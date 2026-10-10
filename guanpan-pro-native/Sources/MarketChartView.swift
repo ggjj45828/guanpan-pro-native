@@ -398,28 +398,40 @@ struct MarketChartView: View {
                             Button("重置") { chartZoom = 1; chartPanOffset = 0 }
                         }.font(.caption)
                         Chart {
+                            // K 线实体：加宽到 5pt，去影线细线化，仿同花顺的清晰观感
                             ForEach(zoomedPeriodBars) { bar in
                                 let candleColor = bar.close >= bar.open ? Color.red : Color.green
                                 RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
-                                    .foregroundStyle(candleColor).lineStyle(StrokeStyle(lineWidth: 1))
-                                RectangleMark(x: .value("日期", bar.date), yStart: .value("开盘", bar.open), yEnd: .value("收盘", bar.close), width: .fixed(3))
+                                    .foregroundStyle(candleColor.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1))
+                                RectangleMark(x: .value("日期", bar.date), yStart: .value("开盘", bar.open), yEnd: .value("收盘", bar.close), width: .fixed(5))
                                     .foregroundStyle(candleColor)
                             }
+                            // 均线统一为实线（虚线会与 K 线柱、净值线糊在一起），
+                            // 配色对齐同花顺/网页版：MA5 橙 / MA20 紫 / MA60 青绿，色相拉开
                             ForEach(average(5, source: zoomedPeriodBars)) { point in
                                 LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
-                                    .foregroundStyle(Color.cyan).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                                    .foregroundStyle(Color(red: 1.0, green: 0.62, blue: 0.11))
+                                    .lineStyle(StrokeStyle(lineWidth: 1.8))
                             }
                             ForEach(average(20, source: zoomedPeriodBars)) { point in
                                 LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
-                                    .foregroundStyle(Color.orange).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                    .foregroundStyle(Color(red: 0.71, green: 0.48, blue: 1.0))
+                                    .lineStyle(StrokeStyle(lineWidth: 1.8))
                             }
                             ForEach(average(60, source: zoomedPeriodBars)) { point in
                                 LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
-                                    .foregroundStyle(Color.purple).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                                    .foregroundStyle(Color(red: 0.18, green: 0.85, blue: 0.78))
+                                    .lineStyle(StrokeStyle(lineWidth: 1.8))
                             }
                         }
-                        .frame(height: 240)
+                        .frame(height: 260)
                         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
+                        .chartYAxis {
+                            AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) {
+                                AxisGridLine().foregroundStyle(Color.primary.opacity(0.07))
+                                AxisValueLabel().font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
                         .simultaneousGesture(MagnifyGesture()
                             .updating($pinchScale) { value, state, _ in state = value.magnification }
                             .onEnded { value in chartZoom = min(8, max(1, chartZoom * value.magnification)) })
@@ -431,9 +443,9 @@ struct MarketChartView: View {
                         })
                         HStack(spacing: 12) {
                             Label(selectedChartPeriod.rawValue, systemImage: "chart.bar.xaxis").foregroundStyle(.red)
-                            Label("MA5", systemImage: "line.diagonal").foregroundStyle(.cyan)
-                            Label("MA20", systemImage: "line.diagonal").foregroundStyle(.orange)
-                            Label("MA60", systemImage: "line.diagonal").foregroundStyle(.purple)
+                            Label("MA5", systemImage: "line.diagonal").foregroundStyle(Color(red: 1.0, green: 0.62, blue: 0.11))
+                            Label("MA20", systemImage: "line.diagonal").foregroundStyle(Color(red: 0.71, green: 0.48, blue: 1.0))
+                            Label("MA60", systemImage: "line.diagonal").foregroundStyle(Color(red: 0.18, green: 0.85, blue: 0.78))
                         }.font(.caption2)
                     } else {
                         ContentUnavailableView("暂无\(selectedChartPeriod.rawValue)", systemImage: "chart.xyaxis.line", description: Text("联网获取历史行情，或在备份中导入已有日线缓存。"))
@@ -628,13 +640,17 @@ struct MarketChartView: View {
         guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=min_data_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else { return }
         do {
             let data: Data
-            if let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
-                data = proxied
-            } else {
+            do {
+                // 行情走 iPhone 直连优先（与主行情通道一致），不依赖 NAS 穿透
                 var request = URLRequest(url: url); request.timeoutInterval = 12
                 let (direct, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                 data = direct
+            } catch {
+                // 直连失败时才走 NAS 行情代理兜底
+                if let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
+                    data = proxied
+                } else { throw error }
             }
             guard let raw = String(data: data, encoding: .utf8),
                   let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),

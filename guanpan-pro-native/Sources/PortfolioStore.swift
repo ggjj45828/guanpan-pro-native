@@ -45,6 +45,27 @@ final class PortfolioStore: ObservableObject {
     var totalMarketValue: Double { data.holdings.reduce(0) { $0 + $1.marketValue } }
     var totalAsset: Double { totalMarketValue + data.cash }
     var totalPnL: Double { data.holdings.reduce(0) { $0 + holdingPnL($1) } }
+
+    // MARK: - 分模块汇总（ETF/证券 与 场外基金 各自独立，不混算）
+    /// 指定类别的当前市值合计。
+    func marketValue(of kind: Holding.Kind) -> Double {
+        data.holdings.filter { $0.kind == kind }.reduce(0) { $0 + $1.marketValue }
+    }
+    /// 指定类别的持仓浮盈合计（口径与账户「持仓浮盈」一致，含成本覆盖/摊薄口径）。
+    func pnl(of kind: Holding.Kind) -> Double {
+        data.holdings.filter { $0.kind == kind }.reduce(0) { $0 + holdingPnL($1) }
+    }
+    /// 指定类别的持仓成本合计（用于成本收益率）。
+    func cost(of kind: Holding.Kind) -> Double {
+        data.holdings.filter { $0.kind == kind }
+            .reduce(0) { $0 + $1.quantity * displayedCost(for: $1) }
+    }
+    /// 指定类别的成本收益率（%）。成本为 0 时返回 nil，避免除零与臆测。
+    func pnlRate(of kind: Holding.Kind) -> Double? {
+        let base = cost(of: kind)
+        guard base > 0, base.isFinite else { return nil }
+        return pnl(of: kind) / base * 100
+    }
     func displayedCost(for holding: Holding) -> Double {
         if let override = holding.costOverride, override.isFinite, override > 0 { return override }
         guard data.costAccountingMode == .diluted, holding.quantity > 0 else { return holding.cost }
@@ -125,12 +146,7 @@ final class PortfolioStore: ObservableObject {
         guard code.count == 6, code.allSatisfy(\.isNumber) else { throw URLError(.badURL) }
         if !force, let cached = dailyBars[code], !cached.isEmpty { return cached }
         let symbol = tencentSymbol(code)
-        if let proxyBytes = try? await NASSyncService.marketProxyData(path: "daily", queryItems: [
-            URLQueryItem(name: "symbol", value: symbol),
-            URLQueryItem(name: "count", value: String(min(max(count, 30), 640)))
-        ]), let result = parseDailyBars(proxyBytes, code: code, symbol: symbol), !result.isEmpty {
-            dailyBars[code] = result; saveDailyBars(); return result
-        }
+        // 行情走 iPhone 直连优先，NAS 仅作兜底（NAS 地址是给多设备同步用的，不应成为行情必经链路）
         let endpoints = [
             "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
             "https://ifzq.gtimg.cn/appstock/app/newfqkline/get",
@@ -149,6 +165,13 @@ final class PortfolioStore: ObservableObject {
                 guard !result.isEmpty else { throw URLError(.cannotParseResponse) }
                 dailyBars[code] = result; saveDailyBars(); return result
             } catch { lastError = error }
+        }
+        // 直连全部失败后，最后才尝试 NAS 行情代理兜底
+        if let proxyBytes = try? await NASSyncService.marketProxyData(path: "daily", queryItems: [
+            URLQueryItem(name: "symbol", value: symbol),
+            URLQueryItem(name: "count", value: String(min(max(count, 30), 640)))
+        ]), let result = parseDailyBars(proxyBytes, code: code, symbol: symbol), !result.isEmpty {
+            dailyBars[code] = result; saveDailyBars(); return result
         }
         if let cached = dailyBars[code], !cached.isEmpty { return cached }
         throw lastError
@@ -506,12 +529,15 @@ final class PortfolioStore: ObservableObject {
         }
         var request = URLRequest(url: url); request.timeoutInterval = 12
         let bytes: Data
-        if let proxied = try? await NASSyncService.marketProxyData(path: "quote", queryItems: [URLQueryItem(name: "codes", value: symbol)]) {
-            bytes = proxied
-        } else {
+        do {
             let (directBytes, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
             bytes = directBytes
+        } catch {
+            // 直连失败时才走 NAS 行情代理兜底
+            if let proxied = try? await NASSyncService.marketProxyData(path: "quote", queryItems: [URLQueryItem(name: "codes", value: symbol)]) {
+                bytes = proxied
+            } else { throw error }
         }
         let text = decodeTencent(bytes)
         guard let quote = parseTencent(text)[symbol], !quote.name.isEmpty else { return nil }
@@ -546,13 +572,16 @@ final class PortfolioStore: ObservableObject {
             var request = URLRequest(url: url); request.timeoutInterval = 12
             let bytes: Data
             var usedNASProxy = false
-            if let proxied = try? await NASSyncService.marketProxyData(path: "quote", queryItems: [URLQueryItem(name: "codes", value: requestCodes.joined(separator: ","))]) {
-                bytes = proxied
-                usedNASProxy = true
-            } else {
+            do {
                 let (directBytes, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                 bytes = directBytes
+            } catch {
+                // 直连失败时才走 NAS 行情代理兜底
+                if let proxied = try? await NASSyncService.marketProxyData(path: "quote", queryItems: [URLQueryItem(name: "codes", value: requestCodes.joined(separator: ","))]) {
+                    bytes = proxied
+                    usedNASProxy = true
+                } else { throw error }
             }
             let text = decodeTencent(bytes)
             let values = parseTencent(text)
@@ -717,13 +746,16 @@ final class PortfolioStore: ObservableObject {
                     request.timeoutInterval = 20
                     request.setValue("https://fund.eastmoney.com/", forHTTPHeaderField: "Referer")
                     let bytes: Data
-                    if let proxied = try? await NASSyncService.marketProxyData(path: "fundnav", queryItems: [URLQueryItem(name: "code", value: code)]) {
-                        bytes = proxied
-                        usedNASProxy = true
-                    } else {
+                    do {
                         let (directBytes, response) = try await URLSession.shared.data(for: request)
                         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                         bytes = directBytes
+                    } catch {
+                        // 直连失败时才走 NAS 行情代理兜底
+                        if let proxied = try? await NASSyncService.marketProxyData(path: "fundnav", queryItems: [URLQueryItem(name: "code", value: code)]) {
+                            bytes = proxied
+                            usedNASProxy = true
+                        } else { throw error }
                     }
                     guard let points = Self.parseFundNAVScript(bytes, code: code), !points.isEmpty else {
                         throw URLError(.cannotParseResponse)
@@ -771,17 +803,20 @@ final class PortfolioStore: ObservableObject {
             for fund in funds {
                 do {
                     let bytes: Data
-                    if let proxied = try? await NASSyncService.marketProxyData(path: "hold", queryItems: [
-                        URLQueryItem(name: "code", value: fund.code), URLQueryItem(name: "topline", value: "50")
-                    ]) {
-                        bytes = proxied; usedNAS = true
-                    } else {
+                    do {
                         var request = URLRequest(url: URL(string: "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=\(fund.code)&topline=50&year=&month=")!)
                         request.timeoutInterval = 18
                         request.setValue("https://fundf10.eastmoney.com/", forHTTPHeaderField: "Referer")
                         let (body, response) = try await URLSession.shared.data(for: request)
                         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                         bytes = body
+                    } catch {
+                        // 直连失败时才走 NAS 行情代理兜底
+                        if let proxied = try? await NASSyncService.marketProxyData(path: "hold", queryItems: [
+                            URLQueryItem(name: "code", value: fund.code), URLQueryItem(name: "topline", value: "50")
+                        ]) {
+                            bytes = proxied; usedNAS = true
+                        } else { throw error }
                     }
                     guard let decoded = Self.parseFundConstituents(bytes, code: fund.code), !decoded.holdings.isEmpty else {
                         throw URLError(.cannotParseResponse)

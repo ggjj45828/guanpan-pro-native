@@ -23,20 +23,12 @@ struct ContentView: View {
     @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
     var body: some View {
         ZStack {
-            if backgroundRevision >= 0, let image = NativeBackgroundStore.load() {
-                Image(uiImage: image).resizable().scaledToFill().ignoresSafeArea()
-                    .overlay(store.appearance == .light || store.appearance == .paper || store.appearance == .mint
-                             ? Color.white.opacity(backgroundOverlayOpacity) : Color.black.opacity(backgroundOverlayOpacity))
-            } else if backgroundRevision >= 0, let gradient = NativeBackgroundStore.selectedGradient {
-                LinearGradient(colors: gradient.hexColors.map { hex in
-                    Color(red: Double((hex >> 16) & 0xff) / 255,
-                          green: Double((hex >> 8) & 0xff) / 255,
-                          blue: Double(hex & 0xff) / 255)
-                }, startPoint: .topLeading, endPoint: .bottomTrailing)
-                .ignoresSafeArea()
-                .overlay(store.appearance == .light || store.appearance == .paper || store.appearance == .mint
-                         ? Color.white.opacity(backgroundOverlayOpacity) : Color.black.opacity(backgroundOverlayOpacity))
-            }
+            // backgroundRevision 是 @AppStorage，选择/清除背景时会递增。
+            // NativeBackgroundStore 读的是 UserDefaults + 沙盒文件，SwiftUI 无法自动追踪，
+            // 因此必须显式依赖 revision，并用 .id(revision) 让背景视图随选择重建 —— 
+            // 原先的 `if backgroundRevision >= 0` 恒为真且未参与视图构建，导致「换背景没反应」。
+            backgroundLayer
+                .id(backgroundRevision)
             TabView {
                 DashboardView().tabItem { Label("自选", systemImage: "chart.xyaxis.line") }
                 HoldingsView(kind: .etf).tabItem { Label("持仓", systemImage: "briefcase.fill") }
@@ -53,6 +45,29 @@ struct ContentView: View {
             if phase == .active { store.configureNASSync() }
             else { store.pauseNASSyncPolling() }
         }
+    }
+
+    @ViewBuilder private var backgroundLayer: some View {
+        if let image = NativeBackgroundStore.load() {
+            Image(uiImage: image).resizable().scaledToFill().ignoresSafeArea()
+                .overlay(overlayTint)
+        } else if let gradient = NativeBackgroundStore.selectedGradient {
+            LinearGradient(colors: gradient.hexColors.map { hex in
+                Color(red: Double((hex >> 16) & 0xff) / 255,
+                      green: Double((hex >> 8) & 0xff) / 255,
+                      blue: Double(hex & 0xff) / 255)
+            }, startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+            .overlay(overlayTint)
+        } else {
+            Color(uiColor: .systemBackground).ignoresSafeArea()
+        }
+    }
+
+    private var overlayTint: Color {
+        store.appearance == .light || store.appearance == .paper || store.appearance == .mint
+            ? Color.white.opacity(backgroundOverlayOpacity)
+            : Color.black.opacity(backgroundOverlayOpacity)
     }
 }
 
@@ -80,6 +95,12 @@ struct DashboardView: View {
                             dashboardMetric("已实现", value: store.realizedPnL)
                             Spacer(minLength: 12)
                             dashboardMetric("参考现金", value: store.data.cash)
+                        }
+                        // 明确区分两个模块，账户页合计数不再被误当成单模块数据。
+                        HStack(spacing: 0) {
+                            dashboardMetric("ETF/证券", value: store.marketValue(of: .etf))
+                            Spacer(minLength: 12)
+                            dashboardMetric("场外基金", value: store.marketValue(of: .fund))
                         }
                     }
                     .padding(16)
@@ -139,6 +160,28 @@ struct DashboardView: View {
                                         .font(.caption2).foregroundStyle(.secondary)
                                 } else {
                                     Text("点开查看行情详情").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                // 技术信号标签：与网页版口径一致（MACD多空 / 超买超卖 / 放量 / MA20 位置）
+                                // 需要该标的日线缓存；无缓存则静默不显示，不臆测。
+                                if let signal = MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? []) {
+                                    HStack(spacing: 5) {
+                                        Text("\(signal.score) \(signal.label)")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .padding(.horizontal, 6).padding(.vertical, 2.5)
+                                            .foregroundStyle(signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                                             : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary)
+                                            .background((signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                                         : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary).opacity(0.14), in: Capsule())
+                                        Text(signal.trendText)
+                                            .font(.system(size: 10, weight: .medium))
+                                            .padding(.horizontal, 6).padding(.vertical, 2.5)
+                                            .foregroundStyle(.secondary)
+                                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                                        SignalTagRow(tags: Array(signal.tags.prefix(3)))
+                                    }
+                                } else if store.dailyBars[q.code] == nil {
+                                    Text("点开一次可载入日线，显示技术信号")
+                                        .font(.caption2).foregroundStyle(.tertiary)
                                 }
                             }
                             .padding(12)
@@ -450,6 +493,7 @@ struct HoldingsView: View {
     private var listContent: some View {
         NavigationStack {
             List {
+                moduleSummarySection
                 accountHintSection
                 if holdings.isEmpty {
                     ContentUnavailableView("暂无\(title)", systemImage: "tray", description: Text("点右上角添加持仓。"))
@@ -473,6 +517,40 @@ struct HoldingsView: View {
                     Button { showAdd = true } label: { Image(systemName: "plus") }
                 }
             }
+        }
+    }
+
+    /// 本模块（ETF/证券 或 场外基金）自己的汇总：市值 / 浮盈 / 收益率。
+    /// 与账户页的「总资产」互不混算——两个模块各看各的，避免把合计当成单模块数字。
+    @ViewBuilder private var moduleSummarySection: some View {
+        Section(kind == .fund ? "基金资产概览" : "ETF / 证券资产概览") {
+            let value = store.marketValue(of: kind)
+            let pnlValue = store.pnl(of: kind)
+            let rate = store.pnlRate(of: kind)
+            HStack {
+                Text("本模块市值")
+                Spacer()
+                Text(value.cny()).font(.headline.monospacedDigit())
+            }
+            HStack {
+                Text("持仓浮盈")
+                Spacer()
+                Text(pnlValue.cny())
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(pnlValue >= 0 ? Color.red : Color.green)
+            }
+            if let rate {
+                HStack {
+                    Text("成本收益率")
+                    Spacer()
+                    Text(rate.pct(2))
+                        .foregroundStyle(rate >= 0 ? Color.red : Color.green)
+                }
+            }
+            Text(kind == .fund
+                 ? "只统计本页场外基金的市值与浮盈；ETF / 证券持仓不计入这里。账户页「总资产」才是两者合计。"
+                 : "只统计本页 ETF / 证券持仓的市值与浮盈；场外基金不计入这里。账户页「总资产」才是两者合计。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -626,8 +704,17 @@ struct HoldingsView: View {
             }.suffix(10).reversed()
             if entries.isEmpty { Text("暂无交易流水").foregroundStyle(.secondary) }
             ForEach(Array(entries)) { e in
+                // 名称回填：ledger 记录若没存名称，依次从在场持仓 / 已归档基金流水中反查，
+                // 避免出现「买入 ¥556.00」这种只有金额没有标的的行。
+                let resolvedName: String = {
+                    if !e.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return e.name }
+                    if let held = store.data.holdings.first(where: { $0.code == e.code && $0.kind == e.kind }) { return held.name }
+                    if let held = store.data.holdings.first(where: { $0.code == e.code }), !held.name.isEmpty { return held.name }
+                    if let tx = store.data.fundTransactions.first(where: { $0.code == e.code && !$0.name.isEmpty }) { return tx.name }
+                    return e.code
+                }()
                 HStack {
-                    Text(e.name); Spacer()
+                    Text(resolvedName); Spacer()
                     Text(e.side == .buy ? "买入" : "卖出")
                     Text((e.gross).cny())
                 }.font(.caption)
@@ -3637,10 +3724,12 @@ struct SettingsView: View {
 
     @ViewBuilder private var quoteSection: some View {
         Section("行情刷新") {
-            Toggle("自动刷新行情", isOn: Binding(get: { store.data.quoteRefreshSeconds > 0 }, set: { store.data.quoteRefreshSeconds = $0 ? max(10, store.data.quoteRefreshSeconds) : 0; store.save(label: "修改账本或设置") }))
-            Stepper(value: Binding(get: { max(10, store.data.quoteRefreshSeconds) }, set: { store.data.quoteRefreshSeconds = min(600, max(10, $0)); store.save(label: "修改账本或设置") }), in: 10...600, step: 10) {
+            Toggle("自动刷新行情", isOn: Binding(get: { store.data.quoteRefreshSeconds > 0 }, set: { store.data.quoteRefreshSeconds = $0 ? max(5, store.data.quoteRefreshSeconds) : 0; store.save(label: "修改账本或设置") }))
+            Stepper(value: Binding(get: { max(5, store.data.quoteRefreshSeconds) }, set: { store.data.quoteRefreshSeconds = min(600, max(5, $0)); store.save(label: "修改账本或设置") }), in: 5...600, step: 5) {
                 LabeledContent("自动刷新间隔", value: store.data.quoteRefreshSeconds > 0 ? "\(store.data.quoteRefreshSeconds) 秒" : "已关闭")
-            }.disabled(store.data.quoteRefreshSeconds == 0)
+            }
+            Text("最短 5 秒，与网页版一致。行情走 iPhone 直连，刷新频率由本机控制，不经过 NAS。")
+                .font(.footnote).foregroundStyle(.secondary).disabled(store.data.quoteRefreshSeconds == 0)
             Toggle("行情刷新时记录分时点", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
             Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
             Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
@@ -3735,15 +3824,34 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Toggle("自动同步", isOn: $nasAutoSync)
-            HStack {
-                Button(checkingNAS ? "正在检查…" : "测试连接") { testNAS() }.disabled(checkingNAS)
-                Spacer()
-                Button("安全同步") { Task { await store.synchronizeNASSafely() } }
+            // 三个动作语义不同，各自独立成行并加说明，避免误触「上传/下载」覆盖数据
+            VStack(alignment: .leading, spacing: 4) {
+                Button { testNAS() } label: {
+                    Label(checkingNAS ? "正在检查…" : "① 测试连接", systemImage: "antenna.radiowaves.left.and.right")
+                }.disabled(checkingNAS)
+                Text("只探测 NAS 地址是否可达，不改动任何数据。")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
-            HStack {
-                Button("从 NAS 下载") { confirmNASDownload = true }
-                Spacer()
-                Button("上传到 NAS") { confirmNASUpload = true }
+            VStack(alignment: .leading, spacing: 4) {
+                Button { Task { await store.synchronizeNASSafely() } } label: {
+                    Label("② 安全同步（双向，冲突时暂停）", systemImage: "arrow.triangle.2.circlepath")
+                }
+                Text("先比对两边改动再做合并；两台设备同时修改会暂停并提示，不会静默覆盖。")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Button { confirmNASDownload = true } label: {
+                    Label("③ 从 NAS 下载（覆盖本机）", systemImage: "arrow.down.circle")
+                }
+                Text("用 NAS 上的账本替换本机账本。方向单一，确认后执行。")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Button { confirmNASUpload = true } label: {
+                    Label("④ 上传到 NAS（覆盖云端）", systemImage: "arrow.up.circle")
+                }
+                Text("用本机账本替换 NAS 上的账本。方向单一，确认后执行。")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             Button(loadingNASHistory ? "正在读取历史版本…" : "查看 NAS 历史版本") { loadNASHistory() }
                 .disabled(loadingNASHistory || restoringNAS)
@@ -3765,7 +3873,7 @@ struct SettingsView: View {
                 }
             }
             Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。原生空间为空时会先迁入 NAS 上可识别的网页账本；之后网页与原生各自同步，原生改动不会反向转换回网页格式。分时和日线缓存随原生账本同步。行情刷新和日线下载优先尝试 NAS 行情代理，失败时自动回退到 iPhone 直连。最近 10 个 NAS 历史版本可查看和恢复；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
+            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。原生空间为空时会先迁入 NAS 上可识别的网页账本；之后网页与原生各自同步，原生改动不会反向转换回网页格式。分时和日线缓存随原生账本同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if !store.data.legacySettingsArchives.isEmpty {

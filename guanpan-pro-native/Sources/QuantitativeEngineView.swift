@@ -122,6 +122,10 @@ struct QuantitativeEngineView: View {
             } else {
                 Text("打开详情或点击上方扫描获取日线数据").font(.caption).foregroundStyle(.secondary)
             }
+            // 与自选面板一致的技术标签
+            if let raw = MarketSignalCalculator.evaluate(store.dailyBars[item.code] ?? []) {
+                SignalTagRow(tags: raw.tags)
+            }
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
@@ -148,69 +152,8 @@ struct QuantitativeEngineView: View {
     }
 
     private static func evaluate(_ bars: [DailyBar]) -> QuantEngineSignal? {
-        let source = Array(bars.suffix(640))
-        guard source.count >= 20, let latest = source.last else { return nil }
-        let closes = source.map(\.close)
-        func average(_ count: Int) -> Double? {
-            guard closes.count >= count else { return nil }
-            return closes.suffix(count).reduce(0, +) / Double(count)
-        }
-        guard let ma5 = average(5), let ma10 = average(10), let ma20 = average(20) else { return nil }
-        let ma60 = average(60)
-        var raw = 0
-        var notes: [String] = []
-        if ma5 > ma10 && ma10 > ma20 { raw += 2; notes.append("短期均线多头排列") }
-        else if ma5 < ma10 && ma10 < ma20 { raw -= 2; notes.append("短期均线空头排列") }
-        if let ma60 {
-            if ma20 > ma60 { raw += 1; notes.append("MA20 在 MA60 上方") }
-            else { raw -= 1; notes.append("MA20 在 MA60 下方") }
-        }
-        if latest.close >= ma20 { raw += 1; notes.append("收盘高于 MA20") }
-        else { raw -= 1; notes.append("收盘低于 MA20") }
-        if source.count >= 6 {
-            let momentum = latest.close / source[source.count - 6].close - 1
-            if momentum >= 0.02 { raw += 1; notes.append("5 日动量为正") }
-            else if momentum <= -0.02 { raw -= 1; notes.append("5 日动量为负") }
-        }
-        if closes.count >= 15 {
-            // 展开成显式循环：原式 map + 多重下标运算会让类型检查超时。
-            let rsiBase = closes.count - 15
-            var delta: [Double] = []
-            for offset in 1..<15 {
-                delta.append(closes[rsiBase + offset] - closes[rsiBase + offset - 1])
-            }
-            let gain = delta.map { max(0, $0) }.reduce(0, +) / 14
-            let loss = delta.map { max(0, -$0) }.reduce(0, +) / 14
-            let rsi = loss == 0 ? (gain == 0 ? 50 : 100) : 100 - 100 / (1 + gain / loss)
-            if rsi < 30 { raw += 1; notes.append("RSI14 偏低") }
-            else if rsi > 70 { raw -= 1; notes.append("RSI14 偏高") }
-            else { notes.append("RSI14 中性") }
-        }
-        if closes.count >= 35 {
-            var fast = closes[0], slow = closes[0], dea = 0.0
-            var histogram = 0.0
-            for (index, close) in closes.enumerated() {
-                if index > 0 {
-                    fast += (2.0 / 13.0) * (close - fast)
-                    slow += (2.0 / 27.0) * (close - slow)
-                }
-                let dif = fast - slow
-                dea = index == 0 ? dif : dea + 0.2 * (dif - dea)
-                histogram = 2 * (dif - dea)
-            }
-            if histogram > 0 { raw += 1; notes.append("MACD 柱值为正") }
-            else if histogram < 0 { raw -= 1; notes.append("MACD 柱值为负") }
-        }
-        if source.count >= 21 {
-            let baseline = source.suffix(21).dropLast().map(\.volume).reduce(0, +) / 20
-            let change = latest.close / source[source.count - 2].close - 1
-            if baseline > 0 && latest.volume >= baseline * 1.5 {
-                if change >= 0 { raw += 1; notes.append("放量上涨") }
-                else { raw -= 1; notes.append("放量下跌") }
-            }
-        }
-        let score = min(100, max(0, 50 + raw * 6))
-        let label = score >= 68 ? "偏强" : score >= 56 ? "偏多" : score <= 32 ? "偏弱" : score <= 44 ? "偏空" : "中性"
-        return QuantEngineSignal(score: score, label: label, notes: notes, date: latest.date)
+        // 统一走 MarketSignalCalculator，保证自选面板与量化引擎口径完全一致
+        guard let signal = MarketSignalCalculator.evaluate(bars) else { return nil }
+        return QuantEngineSignal(score: signal.score, label: signal.label, notes: signal.notes, date: signal.date)
     }
 }

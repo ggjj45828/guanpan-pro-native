@@ -63,13 +63,27 @@ enum NativeBackgroundStore {
     }
 
     static func save(_ source: Data) throws {
-        guard let image = UIImage(data: source), let fileURL else { throw BackgroundImageError.invalidImage }
+        guard let raw = UIImage(data: source), let fileURL else { throw BackgroundImageError.invalidImage }
+        // 先按最长边缩到 1800（与旧逻辑一致），再强制裁成 3:4 竖向比例并归一到固定像素尺寸。
+        // 原因：极端宽高比的图配合 scaledToFill 会让 SwiftUI 渲染出超大位图，导致界面错乱/内存暴涨。
+        // 统一成 1080x1440 后，任何来源的图片都只占用固定显存。
         let maxDimension: CGFloat = 1800
-        let scale = min(1, maxDimension / max(image.size.width, image.size.height))
-        let size = CGSize(width: max(1, image.size.width * scale), height: max(1, image.size.height * scale))
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-        guard let encoded = resized.jpegData(compressionQuality: 0.78), encoded.count <= 8 * 1024 * 1024 else {
+        let scale = min(1, maxDimension / max(raw.size.width, raw.size.height))
+        let scaledSize = CGSize(width: max(1, raw.size.width * scale), height: max(1, raw.size.height * scale))
+        let resized = UIGraphicsImageRenderer(size: scaledSize).image { _ in
+            raw.draw(in: CGRect(origin: .zero, size: scaledSize))
+        }
+        let targetSize = CGSize(width: 1080, height: 1440)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let normalized = renderer.image { _ in
+            // aspectFill：铺满目标画布并居中裁剪，避免拉伸变形
+            let ratio = max(targetSize.width / resized.size.width, targetSize.height / resized.size.height)
+            let drawSize = CGSize(width: resized.size.width * ratio, height: resized.size.height * ratio)
+            let origin = CGPoint(x: (targetSize.width - drawSize.width) / 2,
+                                 y: (targetSize.height - drawSize.height) / 2)
+            resized.draw(in: CGRect(origin: origin, size: drawSize))
+        }
+        guard let encoded = normalized.jpegData(compressionQuality: 0.78), encoded.count <= 8 * 1024 * 1024 else {
             throw BackgroundImageError.invalidImage
         }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
