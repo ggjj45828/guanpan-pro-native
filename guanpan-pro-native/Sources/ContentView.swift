@@ -808,6 +808,11 @@ struct QuoteAlertEditor: View {
     @State private var target = ""
     @State private var direction: QuoteAlert.Direction = .above
     @State private var error = ""
+
+    /// 从持仓/自选行直接呼出时预填代码，省一次选择
+    init(initialCode: String? = nil) {
+        _code = State(initialValue: initialCode ?? "")
+    }
     private var instruments: [AlertInstrument] {
         let values = store.data.quotes.map { AlertInstrument(code: $0.code, name: $0.name) }
             + store.data.holdings.filter { $0.kind == .etf }.map { AlertInstrument(code: $0.code, name: $0.name) }
@@ -949,6 +954,7 @@ struct HoldingsView: View {
     @State private var deleteArchivedFundCode: String?
     @State private var undoTradeMessage: String?
     @State private var showPortfolioAdvice = false
+    @State private var alertTarget: Holding?
     @State private var searchText = ""
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
     private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
@@ -1007,6 +1013,7 @@ struct HoldingsView: View {
             .sheet(item: $feePolicyTarget) { FundFeePolicyEditor(fund: $0) }
             .sheet(item: $feeReconciliationTarget) { FundFeeReconciliationEditor(transaction: $0) }
             .sheet(item: $marketChartTarget) { MarketChartView(holding: $0) }
+            .sheet(item: $alertTarget) { QuoteAlertEditor(initialCode: $0.code) }
             .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() }
             .sheet(isPresented: $showFundQuant) { FundQuantView() }
             .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() }
@@ -1153,21 +1160,24 @@ struct HoldingsView: View {
     }
 
     @ViewBuilder private func holdingRow(_ h: Holding) -> some View {
-        // 每只下面补一行「当日盈亏 / 收益率 / 占总资产」，密度对齐网页版持仓行。
+        // 列布局对齐养基宝：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），
+        // 市值在名称行右侧，占总资产挪到底部信息行 —— 4 列太挤，3 列是它的可读上限。
         // 缺当日行情时显示 --，不把「没数据」画成 0。
         let dayValue = store.dayPnL(of: h)
         let hasDay = store.marketChanges[h.code] != nil
+        let dayPercent: Double? = hasDay ? (store.marketChanges[h.code]) : nil
         let costBasis = h.quantity * store.displayedCost(for: h)
-        let rate = costBasis > 0 ? store.holdingPnL(h) / costBasis * 100 : nil
+        let holdingPnL = store.holdingPnL(h)
+        let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
         VStack(alignment: .leading, spacing: 7) {
-            HStack { Text(h.name).font(.headline); Spacer(); Text((h.marketValue).cny()).font(.headline) }
+            HStack { Text(h.name).font(.headline).lineLimit(1); Spacer(); Text((h.marketValue).cny()).font(.headline) }
             HStack(spacing: 9) {
-                holdingStat("当日", hasDay ? dayValue.cny() : "--", hasDay ? dayValue : nil)
-                holdingStat("收益率", rate.map { $0.pct(2) } ?? "--", store.holdingPnL(h))
-                holdingStat("占总资产", (store.allocationActualPercent(for: h)).pct(1), nil)
+                holdingStat("当日涨幅", dayPercent.map { "\($0.directionMark()) \($0.pct(2))" } ?? "--", dayPercent)
+                holdingStat("当日收益", hasDay ? "\(dayValue.directionMark()) \(dayValue.cny())" : "--", hasDay ? dayValue : nil)
+                holdingStat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
                 Spacer(minLength: 0)
             }
-            Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3)))")
+            Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3))) · 占总资产 \((store.allocationActualPercent(for: h)).pct(1))")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("成本额 \((h.quantity * store.displayedCost(for: h)).cny())")
@@ -1206,9 +1216,28 @@ struct HoldingsView: View {
             }.buttonStyle(.borderless).font(.subheadline)
         }.padding(.vertical, 5)
         .contentShape(Rectangle())
+        // 左滑动作对齐养基宝的「后面有很多」：删除仍是全滑直达，
+        // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
+        // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("删除", role: .destructive) { Haptics.heavy(); store.removeHolding(h) }
             Button("编辑") { Haptics.tap(); editTarget = h }.tint(.blue)
+            Button("交易") { Haptics.tap(); tradeTarget = h }.tint(.orange)
+            if kind == .fund {
+                Button("净值") { fundHistoryTarget = h }.tint(.indigo)
+                Button("定投") { dcaTarget = h }.tint(.teal)
+            } else {
+                Button("日K") { marketChartTarget = h }.tint(.indigo)
+                Button("提醒") { alertTarget = h }.tint(.teal)
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button("加自选") {
+                Haptics.tap()
+                if !store.data.quotes.contains(where: { $0.code == h.code }) {
+                    store.addWatch(code: h.code, name: h.name)
+                }
+            }.tint(.mint)
         }
     }
 

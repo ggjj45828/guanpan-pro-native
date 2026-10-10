@@ -151,6 +151,19 @@ final class PortfolioStore: ObservableObject {
     func load() {
         guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
         data = value
+        migrateChartRangeIfNeeded()
+    }
+
+    /// 一次性迁移：旧默认 250 日会让 K 线细到亚像素（一团灰），
+    /// 新默认 120。只迁移一次，之后用户改回 250 不会被覆盖。
+    private func migrateChartRangeIfNeeded() {
+        let flag = "guanpan.native.chartRangeMigrated120"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        if data.dailyChartRangeDays == 250 {
+            data.dailyChartRangeDays = 120
+            save(label: nil)
+        }
     }
     private func gridBarsURL() -> URL? {
         guard let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }

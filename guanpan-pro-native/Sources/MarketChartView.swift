@@ -108,6 +108,53 @@ struct MarketChartView: View {
         let day = intradayDays.contains(selectedIntradayDay) ? selectedIntradayDay : (intradayDays.first ?? "")
         return store.intradayBars.filter { $0.code == holding.code && $0.day == day }.sorted { $0.timestamp < $1.timestamp }
     }
+
+    /// 分时均价点：有量就用「累计成交额 / 累计量」的加权均价，
+    /// 全程没量（导入的历史分时）就退化为简单算术均价，两种口径都不臆造。
+    private struct IntradayAvgPoint: Identifiable {
+        let timestamp: Date
+        let price: Double
+        var id: TimeInterval { timestamp.timeIntervalSince1970 }
+    }
+    private var intradayAvgPoints: [IntradayAvgPoint] {
+        let bars = selectedIntradayBars
+        guard !bars.isEmpty else { return [] }
+        let hasVolume = bars.contains { ($0.volume ?? 0) > 0 }
+        var amount = 0.0
+        var shares = 0.0
+        var count = 0.0
+        var out: [IntradayAvgPoint] = []
+        out.reserveCapacity(bars.count)
+        for bar in bars {
+            if hasVolume {
+                let volume = max(bar.volume ?? 0, 0)
+                amount += bar.price * volume
+                shares += volume
+                out.append(IntradayAvgPoint(timestamp: bar.timestamp, price: shares > 0 ? amount / shares : bar.price))
+            } else {
+                count += 1
+                amount += bar.price
+                out.append(IntradayAvgPoint(timestamp: bar.timestamp, price: amount / count))
+            }
+        }
+        return out
+    }
+
+    /// 昨收基准：优先手填昨收，其次由现价和涨跌幅反推。
+    private var intradayPrevClose: Double? {
+        let manual = store.data.manualQuoteOverrides[holding.code]
+        if let previous = manual?.previousClose, previous > 0 { return previous }
+        let quote = store.data.quotes.first { $0.code == holding.code }
+        if let quote, quote.changePct.isFinite, quote.changePct > -1, quote.price > 0 {
+            return quote.price / (1 + quote.changePct)
+        }
+        if let change = store.marketChanges[holding.code], change.isFinite, change > -1 {
+            let price = manual?.price ?? quote?.price ?? holding.current
+            if price > 0 { return price / (1 + change) }
+        }
+        return nil
+    }
+
     private var minuteBuckets: [MinuteBucket] {
         let width: TimeInterval
         switch selectedChartPeriod {
@@ -331,8 +378,22 @@ struct MarketChartView: View {
                             Chart(selectedIntradayBars) { point in
                                 LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
                                     .foregroundStyle(intradayLineColor).interpolationMethod(.linear)
+                                    // 默认线宽约 1pt，在浅色背景上发虚；加粗到 2.4pt 才有券商 App 的实心感
+                                    .lineStyle(StrokeStyle(lineWidth: 2.4))
+                                // 均价线：累计成交额 / 累计成交量（对齐养基宝分时的橙线）
+                                ForEach(intradayAvgPoints) { avg in
+                                    LineMark(x: .value("时间", avg.timestamp), y: .value("均价", avg.price))
+                                        .foregroundStyle(Color.orange)
+                                        .lineStyle(StrokeStyle(lineWidth: 1.4))
+                                }
+                                // 昨收基准虚线，一眼看出现在相对昨天是红是绿
+                                if let prev = intradayPrevClose {
+                                    RuleMark(y: .value("昨收", prev))
+                                        .foregroundStyle(Color.secondary.opacity(0.55))
+                                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                }
                             }
-                            .frame(height: 280)
+                            .frame(height: 320)
                             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
                             Picker("分时副图", selection: $intradaySubchart) {
                                 ForEach(IntradaySubchart.allCases) { item in Text(item.rawValue).tag(item) }
@@ -587,20 +648,57 @@ struct MarketChartView: View {
         max(180, chartBodyHeight - volumeHeight - 8)
     }
 
+    // MARK: 可见窗口的 Y 轴自适应
+
+    /// 显式按「当前可见的 K 线」计算 Y 轴区间。
+    ///
+    /// 之前依赖 SwiftUI Charts 的自动 domain：它会带一层不可控的留白，
+    /// 缩放时变化不明显，看起来就像高低区间是死的。
+    /// 显式给 domain 后，捏合和拖动都会立即重算上下界。
+    /// 均线也一并纳入，避免 MA60 在窗口外被裁掉。
+    private func yDomain(for bars: [DailyBar]) -> ClosedRange<Double> {
+        guard !bars.isEmpty else { return 0...1 }
+        var low = bars.map(\.low).min() ?? 0
+        var high = bars.map(\.high).max() ?? 1
+        for source in [average(5, source: bars), average(10, source: bars),
+                       average(20, source: bars), average(60, source: bars)] {
+            for point in source {
+                low = min(low, point.value)
+                high = max(high, point.value)
+            }
+        }
+        guard high > low else {
+            let base = max(high, 0.0001)
+            return (base * 0.999)...(base * 1.001)
+        }
+        let padding = (high - low) * 0.06
+        return (low - padding)...(high + padding)
+    }
+
+    /// 可见窗口最高/最低的文字，用于图上方实时提示
+    private func windowHighLowText(_ bars: [DailyBar]) -> String {
+        guard let high = bars.map(\.high).max(), let low = bars.map(\.low).min(), !bars.isEmpty else { return "" }
+        return "高 \((high).num(3))  低 \((low).num(3))"
+    }
+
+
     @ViewBuilder private var dailyChartSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("捏合缩放 · 左右拖动看历史")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("重置") { chartZoom = 1; chartPanOffset = 0 }.font(.caption)
-            }
+            Text("捏合缩放 · 左右拖动看历史")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            // 可见窗口的最高/最低：捏合、拖动时实时跟着变，不再是整个区间的固定值
+            Text(windowHighLowText(zoomedPeriodBars))
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Button("重置") { chartZoom = 1; chartPanOffset = 0 }.font(.caption)
+        }
             maLegendRow
             // GeometryReader 拿到实际绘图宽度，据此算出随缩放变化的实体宽度。
             // 之前实体固定 5pt，放大后柱子不变粗、间距却变大，看起来既稀疏又糊。
             GeometryReader { geo in
                 let slot = max(60, geo.size.width) / CGFloat(max(1, zoomedPeriodBars.count))
-                let bodyWidth = min(max(slot * 0.68, 1.2), 18)
+                let bodyWidth = min(max(slot * 0.74, 2.2), 30)
                 VStack(spacing: 8) {
                     candlePlot(bodyWidth: bodyWidth).frame(height: candleHeight)
                     volumePlot(bodyWidth: bodyWidth).frame(height: volumeHeight)
@@ -687,7 +785,7 @@ struct MarketChartView: View {
                 let pad = (highBody - lowBody) < highBody * 0.0008 ? highBody * 0.0008 : 0
                 RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
                     .foregroundStyle(candleColor.opacity(0.9))
-                    .lineStyle(StrokeStyle(lineWidth: max(0.8, bodyWidth * 0.16)))
+                    .lineStyle(StrokeStyle(lineWidth: max(1.2, bodyWidth * 0.2)))
                 RectangleMark(x: .value("日期", bar.date),
                               yStart: .value("开盘", lowBody),
                               yEnd: .value("收盘", highBody + pad),
@@ -711,6 +809,8 @@ struct MarketChartView: View {
                     .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 2))
             }
         }
+        // Y 轴显式跟随可见窗口：捏合/拖动后上下界立即重算（含均线），不再是一整段区间
+        .chartYScale(domain: yDomain(for: zoomedPeriodBars))
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 5)) { _ in
                 AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
@@ -890,6 +990,26 @@ struct LandscapeChartView: View {
         return Array(allBars.suffix(min(max(target, 20), allBars.count)))
     }
 
+    /// 与主视图同口径：Y 轴显式跟随可见窗口（含均线），放大缩小都实时重算
+    private func yDomain(for bars: [DailyBar]) -> ClosedRange<Double> {
+        guard !bars.isEmpty else { return 0...1 }
+        var low = bars.map(\.low).min() ?? 0
+        var high = bars.map(\.high).max() ?? 1
+        for source in [average(5, source: bars), average(10, source: bars),
+                       average(20, source: bars), average(60, source: bars)] {
+            for point in source {
+                low = min(low, point.value)
+                high = max(high, point.value)
+            }
+        }
+        guard high > low else {
+            let base = max(high, 0.0001)
+            return (base * 0.999)...(base * 1.001)
+        }
+        let padding = (high - low) * 0.06
+        return (low - padding)...(high + padding)
+    }
+
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
@@ -957,7 +1077,7 @@ struct LandscapeChartView: View {
         GeometryReader { geo in
             let count = max(visibleBars.count, 1)
             let slot = geo.size.width / CGFloat(count)
-            let bodyWidth = min(max(slot * 0.66, 1.0), 20)
+            let bodyWidth = min(max(slot * 0.74, 2.2), 30)
             Chart {
                 ForEach(visibleBars) { bar in
                     let rising = bar.close >= bar.open
@@ -968,7 +1088,7 @@ struct LandscapeChartView: View {
                     let pad = (highBody - lowBody) < highBody * 0.0008 ? highBody * 0.0008 : 0
                     RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
                         .foregroundStyle(candleColor.opacity(0.9))
-                        .lineStyle(StrokeStyle(lineWidth: max(0.8, bodyWidth * 0.16)))
+                        .lineStyle(StrokeStyle(lineWidth: max(1.2, bodyWidth * 0.2)))
                     RectangleMark(x: .value("日期", bar.date),
                                   yStart: .value("开盘", lowBody),
                                   yEnd: .value("收盘", highBody + pad),
@@ -992,6 +1112,8 @@ struct LandscapeChartView: View {
                         .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
+            // 横屏同样显式跟随可见窗口
+            .chartYScale(domain: yDomain(for: visibleBars))
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: 8)) { _ in
                     AxisValueLabel().font(.system(size: 10)).foregroundStyle(.secondary)
@@ -1013,7 +1135,7 @@ struct LandscapeChartView: View {
         GeometryReader { geo in
             let count = max(visibleBars.count, 1)
             let slot = geo.size.width / CGFloat(count)
-            let bodyWidth = min(max(slot * 0.66, 1.0), 20)
+            let bodyWidth = min(max(slot * 0.74, 2.2), 30)
             Chart {
                 ForEach(visibleBars) { bar in
                     BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(bodyWidth))

@@ -580,7 +580,9 @@ struct PortfolioData: Codable {
     var quoteRefreshSeconds = 60
     var dailyPnLMode: DailyPnLMode = .pnl
     var intradaySubchartMode = "macd"
-    var dailyChartRangeDays = 250
+    // 120 而不是 250：250 根 K 线挤进一屏宽度时每根实体不到 1pt（亚像素），
+    // 抗锯齿后是一团灰；120 根约 3pt/根，柱子有实心感。老数据由 store 的迁移改成 120。
+    var dailyChartRangeDays = 120
     var intradayLineColorMode: IntradayLineColorMode = .automatic
     var intradayCaptureEnabled = true
     var automaticFundNAVRefreshEnabled = false
