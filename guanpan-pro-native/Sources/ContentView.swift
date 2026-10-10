@@ -47,25 +47,41 @@ struct ContentView: View {
         }
     }
 
+    private var currentTheme: AppTheme { AppTheme.palette(for: store.appearance) }
+
     @ViewBuilder private var backgroundLayer: some View {
-        if let image = NativeBackgroundStore.load() {
-            Image(uiImage: image).resizable().scaledToFill().ignoresSafeArea()
-                .overlay(overlayTint)
-        } else if let gradient = NativeBackgroundStore.selectedGradient {
-            LinearGradient(colors: gradient.hexColors.map { hex in
-                Color(red: Double((hex >> 16) & 0xff) / 255,
-                      green: Double((hex >> 8) & 0xff) / 255,
-                      blue: Double(hex & 0xff) / 255)
-            }, startPoint: .topLeading, endPoint: .bottomTrailing)
+        // 主题底色兜底：即使没有自定义背景，换主题也能立刻看到差异。
+        currentTheme.gradient
             .ignoresSafeArea()
-            .overlay(overlayTint)
-        } else {
-            Color(uiColor: .systemBackground).ignoresSafeArea()
-        }
+            .overlay {
+                // 关键点：Image 的 ideal size 是图片原始像素（1080x1440），
+// 直接放进 ZStack 且不加尺寸约束时，会把根布局撑开，表现为「上传背景后界面错乱」。
+// 用 GeometryReader 显式给出屏幕尺寸并 clipped，图片只做填充不再参与布局计算。
+                GeometryReader { geo in
+                    if let image = NativeBackgroundStore.load() {
+                        Image(uiImage: image).resizable().scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                            .overlay(overlayTint)
+                    } else if let gradient = NativeBackgroundStore.selectedGradient {
+                        LinearGradient(colors: gradient.hexColors.map { hex in
+                            Color(red: Double((hex >> 16) & 0xff) / 255,
+                                  green: Double((hex >> 8) & 0xff) / 255,
+                                  blue: Double(hex & 0xff) / 255)
+                        }, startPoint: .topLeading, endPoint: .bottomTrailing)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .overlay(overlayTint)
+                    }
+                }
+                .ignoresSafeArea()
+            }
     }
 
+    /// 背景图上的压暗/提亮蒙版，保证列表文字在任何图片上都能读清。
+    /// 透明度由设置页滑杆控制（0.08~0.82）。
     private var overlayTint: Color {
-        store.appearance == .light || store.appearance == .paper || store.appearance == .mint
+        currentTheme.isLight
             ? Color.white.opacity(backgroundOverlayOpacity)
             : Color.black.opacity(backgroundOverlayOpacity)
     }
@@ -73,6 +89,14 @@ struct ContentView: View {
 
 struct DashboardView: View {
     @EnvironmentObject var store: PortfolioStore
+
+    // 拿不到当日涨跌幅时显示 --，避免把「没数据」画成 0。
+    private var pnlRateText: String { store.totalPnLRate.map { $0.pct(2) } ?? "--" }
+    private var dayPnLText: String { store.hasDayPnL ? store.dayPnL.cny() : "--" }
+    private var dayPnLRateText: String {
+        guard store.hasDayPnL, let rate = store.dayPnLRate else { return "--" }
+        return rate.pct(2)
+    }
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAdd = false
     @State private var showAlertEditor = false
@@ -96,18 +120,40 @@ struct DashboardView: View {
                             Spacer(minLength: 12)
                             dashboardMetric("参考现金", value: store.data.cash)
                         }
-                        // 明确区分两个模块，账户页合计数不再被误当成单模块数据。
-                        HStack(spacing: 0) {
-                            dashboardMetric("ETF/证券", value: store.marketValue(of: .etf))
-                            Spacer(minLength: 12)
-                            dashboardMetric("场外基金", value: store.marketValue(of: .fund))
-                        }
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(LinearGradient(colors: [Color(red: 0.18, green: 0.37, blue: 0.73), Color(red: 0.26, green: 0.52, blue: 0.76)], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+
+                    // 账户明细网格：对齐网页版持仓页汇总卡（市值/现金/盈亏比例/今日盈亏/仓位…）。
+                    // 原来只有 3 个大数字，这里补齐到 9 格，标签 10px、数值 13px，密度接近网页版。
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("账户明细").font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("市值 + 现金 = 总资产").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        MetricGrid(columns: 3, cells: [
+                            MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
+                            MetricCell(title: "参考现金", value: store.data.cash.cny()),
+                            MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
+                            MetricCell(title: "今日盈亏", value: dayPnLText,
+                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
+                            MetricCell(title: "今日幅度", value: dayPnLRateText,
+                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
+                            MetricCell(title: "总成本", value: store.totalCost.cny()),
+                            MetricCell(title: "ETF / 证券", value: store.marketValue(of: .etf).cny()),
+                            MetricCell(title: "场外基金", value: store.marketValue(of: .fund).cny()),
+                            MetricCell(title: "仓位", value: store.positionPercent.pct(1))
+                        ])
+                        Text("今日盈亏按最近一次拿到的涨跌幅反推昨收估算，没取到行情时显示 --，不臆测补数。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    .cardSurface()
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
                 } header: { Text("账户") }
                 Section("行情状态") {
@@ -247,10 +293,39 @@ struct MoreHubView: View {
     @EnvironmentObject private var store: PortfolioStore
     @State private var showTools = false
     @State private var showSettings = false
+    // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
+    // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
+    @State private var showAIAnalysis = false
+    @State private var showQuantEngine = false
+    @State private var showPortfolioAdvice = false
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    VStack(spacing: 10) {
+                        MoreHubCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
+                                    icon: "sparkles", tint: Color(red: 0.55, green: 0.36, blue: 1.0)) {
+                            showAIAnalysis = true
+                        }
+                        HStack(spacing: 10) {
+                            MoreHubTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
+                                        icon: "waveform.path.ecg", tint: Color(red: 0.16, green: 0.72, blue: 0.85)) {
+                                showQuantEngine = true
+                            }
+                            MoreHubTile(title: "账户决策提示", subtitle: "仓位上限\n现金占比",
+                                        icon: "lightbulb.fill", tint: Color(red: 1.0, green: 0.62, blue: 0.18)) {
+                                showPortfolioAdvice = true
+                            }
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                } header: { Text("AI 与智能分析") } footer: {
+                    Text("投资偏好（画像）与模型接口在「AI 账户分析」页内配置；密钥只存本机钥匙串。")
+                        .font(.system(size: 10))
+                }
+
                 Section {
                     Button { showTools = true } label: {
                         MoreHubRow(title: "分析与规划", subtitle: "回测、现金计划、风险分析与数据核对", icon: "slider.horizontal.3", tint: .blue)
@@ -279,7 +354,84 @@ struct MoreHubView: View {
             .navigationBarTitleDisplayMode(.large)
             .sheet(isPresented: $showTools) { ToolsView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
+            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() }
+            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() }
         }
+    }
+}
+
+/// 一级页的横向大卡：图标 + 标题 + 说明，整块可点。
+private struct MoreHubCard: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(tint.gradient, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(tint.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .strokeBorder(tint.opacity(0.28), lineWidth: 0.6)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 一半宽度的小卡，两个并排。
+private struct MoreHubTile: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 104, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(tint.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .strokeBorder(tint.opacity(0.24), lineWidth: 0.6)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -522,35 +674,57 @@ struct HoldingsView: View {
 
     /// 本模块（ETF/证券 或 场外基金）自己的汇总：市值 / 浮盈 / 收益率。
     /// 与账户页的「总资产」互不混算——两个模块各看各的，避免把合计当成单模块数字。
+    /// 持仓行内的小统计：标签 9px、数值 11px，一行塞三个不挤。
+    private func holdingStat(_ title: String, _ value: String, _ tone: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.system(size: 9)).foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                .foregroundStyle(tone.map { $0 >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                                    : Color(red: 0.07, green: 0.77, blue: 0.55) } ?? Color.primary)
+        }
+    }
+
     @ViewBuilder private var moduleSummarySection: some View {
         Section(kind == .fund ? "基金资产概览" : "ETF / 证券资产概览") {
             let value = store.marketValue(of: kind)
             let pnlValue = store.pnl(of: kind)
-            let rate = store.pnlRate(of: kind)
-            HStack {
-                Text("本模块市值")
-                Spacer()
-                Text(value.cny()).font(.headline.monospacedDigit())
-            }
-            HStack {
-                Text("持仓浮盈")
-                Spacer()
-                Text(pnlValue.cny())
-                    .font(.headline.monospacedDigit())
-                    .foregroundStyle(pnlValue >= 0 ? Color.red : Color.green)
-            }
-            if let rate {
-                HStack {
-                    Text("成本收益率")
-                    Spacer()
-                    Text(rate.pct(2))
-                        .foregroundStyle(rate >= 0 ? Color.red : Color.green)
+            let count = holdings.filter { $0.quantity > 0 }.count
+            let dayValue = store.dayPnL(of: kind)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("本模块市值").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(value.cny())
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                            .minimumScaleFactor(0.7).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("持仓浮盈").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(pnlValue.cny())
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(pnlValue >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                                            : Color(red: 0.07, green: 0.77, blue: 0.55))
+                    }
                 }
+                MetricGrid(columns: 3, cells: [
+                    MetricCell(title: "成本收益率", value: store.pnlRate(of: kind).map { $0.pct(2) } ?? "--",
+                               toneValue: pnlValue),
+                    MetricCell(title: "今日盈亏", value: store.hasDayPnL ? dayValue.cny() : "--",
+                               toneValue: store.hasDayPnL ? dayValue : nil),
+                    MetricCell(title: "持仓数", value: "\(count) 只")
+                ])
+                Text(kind == .fund
+                     ? "只统计本页场外基金；ETF / 证券不计入。账户页「总资产」才是两者合计。"
+                     : "只统计本页 ETF / 证券；场外基金不计入。账户页「总资产」才是两者合计。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            Text(kind == .fund
-                 ? "只统计本页场外基金的市值与浮盈；ETF / 证券持仓不计入这里。账户页「总资产」才是两者合计。"
-                 : "只统计本页 ETF / 证券持仓的市值与浮盈；场外基金不计入这里。账户页「总资产」才是两者合计。")
-                .font(.footnote).foregroundStyle(.secondary)
+            .cardSurface()
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -575,8 +749,20 @@ struct HoldingsView: View {
     }
 
     @ViewBuilder private func holdingRow(_ h: Holding) -> some View {
+        // 每只下面补一行「当日盈亏 / 收益率 / 占总资产」，密度对齐网页版持仓行。
+        // 缺当日行情时显示 --，不把「没数据」画成 0。
+        let dayValue = store.dayPnL(of: h)
+        let hasDay = store.marketChanges[h.code] != nil
+        let costBasis = h.quantity * store.displayedCost(for: h)
+        let rate = costBasis > 0 ? store.holdingPnL(h) / costBasis * 100 : nil
         VStack(alignment: .leading, spacing: 7) {
             HStack { Text(h.name).font(.headline); Spacer(); Text((h.marketValue).cny()).font(.headline) }
+            HStack(spacing: 9) {
+                holdingStat("当日", hasDay ? dayValue.cny() : "--", hasDay ? dayValue : nil)
+                holdingStat("收益率", rate.map { $0.pct(2) } ?? "--", store.holdingPnL(h))
+                holdingStat("占总资产", (store.allocationActualPercent(for: h)).pct(1), nil)
+                Spacer(minLength: 0)
+            }
             Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3)))")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -615,7 +801,8 @@ struct HoldingsView: View {
                 Button("编辑") { editTarget = h }
             }.buttonStyle(.borderless).font(.subheadline)
         }.padding(.vertical, 5)
-        .swipeActions(edge: .trailing) {
+        .contentShape(Rectangle())
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("删除", role: .destructive) { store.removeHolding(h) }
             Button("编辑") { editTarget = h }.tint(.blue)
         }
@@ -747,15 +934,17 @@ struct HoldingsView: View {
                 let name = trades.first(where: { !$0.name.isEmpty })?.name ?? code
                 let realized = store.data.ledger.filter { $0.code == code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
                     + trades.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
-                Button { archivedFundTarget = ArchivedFundItem(code: code, name: name) } label: {
-                    HStack {
-                        VStack(alignment: .leading) { Text(name); Text("\(trades.count) 笔流水 · 历史保留").font(.caption).foregroundStyle(.secondary) }
-                        Spacer(); Text((realized).cny())
-                    }
-                }.buttonStyle(.plain)
-                    .swipeActions(edge: .trailing) {
-                        Button("删除历史", role: .destructive) { deleteArchivedFundCode = code }
-                    }
+                // 之前这一行是 Button + .buttonStyle(.plain)：按钮会吃掉横向滑动手势，
+                // 导致左滑不弹出删除按钮。改成普通行 + onTapGesture，swipeActions 才能生效。
+                HStack {
+                    VStack(alignment: .leading) { Text(name); Text("\(trades.count) 笔流水 · 历史保留").font(.caption).foregroundStyle(.secondary) }
+                    Spacer(); Text((realized).cny())
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { archivedFundTarget = ArchivedFundItem(code: code, name: name) }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button("删除历史", role: .destructive) { deleteArchivedFundCode = code }
+                }
             }
         }
     }

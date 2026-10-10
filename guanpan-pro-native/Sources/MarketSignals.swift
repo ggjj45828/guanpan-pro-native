@@ -195,6 +195,60 @@ enum MarketSignalCalculator {
     }
 }
 
+// MARK: - 支撑压力（网页版「撑压分析」，此前 App 没有）
+
+/// 由近端摆点高低点推出的支撑/压力位。只描述历史成交区间，不预测突破。
+struct SupportResistance {
+    var current: Double
+    /// 低于现价的摆动低点，由近到远
+    var supports: [Double]
+    /// 高于现价的摆动高点，由近到远
+    var resistances: [Double]
+
+    var nearestSupport: Double? { supports.first }
+    var nearestResistance: Double? { resistances.first }
+
+    /// 距最近支撑的跌幅空间（%）
+    var supportRoomPercent: Double? {
+        guard let s = nearestSupport, current > 0 else { return nil }
+        return (s - current) / current * 100
+    }
+    /// 距最近压力的涨幅空间（%）
+    var resistanceRoomPercent: Double? {
+        guard let r = nearestResistance, current > 0 else { return nil }
+        return (r - current) / current * 100
+    }
+}
+
+enum SupportResistanceCalculator {
+    /// 用左右各 `window` 根 K 线确认摆动高低点，再从现价两侧各取最近的两个。
+    static func evaluate(_ bars: [DailyBar], lookback: Int = 160, window: Int = 4) -> SupportResistance? {
+        let source = Array(bars.suffix(lookback))
+        guard source.count >= window * 2 + 3, let last = source.last else { return nil }
+        let current = last.close
+        var pivots: [Double] = []
+        pivots.reserveCapacity(source.count)
+        for i in window..<(source.count - window) {
+            let high = source[i].high
+            let low = source[i].low
+            var isHigh = true
+            var isLow = true
+            for j in (i - window)...(i + window) where j != i {
+                if source[j].high > high { isHigh = false }
+                if source[j].low < low { isLow = false }
+                if !isHigh && !isLow { break }
+            }
+            if isHigh { pivots.append(high) }
+            if isLow { pivots.append(low) }
+        }
+        let below = pivots.filter { $0 < current * 0.999 }.sorted(by: >)
+        let above = pivots.filter { $0 > current * 1.001 }.sorted(by: <)
+        return SupportResistance(current: current,
+                                 supports: Array(below.prefix(2)),
+                                 resistances: Array(above.prefix(2)))
+    }
+}
+
 /// 自选卡片上的标签行（横向可换行的徽标）
 struct SignalTagRow: View {
     let tags: [SignalTag]

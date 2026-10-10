@@ -392,61 +392,7 @@ struct MarketChartView: View {
                             ContentUnavailableView("该日分时点不足", systemImage: "chart.xyaxis.line", description: Text("先在前台采集行情或导入分时 CSV。30/60 分钟图只根据本机保存的分时点聚合。"))
                         }
                     } else if periodBars.count > 1 {
-                        HStack {
-                            Text("捏合缩放日K")
-                            Spacer()
-                            Button("重置") { chartZoom = 1; chartPanOffset = 0 }
-                        }.font(.caption)
-                        Chart {
-                            // K 线实体：加宽到 5pt，去影线细线化，仿同花顺的清晰观感
-                            ForEach(zoomedPeriodBars) { bar in
-                                let candleColor = bar.close >= bar.open ? Color.red : Color.green
-                                RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
-                                    .foregroundStyle(candleColor.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1))
-                                RectangleMark(x: .value("日期", bar.date), yStart: .value("开盘", bar.open), yEnd: .value("收盘", bar.close), width: .fixed(5))
-                                    .foregroundStyle(candleColor)
-                            }
-                            // 均线统一为实线（虚线会与 K 线柱、净值线糊在一起），
-                            // 配色对齐同花顺/网页版：MA5 橙 / MA20 紫 / MA60 青绿，色相拉开
-                            ForEach(average(5, source: zoomedPeriodBars)) { point in
-                                LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
-                                    .foregroundStyle(Color(red: 1.0, green: 0.62, blue: 0.11))
-                                    .lineStyle(StrokeStyle(lineWidth: 1.8))
-                            }
-                            ForEach(average(20, source: zoomedPeriodBars)) { point in
-                                LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
-                                    .foregroundStyle(Color(red: 0.71, green: 0.48, blue: 1.0))
-                                    .lineStyle(StrokeStyle(lineWidth: 1.8))
-                            }
-                            ForEach(average(60, source: zoomedPeriodBars)) { point in
-                                LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
-                                    .foregroundStyle(Color(red: 0.18, green: 0.85, blue: 0.78))
-                                    .lineStyle(StrokeStyle(lineWidth: 1.8))
-                            }
-                        }
-                        .frame(height: 260)
-                        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
-                        .chartYAxis {
-                            AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) {
-                                AxisGridLine().foregroundStyle(Color.primary.opacity(0.07))
-                                AxisValueLabel().font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                        .simultaneousGesture(MagnifyGesture()
-                            .updating($pinchScale) { value, state, _ in state = value.magnification }
-                            .onEnded { value in chartZoom = min(8, max(1, chartZoom * value.magnification)) })
-                        .simultaneousGesture(DragGesture(minimumDistance: 18).onEnded { value in
-                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                            let step = max(1, Int(abs(value.translation.width) / 24))
-                            let maxOffset = max(0, periodBars.count - zoomedBarCount)
-                            chartPanOffset = min(maxOffset, max(0, chartPanOffset + (value.translation.width < 0 ? step : -step)))
-                        })
-                        HStack(spacing: 12) {
-                            Label(selectedChartPeriod.rawValue, systemImage: "chart.bar.xaxis").foregroundStyle(.red)
-                            Label("MA5", systemImage: "line.diagonal").foregroundStyle(Color(red: 1.0, green: 0.62, blue: 0.11))
-                            Label("MA20", systemImage: "line.diagonal").foregroundStyle(Color(red: 0.71, green: 0.48, blue: 1.0))
-                            Label("MA60", systemImage: "line.diagonal").foregroundStyle(Color(red: 0.18, green: 0.85, blue: 0.78))
-                        }.font(.caption2)
+                        dailyChartSection
                     } else {
                         ContentUnavailableView("暂无\(selectedChartPeriod.rawValue)", systemImage: "chart.xyaxis.line", description: Text("联网获取历史行情，或在备份中导入已有日线缓存。"))
                     }
@@ -604,7 +550,167 @@ struct MarketChartView: View {
     }
 
     private var zoomedBarCount: Int {
-        min(periodBars.count, max(12, Int(Double(periodBars.count) / (chartZoom * pinchScale))))
+        min(periodBars.count, max(6, Int(Double(periodBars.count) / (chartZoom * pinchScale))))
+    }
+
+    // MARK: - 日K 图（主图 + 成交量副图）
+
+    // 四条均线色相尽量拉开，避免挤在相邻波段导致「看起来都是一个颜色」。
+    private var ma5Color: Color { Color(red: 1.0, green: 0.62, blue: 0.11) }    // 橙
+    private var ma10Color: Color { Color(red: 0.30, green: 0.66, blue: 1.0) }   // 蓝
+    private var ma20Color: Color { Color(red: 0.80, green: 0.36, blue: 1.0) }   // 紫
+    private var ma60Color: Color { Color(red: 0.16, green: 0.88, blue: 0.76) }  // 青绿
+
+    @ViewBuilder private var dailyChartSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("捏合缩放 · 左右拖动看历史")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("重置") { chartZoom = 1; chartPanOffset = 0 }.font(.caption)
+            }
+            maLegendRow
+            // GeometryReader 拿到实际绘图宽度，据此算出随缩放变化的实体宽度。
+            // 之前实体固定 5pt，放大后柱子不变粗、间距却变大，看起来既稀疏又糊。
+            GeometryReader { geo in
+                let slot = max(60, geo.size.width) / CGFloat(max(1, zoomedPeriodBars.count))
+                let bodyWidth = min(max(slot * 0.68, 1.2), 18)
+                VStack(spacing: 8) {
+                    candlePlot(bodyWidth: bodyWidth).frame(height: 300)
+                    volumePlot(bodyWidth: bodyWidth).frame(height: 82)
+                }
+            }
+            .frame(height: 390)
+            .contentShape(Rectangle())
+            .simultaneousGesture(MagnifyGesture()
+                .updating($pinchScale) { value, state, _ in state = value.magnification }
+                .onEnded { value in
+                    // 上限 8 → 40：原来最多只能把 250 根压到 31 根，单根 K 线仍然很挤。
+                    chartZoom = min(40, max(1, chartZoom * value.magnification))
+                })
+            .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                let step = max(1, Int(abs(value.translation.width) / 22))
+                let maxOffset = max(0, periodBars.count - zoomedBarCount)
+                chartPanOffset = min(maxOffset, max(0, chartPanOffset + (value.translation.width < 0 ? step : -step)))
+            })
+            supportResistanceRow
+        }
+    }
+
+    /// 撑压分析：网页版有、此前 App 没有的一块。只描述历史摆动区间，不预测突破。
+    @ViewBuilder private var supportResistanceRow: some View {
+        if let sr = SupportResistanceCalculator.evaluate(periodBars) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("撑压分析").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    srChip("压力", sr.resistances, Color(red: 0.93, green: 0.30, blue: 0.37))
+                    srChip("现价", [sr.current], Color.primary)
+                    srChip("支撑", sr.supports, Color(red: 0.07, green: 0.77, blue: 0.55))
+                    Spacer(minLength: 0)
+                }
+                Text("由近 160 根日线的摆动高低点推出；只是历史成交区间的描述，不代表未来会止跌或受阻。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+        }
+    }
+
+    private func srChip(_ title: String, _ values: [Double], _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 9)).foregroundStyle(.secondary)
+            ForEach(Array(values.enumerated()), id: \.offset) { _, v in
+                Text(v.num(3)).font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(color)
+            }
+            if values.isEmpty { Text("--").font(.system(size: 11)).foregroundStyle(.secondary) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var maLegendRow: some View {
+        HStack(spacing: 10) {
+            maChip("MA5", ma5Color)
+            maChip("MA10", ma10Color)
+            maChip("MA20", ma20Color)
+            maChip("MA60", ma60Color)
+            Spacer(minLength: 0)
+        }.font(.caption2)
+    }
+
+    private func maChip(_ title: String, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 12, height: 3)
+            Text(title).foregroundStyle(color)
+        }
+        .font(.system(size: 10, weight: .semibold))
+    }
+
+    private func candlePlot(bodyWidth: CGFloat) -> some View {
+        Chart {
+            ForEach(zoomedPeriodBars) { bar in
+                let rising = bar.close >= bar.open
+                let candleColor = rising ? Color.red : Color.green
+                let lowBody = min(bar.open, bar.close)
+                let highBody = max(bar.open, bar.close)
+                // 一字线（开=收）时给一个最小高度，否则实体画不出来
+                let pad = (highBody - lowBody) < highBody * 0.0008 ? highBody * 0.0008 : 0
+                RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
+                    .foregroundStyle(candleColor.opacity(0.9))
+                    .lineStyle(StrokeStyle(lineWidth: max(0.8, bodyWidth * 0.16)))
+                RectangleMark(x: .value("日期", bar.date),
+                              yStart: .value("开盘", lowBody),
+                              yEnd: .value("收盘", highBody + pad),
+                              width: .fixed(bodyWidth))
+                    .foregroundStyle(candleColor)
+            }
+            ForEach(average(5, source: zoomedPeriodBars)) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
+                    .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            ForEach(average(10, source: zoomedPeriodBars)) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
+                    .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            ForEach(average(20, source: zoomedPeriodBars)) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
+                    .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            ForEach(average(60, source: zoomedPeriodBars)) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
+                    .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 2))
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { _ in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.10))
+                AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func volumePlot(bodyWidth: CGFloat) -> some View {
+        Chart {
+            ForEach(zoomedPeriodBars) { bar in
+                BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(bodyWidth))
+                    .foregroundStyle(bar.close >= bar.open ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
     }
     private func quoteMetric(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {

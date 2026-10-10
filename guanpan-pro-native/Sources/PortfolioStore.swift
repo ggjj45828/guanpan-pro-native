@@ -66,6 +66,46 @@ final class PortfolioStore: ObservableObject {
         guard base > 0, base.isFinite else { return nil }
         return pnl(of: kind) / base * 100
     }
+
+    // MARK: - 账户卡片指标（对齐网页版持仓页汇总：总资产 / 总盈亏 / 仓位 / 今日盈亏…）
+
+    /// 全部持仓的成本合计（含成本覆盖与摊薄口径）。
+    var totalCost: Double { data.holdings.reduce(0) { $0 + $1.quantity * displayedCost(for: $1) } }
+    /// 总盈亏 / 总成本，即网页版「盈亏比例」。成本为 0 返回 nil。
+    var totalPnLRate: Double? {
+        guard totalCost > 0, totalCost.isFinite else { return nil }
+        return totalPnL / totalCost * 100
+    }
+    /// 指定类别的当日盈亏：用最近一次拿到的涨跌幅反推昨收，不额外发请求。
+    func dayPnL(of kind: Holding.Kind) -> Double {
+        data.holdings.filter { $0.kind == kind }.reduce(0) { $0 + dayPnL(of: $1) }
+    }
+    func dayPnL(of holding: Holding) -> Double {
+        guard let pct = marketChanges[holding.code], pct.isFinite,
+              abs(pct) > 0.0001, (1 + pct / 100) != 0 else { return 0 }
+        let previousClose = holding.current / (1 + pct / 100)
+        return holding.quantity * (holding.current - previousClose)
+    }
+    /// 全部持仓当日盈亏。
+    var dayPnL: Double { data.holdings.reduce(0) { $0 + dayPnL(of: $1) } }
+    /// 当日盈亏是否可算：至少要有一只拿到当日涨跌幅，否则显示「--」而不是 0。
+    var hasDayPnL: Bool { data.holdings.contains { marketChanges[$0.code] != nil } }
+    /// 今日幅度 = 当日盈亏 / 昨收市值。
+    var dayPnLRate: Double? {
+        let base = totalMarketValue - dayPnL
+        guard base > 0, base.isFinite else { return nil }
+        return dayPnL / base * 100
+    }
+    /// 仓位（持仓市值 / 总资产）。
+    var positionPercent: Double {
+        guard totalAsset > 0, totalAsset.isFinite else { return 0 }
+        return totalMarketValue / totalAsset * 100
+    }
+    /// 现金占比。
+    var cashPercent: Double {
+        guard totalAsset > 0, totalAsset.isFinite else { return 0 }
+        return data.cash / totalAsset * 100
+    }
     func displayedCost(for holding: Holding) -> Double {
         if let override = holding.costOverride, override.isFinite, override > 0 { return override }
         guard data.costAccountingMode == .diluted, holding.quantity > 0 else { return holding.cost }
