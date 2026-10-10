@@ -1,0 +1,13 @@
+# XcodeGen 生成物（每次 xcodegen generate 都会重建，不纳入版本控制）
+guanpan-pro-native/GuanpanProNative.xcodeproj/
+guanpan-pro-native/Info.plist
+
+# 构建产物
+build/
+DerivedData/
+*.ipa
+*.app
+
+# 系统文件
+.DS_Store
+Thumbs.db

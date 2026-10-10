@@ -1,0 +1,9 @@
+# 统一使用 LF 换行：Windows 默认 CRLF 会让 macOS CI 上的 .sh 脚本直接报 not found
+* text=auto eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ipa binary
+*.xcassets/Contents.json text
