@@ -7,6 +7,36 @@ struct Quote: Codable, Identifiable {
     var price: Double
     var changePct: Double
     var updatedAt: Date?
+    /// 自选分组名。空串归入「未分组」。
+    ///
+    /// 这是后加的字段：Swift 合成的 `Decodable` 对「有默认值但非 Optional」的属性
+    /// 仍然调用 `decode(_:forKey:)`，老备份里没有这个 key 会直接抛错、整份账本打不开。
+    /// 所以这里手写一次解码，缺 key 时回落到空串。
+    var group: String = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case code, name, price, changePct, updatedAt, group
+    }
+
+    init(code: String, name: String, price: Double, changePct: Double,
+         updatedAt: Date? = nil, group: String = "") {
+        self.code = code
+        self.name = name
+        self.price = price
+        self.changePct = changePct
+        self.updatedAt = updatedAt
+        self.group = group
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        code = try c.decode(String.self, forKey: .code)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? code
+        price = try c.decodeIfPresent(Double.self, forKey: .price) ?? 0
+        changePct = try c.decodeIfPresent(Double.self, forKey: .changePct) ?? 0
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+        group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
+    }
 }
 
 struct QuoteAlert: Codable, Identifiable {

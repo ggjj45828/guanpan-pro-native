@@ -982,17 +982,52 @@ final class PortfolioStore: ObservableObject {
         return points.sorted { $0.date < $1.date }
     }
 
-    func addWatch(code: String, name: String) {
+    func addWatch(code: String, name: String, group: String = "") {
         let cleanCode = code.filter(\.isNumber)
         guard cleanCode.count == 6, !data.quotes.contains(where: { $0.code == cleanCode }) else { return }
-        data.quotes.append(Quote(code: cleanCode, name: name.isEmpty ? cleanCode : name, price: 0, changePct: 0, updatedAt: nil))
+        data.quotes.append(Quote(code: cleanCode, name: name.isEmpty ? cleanCode : name,
+                                 price: 0, changePct: 0, updatedAt: nil, group: group))
         save(label: "新增自选")
         Task { [weak self] in
             guard let self, let quote = try? await self.lookupETFQuote(code: cleanCode),
                   let index = self.data.quotes.firstIndex(where: { $0.code == cleanCode }) else { return }
-            self.data.quotes[index] = quote
+            // 保留用户选的分组：网络返回的 Quote 没有 group 字段，直接整体替换会把它抹掉。
+            var merged = quote
+            merged.group = self.data.quotes[index].group
+            self.data.quotes[index] = merged
             self.save(label: "自动识别自选名称")
         }
+    }
+
+    // MARK: - 自选分组
+
+    /// 当前自选用到的分组名，按首次出现顺序去重。空串（未分组）排在最后。
+    var watchGroups: [String] {
+        var seen: [String] = []
+        for q in data.quotes where !q.group.isEmpty && !seen.contains(q.group) { seen.append(q.group) }
+        return seen
+    }
+
+    func moveWatch(code: String, to group: String) {
+        guard let index = data.quotes.firstIndex(where: { $0.code == code }) else { return }
+        data.quotes[index].group = group
+        save(label: "移动自选分组")
+    }
+
+    func renameWatchGroup(from old: String, to new: String) {
+        guard !new.isEmpty else { return }
+        for index in data.quotes.indices where data.quotes[index].group == old {
+            data.quotes[index].group = new
+        }
+        save(label: "重命名自选分组")
+    }
+
+    /// 把某只自选移到列表最前（置顶）。分组不变。
+    func pinWatchToTop(code: String) {
+        guard let index = data.quotes.firstIndex(where: { $0.code == code }), index > 0 else { return }
+        let item = data.quotes.remove(at: index)
+        data.quotes.insert(item, at: 0)
+        save(label: "置顶自选")
     }
 
     private func tencentSymbol(_ raw: String) -> String {

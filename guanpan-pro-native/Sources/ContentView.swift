@@ -52,7 +52,9 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
-    @State private var padTab: PadTab = .watchlist
+    /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
+    /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
+    @State private var padTab: PadTab? = .watchlist
     @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
     @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
     /// 毛玻璃强度：让背景图糊化而不是单纯压暗。糊化后文字对比度更稳定（亮图上白字也不会糊），观感也更高级。
@@ -133,7 +135,8 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var padDetail: some View {
-        switch padTab {
+        // 侧栏未选中（iPad 上偶发）时回落到自选，不要显示空白详情栏
+        switch padTab ?? .watchlist {
         case .watchlist: DashboardView()
         case .holdings: HoldingsView(kind: .etf)
         case .funds: HoldingsView(kind: .fund)
@@ -184,8 +187,56 @@ struct ContentView: View {
     }
 }
 
+/// 自选分组后的一节。用结构体而不是元组：Swift 的 KeyPath 取不到元组元素，
+/// `ForEach(..., id: \.name)` 对元组会直接编译失败。
+private struct WatchSection: Identifiable {
+    let name: String
+    let items: [Quote]
+    var id: String { name }
+}
+
+/// 自选排序方式。默认「添加顺序」即数组原序，其余为只读排序，不改动存储。
+enum WatchSortMode: String, CaseIterable, Identifiable {
+    case manual
+    case gainers
+    case losers
+    case name
+    case code
+    case signal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .manual: return "添加顺序"
+        case .gainers: return "涨幅优先"
+        case .losers: return "跌幅优先"
+        case .name: return "按名称"
+        case .code: return "按代码"
+        case .signal: return "按信号强度"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .manual: return "list.number"
+        case .gainers: return "arrow.up.right"
+        case .losers: return "arrow.down.right"
+        case .name: return "textformat.abc"
+        case .code: return "number"
+        case .signal: return "waveform.path.ecg"
+        }
+    }
+}
+
 struct DashboardView: View {
     @EnvironmentObject var store: PortfolioStore
+    @AppStorage("guanpan.native.watch.sort") private var sortMode: WatchSortMode = .manual
+    @AppStorage("guanpan.native.watch.grouping") private var groupEnabled = false
+    @State private var searchText = ""
+    /// 非 nil 时为「新建分组」弹窗的目标标的代码
+    @State private var groupEditor: String?
+    @State private var groupDraft = ""
 
     // 拿不到当日涨跌幅时显示 --，避免把「没数据」画成 0。
     private var pnlRateText: String { store.totalPnLRate.map { $0.pct(2) } ?? "--" }
@@ -198,6 +249,55 @@ struct DashboardView: View {
     @State private var showAdd = false
     @State private var showAlertEditor = false
     @State private var chartTarget: Holding?
+
+    // MARK: - 自选：搜索 / 排序 / 分组
+
+    /// 搜索（名称或代码）+ 排序后的自选列表。分组只是显示层切分，不动存储顺序。
+    private var filteredQuotes: [Quote] {
+        var list = store.data.quotes
+        let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !keyword.isEmpty {
+            list = list.filter {
+                $0.name.localizedCaseInsensitiveContains(keyword) || $0.code.contains(keyword)
+            }
+        }
+        switch sortMode {
+        case .manual: break
+        case .gainers: list.sort { $0.changePct > $1.changePct }
+        case .losers: list.sort { $0.changePct < $1.changePct }
+        case .name:
+            list.sort { displayName($0).localizedStandardCompare(displayName($1)) == .orderedAscending }
+        case .code: list.sort { $0.code < $1.code }
+        case .signal: list.sort { signalScore($0) > signalScore($1) }
+        }
+        return list
+    }
+
+    /// 分组后的分节数据。关掉分组时返回单节。
+    private var watchSections: [WatchSection] {
+        guard groupEnabled else { return [WatchSection(name: "", items: filteredQuotes)] }
+        var order: [String] = []
+        var buckets: [String: [Quote]] = [:]
+        for q in filteredQuotes {
+            let key = q.group.isEmpty ? "未分组" : q.group
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(q)
+        }
+        // 「未分组」永远排最后，前面按用户建立分组的顺序
+        return order.sorted { a, b in
+            if a == "未分组" { return false }
+            if b == "未分组" { return true }
+            return (store.watchGroups.firstIndex(of: a) ?? 0) < (store.watchGroups.firstIndex(of: b) ?? 0)
+        }.map { WatchSection(name: $0, items: buckets[$0] ?? []) }
+    }
+
+    private func displayName(_ q: Quote) -> String { q.name.isEmpty ? q.code : q.name }
+
+    /// 没有日线缓存时返回 -1，保证「无信号」排在最后而不是混在有信号的中间。
+    private func signalScore(_ q: Quote) -> Int {
+        MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? [])?.score ?? -1
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -276,65 +376,25 @@ struct DashboardView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section("自选") {
-                    if store.data.quotes.isEmpty { Text("还没有自选标的").foregroundStyle(.secondary) }
-                    ForEach(store.data.quotes) { q in
-                        Button {
-                            chartTarget = Holding(code: q.code, name: q.name, quantity: 0, cost: 0,
-                                                  current: q.price, kind: .etf, marketUpdatedAt: q.updatedAt)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 9) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(q.name.isEmpty ? q.code : q.name).font(.headline).lineLimit(1)
-                                        Text(q.code).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                    }
-                                    Spacer(minLength: 8)
-                                    VStack(alignment: .trailing, spacing: 3) {
-                                        Text(q.price > 0 ? q.price.num(3) : "--")
-                                            .font(.system(.title3, design: .rounded, weight: .semibold))
-                                        Text((q.changePct).pct(2))
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(q.changePct >= 0 ? .red : .green)
-                                    }
+                if store.data.quotes.isEmpty {
+                    Section("自选") { Text("还没有自选标的").foregroundStyle(.secondary) }
+                } else if filteredQuotes.isEmpty {
+                    Section("自选") { Text("没有匹配「\(searchText)」的自选标的").foregroundStyle(.secondary) }
+                } else {
+                    ForEach(watchSections) { section in
+                        Section {
+                            watchRows(section.items)
+                        } header: {
+                            if !section.name.isEmpty {
+                                HStack(spacing: 6) {
+                                    Text(section.name).font(.subheadline.weight(.semibold))
+                                    Text("\(section.items.count) 只").font(.caption2).foregroundStyle(.secondary)
                                 }
-                                if q.updatedAt != nil {
-                                    Text("点开查看分时、日K和指标 · \(q.updatedAt?.formatted(date: .omitted, time: .shortened) ?? "") 更新")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                } else {
-                                    Text("点开查看行情详情").font(.caption2).foregroundStyle(.secondary)
-                                }
-                                // 技术信号标签：与网页版口径一致（MACD多空 / 超买超卖 / 放量 / MA20 位置）
-                                // 需要该标的日线缓存；无缓存则静默不显示，不臆测。
-                                if let signal = MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? []) {
-                                    HStack(spacing: 5) {
-                                        Text("\(signal.score) \(signal.label)")
-                                            .scaledFont(10, weight: .semibold)
-                                            .padding(.horizontal, 6).padding(.vertical, 2.5)
-                                            .foregroundStyle(signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-                                                             : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary)
-                                            .background((signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-                                                         : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary).opacity(0.14), in: Capsule())
-                                        Text(signal.trendText)
-                                            .scaledFont(10, weight: .medium)
-                                            .padding(.horizontal, 6).padding(.vertical, 2.5)
-                                            .foregroundStyle(.secondary)
-                                            .background(Color.secondary.opacity(0.12), in: Capsule())
-                                        SignalTagRow(tags: Array(signal.tags.prefix(3)))
-                                    }
-                                } else if store.dailyBars[q.code] == nil {
-                                    Text("点开一次可载入日线，显示技术信号")
-                                        .font(.caption2).foregroundStyle(.tertiary)
-                                }
+                            } else {
+                                Text("自选")
                             }
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(uiColor: .secondarySystemBackground).opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.primary.opacity(0.06), lineWidth: 1))
-                        }.buttonStyle(.plain)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
-                            .listRowBackground(Color.clear)
-                    }.onDelete { offsets in store.data.quotes.remove(atOffsets: offsets); store.save(label: "修改账本或设置") }
+                        }
+                    }
                 }
                 Section("价格提醒（一次性）") {
                     if store.data.quoteAlerts.isEmpty { Text("暂无提醒。需要允许系统通知，并在行情刷新时触发。").foregroundStyle(.secondary) }
@@ -357,15 +417,48 @@ struct DashboardView: View {
                 }
             }.navigationTitle("总览")
             .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $searchText, prompt: "搜索名称或代码")
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("添加自选", systemImage: "plus") { showAdd = true }
                     Button("添加价格提醒", systemImage: "bell.badge") { showAlertEditor = true }
-                } label: { Image(systemName: "plus") }
+                    Divider()
+                    Menu {
+                        ForEach(WatchSortMode.allCases) { mode in
+                            Button {
+                                sortMode = mode
+                            } label: {
+                                if sortMode == mode {
+                                    Label(mode.title, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.title)
+                                }
+                            }
+                        }
+                    } label: { Label("排序：\(sortMode.title)", systemImage: "arrow.up.arrow.down") }
+                    Button {
+                        groupEnabled.toggle()
+                    } label: {
+                        if groupEnabled { Label("按分组显示（已开）", systemImage: "folder.fill") }
+                        else { Label("按分组显示", systemImage: "folder") }
+                    }
+                } label: { Image(systemName: "ellipsis.circle") }
             } }
             .sheet(isPresented: $showAdd) { WatchEditor() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() }
             .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding) }
+            .alert("新建分组", isPresented: groupEditorBinding) {
+                TextField("分组名", text: $groupDraft)
+                Button("确定") {
+                    let name = groupDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty, let code = groupEditor { store.moveWatch(code: code, to: name) }
+                    groupDraft = ""
+                    groupEditor = nil
+                }
+                Button("取消", role: .cancel) { groupDraft = ""; groupEditor = nil }
+            } message: {
+                Text("分组只影响自选列表的显示与排序，不影响行情与持仓。")
+            }
             .task {
                 while !Task.isCancelled {
                     let interval = store.data.quoteRefreshSeconds
@@ -383,6 +476,130 @@ struct DashboardView: View {
                 .font(.system(.caption, design: .rounded, weight: .semibold))
                 .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.7)
         }
+    }
+
+    // MARK: - 自选行渲染
+
+    @ViewBuilder private func watchRows(_ items: [Quote]) -> some View {
+        ForEach(items) { q in
+            Button {
+                chartTarget = Holding(code: q.code, name: q.name, quantity: 0, cost: 0,
+                                      current: q.price, kind: .etf, marketUpdatedAt: q.updatedAt)
+            } label: {
+                watchCard(q)
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+            .listRowBackground(Color.clear)
+            .contextMenu { watchContextMenu(q) }
+        }
+        .onDelete { offsets in
+            // 搜索/排序/分组之后，这里的下标是过滤后列表的下标，
+            // 直接对原数组 remove(atOffsets:) 会删错标的，所以按代码匹配删除。
+            let codes = Set(offsets.map { items[$0].code })
+            store.data.quotes.removeAll { codes.contains($0.code) }
+            store.save(label: "删除自选")
+        }
+    }
+
+    private func watchCard(_ q: Quote) -> some View {
+        // 国内红涨绿跌
+        let accent = q.changePct >= 0
+            ? Color(red: 0.93, green: 0.30, blue: 0.37)
+            : Color(red: 0.07, green: 0.77, blue: 0.55)
+        let signal = MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? [])
+        return HStack(spacing: 10) {
+            // 左侧 3pt 涨跌色条：扫列表时不用逐个读数字就能分辨红绿
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(accent.opacity(0.85))
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayName(q)).font(.headline).lineLimit(1)
+                        Text(q.code).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(q.price > 0 ? q.price.num(3) : "--")
+                            .font(.system(.title3, design: .rounded, weight: .semibold))
+                            .monospacedDigit()
+                        Text((q.changePct).pct(2))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(accent)
+                    }
+                }
+                // 技术信号标签：与网页版口径一致（MACD多空 / 超买超卖 / 放量 / MA20 位置）
+                // 需要该标的日线缓存；无缓存则静默不显示，不臆测。
+                if let signal {
+                    HStack(spacing: 5) {
+                        Text("\(signal.score) \(signal.label)")
+                            .scaledFont(10, weight: .semibold)
+                            .padding(.horizontal, 6).padding(.vertical, 2.5)
+                            .foregroundStyle(signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                             : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary)
+                            .background((signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                         : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary).opacity(0.14), in: Capsule())
+                        Text(signal.trendText)
+                            .scaledFont(10, weight: .medium)
+                            .padding(.horizontal, 6).padding(.vertical, 2.5)
+                            .foregroundStyle(.secondary)
+                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                        SignalTagRow(tags: Array(signal.tags.prefix(3)))
+                    }
+                } else if store.dailyBars[q.code] == nil {
+                    Text("点开一次可载入日线，显示技术信号")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                HStack(spacing: 6) {
+                    let groupName = q.group.isEmpty ? "未分组" : q.group
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder").scaledFont(8)
+                        Text(groupName).scaledFont(9, weight: .medium)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                    Spacer(minLength: 6)
+                    if let updated = q.updatedAt {
+                        Text("\(updated.formatted(date: .omitted, time: .shortened)) 更新")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    } else {
+                        Text("点开查看分时、日K和指标")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground).opacity(0.72),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(Color.primary.opacity(0.06), lineWidth: 1))
+    }
+
+    @ViewBuilder private func watchContextMenu(_ q: Quote) -> some View {
+        Button { store.pinWatchToTop(code: q.code) } label: {
+            Label("置顶", systemImage: "arrow.up.to.line")
+        }
+        Menu("移动到分组") {
+            Button("未分组") { store.moveWatch(code: q.code, to: "") }
+            ForEach(store.watchGroups, id: \.self) { group in
+                Button(group) { store.moveWatch(code: q.code, to: group) }
+            }
+            Divider()
+            Button("新建分组…") { groupDraft = ""; groupEditor = q.code }
+        }
+        Divider()
+        Button(role: .destructive) {
+            store.data.quotes.removeAll { $0.code == q.code }
+            store.save(label: "删除自选")
+        } label: { Label("删除", systemImage: "trash") }
+    }
+
+    private var groupEditorBinding: Binding<Bool> {
+        Binding(get: { groupEditor != nil }, set: { if !$0 { groupEditor = nil } })
     }
 }
 
@@ -625,6 +842,17 @@ struct WatchEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var code = ""
     @State private var name = ""
+    @State private var group = ""
+    @State private var newGroup = ""
+    /// Picker 里「新建分组…」的哨兵值。用哨兵而不是再开一个 Bool，
+    /// 是为了让 selection 只有一个数据源，不会出现「选了新建但开关没跟上」。
+    private static let newGroupValue = "__new_group__"
+
+    private var resolvedGroup: String {
+        guard group == Self.newGroupValue else { return group }
+        return newGroup.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -633,6 +861,18 @@ struct WatchEditor: View {
                 LabeledContent("自动识别名称", value: name.isEmpty ? (code.count == 6 ? "查询中…" : "输入代码后识别") : name)
                 Text("名称和行情将按证券代码自动获取，不需要手动填写。")
                     .font(.footnote).foregroundStyle(.secondary)
+                Section("分组") {
+                    Picker("分组", selection: $group) {
+                        Text("未分组").tag("")
+                        ForEach(store.watchGroups, id: \.self) { item in Text(item).tag(item) }
+                        Text("新建分组…").tag(Self.newGroupValue)
+                    }
+                    if group == Self.newGroupValue {
+                        TextField("新分组名", text: $newGroup)
+                    }
+                    Text("分组只影响自选列表的显示与排序，不影响行情与持仓。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }.navigationTitle("添加自选").keyboardDoneToolbar()
                 .task(id: code) {
                     let requested = code.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -648,7 +888,15 @@ struct WatchEditor: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) { Button("添加") { store.addWatch(code: code.trimmingCharacters(in: .whitespaces), name: name == "正在识别…" ? "" : name.trimmingCharacters(in: .whitespaces)); dismiss(); store.refreshQuotes() }.disabled(code.count != 6) }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("添加") {
+                            store.addWatch(code: code.trimmingCharacters(in: .whitespaces),
+                                           name: name == "正在识别…" ? "" : name.trimmingCharacters(in: .whitespaces),
+                                           group: resolvedGroup)
+                            dismiss()
+                            store.refreshQuotes()
+                        }.disabled(code.count != 6)
+                    }
                 }
         }
     }
