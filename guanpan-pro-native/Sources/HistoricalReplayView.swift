@@ -176,7 +176,7 @@ struct HistoricalReplayView: View {
         if cash < -0.01 || !cash.isFinite { cashKnown = false }; cash = max(0, cash)
 
         // 拆成 filter / map / sorted 三步并显式标注类型，避免链式表达式类型检查超时。
-        let activePositions: [Position] = positions.values.filter { $0.quantity > 1e-8 }
+        let activePositions = positions.values.filter { $0.quantity > 1e-8 }
         let mappedPositions: [Position] = activePositions.map { p -> Position in
             let pricePoint: (Double, String)?
             if p.kind == .fund {

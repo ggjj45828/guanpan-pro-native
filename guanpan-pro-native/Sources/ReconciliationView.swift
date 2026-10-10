@@ -110,37 +110,59 @@ struct ReconciliationView: View {
         }
     }
 
-    // 各分区拆成独立视图表达式：原先单条 List 表达式包含四个分区与嵌套三元，
-    // 编译器报 "generic parameter 'V' could not be inferred"。
+    // 各分区拆成独立视图表达式；Section 的闭包内容再抽一层属性，
+    // 否则编译器会把 Section 匹配到 SwiftUI 的 Table 版初始化器（@TableRowBuilder），
+    // 报 "generic parameter 'V' could not be inferred"。
 
     @ViewBuilder private var cashSection: some View {
-        Section("现金对账") {
-            LabeledContent("原生账本现金", value: (store.data.cash).cny())
-            LabeledContent("账本现金流水净额", value: (cashFlowTotal).cny())
-            LabeledContent("联动成交净额", value: (linkedTradeCashDelta).cny())
-            TextField("券商可用资金（元）", text: $brokerCash).keyboardType(.decimalPad)
-            if let broker = Double(brokerCash), broker.isFinite {
-                let difference = store.data.cash - broker
-                LabeledContent("观盘 − 券商", value: (difference).cny())
-                Text(cashDifferenceText(difference))
-                    .font(.footnote).foregroundStyle(abs(difference) < 0.005 ? .secondary : .orange)
-            }
-            Text("下方按流水拆分现金变化，帮助定位差额；填写券商金额只用于对比，不会改账。")
-                .font(.footnote).foregroundStyle(.secondary)
-            ForEach(store.data.cashFlows.sorted { $0.date > $1.date }.prefix(8)) { flow in
-                HStack { Text(flow.memo.isEmpty ? "现金流水" : flow.memo); Spacer(); Text((flow.amount).cny()) }
-                    .font(.caption)
-            }
-            ForEach(store.data.ledger.filter(\.linkedCash).sorted { $0.date > $1.date }.prefix(8)) { entry in
-                let delta = entry.side == .buy ? -(entry.gross + entry.fee) : entry.gross - entry.fee
-                HStack {
-                    Text("\(entry.side == .buy ? "买入" : "卖出") · \(entry.name)")
-                    Spacer()
-                    Text((delta).cny())
-                        .foregroundStyle(delta >= 0 ? .green : .primary)
-                }.font(.caption)
-            }
+        Section("现金对账") { cashSectionBody }
+    }
+
+    @ViewBuilder private var cashSectionBody: some View {
+        LabeledContent("原生账本现金", value: (store.data.cash).cny())
+        LabeledContent("账本现金流水净额", value: (cashFlowTotal).cny())
+        LabeledContent("联动成交净额", value: (linkedTradeCashDelta).cny())
+        TextField("券商可用资金（元）", text: $brokerCash).keyboardType(.decimalPad)
+        brokerCashCompare
+        Text("下方按流水拆分现金变化，帮助定位差额；填写券商金额只用于对比，不会改账。")
+            .font(.footnote).foregroundStyle(.secondary)
+        ForEach(store.data.cashFlows.sorted { $0.date > $1.date }.prefix(8)) { flow in
+            cashFlowRow(flow)
         }
+        ForEach(store.data.ledger.filter(\.linkedCash).sorted { $0.date > $1.date }.prefix(8)) { entry in
+            ledgerRow(entry)
+        }
+    }
+
+    @ViewBuilder private var brokerCashCompare: some View {
+        if let broker = Double(brokerCash), broker.isFinite {
+            let difference = store.data.cash - broker
+            LabeledContent("观盘 − 券商", value: (difference).cny())
+            Text(cashDifferenceText(difference))
+                .font(.footnote).foregroundStyle(abs(difference) < 0.005 ? .secondary : .orange)
+        }
+    }
+
+    private func cashFlowRow(_ flow: CashFlow) -> some View {
+        HStack {
+            Text(flow.memo.isEmpty ? "现金流水" : flow.memo)
+            Spacer()
+            Text((flow.amount).cny())
+        }.font(.caption)
+    }
+
+    private func ledgerRow(_ entry: LedgerEntry) -> some View {
+        let delta = linkedCashDelta(entry)
+        return HStack {
+            Text("\(entry.side == .buy ? "买入" : "卖出") · \(entry.name)")
+            Spacer()
+            Text((delta).cny())
+                .foregroundStyle(delta >= 0 ? .green : .primary)
+        }.font(.caption)
+    }
+
+    private func linkedCashDelta(_ entry: LedgerEntry) -> Double {
+        entry.side == .buy ? -(entry.gross + entry.fee) : entry.gross - entry.fee
     }
 
     @ViewBuilder private var dayPnLSection: some View {
