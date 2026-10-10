@@ -11,6 +11,9 @@ struct PortfolioAnalysisView: View {
     @State private var goldShock = -5.0
     @State private var bondShock = -2.0
     @State private var rmbAppreciation = 3.0
+    @State private var fxSnapshot: ExchangeRateService.Snapshot?
+    @State private var fxLoading = false
+    @State private var fxMessage: String?
 
     private struct Exposure: Identifiable {
         let category: String
@@ -77,6 +80,42 @@ struct PortfolioAnalysisView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                Section("实时汇率") {
+                    if let snapshot = fxSnapshot, !snapshot.rates.isEmpty {
+                        ForEach(snapshot.rates) { rate in
+                            HStack(alignment: .center) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(rate.name)
+                                    Text(rate.source).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 3) {
+                                    Text(rate.price.num(4))
+                                    Text(fxChangeText(rate))
+                                        .font(.caption)
+                                        .foregroundStyle(fxColor(rate.changePct))
+                                }
+                            }
+                        }
+                        Text(fxFooter(snapshot))
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button {
+                            Task { await refreshFX(force: true) }
+                        } label: {
+                            if fxLoading { Text("正在刷新…") } else { Text("刷新实时汇率") }
+                        }
+                        .disabled(fxLoading)
+                    } else if fxLoading {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("正在获取实时汇率…").foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(fxMessage ?? "实时汇率暂不可用。可点下方按钮重试，或在压力情景中手动设定人民币升值幅度。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("重新获取实时汇率") { Task { await refreshFX(force: true) } }
+                    }
+                }
                 Section("组合压力情景（手动设定）") {
                     shockField("A 股", value: $equityShock)
                     shockField("港股", value: $hkShock)
@@ -93,8 +132,49 @@ struct PortfolioAnalysisView: View {
             }
             .navigationTitle("资产穿透与压力测试")
             .keyboardDoneToolbar()
+            .task { await refreshFX(force: false) }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
+    }
+
+    // MARK: - 实时汇率
+
+    /// 抓取实时汇率。非强制刷新时优先复用 24 小时内的缓存，避免每次进入页面都打接口。
+    private func refreshFX(force: Bool) async {
+        guard !fxLoading else { return }
+        if !force, let cached = ExchangeRateService.cached(), !ExchangeRateService.isStale(cached) {
+            fxSnapshot = cached
+            return
+        }
+        // 刷新期间先展示旧值，避免数字闪空。
+        if fxSnapshot == nil, let cached = ExchangeRateService.cached() { fxSnapshot = cached }
+        fxLoading = true
+        defer { fxLoading = false }
+        if let snapshot = await ExchangeRateService.fetch() {
+            fxSnapshot = snapshot
+            fxMessage = nil
+        } else if fxSnapshot == nil {
+            fxMessage = "实时汇率未获取到（网络或接口异常）。可在下方压力情景中手动填写人民币升值幅度。"
+        }
+    }
+
+    private func fxChangeText(_ rate: ExchangeRate) -> String {
+        let sign = rate.changePct > 0 ? "+" : ""
+        return sign + (rate.changePct / 100).pct(2)
+    }
+
+    /// 沿用国内看盘习惯：涨为红、跌为绿。
+    private func fxColor(_ pct: Double) -> Color {
+        if pct > 0 { return .red }
+        if pct < 0 { return .green }
+        return .secondary
+    }
+
+    private func fxFooter(_ snapshot: ExchangeRateService.Snapshot) -> String {
+        let time = snapshot.fetchedAt.formatted(date: .abbreviated, time: .shortened)
+        var text = "报价为每单位外币兑人民币，取自公开行情接口，仅供参考。更新于 \(time)。"
+        if ExchangeRateService.isStale(snapshot) { text += "当前为本地缓存，可能滞后。" }
+        return text
     }
 
     @ViewBuilder private func shockField(_ title: String, value: Binding<Double>) -> some View {
