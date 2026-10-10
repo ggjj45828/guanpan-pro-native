@@ -126,6 +126,19 @@ final class PortfolioStore: ObservableObject {
         data.ledger.reduce(0) { $0 + $1.realizedPnL }
             + data.fundTransactions.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
     }
+    /// 最终生效的深浅模式：定时自动切换优先于主题自带设置。
+    var effectiveColorScheme: ColorScheme? {
+        if let forced = AutoThemeSchedule.override(schedule: data.autoThemeSchedule) {
+            return forced ? .dark : .light
+        }
+        return data.appearance.colorScheme
+    }
+    /// 最终生效的强调色：自定义强调色优先于主题自带强调色。
+    var effectiveAccentColor: Color {
+        if let preset = AccentPreset(rawValue: data.accentColorName), let color = preset.color { return color }
+        return data.appearance.accentColor
+    }
+
     var marketMood: (average: Double, count: Int)? {
         let codes = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code))
         let values = codes.compactMap { code in

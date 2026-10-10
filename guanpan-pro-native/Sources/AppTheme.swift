@@ -52,3 +52,91 @@ struct AppTheme {
         LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
     }
 }
+
+// MARK: - 主题自带的深浅模式与强调色
+
+extension AppAppearance {
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light, .paper, .mint: return .light
+        default: return .dark
+        }
+    }
+
+    var accentColor: Color {
+        switch self {
+        case .oled, .dark, .graphite: return Color(red: 0.31, green: 0.55, blue: 1.0)
+        case .light: return Color(red: 0.15, green: 0.39, blue: 0.92)
+        case .blue: return Color(red: 0.30, green: 0.62, blue: 1.0)
+        case .green: return Color(red: 0.24, green: 0.79, blue: 0.63)
+        case .purple: return Color(red: 0.66, green: 0.42, blue: 1.0)
+        case .sakura: return Color(red: 1.0, green: 0.47, blue: 0.69)
+        case .cyber: return Color(red: 0.0, green: 0.90, blue: 1.0)
+        case .amber: return Color(red: 1.0, green: 0.69, blue: 0.13)
+        case .paper: return Color(red: 0.66, green: 0.44, blue: 0.10)
+        case .mint: return Color(red: 0.07, green: 0.56, blue: 0.49)
+        case .coffee: return Color(red: 0.85, green: 0.60, blue: 0.31)
+        case .system: return Color.accentColor
+        }
+    }
+}
+
+// MARK: - 强调色（可独立于主题自选）
+
+enum AccentPreset: String, CaseIterable, Identifiable {
+    case auto, azure, teal, emerald, amber, rose, violet, indigo
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .auto: return "跟随主题"
+        case .azure: return "天蓝"
+        case .teal: return "青碧"
+        case .emerald: return "翠绿"
+        case .amber: return "琥珀"
+        case .rose: return "玫红"
+        case .violet: return "紫罗兰"
+        case .indigo: return "靛青"
+        }
+    }
+    var color: Color? {
+        switch self {
+        case .auto: return nil
+        case .azure: return Color(red: 0.20, green: 0.55, blue: 1.0)
+        case .teal: return Color(red: 0.10, green: 0.72, blue: 0.72)
+        case .emerald: return Color(red: 0.16, green: 0.74, blue: 0.50)
+        case .amber: return Color(red: 1.0, green: 0.68, blue: 0.16)
+        case .rose: return Color(red: 1.0, green: 0.42, blue: 0.55)
+        case .violet: return Color(red: 0.66, green: 0.42, blue: 1.0)
+        case .indigo: return Color(red: 0.36, green: 0.40, blue: 0.95)
+        }
+    }
+}
+
+// MARK: - 按时间自动切换深浅
+
+enum AutoThemeSchedule {
+    /// 依据 schedule 决定覆盖成深还是浅；返回 nil 表示不覆盖（跟随主题设置）。
+    /// - "sun"：日出日落近似（07:00–19:00 浅，其余深）
+    /// - "HH:mm-HH:mm"：该区间为深色
+    static func override(schedule: String, now: Date = .now) -> Bool? {
+        guard !schedule.isEmpty else { return nil }
+        let calendar = Calendar.current
+        let minute = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+
+        func parse(_ text: String) -> Int? {
+            let parts = text.split(separator: ":").compactMap { Int($0) }
+            guard parts.count == 2 else { return nil }
+            return parts[0] * 60 + parts[1]
+        }
+
+        if schedule == "sun" { return minute < 7 * 60 || minute >= 19 * 60 }
+
+        let range = schedule.split(separator: "-").map(String.init)
+        guard range.count == 2, let start = parse(range[0]), let end = parse(range[1]) else { return nil }
+        if start <= end { return minute >= start && minute < end }
+        // 跨零点，如 22:00-07:00
+        return minute >= start || minute < end
+    }
+}

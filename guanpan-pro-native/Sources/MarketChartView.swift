@@ -294,7 +294,7 @@ struct MarketChartView: View {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text((quote?.price ?? holding.current).num(3))
-                                .font(.system(size: 30, weight: .bold, design: .rounded))
+                                .scaledFont(30, weight: .bold, design: .rounded)
                             Text("\(holding.name) · \(holding.code)").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -610,7 +610,7 @@ struct MarketChartView: View {
                     Spacer(minLength: 0)
                 }
                 Text("由近 160 根日线的摆动高低点推出；只是历史成交区间的描述，不代表未来会止跌或受阻。")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .scaledFont(10).foregroundStyle(.secondary)
             }
             .padding(10)
             .background(
@@ -622,12 +622,12 @@ struct MarketChartView: View {
 
     private func srChip(_ title: String, _ values: [Double], _ color: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 9)).foregroundStyle(.secondary)
+            Text(title).scaledFont(9).foregroundStyle(.secondary)
             ForEach(Array(values.enumerated()), id: \.offset) { _, v in
-                Text(v.num(3)).font(.system(size: 11, weight: .semibold, design: .rounded))
+                Text(v.num(3)).scaledFont(11, weight: .semibold, design: .rounded)
                     .monospacedDigit().foregroundStyle(color)
             }
-            if values.isEmpty { Text("--").font(.system(size: 11)).foregroundStyle(.secondary) }
+            if values.isEmpty { Text("--").scaledFont(11).foregroundStyle(.secondary) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -647,7 +647,7 @@ struct MarketChartView: View {
             RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 12, height: 3)
             Text(title).foregroundStyle(color)
         }
-        .font(.system(size: 10, weight: .semibold))
+        .scaledFont(10, weight: .semibold)
     }
 
     private func candlePlot(bodyWidth: CGFloat) -> some View {

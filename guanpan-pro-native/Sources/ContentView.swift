@@ -16,11 +16,50 @@ extension View {
     }
 }
 
+/// iPad / 横屏宽视图下的分栏入口。iPhone 仍走底部 TabView。
+enum PadTab: String, CaseIterable, Identifiable {
+    case watchlist
+    case holdings
+    case funds
+    case assets
+    case more
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .watchlist: return "自选"
+        case .holdings: return "持仓"
+        case .funds: return "基金"
+        case .assets: return "资产"
+        case .more: return "更多"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .watchlist: return "chart.xyaxis.line"
+        case .holdings: return "briefcase.fill"
+        case .funds: return "building.columns.fill"
+        case .assets: return "chart.pie.fill"
+        case .more: return "ellipsis.circle.fill"
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
+    @State private var padTab: PadTab = .watchlist
     @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
     @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
+    /// 毛玻璃强度：让背景图糊化而不是单纯压暗。糊化后文字对比度更稳定（亮图上白字也不会糊），观感也更高级。
+    @AppStorage("guanpan.native.background.blur") private var backgroundBlur = 0.32
+    /// 定时自动切换深浅时，需要一个随时间推进的驱动器，否则计划时间到了也不会变。
+    @State private var themeTick = 0
+    private let themeTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
     var body: some View {
         ZStack {
             // backgroundRevision 是 @AppStorage，选择/清除背景时会递增。
@@ -29,25 +68,79 @@ struct ContentView: View {
             // 原先的 `if backgroundRevision >= 0` 恒为真且未参与视图构建，导致「换背景没反应」。
             backgroundLayer
                 .id(backgroundRevision)
-            TabView {
-                DashboardView().tabItem { Label("自选", systemImage: "chart.xyaxis.line") }
-                HoldingsView(kind: .etf).tabItem { Label("持仓", systemImage: "briefcase.fill") }
-                HoldingsView(kind: .fund).tabItem { Label("基金", systemImage: "building.columns.fill") }
-                AssetsView().tabItem { Label("资产", systemImage: "chart.pie.fill") }
-                MoreHubView().tabItem { Label("更多", systemImage: "ellipsis.circle.fill") }
+            if horizontalSizeClass == .regular {
+                padSplitRoot
+            } else {
+                phoneTabRoot
             }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .toolbarBackground(.regularMaterial, for: .tabBar)
         }
+        .preferredColorScheme(effectiveColorScheme)
+        .tint(store.effectiveAccentColor)
+        .appFontScale(CGFloat(fontScale))
         .onAppear { store.configureNASSync() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { store.configureNASSync() }
             else { store.pauseNASSyncPolling() }
         }
+        .onReceive(themeTimer) { _ in
+            // 只在开启了定时切换时才自增，避免无谓的重绘
+            guard !store.data.autoThemeSchedule.isEmpty else { return }
+            themeTick += 1
+        }
+    }
+
+    /// 依赖 themeTick，保证定时切换到了点会重算。
+    private var effectiveColorScheme: ColorScheme? {
+        _ = themeTick
+        return store.effectiveColorScheme
     }
 
     private var currentTheme: AppTheme { AppTheme.palette(for: store.appearance) }
+
+    // MARK: - 双形态根容器（iPhone 用 TabView，iPad / 宽视图用分栏）
+
+    @ViewBuilder private var phoneTabRoot: some View {
+        TabView {
+            DashboardView().tabItem { Label("自选", systemImage: "chart.xyaxis.line") }
+            HoldingsView(kind: .etf).tabItem { Label("持仓", systemImage: "briefcase.fill") }
+            HoldingsView(kind: .fund).tabItem { Label("基金", systemImage: "building.columns.fill") }
+            AssetsView().tabItem { Label("资产", systemImage: "chart.pie.fill") }
+            MoreHubView().tabItem { Label("更多", systemImage: "ellipsis.circle.fill") }
+        }
+        .scrollContentBackground(.hidden)
+        .background(.clear)
+        .toolbarBackground(.regularMaterial, for: .tabBar)
+    }
+
+    /// iPad 上底部五个 Tab 会挤在中间、列表也只剩窄窄一条，观感很差；
+    /// 改成 NavigationSplitView：左侧常驻侧栏，右侧整屏详情，横向空间才真正用起来。
+    @ViewBuilder private var padSplitRoot: some View {
+        NavigationSplitView {
+            List(selection: $padTab) {
+                ForEach(PadTab.allCases) { tab in
+                    Label(tab.title, systemImage: tab.icon)
+                        .tag(tab)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .navigationTitle("观盘 Pro")
+        } detail: {
+            padDetail
+        }
+        .navigationSplitViewStyle(.balanced)
+        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
+    }
+
+    @ViewBuilder private var padDetail: some View {
+        switch padTab {
+        case .watchlist: DashboardView()
+        case .holdings: HoldingsView(kind: .etf)
+        case .funds: HoldingsView(kind: .fund)
+        case .assets: AssetsView()
+        case .more: MoreHubView()
+        }
+    }
 
     @ViewBuilder private var backgroundLayer: some View {
         // 主题底色兜底：即使没有自定义背景，换主题也能立刻看到差异。
@@ -62,7 +155,7 @@ struct ContentView: View {
                         Image(uiImage: image).resizable().scaledToFill()
                             .frame(width: geo.size.width, height: geo.size.height)
                             .clipped()
-                            .overlay(overlayTint)
+                            .overlay { overlayTint }
                     } else if let gradient = NativeBackgroundStore.selectedGradient {
                         LinearGradient(colors: gradient.hexColors.map { hex in
                             Color(red: Double((hex >> 16) & 0xff) / 255,
@@ -71,19 +164,23 @@ struct ContentView: View {
                         }, startPoint: .topLeading, endPoint: .bottomTrailing)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
-                        .overlay(overlayTint)
+                        .overlay { overlayTint }
                     }
                 }
                 .ignoresSafeArea()
             }
     }
 
-    /// 背景图上的压暗/提亮蒙版，保证列表文字在任何图片上都能读清。
-    /// 透明度由设置页滑杆控制（0.08~0.82）。
-    private var overlayTint: Color {
-        currentTheme.isLight
-            ? Color.white.opacity(backgroundOverlayOpacity)
-            : Color.black.opacity(backgroundOverlayOpacity)
+    /// 背景图上的蒙版：毛玻璃 + 压暗/提亮两层叠加。
+    /// 只用纯色压暗时，亮背景图配低透明度会让白字读不清；
+    /// 叠加 Material 毛玻璃后，底层被糊化，文字对比度不再依赖压暗强度。
+    @ViewBuilder private var overlayTint: some View {
+        ZStack {
+            Rectangle().fill(.thinMaterial).opacity(backgroundBlur)
+            currentTheme.isLight
+                ? Color.white.opacity(backgroundOverlayOpacity)
+                : Color.black.opacity(backgroundOverlayOpacity)
+        }
     }
 }
 
@@ -109,7 +206,7 @@ struct DashboardView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("总资产").font(.subheadline).foregroundStyle(.white.opacity(0.8))
                             Text((store.totalAsset).cny())
-                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .scaledFont(32, weight: .bold, design: .rounded)
                                 .minimumScaleFactor(0.75).lineLimit(1)
                                 .foregroundStyle(.white)
                         }
@@ -150,7 +247,7 @@ struct DashboardView: View {
                             MetricCell(title: "仓位", value: store.positionPercent.pct(1))
                         ])
                         Text("今日盈亏按最近一次拿到的涨跌幅反推昨收估算，没取到行情时显示 --，不臆测补数。")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .scaledFont(10).foregroundStyle(.secondary)
                     }
                     .cardSurface()
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
@@ -212,14 +309,14 @@ struct DashboardView: View {
                                 if let signal = MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? []) {
                                     HStack(spacing: 5) {
                                         Text("\(signal.score) \(signal.label)")
-                                            .font(.system(size: 10, weight: .semibold))
+                                            .scaledFont(10, weight: .semibold)
                                             .padding(.horizontal, 6).padding(.vertical, 2.5)
                                             .foregroundStyle(signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
                                                              : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary)
                                             .background((signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
                                                          : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary).opacity(0.14), in: Capsule())
                                         Text(signal.trendText)
-                                            .font(.system(size: 10, weight: .medium))
+                                            .scaledFont(10, weight: .medium)
                                             .padding(.horizontal, 6).padding(.vertical, 2.5)
                                             .foregroundStyle(.secondary)
                                             .background(Color.secondary.opacity(0.12), in: Capsule())
@@ -323,7 +420,7 @@ struct MoreHubView: View {
                     .listRowBackground(Color.clear)
                 } header: { Text("AI 与智能分析") } footer: {
                     Text("投资偏好（画像）与模型接口在「AI 账户分析」页内配置；密钥只存本机钥匙串。")
-                        .font(.system(size: 10))
+                        .scaledFont(10)
                 }
 
                 Section {
@@ -373,13 +470,13 @@ private struct MoreHubCard: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
+                    .scaledFont(20, weight: .semibold)
                     .foregroundStyle(.white)
                     .frame(width: 46, height: 46)
                     .background(tint.gradient, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(title).scaledFont(15, weight: .semibold).foregroundStyle(.primary)
+                    Text(subtitle).scaledFont(11).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 4)
@@ -412,10 +509,10 @@ private struct MoreHubTile: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 7) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(17, weight: .semibold)
                     .foregroundStyle(tint)
-                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
-                Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(title).scaledFont(13, weight: .semibold).foregroundStyle(.primary)
+                Text(subtitle).scaledFont(10).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
@@ -444,7 +541,7 @@ private struct MoreHubRow: View {
     var body: some View {
         HStack(spacing: 13) {
             Image(systemName: icon)
-                .font(.system(size: 18, weight: .semibold))
+                .scaledFont(18, weight: .semibold)
                 .foregroundStyle(.white)
                 .frame(width: 42, height: 42)
                 .background(tint.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -677,9 +774,9 @@ struct HoldingsView: View {
     /// 持仓行内的小统计：标签 9px、数值 11px，一行塞三个不挤。
     private func holdingStat(_ title: String, _ value: String, _ tone: Double?) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.system(size: 9)).foregroundStyle(.secondary)
+            Text(title).scaledFont(9).foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .scaledFont(11, weight: .semibold, design: .rounded)
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                 .foregroundStyle(tone.map { $0 >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
                                                     : Color(red: 0.07, green: 0.77, blue: 0.55) } ?? Color.primary)
@@ -695,16 +792,16 @@ struct HoldingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("本模块市值").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("本模块市值").scaledFont(11).foregroundStyle(.secondary)
                         Text(value.cny())
-                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                            .scaledFont(24, weight: .bold, design: .rounded)
                             .minimumScaleFactor(0.7).lineLimit(1)
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("持仓浮盈").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("持仓浮盈").scaledFont(11).foregroundStyle(.secondary)
                         Text(pnlValue.cny())
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .scaledFont(17, weight: .bold, design: .rounded)
                             .monospacedDigit()
                             .foregroundStyle(pnlValue >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
                                                             : Color(red: 0.07, green: 0.77, blue: 0.55))
@@ -720,7 +817,7 @@ struct HoldingsView: View {
                 Text(kind == .fund
                      ? "只统计本页场外基金；ETF / 证券不计入。账户页「总资产」才是两者合计。"
                      : "只统计本页 ETF / 证券；场外基金不计入。账户页「总资产」才是两者合计。")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .scaledFont(10).foregroundStyle(.secondary)
             }
             .cardSurface()
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
@@ -2107,10 +2204,10 @@ struct ETFIncomeCalendarView: View {
                                         Text(String(date.suffix(2)))
                                         if let day {
                                             Text(showRate && day.base > 0 ? String(format: "%.1f%%", day.profit / day.base * 100) : String(format: "%.0f", day.profit))
-                                                .font(.system(size: 8, weight: .medium))
+                                                .scaledFont(8, weight: .medium)
                                                 .lineLimit(1).minimumScaleFactor(0.65)
                                         } else {
-                                            Text(statusText(for: date)).font(.system(size: 7))
+                                            Text(statusText(for: date)).scaledFont(7)
                                                 .lineLimit(1).minimumScaleFactor(0.65)
                                                 .foregroundStyle(statusText(for: date) == "休市" ? .secondary : .tertiary)
                                         }
@@ -3705,6 +3802,9 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
+    /// 背景毛玻璃强度。和压暗分离：压暗只降亮度，毛玻璃把底图糊化，亮图上的白字才不会糊。
+    @AppStorage("guanpan.native.background.blur") private var backgroundBlur = 0.32
+    @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     @State private var showExporter = false
@@ -3795,21 +3895,127 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var appearanceSection: some View {
-        Picker("外观主题", selection: Binding(get: { store.appearance }, set: { store.appearance = $0 })) {
-            Text("跟随系统").tag(AppAppearance.system)
-            Section("深色主题") {
-                Text("深空灰").tag(AppAppearance.dark); Text("纯黑 OLED").tag(AppAppearance.oled)
-                Text("午夜蓝").tag(AppAppearance.blue); Text("松墨绿").tag(AppAppearance.green)
-                Text("暗夜紫").tag(AppAppearance.purple); Text("樱花粉").tag(AppAppearance.sakura)
-                Text("赛博朋克").tag(AppAppearance.cyber); Text("琥珀金").tag(AppAppearance.amber)
-                Text("拿铁棕").tag(AppAppearance.coffee); Text("石墨灰").tag(AppAppearance.graphite)
+        Section("外观主题") {
+            // 每个主题给一块真实配色预览，不用只看名字盲选。
+            let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(allThemes, id: \.rawValue) { item in
+                    ThemePreviewCard(appearance: item,
+                                     accent: AccentPreset(rawValue: store.data.accentColorName)?.color ?? item.accentColor,
+                                     selected: store.appearance == item) {
+                        store.appearance = item
+                    }
+                }
             }
-            Section("浅色主题") {
-                Text("明亮白").tag(AppAppearance.light); Text("纸白").tag(AppAppearance.paper)
-                Text("薄荷").tag(AppAppearance.mint)
+            .padding(.vertical, 4)
+        }
+        Section("强调色") {
+            Picker("强调色", selection: Binding(
+                get: { store.data.accentColorName },
+                set: { store.data.accentColorName = $0; store.save(label: "修改账本或设置") })) {
+                ForEach(AccentPreset.allCases) { preset in Text(preset.title).tag(preset.rawValue) }
+            }
+            Text("选「跟随主题」时用主题自带强调色；选其他则覆盖全部主题。")
+                .scaledFont(10).foregroundStyle(.secondary)
+        }
+        Section("定时自动切换深浅") {
+            Picker("自动切换", selection: Binding(
+                get: { store.data.autoThemeSchedule },
+                set: { store.data.autoThemeSchedule = $0; store.save(label: "修改账本或设置") })) {
+                Text("关闭").tag("")
+                Text("日出日落（19:00–07:00 深色）").tag("sun")
+                Text("22:00–07:00 深色").tag("22:00-07:00")
+                Text("20:00–08:00 深色").tag("20:00-08:00")
+            }
+            if !store.data.autoThemeSchedule.isEmpty {
+                Text("开启后每分钟检查一次；到点自动切换，会覆盖上面所选主题的深浅。")
+                    .scaledFont(10).foregroundStyle(.secondary)
+            }
+        }
+        Section("字号") {
+            Picker("字号", selection: $fontScale) {
+                ForEach(FontScalePreset.allCases) { preset in
+                    Text(preset.title).tag(preset.value)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("App 内字号倍率，会与系统「设置 → 显示与亮度 → 文字大小」叠加。改大后部分紧凑网格会自动换行。")
+                .scaledFont(10).foregroundStyle(.secondary)
+            // 同一段文字用当前倍率渲染，选档位时能直接看到效果，不用退出去猜。
+            HStack {
+                Text("预览：总资产 ¥1,234,567.89")
+                    .scaledFont(13, weight: .semibold, design: .rounded)
+                Spacer(minLength: 0)
             }
         }
     }
+
+    private var allThemes: [AppAppearance] {
+        [.system, .dark, .oled, .blue, .green, .purple, .sakura, .cyber, .amber, .coffee, .graphite, .light, .paper, .mint]
+    }
+
+    /// 主题预览卡：直接画出该主题的底色渐变 + 强调色 + 深浅标记，选中加边框。
+    private struct ThemePreviewCard: View {
+    let appearance: AppAppearance
+    let accent: Color
+    let selected: Bool
+    let action: () -> Void
+
+    private var theme: AppTheme { AppTheme.palette(for: appearance) }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack(alignment: .topTrailing) {
+                    theme.gradient
+                        .frame(height: 46)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    Circle().fill(accent).frame(width: 9, height: 9)
+                        .padding(6)
+                }
+                HStack(spacing: 3) {
+                    Text(appearanceTitle).scaledFont(11, weight: .medium).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .scaledFont(11).foregroundStyle(accent)
+                    }
+                }
+                Text(theme.isLight ? "浅色" : "深色")
+                    .scaledFont(9).foregroundStyle(.secondary)
+            }
+            .padding(7)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(selected ? accent.opacity(0.14) : Color.secondary.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(selected ? accent.opacity(0.6) : Color.clear, lineWidth: 1.2)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var appearanceTitle: String {
+        switch appearance {
+        case .system: return "跟随系统"
+        case .dark: return "深空灰"
+        case .oled: return "纯黑OLED"
+        case .blue: return "午夜蓝"
+        case .green: return "松墨绿"
+        case .purple: return "暗夜紫"
+        case .sakura: return "樱花粉"
+        case .cyber: return "赛博朋克"
+        case .amber: return "琥珀金"
+        case .coffee: return "拿铁棕"
+        case .graphite: return "石墨灰"
+        case .light: return "明亮白"
+        case .paper: return "纸白"
+        case .mint: return "薄荷"
+        }
+    }
+}
 
     @ViewBuilder private var backgroundSection: some View {
         Section("网页内置图片主题") {
@@ -3880,8 +4086,15 @@ struct SettingsView: View {
             if !backgroundMessage.isEmpty { Text(backgroundMessage).font(.footnote).foregroundStyle(.secondary) }
             VStack(alignment: .leading) {
                 HStack { Text("背景透明度"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
-                Slider(value: $backgroundOverlayOpacity, in: 0.08...0.82, step: 0.02)
+                // 下限 0.08 → 0.15：低于此值时亮背景图上的文字对比度不足。
+                Slider(value: $backgroundOverlayOpacity, in: 0.15...0.82, step: 0.02)
             }
+            VStack(alignment: .leading) {
+                HStack { Text("背景毛玻璃"); Spacer(); Text("\(Int(backgroundBlur * 100))%") }.font(.subheadline)
+                Slider(value: $backgroundBlur, in: 0...0.9, step: 0.02)
+            }
+            Text("毛玻璃会糊化背景图，让文字对比度不再依赖压暗强度；想要背景更清晰就把毛玻璃调低。")
+                .scaledFont(10).foregroundStyle(.secondary)
             Text("自定义图片保存在本机并自动压缩至 1800 像素以内；原网页备份不含当前背景选择，原生 JSON 备份会包含背景图。iOS 状态栏颜色由系统按深浅外观自动适配。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -3897,8 +4110,11 @@ struct SettingsView: View {
         Section("交易所休市日") {
             Text("每行填写一个日期（YYYY-MM-DD）。自定义日期会随原生备份和 NAS 同步；2026 年内置休市安排已载入。后续年份请按交易所公告补充。")
                 .font(.footnote).foregroundStyle(.secondary)
+            // 全局把 UIScrollView 背景设为透明后，TextEditor（UIScrollView 子类）也跟着透明了，
+            // 输入框会看不见。这里单独恢复不透明底。
             TextEditor(text: $marketHolidayText).frame(minHeight: 110)
                 .font(.system(.footnote, design: .monospaced))
+                .scrollContentBackground(.visible)
             HStack {
                 Button("保存休市日") { saveMarketHolidays() }
                 Spacer()

@@ -16,12 +16,12 @@ struct MetricCell: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 10))
+                .scaledFont(10)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(value)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .scaledFont(13, weight: .semibold, design: .rounded)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)

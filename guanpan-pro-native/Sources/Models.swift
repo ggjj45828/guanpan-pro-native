@@ -562,9 +562,13 @@ struct PortfolioData: Codable {
     var tradePlans: [TradePlan] = []
     /// User-maintained exchange closure dates (YYYY-MM-DD); synced with the portfolio.
     var customMarketHolidays: [String] = []
+    /// 自定义强调色名（空串 = 跟随主题自带强调色）。
+    var accentColorName = ""
+    /// 按时间自动切换深浅：空串 = 关闭；"sun" = 日出日落；否则为 "HH:mm-HH:mm" 深色时段。
+    var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays
+        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -594,6 +598,8 @@ struct PortfolioData: Codable {
         cash = try c.decodeIfPresent(Double.self, forKey: .cash) ?? 0
         cashLinkedByDefault = try c.decodeIfPresent(Bool.self, forKey: .cashLinkedByDefault) ?? false
         appearance = try c.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? .system
+        accentColorName = try c.decodeIfPresent(String.self, forKey: .accentColorName) ?? ""
+        autoThemeSchedule = try c.decodeIfPresent(String.self, forKey: .autoThemeSchedule) ?? ""
         quoteRefreshSeconds = min(600, max(0, try c.decodeIfPresent(Int.self, forKey: .quoteRefreshSeconds) ?? 60))
         dailyPnLMode = try c.decodeIfPresent(DailyPnLMode.self, forKey: .dailyPnLMode) ?? .pnl
         let subchart = try c.decodeIfPresent(String.self, forKey: .intradaySubchartMode) ?? "macd"

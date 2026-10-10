@@ -257,7 +257,7 @@ struct SignalTagRow: View {
             HStack(spacing: 5) {
                 ForEach(tags) { tag in
                     Text(tag.text)
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(10, weight: .semibold)
                         .padding(.horizontal, 6).padding(.vertical, 2.5)
                         .foregroundStyle(tag.color)
                         .background(tag.color.opacity(0.14), in: Capsule())

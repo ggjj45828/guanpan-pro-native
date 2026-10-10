@@ -32,6 +32,12 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # iPad 需要单独声明支持的方向，否则分栏布局在 iPad 上会被强制竖屏。
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - fetch
         NSLocalNetworkUsageDescription: "连接你在设置中填写的 NAS 地址，用于同步观盘 Pro 本机账本和行情历史缓存。"
@@ -44,7 +50,9 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: 观盘 Pro
         GENERATE_INFOPLIST_FILE: "NO"
-        TARGETED_DEVICE_FAMILY: "1"
+        # 1 = iPhone，2 = iPad。改成 "1,2" 后 App 才能在 iPad 上以全屏（而非放大 2 倍的兼容模式）运行，
+        # 配合 ContentView 里 horizontalSizeClass == .regular 的分栏分支才真正有意义。
+        TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: "NO"
     scheme:
       gatherCoverageData: false
