@@ -21,6 +21,15 @@ struct ValuationVerdict {
         case .neutral: return Color.secondary
         }
     }
+
+    /// 用 switch 而不是 `tone == .x`，省掉对 Equatable 合成规则的依赖
+    var iconName: String {
+        switch tone {
+        case .expensive: return "arrow.up.circle"
+        case .cheap: return "arrow.down.circle"
+        case .neutral: return "equal.circle"
+        }
+    }
 }
 
 /// 单只标的的位置体检（俗称「值不值得买」）。
@@ -189,7 +198,7 @@ struct ValuationView: View {
     @ViewBuilder private var verdictBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: verdict.tone == .neutral ? "equal.circle" : (verdict.tone == .cheap ? "arrow.down.circle" : "arrow.up.circle"))
+                Image(systemName: verdict.iconName)
                     .foregroundStyle(verdict.color)
                 Text(verdict.title)
                     .font(.title3.weight(.semibold))

@@ -595,6 +595,15 @@ struct DashboardView: View {
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
             .stroke(Color.primary.opacity(0.06), lineWidth: 1))
+        // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
+        .combineAccessibility()
+        .accessibilityLabel(watchSpokenLabel(q))
+    }
+
+    /// 自选卡片的读屏文案。价格可能缺失，缺了就说「无报价」而不是念 0。
+    private func watchSpokenLabel(_ q: Quote) -> String {
+        let price = q.price > 0 ? "现价 \(q.price.num(3))" : "无报价"
+        return "\(displayName(q))，代码 \(q.code)，\(price)，\(spokenPercent(q.changePct))"
     }
 
     @ViewBuilder private func watchContextMenu(_ q: Quote) -> some View {
@@ -1071,6 +1080,8 @@ struct HoldingsView: View {
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                 .foregroundStyle(tone.map { $0 >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
                                                     : Color(red: 0.07, green: 0.77, blue: 0.55) } ?? Color.primary)
+                // 读屏念「当日 上涨 ¥12.34」，把颜色代表的涨跌转成文字
+                .accessibilityLabel(tone.map { "\(title) \(spokenDirection($0)) \(value)" } ?? "\(title) \(value)")
         }
     }
 
@@ -2288,6 +2299,7 @@ struct AssetsView: View {
                                     .scaledFont(15, weight: .semibold, design: .rounded)
                                     .monospacedDigit()
                                     .foregroundStyle(dayTone)
+                                    .accessibilityLabel(store.hasDayPnL ? "当日盈亏 \(spokenMoney(store.dayPnL))" : "当日盈亏暂无数据")
                                 Text(store.hasDayPnL ? (store.dayPnLRate?.pct(2) ?? "--") : "--")
                                     .font(.caption).foregroundStyle(dayTone)
                                 Text("当日盈亏").font(.caption2).foregroundStyle(.secondary)
