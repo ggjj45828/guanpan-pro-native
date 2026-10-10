@@ -855,7 +855,7 @@ struct ArchivedFundHistoryView: View {
                             HStack {
                                 Text(transactionTitle(trade)).font(.headline)
                                 Spacer(); Text(trade.status == .pending ? "待确认" : "已确认")
-                                    .foregroundStyle(trade.status == .pending ? .orange : .secondary)
+                                    .foregroundStyle(trade.status == .pending ? Color.orange : Color.secondary)
                             }
                             Text("生效日 \(trade.effectiveDate) · \((trade.quantity).num(4)) 份 · 净值 \((trade.nav).num(4))")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -2060,14 +2060,14 @@ struct ToolsView: View {
                         Text(holding.name).font(.headline)
                         if let limit = holding.maxPositionPercent {
                             Text("仓位 \((actual).num(1))% / 上限 \((limit).num(1))% · \(actual > limit ? "已超过" : "未超过")")
-                                .foregroundStyle(actual > limit ? .orange : .secondary)
+                                .foregroundStyle(actual > limit ? Color.orange : Color.secondary)
                         }
                         if let period = holding.maWarningPeriod {
                             let bars = store.dailyBars[holding.code] ?? []
                             if bars.count >= period, let latest = bars.last {
                                 let ma = bars.suffix(period).map(\.close).reduce(0, +) / Double(period)
                                 Text("\(latest.date) 收盘 \((latest.close).num(3)) · MA\(period) \((ma).num(3)) · \(latest.close < ma ? "收盘已跌破均线" : "收盘仍在均线上方")")
-                                    .foregroundStyle(latest.close < ma ? .orange : .secondary)
+                                    .foregroundStyle(latest.close < ma ? Color.orange : Color.secondary)
                             } else {
                                 Text("MA\(period)：本机日线不足，打开该标的日线图更新历史数据后检查。")
                                     .foregroundStyle(.secondary)

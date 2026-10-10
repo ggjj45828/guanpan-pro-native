@@ -139,7 +139,7 @@ struct ReconciliationView: View {
             let difference = store.data.cash - broker
             LabeledContent("观盘 − 券商", value: (difference).cny())
             Text(cashDifferenceText(difference))
-                .font(.footnote).foregroundStyle(abs(difference) < 0.005 ? .secondary : .orange)
+                .font(.footnote).foregroundStyle(abs(difference) < 0.005 ? Color.secondary : Color.orange)
         }
     }
 

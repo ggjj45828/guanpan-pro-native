@@ -90,7 +90,7 @@ struct DataTrustView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack { Text(fund.name); Spacer(); Text(point?.date ?? "没有本地净值") }
                             Text(point.map { "最近公布净值 \(($0.nav).num(4))" } ?? "没有可用的历史净值")
-                                .font(.caption).foregroundStyle(point == nil ? .orange : .secondary)
+                                .font(.caption).foregroundStyle(point == nil ? Color.orange : Color.secondary)
                         }
                     }
                     Text("这里展示已公布净值及日期，不含基金盘中估值。QDII 等海外资产净值可能有时差。")
