@@ -955,6 +955,11 @@ struct HoldingsView: View {
     @State private var undoTradeMessage: String?
     @State private var showPortfolioAdvice = false
     @State private var alertTarget: Holding?
+    /// 「基金工具」原来直接用 Menu 嵌在行内 —— List 行内嵌 Menu 会抢走横向平移手势，
+    /// 导致整行左滑失效（swipeActions 弹不出来）。改成按钮 + confirmationDialog。
+    @State private var fundToolTarget: Holding?
+    /// 长按菜单删除的确认目标
+    @State private var removeTarget: Holding?
     @State private var searchText = ""
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
     private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
@@ -1018,6 +1023,12 @@ struct HoldingsView: View {
             .sheet(isPresented: $showFundQuant) { FundQuantView() }
             .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() }
             .sheet(item: $archivedFundTarget) { ArchivedFundHistoryView(item: $0) }
+            .confirmationDialog(fundToolTarget?.name ?? "基金工具", isPresented: Binding(get: { fundToolTarget != nil }, set: { if !$0 { fundToolTarget = nil } }), titleVisibility: .visible) {
+                Button("净值走势") { if let t = fundToolTarget { fundHistoryTarget = t }; fundToolTarget = nil }
+                Button("赎回费率") { if let t = fundToolTarget { feePolicyTarget = t }; fundToolTarget = nil }
+                Button("流水核对") { if let t = fundToolTarget { fundReconciliationTarget = t }; fundToolTarget = nil }
+                Button("取消", role: .cancel) { fundToolTarget = nil }
+            } message: { Text("这只基金的历史净值、费率与流水核对工具。") }
             .alert("交易流水", isPresented: Binding(get: { undoTradeMessage != nil }, set: { if !$0 { undoTradeMessage = nil } })) {
                 Button("好", role: .cancel) { undoTradeMessage = nil }
             } message: { Text(undoTradeMessage ?? "") }
@@ -1204,11 +1215,8 @@ struct HoldingsView: View {
                         Button("补录起点") { backfillTarget = h }
                     }
                     Button("定投") { dcaTarget = h }
-                    Menu("基金工具") {
-                        Button("净值走势") { fundHistoryTarget = h }
-                        Button("赎回费率") { feePolicyTarget = h }
-                        Button("流水核对") { fundReconciliationTarget = h }
-                    }
+                    // 不能用 Menu：行内嵌 Menu 会吃掉滑动手势，左滑删除就弹不出来
+                    Button("基金工具") { fundToolTarget = h }
                 } else {
                     Button("日K与指标") { marketChartTarget = h }
                 }
@@ -1239,6 +1247,19 @@ struct HoldingsView: View {
                 }
             }.tint(.mint)
         }
+        // 长按兜底：万一设备上 swipeActions 仍被系统手势挡住，也能走到删除 / 编辑。
+        .contextMenu {
+            Button { editTarget = h } label: { Label("编辑持仓", systemImage: "pencil") }
+            Button { tradeTarget = h } label: { Label("买入 / 卖出", systemImage: "arrow.left.arrow.right") }
+            Button(role: .destructive) {
+                Haptics.heavy()
+                removeTarget = h
+            } label: { Label("删除持仓", systemImage: "trash") }
+        }
+        .confirmationDialog("删除「\(h.name)」？", isPresented: Binding(get: { removeTarget?.id == h.id }, set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
+            Button("删除持仓", role: .destructive) { store.removeHolding(h); removeTarget = nil }
+            Button("取消", role: .cancel) { removeTarget = nil }
+        } message: { Text("持仓会被移除，相关交易流水保留。删除后可用设置里的撤销操作找回最近一次。") }
     }
 
     @ViewBuilder private var fundToolsSection: some View {
@@ -1897,7 +1918,7 @@ struct FundQuantView: View {
                     LabeledContent("持仓成本", value: (totalCost).cny())
                     LabeledContent("持仓浮盈", value: (totalValue - totalCost).cny())
                     if totalCost > 0 {
-                        LabeledContent("成本收益率", value: ((totalValue - totalCost) / totalCost).pct(2))
+                        LabeledContent("成本收益率", value: ((totalValue - totalCost) / totalCost * 100).pct(2))
                     }
                 }
                 Section("持仓集中度与表现") {
@@ -1908,7 +1929,7 @@ struct FundQuantView: View {
                             HStack {
                                 Text(fund.name).font(.headline)
                                 Spacer()
-                                Text((weight).pct(1))
+                                Text((weight * 100).pct(1))
                                     .foregroundStyle(weight >= 0.5 ? Color.orange : Color.secondary)
                             }
                             let fundPnL = store.holdingPnL(fund)
@@ -2617,7 +2638,7 @@ struct ETFIncomeCalendarView: View {
                     } else if !days.isEmpty {
                         LabeledContent("月累计收益", value: (monthlyProfit).cny())
                         if let monthlyRate {
-                            LabeledContent("复合收益率", value: (monthlyRate / 100).pct(2))
+                            LabeledContent("复合收益率", value: monthlyRate.pct(2))
                         } else { LabeledContent("复合收益率", value: "—") }
                     }
                     if loading { ProgressView("正在读取 ETF 日 K…") }
@@ -2775,6 +2796,7 @@ struct ToolsView: View {
     @State private var shockPercent = 20
     @State private var showGrid = false
     @State private var showAIAnalysis = false
+    @State private var showPortrait = false
     @State private var showLedgerHealth = false
     @State private var showTradePlans = false
     @State private var showOverlap = false
@@ -2842,8 +2864,8 @@ struct ToolsView: View {
             }
             Section("目标仓位与再平衡参考") {
                 let configured = store.data.allocationTargets.reduce(0) { $0 + $1.targetPercent }
-                LabeledContent("已配置目标合计", value: (configured / 100).pct(1))
-                LabeledContent("未分配目标比例", value: (max(0, 100 - configured) / 100).pct(1))
+                LabeledContent("已配置目标合计", value: configured.pct(1))
+                LabeledContent("未分配目标比例", value: max(0, 100 - configured).pct(1))
                 ForEach(store.data.holdings) { holding in
                     let target = store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }
                     let targetPercent = target?.targetPercent ?? 0
@@ -2980,6 +3002,11 @@ struct ToolsView: View {
                 Text("只读检查持仓、交易流水、基金、现金、快照和净值历史，不会自动修改账本。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            Section("AI 账户智能画像") {
+                Button("看系统怎么评价我的操作习惯") { showPortrait = true }
+                Text("对齐网页版「私人顾问 · 画像」：从交易流水推断风格、胜率、费用拖累、集中度与定投纪律，规则引擎本机先算，配了密钥可让大模型深度推断。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section("单只位置体检") {
                 Button("值不值得买：当前价格在历史区间的位置") { showValuation = true }
                 Text("只用本机日线回答「现价在自己近 120/250/640 日区间里处于什么位置」，不是 PE / PB 基本面估值，不包含财报，也不预测涨跌。")
@@ -3020,6 +3047,7 @@ struct ToolsView: View {
         }.navigationTitle("工具")
             .sheet(isPresented: $showGrid) { DayGridView() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
+            .sheet(isPresented: $showPortrait) { AccountPortraitView() }
             .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() }
             .sheet(isPresented: $showTradePlans) { TradePlansView() }
             .sheet(isPresented: $showOverlap) { ETFOverlapView() }
@@ -3200,15 +3228,15 @@ struct PortfolioScenarioView: View {
                     comparison("ETF/证券市值", before.market.cny(), after.market.cny())
                     comparison("已知年分红", before.dividends.cny(), after.dividends.cny())
                     comparison("按持仓市值估算股息率",
-                               (before.market > 0 ? before.dividends / before.market : 0).pct(2),
-                               (after.market > 0 ? after.dividends / after.market : 0).pct(2))
+                               (before.market > 0 ? before.dividends / before.market * 100 : 0).pct(2),
+                               (after.market > 0 ? after.dividends / after.market * 100 : 0).pct(2))
                     comparison("有效持仓数", before.effective.num(2), after.effective.num(2))
-                    comparison("最大单仓", before.maxWeight.pct(0), after.maxWeight.pct(0))
+                    comparison("最大单仓", (before.maxWeight * 100).pct(0), (after.maxWeight * 100).pct(0))
                     comparison("年化波动（共同日线）",
                                before.annualizedVolatility.map { String(format: "%.1f%%", $0) } ?? "数据不足",
                                after.annualizedVolatility.map { String(format: "%.1f%%", $0) } ?? "数据不足")
                     ForEach(Array(after.categories.enumerated()), id: \.offset) { item in
-                        LabeledContent("模拟 · \(item.element.0)", value: (after.market + max(0, store.data.cash) > 0 ? item.element.1 / (after.market + max(0, store.data.cash)) : 0).pct(1))
+                        LabeledContent("模拟 · \(item.element.0)", value: (after.market + max(0, store.data.cash) > 0 ? item.element.1 / (after.market + max(0, store.data.cash)) * 100 : 0).pct(1))
                     }
                     Text("波动率只使用所有模拟持仓都有记录的共同日线日期，至少 20 个共同收益点才显示；数据不足时不填默认相关系数。分红只汇总原生账本中的每份年分红设置或近 365 天已录入 ETF 分红事件；缺失的分红不会外推。集中度仅按 ETF/证券市值计算。模拟不会改变账户现金、持仓、交易记录或同步数据。")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -4099,7 +4127,7 @@ struct DayGridView: View {
                         LabeledContent("模拟盈亏", value: (result.profit).cny())
                         LabeledContent("买入 / 卖出", value: "\(result.buyCount) / \(result.sellCount) 笔")
                         LabeledContent("估算费用", value: (result.fees).cny())
-                        LabeledContent("分时覆盖", value: (result.coverage).pct(0))
+                        LabeledContent("分时覆盖", value: (result.coverage * 100).pct(0))
                         Text(result.fills == 0 ? "该日没有触发网格成交。若资金不足以买入 100 份一手、网格间距超出当日波动，或数据缺点，结果可能没有代表性。" : "回放按时间顺序计算，含逐笔固定费用；不含排队、成交量、滑点、涨跌停和真实券商规则。历史最佳参数会有过拟合，不能直接当作明日建议。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }

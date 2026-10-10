@@ -77,7 +77,7 @@ struct TradePreviewView: View {
                         LabeledContent("交易后市值", value: (postValue).cny())
                         LabeledContent("参考现金", value: (store.data.cash).cny())
                         LabeledContent("交易后参考现金", value: (postCash).cny())
-                        LabeledContent("交易后资产占比", value: (weight).pct(1))
+                        LabeledContent("交易后资产占比", value: (weight * 100).pct(1))
                     }
                 }
                 if let validation {

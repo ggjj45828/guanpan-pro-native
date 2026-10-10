@@ -224,8 +224,8 @@ struct ValuationView: View {
         if let percentile, let low = rangeLow, let high = rangeHigh {
             LabeledContent("现价", value: (currentPrice).num(3))
             LabeledContent("近 \(window) 日区间", value: "\((low).num(3)) ~ \((high).num(3))")
-            LabeledContent("区间分位", value: (percentile / 100).pct(1))
-                .accessibilityLabel("现价处于近 \(window) 日区间的 \((percentile / 100).pct(1)) 分位")
+            LabeledContent("区间分位", value: percentile.pct(1))
+                .accessibilityLabel("现价处于近 \(window) 日区间的 \(percentile.pct(1)) 分位")
             percentileBar(percentile)
         } else {
             Text("没有足够的日线数据计算区间位置。").foregroundStyle(.secondary)
@@ -327,7 +327,7 @@ struct ValuationView: View {
                     .pnlAccessibility(percent: deviation / 100)
             }
             let share = store.totalAsset > 0 ? holding.marketValue / store.totalAsset * 100 : 0
-            LabeledContent("占总资产", value: (share / 100).pct(1))
+            LabeledContent("占总资产", value: share.pct(1))
             Text("成本偏离只说明浮盈浮亏，不代表该不该加仓；加仓还要看仓位上限和原计划。")
                 .font(.footnote).foregroundStyle(.secondary)
         } else {

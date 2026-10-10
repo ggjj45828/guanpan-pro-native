@@ -36,13 +36,19 @@ extension BinaryFloatingPoint {
         return nf.string(from: NSNumber(value: Double(self))) ?? String(format: "%.*f", digits, Double(self))
     }
 
+    /// 把「已经是百分数」的值格式化成字符串：-1.05 → "-1.05%"。
+    ///
+    /// 千万不要用 NumberFormatter 的 .percent 样式：那个样式约定输入是 0.0105 这类小数，
+    /// 会自动再 ×100。而本工程所有调用方（pnlRate / positionPercent / changePct / winRate…）
+    /// 传入的都是百分数，二次相乘就会显示成 "-104.56%" 这种百倍错误（2026-10 用户实测发现）。
     func pct(_ digits: Int) -> String {
         let nf = NumberFormatter()
-        nf.numberStyle = .percent
+        nf.numberStyle = .decimal
         nf.locale = Locale(identifier: "zh_CN")
         nf.minimumFractionDigits = digits
         nf.maximumFractionDigits = digits
-        return nf.string(from: NSNumber(value: Double(self))) ?? String(format: "%.*f", digits, Double(self) * 100)
+        let v = Double(self)
+        return (nf.string(from: NSNumber(value: v)) ?? String(format: "%.*f", digits, v)) + "%"
     }
 }
 
@@ -66,13 +72,15 @@ extension Decimal {
         return nf.string(from: self as NSDecimalNumber) ?? "\(self)"
     }
 
+    /// 传入值已是百分数（见 Double.pct 的说明），直接加 % 格式化。
     func pct(_ digits: Int) -> String {
         let nf = NumberFormatter()
-        nf.numberStyle = .percent
+        nf.numberStyle = .decimal
         nf.locale = Locale(identifier: "zh_CN")
         nf.minimumFractionDigits = digits
         nf.maximumFractionDigits = digits
-        return nf.string(from: self as NSDecimalNumber) ?? "\(self)"
+        let s = nf.string(from: self as NSDecimalNumber)
+        return (s ?? "\(self)") + "%"
     }
 }
 

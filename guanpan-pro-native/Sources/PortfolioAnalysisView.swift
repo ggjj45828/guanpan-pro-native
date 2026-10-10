@@ -67,14 +67,14 @@ struct PortfolioAnalysisView: View {
                             Spacer()
                             VStack(alignment: .trailing, spacing: 3) {
                                 Text((item.value).cny())
-                                Text((total > 0 ? item.value / total : 0).pct(1))
+                                Text((total > 0 ? item.value / total * 100 : 0).pct(1))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
                     LabeledContent("现金", value: (max(0, store.data.cash)).cny())
                     LabeledContent("外币计价 ETF 敞口（估算）", value: (foreignValue).cny())
-                    LabeledContent("占总资产", value: (total > 0 ? foreignValue / total : 0).pct(1))
+                    LabeledContent("占总资产", value: (total > 0 ? foreignValue / total * 100 : 0).pct(1))
                     if fundValue > 0 {
                         Text("场外基金 \((fundValue).cny()) 作为未穿透持仓单列；本页不推测基金底层地区、币种或类别。")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -125,7 +125,7 @@ struct PortfolioAnalysisView: View {
                     shockField("人民币升值", value: $rmbAppreciation)
                     LabeledContent("持仓估算影响", value: (impact).cny())
                         .foregroundStyle(impact < 0 ? .green : .red)
-                    LabeledContent("占总资产", value: (total > 0 ? impact / total : 0).pct(2))
+                    LabeledContent("占总资产", value: (total > 0 ? impact / total * 100 : 0).pct(2))
                     Text("仅对当前持仓市值做静态情景估算；外币冲击按汇率折算近似计算。现金不受冲击。ETF 分类使用代码表或名称关键词，未知品种会标为未分类；基金未穿透。不是行情预测或最大亏损保证。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -160,7 +160,7 @@ struct PortfolioAnalysisView: View {
 
     private func fxChangeText(_ rate: ExchangeRate) -> String {
         let sign = rate.changePct > 0 ? "+" : ""
-        return sign + (rate.changePct / 100).pct(2)
+        return sign + rate.changePct.pct(2)
     }
 
     /// 沿用国内看盘习惯：涨为红、跌为绿。

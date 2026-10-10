@@ -48,12 +48,61 @@ private struct PriceLevelSummary {
     var bollingerLower: Double
 }
 
+/// MA 均线显示开关（竖屏/横屏共用同一份 UserDefaults，点图例 chip 切换）。
+private enum MAVisibility {
+    static let key = "guanpan.native.ma.visible"
+    static func read() -> Set<Int> {
+        let raw = UserDefaults.standard.string(forKey: key) ?? "5,10,20,60"
+        return Set(raw.split(separator: ",").compactMap { Int($0) })
+    }
+    static func write(_ set: Set<Int>) {
+        UserDefaults.standard.set(set.sorted().map(String.init).joined(separator: ","), forKey: key)
+    }
+}
+
+/// X 轴的日期刻度点（竖屏 / 横屏共用）。
+///
+/// 逐根显示日期时，相邻标签间距会被压到 10pt 以下互相压叠，小字号下基本读不出来。
+/// 改成「每个月只取当月第一个交易日」，上限 5 个；整个可见区间都在同一个月内时等间隔取日期。
+private func xAxisDates(_ bars: [DailyBar]) -> [String] {
+    guard !bars.isEmpty else { return [] }
+    let limit = 5
+    var firstOfMonth: [String] = []
+    var seenMonths = Set<String>()
+    for bar in bars {
+        let month = String(bar.date.prefix(7))
+        if !seenMonths.contains(month) {
+            seenMonths.insert(month)
+            firstOfMonth.append(bar.date)
+        }
+    }
+    if firstOfMonth.count >= 2 {
+        guard firstOfMonth.count > limit else { return firstOfMonth }
+        let stride = Int(ceil(Double(firstOfMonth.count) / Double(limit)))
+        return Swift.stride(from: 0, to: firstOfMonth.count, by: stride).map { firstOfMonth[$0] }
+    }
+    let step = max(1, bars.count / limit)
+    return Swift.stride(from: 0, to: bars.count, by: step).map { bars[$0].date }
+}
+
+/// 刻度文案：跨月只显示年月（同年「10月」，跨年「25/10」），同一个月内才显示 MM/DD。
+private func xAxisLabel(_ date: String, _ bars: [DailyBar]) -> String {
+    let sameMonth = bars.isEmpty || Set(bars.map { String($0.date.prefix(7)) }).count <= 1
+    if sameMonth { return String(date.suffix(5)).replacingOccurrences(of: "-", with: "/") }
+    let month = String(date.dropFirst(5).prefix(2))
+    let spansMultipleYears = bars.count > 1 && String(bars.first!.date.prefix(4)) != String(bars.last!.date.prefix(4))
+    guard spansMultipleYears else { return "\(month)月" }
+    return "\(String(date.prefix(4)).suffix(2))/\(month)"
+}
+
 struct MarketChartView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     let holding: Holding
     @State private var selectedIntradayDay = ""
     @State private var selectedChartPeriod: NativeChartPeriod = .intraday
+    /// 每条均线可单独开关：点图例 chip 切换，状态持久化到 UserDefaults
+    @State private var maVisible: Set<Int> = MAVisibility.read()
     @State private var intradaySubchart: IntradaySubchart = .macd
     @State private var showInstrumentAI = false
     @State private var instrumentAIResult = ""
@@ -544,10 +593,10 @@ struct MarketChartView: View {
                     if let result = backtestResult {
                         LabeledContent("回测区间", value: "\(result.startDate) 至 \(result.endDate)")
                         LabeledContent("MA 策略期末资产", value: (result.strategyValue).cny())
-                        LabeledContent("MA 策略收益", value: (result.strategyReturn).pct(2))
+                        LabeledContent("MA 策略收益", value: (result.strategyReturn * 100).pct(2))
                         LabeledContent("买入持有期末资产", value: (result.holdValue).cny())
-                        LabeledContent("买入持有收益", value: (result.holdReturn).pct(2))
-                        LabeledContent("MA 策略最大回撤", value: (result.maxDrawdown).pct(2))
+                        LabeledContent("买入持有收益", value: (result.holdReturn * 100).pct(2))
+                        LabeledContent("MA 策略最大回撤", value: (result.maxDrawdown * 100).pct(2))
                         LabeledContent("模拟委托次数", value: "\(result.orders)")
                     }
                     if !backtestMessage.isEmpty { Text(backtestMessage).font(.footnote).foregroundStyle(.orange) }
@@ -647,6 +696,7 @@ struct MarketChartView: View {
     private var candleHeight: CGFloat {
         max(180, chartBodyHeight - volumeHeight - 8)
     }
+
 
     // MARK: 可见窗口的 Y 轴自适应
 
@@ -758,20 +808,30 @@ struct MarketChartView: View {
 
     @ViewBuilder private var maLegendRow: some View {
         HStack(spacing: 10) {
-            maChip("MA5", ma5Color)
-            maChip("MA10", ma10Color)
-            maChip("MA20", ma20Color)
-            maChip("MA60", ma60Color)
+            maChip("MA5", 5, ma5Color)
+            maChip("MA10", 10, ma10Color)
+            maChip("MA20", 20, ma20Color)
+            maChip("MA60", 60, ma60Color)
             Spacer(minLength: 0)
         }.font(.caption2)
     }
 
-    private func maChip(_ title: String, _ color: Color) -> some View {
-        HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 12, height: 3)
-            Text(title).foregroundStyle(color)
+    private func maChip(_ title: String, _ window: Int, _ color: Color) -> some View {
+        let on = maVisible.contains(window)
+        return Button {
+            Haptics.selection()
+            if on { maVisible.remove(window) } else { maVisible.insert(window) }
+            MAVisibility.write(maVisible)
+        } label: {
+            HStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 1.5).fill(on ? color : Color.secondary.opacity(0.3)).frame(width: 12, height: 3)
+                Text(title).foregroundStyle(on ? color : Color.secondary)
+            }
+            .scaledFont(10, weight: .semibold)
+            .opacity(on ? 1 : 0.55)
         }
-        .scaledFont(10, weight: .semibold)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title)显示开关，当前\(on ? "打开" : "关闭")")
     }
 
     private func candlePlot(bodyWidth: CGFloat) -> some View {
@@ -792,28 +852,44 @@ struct MarketChartView: View {
                               width: .fixed(bodyWidth))
                     .foregroundStyle(candleColor)
             }
-            ForEach(average(5, source: zoomedPeriodBars)) { point in
-                LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
-                    .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 2))
+            if maVisible.contains(5) {
+                ForEach(average(5, source: zoomedPeriodBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
+                        .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 2))
+                }
             }
-            ForEach(average(10, source: zoomedPeriodBars)) { point in
-                LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
-                    .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 2))
+            if maVisible.contains(10) {
+                ForEach(average(10, source: zoomedPeriodBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
+                        .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 2))
+                }
             }
-            ForEach(average(20, source: zoomedPeriodBars)) { point in
-                LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
-                    .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 2))
+            if maVisible.contains(20) {
+                ForEach(average(20, source: zoomedPeriodBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
+                        .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 2))
+                }
             }
-            ForEach(average(60, source: zoomedPeriodBars)) { point in
-                LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
-                    .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 2))
+            if maVisible.contains(60) {
+                ForEach(average(60, source: zoomedPeriodBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
+                        .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 2))
+                }
             }
         }
         // Y 轴显式跟随可见窗口：捏合/拖动后上下界立即重算（含均线），不再是一整段区间
         .chartYScale(domain: yDomain(for: zoomedPeriodBars))
+        // X 轴按月抽稀：不再逐根显示日期，标签互相压叠又看不清
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
+            AxisMarks(values: xAxisDates(zoomedPeriodBars)) { value in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                AxisValueLabel {
+                    if let date = value.as(String.self) {
+                        Text(xAxisLabel(date, zoomedPeriodBars))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .chartYAxis {
@@ -980,6 +1056,8 @@ struct LandscapeChartView: View {
     @State private var zoom: CGFloat = 1
     @GestureState private var pinch: CGFloat = 1
     @State private var showVolume = true
+    /// 与竖屏共用同一份开关状态（UserDefaults）
+    @State private var maVisible: Set<Int> = MAVisibility.read()
 
     private var allBars: [DailyBar] { store.dailyBars[holding.code] ?? [] }
 
@@ -1054,10 +1132,10 @@ struct LandscapeChartView: View {
                     .foregroundStyle(quote.changePct >= 0 ? .red : .green)
             }
             Spacer(minLength: 0)
-            maChip("MA5", ChartPalette.ma5)
-            maChip("MA10", ChartPalette.ma10)
-            maChip("MA20", ChartPalette.ma20)
-            maChip("MA60", ChartPalette.ma60)
+            maChip("MA5", 5, ChartPalette.ma5)
+            maChip("MA10", 10, ChartPalette.ma10)
+            maChip("MA20", 20, ChartPalette.ma20)
+            maChip("MA60", 60, ChartPalette.ma60)
             Button { showVolume.toggle() } label: {
                 Image(systemName: showVolume ? "chart.bar.fill" : "chart.bar").font(.caption)
             }.buttonStyle(.bordered)
@@ -1066,11 +1144,20 @@ struct LandscapeChartView: View {
         .padding(.horizontal, 12).padding(.vertical, 6)
     }
 
-    private func maChip(_ title: String, _ color: Color) -> some View {
-        HStack(spacing: 3) {
-            RoundedRectangle(cornerRadius: 1).fill(color).frame(width: 10, height: 3)
-            Text(title).scaledFont(9, weight: .semibold).foregroundStyle(color)
+    private func maChip(_ title: String, _ window: Int, _ color: Color) -> some View {
+        let on = maVisible.contains(window)
+        return Button {
+            Haptics.selection()
+            if on { maVisible.remove(window) } else { maVisible.insert(window) }
+            MAVisibility.write(maVisible)
+        } label: {
+            HStack(spacing: 3) {
+                RoundedRectangle(cornerRadius: 1).fill(on ? color : Color.secondary.opacity(0.3)).frame(width: 10, height: 3)
+                Text(title).scaledFont(9, weight: .semibold).foregroundStyle(on ? color : Color.secondary)
+            }.opacity(on ? 1 : 0.55)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title)显示开关，当前\(on ? "打开" : "关闭")")
     }
 
     private func candleChart(height: CGFloat) -> some View {
@@ -1095,28 +1182,43 @@ struct LandscapeChartView: View {
                                   width: .fixed(bodyWidth))
                         .foregroundStyle(candleColor)
                 }
-                ForEach(average(5, source: visibleBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
-                        .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 2))
+                if maVisible.contains(5) {
+                    ForEach(average(5, source: visibleBars)) { point in
+                        LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
+                            .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 2))
+                    }
                 }
-                ForEach(average(10, source: visibleBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
-                        .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 2))
+                if maVisible.contains(10) {
+                    ForEach(average(10, source: visibleBars)) { point in
+                        LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
+                            .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 2))
+                    }
                 }
-                ForEach(average(20, source: visibleBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
-                        .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 2))
+                if maVisible.contains(20) {
+                    ForEach(average(20, source: visibleBars)) { point in
+                        LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
+                            .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 2))
+                    }
                 }
-                ForEach(average(60, source: visibleBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
-                        .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 2))
+                if maVisible.contains(60) {
+                    ForEach(average(60, source: visibleBars)) { point in
+                        LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
+                            .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 2))
+                    }
                 }
             }
             // 横屏同样显式跟随可见窗口
             .chartYScale(domain: yDomain(for: visibleBars))
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 8)) { _ in
-                    AxisValueLabel().font(.system(size: 10)).foregroundStyle(.secondary)
+                AxisMarks(values: xAxisDates(visibleBars)) { value in
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                    AxisValueLabel {
+                        if let date = value.as(String.self) {
+                            Text(xAxisLabel(date, visibleBars))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             .chartYAxis {

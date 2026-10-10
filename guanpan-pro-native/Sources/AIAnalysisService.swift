@@ -70,6 +70,11 @@ enum AIAnalysisService {
         try await request(config: config, prompt: portfolioPrompt(portfolio))
     }
 
+    /// 通用对话入口：供「账户智能画像」等本机规则先行、可选大模型深挖的功能复用。
+    static func chat(config: AIAnalysisConfig, prompt: String) async throws -> String {
+        try await request(config: config, prompt: prompt)
+    }
+
     static func analyzeInstrument(config: AIAnalysisConfig, holding: Holding,
                                   quote: Quote?, bars: [DailyBar],
                                   intradayBars: [IntradayBar] = [],
