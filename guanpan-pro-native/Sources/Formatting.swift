@@ -5,6 +5,18 @@ import Foundation
 /// 在 CI 所用的 Swift 版本上，对 Decimal 或带标签的字符串插值无法推断基类型而编译失败。
 /// 这里改用 NumberFormatter 实现，Double / Decimal / Int 均可直接调用，行为保持一致。
 extension BinaryFloatingPoint {
+    /// 涨跌的方向符号。
+    ///
+    /// 国内是红涨绿跌，但**只靠颜色**区分时红绿色盲（男性约 8%、女性约 0.5%）完全读不出来，
+    /// 打印 / 截图转灰度后也一样。所以涨跌数字旁边恒定带一个方向符号，
+    /// 颜色之外还能靠形状分辨。0 用「—」而不是空格，避免和「没数据」混淆。
+    func directionMark() -> String {
+        let v = Double(self)
+        if v > 0 { return "▲" }
+        if v < 0 { return "▼" }
+        return "—"
+    }
+
     func cny(_ digits: Int = 2) -> String {
         let nf = NumberFormatter()
         nf.numberStyle = .currency

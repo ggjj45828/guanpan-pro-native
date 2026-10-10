@@ -608,6 +608,14 @@ final class PortfolioStore: ObservableObject {
         return await performQuoteRefresh(captureIntraday: false)
     }
 
+    /// 供 `.refreshable` 使用。
+    /// 原来的 `refreshQuotes()` 是「发起后立刻返回」，下拉转圈会瞬间消失，看着像没刷新。
+    /// 这里 await 到真正拿完（或失败）为止，转圈时长与真实耗时一致。
+    func refreshQuotesAndWait() async {
+        guard !isRefreshingQuotes else { return }
+        _ = await performQuoteRefresh(captureIntraday: true)
+    }
+
     private func performQuoteRefresh(captureIntraday: Bool) async -> Bool {
         // Tencent's stock quote endpoint does not return OTC fund NAVs. Never send
         // fund codes there or present a stock quote as a fund valuation.
@@ -778,6 +786,17 @@ final class PortfolioStore: ObservableObject {
         guard let timestamp else { return false }
         let age = now.timeIntervalSince(timestamp)
         return age >= -90 && age <= 180
+    }
+
+    /// 供 `.refreshable` 用：净值刷新是「发起后立即返回 + 内部 Task」，
+    /// 这里等它真正跑完，下拉转圈才不会一闪而过。轮询 0.2s，最多等 30s。
+    func refreshFundNAVsAndWait() async {
+        guard !isRefreshingFunds else { return }
+        refreshFundNAVs()
+        let deadline = Date().addingTimeInterval(30)
+        while isRefreshingFunds, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
     }
 
     func refreshFundNAVs() {

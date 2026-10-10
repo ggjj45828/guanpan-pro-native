@@ -51,6 +51,7 @@ struct ContentView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
     /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
@@ -70,7 +71,7 @@ struct ContentView: View {
             // 原先的 `if backgroundRevision >= 0` 恒为真且未参与视图构建，导致「换背景没反应」。
             backgroundLayer
                 .id(backgroundRevision)
-            if horizontalSizeClass == .regular {
+            if useSplitLayout {
                 padSplitRoot
             } else {
                 phoneTabRoot
@@ -99,7 +100,15 @@ struct ContentView: View {
 
     private var currentTheme: AppTheme { AppTheme.palette(for: store.appearance) }
 
-    // MARK: - 双形态根容器（iPhone 用 TabView，iPad / 宽视图用分栏）
+    // MARK: - 双形态根容器（iPhone 用 TabView，iPad 用分栏）
+
+    /// 不能只判 `horizontalSizeClass == .regular`：
+    /// iPhone Plus / Pro Max 横屏时横向也是 .regular，会被误判成 iPad，
+    /// 结果手机上出现一条 200–300pt 的常驻侧栏，内容区反而被挤成一条。
+    /// iPad 的特征是「横竖都是 .regular」，用两个条件同时成立来区分。
+    private var useSplitLayout: Bool {
+        horizontalSizeClass == .regular && verticalSizeClass == .regular
+    }
 
     @ViewBuilder private var phoneTabRoot: some View {
         TabView {
@@ -364,7 +373,8 @@ struct DashboardView: View {
                         HStack {
                             Text("平均涨跌幅（\(mood.count) 只）")
                             Spacer()
-                            Text((mood.average).pct(2))
+                            Text("\((mood.average).directionMark()) \((mood.average).pct(2))")
+                                .monospacedDigit()
                                 .foregroundStyle(mood.average >= 0 ? .red : .green)
                             Text(label).foregroundStyle(.secondary)
                         }
@@ -418,6 +428,7 @@ struct DashboardView: View {
             }.navigationTitle("总览")
             .navigationBarTitleDisplayMode(.large)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
+            .refreshable { await store.refreshQuotesAndWait() }
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("添加自选", systemImage: "plus") { showAdd = true }
@@ -524,8 +535,10 @@ struct DashboardView: View {
                         Text(q.price > 0 ? q.price.num(3) : "--")
                             .font(.system(.title3, design: .rounded, weight: .semibold))
                             .monospacedDigit()
-                        Text((q.changePct).pct(2))
+                        // 方向符号：色盲 / 灰度打印时也能分辨涨跌，不单靠红绿
+                        Text("\((q.changePct).directionMark()) \((q.changePct).pct(2))")
                             .font(.caption.weight(.semibold))
+                            .monospacedDigit()
                             .foregroundStyle(accent)
                     }
                 }
@@ -1005,6 +1018,11 @@ struct HoldingsView: View {
                 }
             }
             .navigationTitle(title)
+            .refreshable {
+                // 基金页下拉刷净值，ETF/证券页下拉刷行情，各自对应页面上真正会变的东西
+                if kind == .fund { await store.refreshFundNAVsAndWait() }
+                else { await store.refreshQuotesAndWait() }
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if kind == .fund {
@@ -2224,7 +2242,7 @@ struct AssetsView: View {
                             }
                             Spacer(minLength: 8)
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text(store.hasDayPnL ? (store.dayPnL).cny() : "--")
+                                Text(store.hasDayPnL ? "\((store.dayPnL).directionMark()) \((store.dayPnL).cny())" : "--")
                                     .scaledFont(15, weight: .semibold, design: .rounded)
                                     .monospacedDigit()
                                     .foregroundStyle(dayTone)
@@ -2340,6 +2358,7 @@ struct AssetsView: View {
                     }
                 }
             }.navigationTitle("资产")
+                .refreshable { await store.refreshQuotesAndWait() }
                 .onAppear {
                     if selectedSnapshotMonth.isEmpty { selectedSnapshotMonth = store.snapshotMonths.first ?? "" }
                     if selectedLedgerMonth.isEmpty { selectedLedgerMonth = store.ledgerMonths.first ?? "" }

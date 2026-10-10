@@ -27,7 +27,11 @@ targets:
         CFBundleVersion: "2"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
-        UILaunchScreen: {}
+        # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。
+        # 指向 Assets 里的 LaunchBackground（浅色近白 / 深色近墨蓝），
+        # 和图标同色系，冷启动看起来是连贯的。
+        UILaunchScreen:
+          UIColorName: LaunchBackground
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -41,6 +45,10 @@ targets:
         UIBackgroundModes:
           - fetch
         NSLocalNetworkUsageDescription: "连接你在设置中填写的 NAS 地址，用于同步观盘 Pro 本机账本和行情历史缓存。"
+        # 设置页选背景图用了 PhotosPicker。虽然 PHPicker 本身免授权，
+        # 但缺这个 key 时 iOS 会直接终止访问而不是弹授权框。
+        NSPhotoLibraryUsageDescription: "用于选择一张图片作为观盘 Pro 的 App 背景。"
+        NSPhotoLibraryAddUsageDescription: "用于把导出的账本备份文件保存到你的相册或文件夹。"
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSAllowsArbitraryLoads: true
