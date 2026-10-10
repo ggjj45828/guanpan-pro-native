@@ -173,7 +173,12 @@ struct QuantitativeEngineView: View {
             else if momentum <= -0.02 { raw -= 1; notes.append("5 日动量为负") }
         }
         if closes.count >= 15 {
-            let delta = (1..<15).map { closes[closes.count - 15 + $0] - closes[closes.count - 15 + $0 - 1] }
+            // 展开成显式循环：原式 map + 多重下标运算会让类型检查超时。
+            let rsiBase = closes.count - 15
+            var delta: [Double] = []
+            for offset in 1..<15 {
+                delta.append(closes[rsiBase + offset] - closes[rsiBase + offset - 1])
+            }
             let gain = delta.map { max(0, $0) }.reduce(0, +) / 14
             let loss = delta.map { max(0, -$0) }.reduce(0, +) / 14
             let rsi = loss == 0 ? (gain == 0 ? 50 : 100) : 100 - 100 / (1 + gain / loss)

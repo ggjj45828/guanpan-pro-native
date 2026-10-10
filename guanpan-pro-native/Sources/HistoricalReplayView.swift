@@ -175,16 +175,21 @@ struct HistoricalReplayView: View {
         }
         if cash < -0.01 || !cash.isFinite { cashKnown = false }; cash = max(0, cash)
 
-        let rows = positions.values.filter { $0.quantity > 1e-8 }.map { p -> Position in
+        // 拆成 filter / map / sorted 三步并显式标注类型，避免链式表达式类型检查超时。
+        let activePositions: [Position] = positions.values.filter { $0.quantity > 1e-8 }
+        let mappedPositions: [Position] = activePositions.map { p -> Position in
             let pricePoint: (Double, String)?
             if p.kind == .fund {
-                pricePoint = store.data.fundNAVHistory.filter { $0.code == p.code && $0.date <= target }.max { $0.date < $1.date }.map { ($0.nav, $0.date) }
+                let candidates = store.data.fundNAVHistory.filter { $0.code == p.code && $0.date <= target }
+                pricePoint = candidates.max { $0.date < $1.date }.map { ($0.nav, $0.date) }
             } else {
-                pricePoint = store.dailyBars[p.code]?.filter { $0.date <= target }.max { $0.date < $1.date }.map { ($0.close, $0.date) }
+                let candidates = (store.dailyBars[p.code] ?? []).filter { $0.date <= target }
+                pricePoint = candidates.max { $0.date < $1.date }.map { ($0.close, $0.date) }
             }
             return Position(key: key(p.kind, p.code), code: p.code, name: p.name, kind: p.kind,
                 quantity: p.quantity, cost: p.cost, price: pricePoint?.0, priceDate: pricePoint?.1)
-        }.sorted { $0.kind == $1.kind ? $0.name < $1.name : $0.kind == .etf }
+        }
+        let rows: [Position] = mappedPositions.sorted { $0.kind == $1.kind ? $0.name < $1.name : $0.kind == .etf }
 
         let ledgerToDate = store.data.ledger.filter { $0.kind != .fund && format($0.date) <= target }
         let fundToDate = store.data.fundTransactions.filter { $0.effectiveDate <= target && $0.status == .confirmed }
@@ -215,9 +220,9 @@ struct HistoricalReplayView: View {
             + laterFundTrades.filter { $0.side == .buy && !$0.isBackfill }.reduce(0) { $0 + $1.amount + (($1.isAutomaticDCA ?? false) ? 0 : $1.fee) }
         let laterSells = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target && $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
             + laterFundTrades.filter { $0.side == .sell && $0.status == .confirmed }.reduce(0) { $0 + max(0, $1.amount - $1.fee) }
-        if rows.contains(where: { position in
-            position.kind == .fund && store.data.fundTransactions.contains(where: { $0.code == position.code && $0.isBackfill })
-        }) {
+        // 先在闭包外算出补录基金代码集合，避免嵌套 contains 闭包让类型检查超时。
+        let backfillFundCodes = Set(store.data.fundTransactions.filter { $0.isBackfill }.map { $0.code })
+        if rows.contains(where: { $0.kind == .fund && backfillFundCodes.contains($0.code) }) {
             warnings.append("基金历史起点补录只提供份额基线，未记录的早期申购成本无法精确还原。")
         }
         return Replay(positions: rows, cash: cash, cashKnown: cashKnown, snapshot: snapshot,

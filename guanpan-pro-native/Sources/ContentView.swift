@@ -415,189 +415,7 @@ struct HoldingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                if kind == .etf {
-                    Section("账户提示") {
-                        Button {
-                            showPortfolioAdvice = true
-                        } label: {
-                            Label("查看账户决策提示", systemImage: "lightbulb")
-                        }
-                        Text("汇总仓位上限、现金占比和基金定期报告重叠提示；只作记录核对，不预测涨跌或自动交易。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                if holdings.isEmpty {
-                    ContentUnavailableView("暂无\(title)", systemImage: "tray", description: Text("点右上角添加持仓。"))
-                }
-                ForEach(holdings.filter { $0.quantity > 0 || kind == .fund }) { h in
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack { Text(h.name).font(.headline); Spacer(); Text((h.marketValue).cny()).font(.headline) }
-                        Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3)))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        HStack { Text("成本额 \((h.quantity * store.displayedCost(for: h)).cny())"); Spacer(); let pnl = store.holdingPnL(h); Text((pnl).cny()).foregroundStyle(pnl >= 0 ? .red : .green) }
-                            .font(.subheadline)
-                        if kind == .fund, let latest = store.data.fundNAVHistory.filter({ $0.code == h.code }).max(by: { $0.date < $1.date }) {
-                            let previous = store.data.fundNAVHistory.filter { $0.code == h.code && $0.date < latest.date }.max(by: { $0.date < $1.date })
-                            if let previous {
-                                let change = (latest.nav - previous.nav) * h.quantity
-                                Text("\(latest.date) 近一期净值变化 · 按当前份额折算 \((change).cny())")
-                                    .font(.caption).foregroundStyle(change >= 0 ? .red : .green)
-                            } else {
-                                Text("最新净值日期：\(latest.date)").font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        HStack {
-                            Button("买入 / 卖出") { tradeTarget = h }
-                            Spacer()
-                            if kind == .fund {
-                                if h.quantity > 0 && !store.data.fundTransactions.contains(where: { $0.code == h.code && $0.side == .buy }) {
-                                    Button("补录起点") { backfillTarget = h }
-                                }
-                                Button("定投") { dcaTarget = h }
-                                Menu("基金工具") {
-                                    Button("净值走势") { fundHistoryTarget = h }
-                                    Button("赎回费率") { feePolicyTarget = h }
-                                    Button("流水核对") { fundReconciliationTarget = h }
-                                }
-                            } else {
-                                Button("日K与指标") { marketChartTarget = h }
-                            }
-                            Button("编辑") { editTarget = h }
-                        }.buttonStyle(.borderless).font(.subheadline)
-                    }.padding(.vertical, 5)
-                    .swipeActions(edge: .trailing) {
-                        Button("删除", role: .destructive) { store.removeHolding(h) }
-                        Button("编辑") { editTarget = h }.tint(.blue)
-                    }
-                }
-                if kind == .fund {
-                    Section("定投与分析") {
-                        Button("基金量化体检") { showFundQuant = true }
-                        Button("更新已公布净值") { store.refreshFundNAVs() }.disabled(store.isRefreshingFunds)
-                        Button("基金日收益日历") { showFundCalendar = true }
-                        Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
-                        Text(store.fundDCAStatus).font(.footnote).foregroundStyle(.secondary)
-                        Text("先显示持仓，再显示定投和净值工具。基金页面只展示已公布净值。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !store.data.legacyDCAEvents.isEmpty {
-                        Section("旧版定投档案") {
-                            ForEach(store.data.legacyDCAEvents.sorted { $0.dueDate > $1.dueDate }) { event in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(event.name) · \(event.code)")
-                                    Text("计划日 \(event.dueDate) · \((event.amount).cny()) · \(legacyDCAStatus(event.status))")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-                Section(kind == .fund ? "最近基金流水" : "最近交易流水") {
-                    if kind == .fund {
-                        let codes = Set(holdings.map(\.code))
-                        let allEntries = store.data.fundTransactions.filter { codes.contains($0.code) }
-                            .sorted { $0.requestDate > $1.requestDate }
-                        let recentEntries = Array(allEntries.prefix(10))
-                        let recentIDs = Set(recentEntries.map(\.id))
-                        let pendingFeeChecks = allEntries.filter { $0.side == .sell && $0.feeWasEstimated == true && !recentIDs.contains($0.id) }
-                        let entries = pendingFeeChecks + recentEntries
-                        if entries.isEmpty { Text("暂无基金流水").foregroundStyle(.secondary) }
-                        ForEach(Array(entries)) { trade in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(fundTransactionLabel(trade))
-                                    Text("\(trade.effectiveDate) · \((trade.quantity).num(4)) 份\(trade.status == .pending ? " · 待确认" : "")")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if trade.side == .sell && trade.feeWasEstimated == true {
-                                    Button("核对费用") { feeReconciliationTarget = trade }
-                                        .font(.caption)
-                                }
-                                Text((trade.amount).cny())
-                            }.contextMenu {
-                                if trade.side == .sell && trade.feeWasEstimated == true {
-                                    Button("核对实际赎回费", systemImage: "checkmark.seal") { feeReconciliationTarget = trade }
-                                }
-                                if store.isLatestLedgerFundTransaction(trade) {
-                                    Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
-                                        do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                                        catch { undoTradeMessage = error.localizedDescription }
-                                    }
-                                }
-                            }.swipeActions(edge: .trailing) {
-                                if store.isLatestLedgerFundTransaction(trade) {
-                                    Button("撤销", role: .destructive) {
-                                        do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                                        catch { undoTradeMessage = error.localizedDescription }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        let entries = store.data.ledger.filter { e in
-                            holdings.contains(where: { $0.code == e.code && (e.kind == nil || e.kind == $0.kind) })
-                        }.suffix(10).reversed()
-                        if entries.isEmpty { Text("暂无交易流水").foregroundStyle(.secondary) }
-                        ForEach(Array(entries)) { e in
-                            HStack {
-                                Text(e.name); Spacer()
-                                Text(e.side == .buy ? "买入" : "卖出")
-                                Text((e.gross).cny())
-                            }.font(.caption)
-                                .contextMenu {
-                                    if store.data.ledger.last?.id == e.id {
-                                        Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
-                                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                                            catch { undoTradeMessage = error.localizedDescription }
-                                        }
-                                    }
-                                }.swipeActions(edge: .trailing) {
-                                    if store.data.ledger.last?.id == e.id {
-                                        Button("撤销", role: .destructive) {
-                                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                                            catch { undoTradeMessage = error.localizedDescription }
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                }
-                if kind == .fund {
-                    Section("已移出持仓 · 左滑可删除历史") {
-                        let activeCodes = Set(holdings.map(\.code))
-                        let archivedCodes = Set(store.data.fundTransactions.map(\.code)).subtracting(activeCodes).sorted()
-                        if archivedCodes.isEmpty { Text("暂无已移出持仓的基金历史").foregroundStyle(.secondary) }
-                        ForEach(archivedCodes, id: \.self) { code in
-                            let trades = store.data.fundTransactions.filter { $0.code == code }
-                            let name = trades.first(where: { !$0.name.isEmpty })?.name ?? code
-                            let realized = store.data.ledger.filter { $0.code == code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
-                                + trades.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
-                            Button { archivedFundTarget = ArchivedFundItem(code: code, name: name) } label: {
-                                HStack {
-                                    VStack(alignment: .leading) { Text(name); Text("\(trades.count) 笔流水 · 历史保留").font(.caption).foregroundStyle(.secondary) }
-                                    Spacer(); Text((realized).cny())
-                                }
-                            }.buttonStyle(.plain)
-                                .swipeActions(edge: .trailing) {
-                                    Button("删除历史", role: .destructive) { deleteArchivedFundCode = code }
-                                }
-                        }
-                    }
-                }
-            }
-            .navigationTitle(title)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if kind == .fund {
-                        Button { store.refreshFundNAVs() } label: { Image(systemName: "arrow.clockwise") }
-                            .disabled(store.isRefreshingFunds)
-                    }
-                    Button { showAdd = true } label: { Image(systemName: "plus") }
-                }
-            }
+        listContent
             .sheet(isPresented: $showAdd) { HoldingEditor(kind: kind) }
             .sheet(item: $editTarget) { HoldingEditor(kind: kind, initial: $0) }
             .sheet(item: $tradeTarget) { TradeEditor(holding: $0) }
@@ -625,6 +443,233 @@ struct HoldingsView: View {
                 Text("此操作会删除该只已移出基金的流水和净值历史，不会删除当前持仓；操作无法直接撤回，请先确认备份。")
             }
             .onAppear { if kind == .fund { store.maybeRefreshFundNAVsAfterMarketClose() } }
+    }
+
+    /// 列表主体单独成表达式：与末尾十余个 sheet / alert 修饰符分开做类型检查，
+    /// 否则整条 body 表达式树过大，编译报 "unable to type-check in reasonable time"。
+    private var listContent: some View {
+        NavigationStack {
+            List {
+                accountHintSection
+                if holdings.isEmpty {
+                    ContentUnavailableView("暂无\(title)", systemImage: "tray", description: Text("点右上角添加持仓。"))
+                }
+                holdingRowList
+                if kind == .fund {
+                    fundToolsSection
+                }
+                recentTradesSection
+                if kind == .fund {
+                    archivedFundSection
+                }
+            }
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if kind == .fund {
+                        Button { store.refreshFundNAVs() } label: { Image(systemName: "arrow.clockwise") }
+                            .disabled(store.isRefreshingFunds)
+                    }
+                    Button { showAdd = true } label: { Image(systemName: "plus") }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var accountHintSection: some View {
+        if kind == .etf {
+            Section("账户提示") {
+                Button {
+                    showPortfolioAdvice = true
+                } label: {
+                    Label("查看账户决策提示", systemImage: "lightbulb")
+                }
+                Text("汇总仓位上限、现金占比和基金定期报告重叠提示；只作记录核对，不预测涨跌或自动交易。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var holdingRowList: some View {
+        ForEach(holdings.filter { $0.quantity > 0 || kind == .fund }) { h in
+            holdingRow(h)
+        }
+    }
+
+    @ViewBuilder private func holdingRow(_ h: Holding) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack { Text(h.name).font(.headline); Spacer(); Text((h.marketValue).cny()).font(.headline) }
+            Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3)))")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("成本额 \((h.quantity * store.displayedCost(for: h)).cny())")
+                Spacer()
+                let pnl = store.holdingPnL(h)
+                Text((pnl).cny()).foregroundStyle(pnl >= 0 ? .red : .green)
+            }
+            .font(.subheadline)
+            if kind == .fund, let latest = store.data.fundNAVHistory.filter({ $0.code == h.code }).max(by: { $0.date < $1.date }) {
+                let previous = store.data.fundNAVHistory.filter { $0.code == h.code && $0.date < latest.date }.max(by: { $0.date < $1.date })
+                if let previous {
+                    let change = (latest.nav - previous.nav) * h.quantity
+                    Text("\(latest.date) 近一期净值变化 · 按当前份额折算 \((change).cny())")
+                        .font(.caption).foregroundStyle(change >= 0 ? .red : .green)
+                } else {
+                    Text("最新净值日期：\(latest.date)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Button("买入 / 卖出") { tradeTarget = h }
+                Spacer()
+                if kind == .fund {
+                    if h.quantity > 0 && !store.data.fundTransactions.contains(where: { $0.code == h.code && $0.side == .buy }) {
+                        Button("补录起点") { backfillTarget = h }
+                    }
+                    Button("定投") { dcaTarget = h }
+                    Menu("基金工具") {
+                        Button("净值走势") { fundHistoryTarget = h }
+                        Button("赎回费率") { feePolicyTarget = h }
+                        Button("流水核对") { fundReconciliationTarget = h }
+                    }
+                } else {
+                    Button("日K与指标") { marketChartTarget = h }
+                }
+                Button("编辑") { editTarget = h }
+            }.buttonStyle(.borderless).font(.subheadline)
+        }.padding(.vertical, 5)
+        .swipeActions(edge: .trailing) {
+            Button("删除", role: .destructive) { store.removeHolding(h) }
+            Button("编辑") { editTarget = h }.tint(.blue)
+        }
+    }
+
+    @ViewBuilder private var fundToolsSection: some View {
+        Section("定投与分析") {
+            Button("基金量化体检") { showFundQuant = true }
+            Button("更新已公布净值") { store.refreshFundNAVs() }.disabled(store.isRefreshingFunds)
+            Button("基金日收益日历") { showFundCalendar = true }
+            Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
+            Text(store.fundDCAStatus).font(.footnote).foregroundStyle(.secondary)
+            Text("先显示持仓，再显示定投和净值工具。基金页面只展示已公布净值。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if !store.data.legacyDCAEvents.isEmpty {
+            Section("旧版定投档案") {
+                ForEach(store.data.legacyDCAEvents.sorted { $0.dueDate > $1.dueDate }) { event in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(event.name) · \(event.code)")
+                        Text("计划日 \(event.dueDate) · \((event.amount).cny()) · \(legacyDCAStatus(event.status))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var recentTradesSection: some View {
+        if kind == .fund {
+            fundTradesSection
+        } else {
+            ledgerTradesSection
+        }
+    }
+
+    @ViewBuilder private var fundTradesSection: some View {
+        Section("最近基金流水") {
+            let codes = Set(holdings.map(\.code))
+            let allEntries = store.data.fundTransactions.filter { codes.contains($0.code) }
+                .sorted { $0.requestDate > $1.requestDate }
+            let recentEntries = Array(allEntries.prefix(10))
+            let recentIDs = Set(recentEntries.map(\.id))
+            let pendingFeeChecks = allEntries.filter { $0.side == .sell && $0.feeWasEstimated == true && !recentIDs.contains($0.id) }
+            let entries = pendingFeeChecks + recentEntries
+            if entries.isEmpty { Text("暂无基金流水").foregroundStyle(.secondary) }
+            ForEach(Array(entries)) { trade in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(fundTransactionLabel(trade))
+                        Text("\(trade.effectiveDate) · \((trade.quantity).num(4)) 份\(trade.status == .pending ? " · 待确认" : "")")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if trade.side == .sell && trade.feeWasEstimated == true {
+                        Button("核对费用") { feeReconciliationTarget = trade }
+                            .font(.caption)
+                    }
+                    Text((trade.amount).cny())
+                }.contextMenu {
+                    if trade.side == .sell && trade.feeWasEstimated == true {
+                        Button("核对实际赎回费", systemImage: "checkmark.seal") { feeReconciliationTarget = trade }
+                    }
+                    if store.isLatestLedgerFundTransaction(trade) {
+                        Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
+                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
+                            catch { undoTradeMessage = error.localizedDescription }
+                        }
+                    }
+                }.swipeActions(edge: .trailing) {
+                    if store.isLatestLedgerFundTransaction(trade) {
+                        Button("撤销", role: .destructive) {
+                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
+                            catch { undoTradeMessage = error.localizedDescription }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var ledgerTradesSection: some View {
+        Section("最近交易流水") {
+            let entries = store.data.ledger.filter { e in
+                holdings.contains(where: { $0.code == e.code && (e.kind == nil || e.kind == $0.kind) })
+            }.suffix(10).reversed()
+            if entries.isEmpty { Text("暂无交易流水").foregroundStyle(.secondary) }
+            ForEach(Array(entries)) { e in
+                HStack {
+                    Text(e.name); Spacer()
+                    Text(e.side == .buy ? "买入" : "卖出")
+                    Text((e.gross).cny())
+                }.font(.caption)
+                    .contextMenu {
+                        if store.data.ledger.last?.id == e.id {
+                            Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
+                                do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
+                                catch { undoTradeMessage = error.localizedDescription }
+                            }
+                        }
+                    }.swipeActions(edge: .trailing) {
+                        if store.data.ledger.last?.id == e.id {
+                            Button("撤销", role: .destructive) {
+                                do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
+                                catch { undoTradeMessage = error.localizedDescription }
+                            }
+                        }
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder private var archivedFundSection: some View {
+        Section("已移出持仓 · 左滑可删除历史") {
+            let activeCodes = Set(holdings.map(\.code))
+            let archivedCodes = Set(store.data.fundTransactions.map(\.code)).subtracting(activeCodes).sorted()
+            if archivedCodes.isEmpty { Text("暂无已移出持仓的基金历史").foregroundStyle(.secondary) }
+            ForEach(archivedCodes, id: \.self) { code in
+                let trades = store.data.fundTransactions.filter { $0.code == code }
+                let name = trades.first(where: { !$0.name.isEmpty })?.name ?? code
+                let realized = store.data.ledger.filter { $0.code == code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
+                    + trades.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
+                Button { archivedFundTarget = ArchivedFundItem(code: code, name: name) } label: {
+                    HStack {
+                        VStack(alignment: .leading) { Text(name); Text("\(trades.count) 笔流水 · 历史保留").font(.caption).foregroundStyle(.secondary) }
+                        Spacer(); Text((realized).cny())
+                    }
+                }.buttonStyle(.plain)
+                    .swipeActions(edge: .trailing) {
+                        Button("删除历史", role: .destructive) { deleteArchivedFundCode = code }
+                    }
+            }
         }
     }
 }
@@ -3407,292 +3452,25 @@ struct SettingsView: View {
     @State private var backgroundPhoto: PhotosPickerItem?
     @State private var backgroundMessage = ""
     var body: some View {
-        NavigationStack {
-            Form {
-                Picker("外观主题", selection: Binding(get: { store.appearance }, set: { store.appearance = $0 })) {
-                    Text("跟随系统").tag(AppAppearance.system)
-                    Section("深色主题") {
-                        Text("深空灰").tag(AppAppearance.dark); Text("纯黑 OLED").tag(AppAppearance.oled)
-                        Text("午夜蓝").tag(AppAppearance.blue); Text("松墨绿").tag(AppAppearance.green)
-                        Text("暗夜紫").tag(AppAppearance.purple); Text("樱花粉").tag(AppAppearance.sakura)
-                        Text("赛博朋克").tag(AppAppearance.cyber); Text("琥珀金").tag(AppAppearance.amber)
-                        Text("拿铁棕").tag(AppAppearance.coffee); Text("石墨灰").tag(AppAppearance.graphite)
-                    }
-                    Section("浅色主题") {
-                        Text("明亮白").tag(AppAppearance.light); Text("纸白").tag(AppAppearance.paper)
-                        Text("薄荷").tag(AppAppearance.mint)
-                    }
-                }
-                Section("网页内置图片主题") {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                        ForEach(NativeBackgroundPreset.allCases) { preset in
-                            Button {
-                                NativeBackgroundStore.select(preset)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Image(preset.assetName).resizable().scaledToFill()
-                                        .frame(height: 82).frame(maxWidth: .infinity).clipped()
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    HStack(spacing: 5) {
-                                        Text(preset.title).lineLimit(1)
-                                        Spacer(minLength: 0)
-                                        if NativeBackgroundStore.selectedPreset == preset {
-                                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                                        }
-                                    }.font(.caption)
-                                }
-                                .padding(7)
-                                .background(NativeBackgroundStore.selectedPreset == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    Text("已迁入网页的四张内置背景图；选择后会作为原生背景并纳入原生 JSON 备份。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("网页渐变背景") {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                        ForEach(NativeGradientPreset.allCases) { preset in
-                            Button {
-                                NativeBackgroundStore.select(preset)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    LinearGradient(colors: preset.hexColors.map { hex in
-                                        Color(red: Double((hex >> 16) & 0xff) / 255,
-                                              green: Double((hex >> 8) & 0xff) / 255,
-                                              blue: Double(hex & 0xff) / 255)
-                                    }, startPoint: .topLeading, endPoint: .bottomTrailing)
-                                    .frame(height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
-                                    HStack {
-                                        Text(preset.title).font(.caption)
-                                        Spacer()
-                                        if NativeBackgroundStore.selectedGradient == preset {
-                                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                                        }
-                                    }
-                                }
-                                .padding(7)
-                                .background(NativeBackgroundStore.selectedGradient == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                            }.buttonStyle(.plain)
-                        }
-                    }
-                    Text("已迁入网页的渐变背景。更换背景不会改变外观主题；自定义图片和内置图片仍可单独选择。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("自定义背景图") {
-                    PhotosPicker(selection: $backgroundPhoto, matching: .images) {
-                        Label("从照片中选择背景", systemImage: "photo")
-                    }
-                    if NativeBackgroundStore.load() != nil || NativeBackgroundStore.selectedGradient != nil {
-                        Button("清除背景", role: .destructive) { NativeBackgroundStore.remove() }
-                    }
-                    if !backgroundMessage.isEmpty { Text(backgroundMessage).font(.footnote).foregroundStyle(.secondary) }
-                    VStack(alignment: .leading) {
-                        HStack { Text("背景透明度"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
-                        Slider(value: $backgroundOverlayOpacity, in: 0.08...0.82, step: 0.02)
-                    }
-                    Text("自定义图片保存在本机并自动压缩至 1800 像素以内；原网页备份不含当前背景选择，原生 JSON 备份会包含背景图。iOS 状态栏颜色由系统按深浅外观自动适配。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("现金账本") {
-                    LabeledContent("当前参考现金", value: (store.data.cash).cny())
-                    Text("现金余额请在“资产”页记录转入/转出，保留现金流历史，避免影响快照收益计算。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Toggle("交易默认联动现金", isOn: Binding(get: { store.data.cashLinkedByDefault }, set: { store.data.cashLinkedByDefault = $0; store.save(label: "修改账本或设置") }))
-                }
-                Section("交易所休市日") {
-                    Text("每行填写一个日期（YYYY-MM-DD）。自定义日期会随原生备份和 NAS 同步；2026 年内置休市安排已载入。后续年份请按交易所公告补充。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    TextEditor(text: $marketHolidayText).frame(minHeight: 110)
-                        .font(.system(.footnote, design: .monospaced))
-                    HStack {
-                        Button("保存休市日") { saveMarketHolidays() }
-                        Spacer()
-                        Button("清空自定义日期", role: .destructive) {
-                            marketHolidayText = ""; saveMarketHolidays()
-                        }
-                    }
-                    Text("当前自定义 \(store.data.customMarketHolidays.count) 天。ETF 日收益日历会将周末、已知休市日和日 K 覆盖区间内无交易记录的日期显示为“休市”。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("行情刷新") {
-                    Toggle("自动刷新行情", isOn: Binding(get: { store.data.quoteRefreshSeconds > 0 }, set: { store.data.quoteRefreshSeconds = $0 ? max(10, store.data.quoteRefreshSeconds) : 0; store.save(label: "修改账本或设置") }))
-                    Stepper(value: Binding(get: { max(10, store.data.quoteRefreshSeconds) }, set: { store.data.quoteRefreshSeconds = min(600, max(10, $0)); store.save(label: "修改账本或设置") }), in: 10...600, step: 10) {
-                        LabeledContent("自动刷新间隔", value: store.data.quoteRefreshSeconds > 0 ? "\(store.data.quoteRefreshSeconds) 秒" : "已关闭")
-                    }.disabled(store.data.quoteRefreshSeconds == 0)
-                    Toggle("行情刷新时记录分时点", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
-                    Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
-                    Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Toggle("允许系统安排后台刷新", isOn: $backgroundRefreshEnabled)
-                    Text("前台按设置间隔刷新；后台刷新由 iOS 自主安排，时间和频率不保证。后台只尝试更新行情并触发已授权的本地价格提醒，不采集分时、不运行影子盘，也不刷新基金净值。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("图表显示") {
-                    Picker("日线范围", selection: Binding(get: { store.data.dailyChartRangeDays }, set: { store.data.dailyChartRangeDays = $0; store.save(label: "修改账本或设置") })) {
-                        Text("60 日").tag(60); Text("120 日").tag(120); Text("250 日").tag(250); Text("640 日").tag(640)
-                    }
-                    Picker("分时价格线", selection: Binding(get: { store.data.intradayLineColorMode }, set: { store.data.intradayLineColorMode = $0; store.save(label: "修改账本或设置") })) {
-                        Text("自动强调色").tag(IntradayLineColorMode.automatic)
-                        Text("白色").tag(IntradayLineColorMode.white)
-                        Text("黑色").tag(IntradayLineColorMode.black)
-                        Text("涨红跌绿").tag(IntradayLineColorMode.upDown)
-                    }
-                }
-                Section("成本口径") {
-                    Picker("持仓成本显示", selection: Binding(get: { store.data.costAccountingMode }, set: { store.data.costAccountingMode = $0; store.save(label: "修改账本或设置") })) {
-                        Text("移动加权").tag(CostAccountingMode.weightedAverage)
-                        Text("摊薄（同花顺）").tag(CostAccountingMode.diluted)
-                    }
-                    Text("摊薄口径会把已实现盈亏折算到剩余份额的显示成本中；账本原始加权成本和每笔已实现盈亏保持不变。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("仓位提示") {
-                    Toggle("显示仓位类提示", isOn: Binding(get: { store.data.positionHintsEnabled }, set: { store.data.positionHintsEnabled = $0; store.save(label: "修改账本或设置") }))
-                    Stepper(value: Binding(get: { store.data.globalPositionLimitPercent }, set: { store.data.globalPositionLimitPercent = min(100, max(0, $0)); store.save(label: "修改账本或设置") }), in: 0...100, step: 1) {
-                        LabeledContent("全局单只上限", value: store.data.globalPositionLimitPercent > 0 ? "\((store.data.globalPositionLimitPercent).num(0))%" : "不限制")
-                    }.disabled(!store.data.positionHintsEnabled)
-                    Text("在工具页按持仓市值占总资产比例显示上限提示；现金占比达到 60% 或低于 5% 时也提示。只提示，不会自动交易。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("手动行情兜底") {
-                    Button("手动填价与恢复自动行情") { showManualPriceEditor = true }
-                    Text("可为自选和 ETF 持仓填写现价、昨收。手填价格会覆盖显示行情，不参与价格提醒或分时采集；清除后重新请求行情。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if !store.data.manualQuoteOverrides.isEmpty {
-                        LabeledContent("当前手填", value: "\(store.data.manualQuoteOverrides.count) 只")
-                    }
-                }
-                Section("数据备份") {
-                    Button("导出 JSON 备份") { showExporter = true }
-                    Button("导入 JSON 备份") { showImporter = true }
-                    Text("导入会整体替换原生版本地账本。可选择原生 JSON 备份或观盘 Pro 网页版完整 JSON 备份；新原生备份会保存自定义背景图，旧备份或网页备份不含背景图时保留当前背景。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("操作撤销") {
-                    Button("操作记录与撤销（最近 \(store.operationAudit.count) 条）") { showOperationHistory = true }
-                    Text("记录你主动执行的账本修改，最多保留 20 条；行情、净值和后台自动补记不进入记录，只能撤销最近一条。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("撤销上一次本机保存", role: .destructive) { confirmUndoLastSave = true }
-                        .disabled(!store.canUndoLastSave)
-                    Text("只保留一份上次保存前的账本副本。撤销会恢复整份账本，并同步到已配置的 NAS；行情或其他自动保存也可能成为撤销点。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("NAS 多设备同步") {
-                    HStack {
-                        TextField("服务器地址，例如 http://192.168.1.20:8788", text: $nasURL)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .keyboardType(.URL)
-                        PasteButton(payloadType: String.self) { values in
-                            if let value = values.first { nasURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        }
-                        .labelStyle(.iconOnly)
-                        .accessibilityLabel("从剪贴板粘贴 NAS 地址")
-                    }
-                    Text("当前配套 NAS 服务支持免口令同步，填写地址后即可测试、下载和上传。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    DisclosureGroup("兼容旧服务器（可选口令）") {
-                        HStack {
-                            TextField("服务器启用了 SYNC_TOKEN 时填写", text: $nasToken)
-                                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            PasteButton(payloadType: String.self) { values in
-                                if let value = values.first { nasToken = value.trimmingCharacters(in: .whitespacesAndNewlines) }
-                            }
-                            .labelStyle(.iconOnly)
-                            .accessibilityLabel("从剪贴板粘贴 NAS 口令")
-                        }
-                        Text("免口令服务器保持空白即可。已有口令只用于兼容你主动配置了 SYNC_TOKEN 的旧服务器。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Toggle("自动同步", isOn: $nasAutoSync)
-                    HStack {
-                        Button(checkingNAS ? "正在检查…" : "测试连接") { testNAS() }.disabled(checkingNAS)
-                        Spacer()
-                        Button("安全同步") { Task { await store.synchronizeNASSafely() } }
-                    }
-                    HStack {
-                        Button("从 NAS 下载") { confirmNASDownload = true }
-                        Spacer()
-                        Button("上传到 NAS") { confirmNASUpload = true }
-                    }
-                    Button(loadingNASHistory ? "正在读取历史版本…" : "查看 NAS 历史版本") { loadNASHistory() }
-                        .disabled(loadingNASHistory || restoringNAS)
-                    if !nasVersions.isEmpty {
-                        ForEach(nasVersions) { version in
-                            Button {
-                                selectedNASVersion = version
-                                confirmNASRestore = true
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text("版本 \(version.revision)")
-                                        Text(version.updatedAt).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "arrow.uturn.backward.circle")
-                                }
-                            }.disabled(restoringNAS)
-                        }
-                    }
-                    Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
-                    Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。原生空间为空时会先迁入 NAS 上可识别的网页账本；之后网页与原生各自同步，原生改动不会反向转换回网页格式。分时和日线缓存随原生账本同步。行情刷新和日线下载优先尝试 NAS 行情代理，失败时自动回退到 iPhone 直连。最近 10 个 NAS 历史版本可查看和恢复；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if !store.data.legacySettingsArchives.isEmpty {
-                    Section("旧版设置与计划备查") {
-                        ForEach(store.data.legacySettingsArchives) { item in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.title).font(.subheadline)
-                                if item.id == "ai" {
-                                    LegacyAIArchiveView(rawJSON: item.rawJSON)
-                                } else if item.id == "gridExperience" {
-                                    LegacyGridExperienceView(rawJSON: item.rawJSON)
-                                } else {
-                                    Text(item.rawJSON).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                        .lineLimit(5).textSelection(.enabled)
-                                }
-                            }
-                        }
-                        Text("旧版 AI 缓存和网格经验可展开回看，但不会伪装成当前分析或参与原生网格参数建议。旧版个人偏好、未来交易计划和原始休市设置保留作参考；有效自定义休市日期已迁入并在日历中生效。旧计划不会在原生版自动执行，网页 AI 凭证不会迁入。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                Section("系统通知") {
-                    Button(notificationBusy ? "正在请求权限…" : "开启并测试本地通知") { enableNotifications() }
-                        .disabled(notificationBusy)
-                    Text(notificationEnabled ? "已获得通知权限。价格提醒和数据源异常可发送本机通知；同类数据源提醒每天最多一次。行情后台监控和远程推送尚未实现。" : "通知权限由 iOS 管理。开启后可接收价格提醒和数据源异常通知。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
-            }
-            .navigationTitle("设置")
-            .keyboardDoneToolbar()
+        formContent
             .sheet(isPresented: $showOperationHistory) { OperationHistoryView() }
+            .sheet(isPresented: $showManualPriceEditor) { ManualQuoteOverrideEditor() }
             .onAppear {
                 BackgroundQuoteRefresh.configure(store: store)
-                if marketHolidayText.isEmpty { marketHolidayText = store.data.customMarketHolidays.sorted().joined(separator: "\n") }
+                if marketHolidayText.isEmpty {
+                    marketHolidayText = store.data.customMarketHolidays.sorted().joined(separator: "\n")
+                }
+                nasToken = NASCredentialStore.load() ?? ""
             }
             .onChange(of: backgroundRefreshEnabled) { _, _ in BackgroundQuoteRefresh.configure(store: store) }
             .onChange(of: store.data.quoteRefreshSeconds) { _, _ in BackgroundQuoteRefresh.configure(store: store) }
-            .onAppear { nasToken = NASCredentialStore.load() ?? "" }
             .onChange(of: nasURL) { _, _ in store.configureNASSync() }
             .onChange(of: nasToken) { _, value in
                 _ = NASCredentialStore.save(value)
                 store.configureNASSync()
             }
             .onChange(of: nasAutoSync) { _, _ in store.configureNASSync() }
-            .onChange(of: backgroundPhoto) { _, item in
-                guard let item else { return }
-                Task {
-                    do {
-                        guard let bytes = try await item.loadTransferable(type: Data.self) else { throw BackgroundImageError.invalidImage }
-                        try NativeBackgroundStore.save(bytes)
-                        backgroundMessage = "背景图已保存"
-                    } catch { backgroundMessage = error.localizedDescription }
-                }
-            }
+            .onChange(of: backgroundPhoto) { _, item in loadBackgroundPhoto(item) }
             .confirmationDialog("从 NAS 下载会覆盖本机原生账本。确认已备份本机数据？", isPresented: $confirmNASDownload, titleVisibility: .visible) {
                 Button("下载并覆盖本机", role: .destructive) { Task { await store.downloadFromNAS() } }
                 Button("取消", role: .cancel) { }
@@ -3714,46 +3492,364 @@ struct SettingsView: View {
                 Button("取消", role: .cancel) { selectedNASVersion = nil }
             }
             .fileExporter(isPresented: $showExporter, document: PortfolioBackup(data: store.data, intradayBars: store.intradayBars, dailyBars: store.dailyBars.values.flatMap { $0 }, backgroundImageData: NativeBackgroundStore.backupData), contentType: .json, defaultFilename: "观盘Pro原生备份") { result in
-                if case .failure(let error) = result { message = error.localizedDescription }
+                handleExportResult(result)
             }
-            .sheet(isPresented: $showManualPriceEditor) { ManualQuoteOverrideEditor() }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
-                do {
-                    guard let url = try result.get().first else { return }
-                    let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-                    let bytes = try Data(contentsOf: url)
-                    if let package = try? JSONDecoder().decode(NativeBackupEnvelope.self, from: bytes) {
-                        if let image = package.backgroundImageData { try NativeBackgroundStore.save(image) }
-                        store.replaceData(package.data, intradayBars: package.intradayBars, dailyBars: package.dailyBars)
-                        message = "原生备份已恢复（含 \(package.intradayBars.count) 个分时点、\(package.dailyBars.count) 个日线点\(package.backgroundImageData == nil ? "；备份未含背景图，保留当前背景" : "和背景图")）"
-                    } else {
-                        let migrated = try LegacyMigration.decodePackage(bytes)
-                        var nasMigrationNotice = ""
-                        if let legacyNAS = migrated.nasConfig {
-                            let currentURL = nasURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                            let legacyURL = legacyNAS.url.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                            let currentToken = NASCredentialStore.load() ?? ""
-                            if (currentURL.isEmpty || currentURL == legacyURL) && currentToken.isEmpty {
-                                if currentURL.isEmpty { nasURL = legacyURL }
-                                let tokenSaved = NASCredentialStore.save(legacyNAS.token)
-                                nasToken = tokenSaved ? legacyNAS.token : ""
-                                if legacyNAS.automatic && !legacyNAS.token.isEmpty && tokenSaved { nasAutoSync = true }
-                                if !tokenSaved {
-                                    nasMigrationNotice = "；NAS 地址已迁入，但系统未能保存同步口令"
-                                } else if legacyNAS.token.isEmpty {
-                                    nasMigrationNotice = "；NAS 地址已迁入，旧备份未含同步口令"
-                                } else {
-                                    nasMigrationNotice = "；NAS 地址和口令已迁入（口令存入 iOS Keychain）"
+                handleImportResult(result)
+            }
+    }
+
+    /// 表单主体单独成表达式：与尾部三十余个修饰符分开做类型检查，避免整条 body 超时。
+    private var formContent: some View {
+        NavigationStack {
+            Form {
+                appearanceSection
+                backgroundSection
+                ledgerSection
+                quoteSection
+                accountingSection
+                dataSection
+                nasSection
+                notificationSection
+                if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
+            }
+            .navigationTitle("设置")
+            .keyboardDoneToolbar()
+        }
+    }
+
+    @ViewBuilder private var appearanceSection: some View {
+        Picker("外观主题", selection: Binding(get: { store.appearance }, set: { store.appearance = $0 })) {
+            Text("跟随系统").tag(AppAppearance.system)
+            Section("深色主题") {
+                Text("深空灰").tag(AppAppearance.dark); Text("纯黑 OLED").tag(AppAppearance.oled)
+                Text("午夜蓝").tag(AppAppearance.blue); Text("松墨绿").tag(AppAppearance.green)
+                Text("暗夜紫").tag(AppAppearance.purple); Text("樱花粉").tag(AppAppearance.sakura)
+                Text("赛博朋克").tag(AppAppearance.cyber); Text("琥珀金").tag(AppAppearance.amber)
+                Text("拿铁棕").tag(AppAppearance.coffee); Text("石墨灰").tag(AppAppearance.graphite)
+            }
+            Section("浅色主题") {
+                Text("明亮白").tag(AppAppearance.light); Text("纸白").tag(AppAppearance.paper)
+                Text("薄荷").tag(AppAppearance.mint)
+            }
+        }
+    }
+
+    @ViewBuilder private var backgroundSection: some View {
+        Section("网页内置图片主题") {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ForEach(NativeBackgroundPreset.allCases) { preset in
+                    Button {
+                        NativeBackgroundStore.select(preset)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image(preset.assetName).resizable().scaledToFill()
+                                .frame(height: 82).frame(maxWidth: .infinity).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            HStack(spacing: 5) {
+                                Text(preset.title).lineLimit(1)
+                                Spacer(minLength: 0)
+                                if NativeBackgroundStore.selectedPreset == preset {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+                                }
+                            }.font(.caption)
+                        }
+                        .padding(7)
+                        .background(NativeBackgroundStore.selectedPreset == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text("已迁入网页的四张内置背景图；选择后会作为原生背景并纳入原生 JSON 备份。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section("网页渐变背景") {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ForEach(NativeGradientPreset.allCases) { preset in
+                    Button {
+                        NativeBackgroundStore.select(preset)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            LinearGradient(colors: preset.hexColors.map { hex in
+                                Color(red: Double((hex >> 16) & 0xff) / 255,
+                                      green: Double((hex >> 8) & 0xff) / 255,
+                                      blue: Double(hex & 0xff) / 255)
+                            }, startPoint: .topLeading, endPoint: .bottomTrailing)
+                            .frame(height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
+                            HStack {
+                                Text(preset.title).font(.caption)
+                                Spacer()
+                                if NativeBackgroundStore.selectedGradient == preset {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
                                 }
                             }
                         }
-                        store.replaceData(migrated.data, intradayBars: migrated.intradayBars)
-                        store.configureNASSync()
-                        message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 个只读档案、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
-                    }
-                } catch { message = "导入失败：\(error.localizedDescription)" }
+                        .padding(7)
+                        .background(NativeBackgroundStore.selectedGradient == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }.buttonStyle(.plain)
+                }
+            }
+            Text("已迁入网页的渐变背景。更换背景不会改变外观主题；自定义图片和内置图片仍可单独选择。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section("自定义背景图") {
+            PhotosPicker(selection: $backgroundPhoto, matching: .images) {
+                Label("从照片中选择背景", systemImage: "photo")
+            }
+            if NativeBackgroundStore.load() != nil || NativeBackgroundStore.selectedGradient != nil {
+                Button("清除背景", role: .destructive) { NativeBackgroundStore.remove() }
+            }
+            if !backgroundMessage.isEmpty { Text(backgroundMessage).font(.footnote).foregroundStyle(.secondary) }
+            VStack(alignment: .leading) {
+                HStack { Text("背景透明度"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
+                Slider(value: $backgroundOverlayOpacity, in: 0.08...0.82, step: 0.02)
+            }
+            Text("自定义图片保存在本机并自动压缩至 1800 像素以内；原网页备份不含当前背景选择，原生 JSON 备份会包含背景图。iOS 状态栏颜色由系统按深浅外观自动适配。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var ledgerSection: some View {
+        Section("现金账本") {
+            LabeledContent("当前参考现金", value: (store.data.cash).cny())
+            Text("现金余额请在“资产”页记录转入/转出，保留现金流历史，避免影响快照收益计算。")
+                .font(.footnote).foregroundStyle(.secondary)
+            Toggle("交易默认联动现金", isOn: Binding(get: { store.data.cashLinkedByDefault }, set: { store.data.cashLinkedByDefault = $0; store.save(label: "修改账本或设置") }))
+        }
+        Section("交易所休市日") {
+            Text("每行填写一个日期（YYYY-MM-DD）。自定义日期会随原生备份和 NAS 同步；2026 年内置休市安排已载入。后续年份请按交易所公告补充。")
+                .font(.footnote).foregroundStyle(.secondary)
+            TextEditor(text: $marketHolidayText).frame(minHeight: 110)
+                .font(.system(.footnote, design: .monospaced))
+            HStack {
+                Button("保存休市日") { saveMarketHolidays() }
+                Spacer()
+                Button("清空自定义日期", role: .destructive) {
+                    marketHolidayText = ""; saveMarketHolidays()
+                }
+            }
+            Text("当前自定义 \(store.data.customMarketHolidays.count) 天。ETF 日收益日历会将周末、已知休市日和日 K 覆盖区间内无交易记录的日期显示为“休市”。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var quoteSection: some View {
+        Section("行情刷新") {
+            Toggle("自动刷新行情", isOn: Binding(get: { store.data.quoteRefreshSeconds > 0 }, set: { store.data.quoteRefreshSeconds = $0 ? max(10, store.data.quoteRefreshSeconds) : 0; store.save(label: "修改账本或设置") }))
+            Stepper(value: Binding(get: { max(10, store.data.quoteRefreshSeconds) }, set: { store.data.quoteRefreshSeconds = min(600, max(10, $0)); store.save(label: "修改账本或设置") }), in: 10...600, step: 10) {
+                LabeledContent("自动刷新间隔", value: store.data.quoteRefreshSeconds > 0 ? "\(store.data.quoteRefreshSeconds) 秒" : "已关闭")
+            }.disabled(store.data.quoteRefreshSeconds == 0)
+            Toggle("行情刷新时记录分时点", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
+            Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
+            Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
+                .font(.footnote).foregroundStyle(.secondary)
+            Toggle("允许系统安排后台刷新", isOn: $backgroundRefreshEnabled)
+            Text("前台按设置间隔刷新；后台刷新由 iOS 自主安排，时间和频率不保证。后台只尝试更新行情并触发已授权的本地价格提醒，不采集分时、不运行影子盘，也不刷新基金净值。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section("图表显示") {
+            Picker("日线范围", selection: Binding(get: { store.data.dailyChartRangeDays }, set: { store.data.dailyChartRangeDays = $0; store.save(label: "修改账本或设置") })) {
+                Text("60 日").tag(60); Text("120 日").tag(120); Text("250 日").tag(250); Text("640 日").tag(640)
+            }
+            Picker("分时价格线", selection: Binding(get: { store.data.intradayLineColorMode }, set: { store.data.intradayLineColorMode = $0; store.save(label: "修改账本或设置") })) {
+                Text("自动强调色").tag(IntradayLineColorMode.automatic)
+                Text("白色").tag(IntradayLineColorMode.white)
+                Text("黑色").tag(IntradayLineColorMode.black)
+                Text("涨红跌绿").tag(IntradayLineColorMode.upDown)
             }
         }
+    }
+
+    @ViewBuilder private var accountingSection: some View {
+        Section("成本口径") {
+            Picker("持仓成本显示", selection: Binding(get: { store.data.costAccountingMode }, set: { store.data.costAccountingMode = $0; store.save(label: "修改账本或设置") })) {
+                Text("移动加权").tag(CostAccountingMode.weightedAverage)
+                Text("摊薄（同花顺）").tag(CostAccountingMode.diluted)
+            }
+            Text("摊薄口径会把已实现盈亏折算到剩余份额的显示成本中；账本原始加权成本和每笔已实现盈亏保持不变。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section("仓位提示") {
+            Toggle("显示仓位类提示", isOn: Binding(get: { store.data.positionHintsEnabled }, set: { store.data.positionHintsEnabled = $0; store.save(label: "修改账本或设置") }))
+            Stepper(value: Binding(get: { store.data.globalPositionLimitPercent }, set: { store.data.globalPositionLimitPercent = min(100, max(0, $0)); store.save(label: "修改账本或设置") }), in: 0...100, step: 1) {
+                LabeledContent("全局单只上限", value: store.data.globalPositionLimitPercent > 0 ? "\((store.data.globalPositionLimitPercent).num(0))%" : "不限制")
+            }.disabled(!store.data.positionHintsEnabled)
+            Text("在工具页按持仓市值占总资产比例显示上限提示；现金占比达到 60% 或低于 5% 时也提示。只提示，不会自动交易。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section("手动行情兜底") {
+            Button("手动填价与恢复自动行情") { showManualPriceEditor = true }
+            Text("可为自选和 ETF 持仓填写现价、昨收。手填价格会覆盖显示行情，不参与价格提醒或分时采集；清除后重新请求行情。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if !store.data.manualQuoteOverrides.isEmpty {
+                LabeledContent("当前手填", value: "\(store.data.manualQuoteOverrides.count) 只")
+            }
+        }
+    }
+
+    @ViewBuilder private var dataSection: some View {
+        Section("数据备份") {
+            Button("导出 JSON 备份") { showExporter = true }
+            Button("导入 JSON 备份") { showImporter = true }
+            Text("导入会整体替换原生版本地账本。可选择原生 JSON 备份或观盘 Pro 网页版完整 JSON 备份；新原生备份会保存自定义背景图，旧备份或网页备份不含背景图时保留当前背景。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section("操作撤销") {
+            Button("操作记录与撤销（最近 \(store.operationAudit.count) 条）") { showOperationHistory = true }
+            Text("记录你主动执行的账本修改，最多保留 20 条；行情、净值和后台自动补记不进入记录，只能撤销最近一条。")
+                .font(.footnote).foregroundStyle(.secondary)
+            Button("撤销上一次本机保存", role: .destructive) { confirmUndoLastSave = true }
+                .disabled(!store.canUndoLastSave)
+            Text("只保留一份上次保存前的账本副本。撤销会恢复整份账本，并同步到已配置的 NAS；行情或其他自动保存也可能成为撤销点。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var nasSection: some View {
+        Section("NAS 多设备同步") {
+            HStack {
+                TextField("服务器地址，例如 http://192.168.1.20:8788", text: $nasURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL)
+                PasteButton(payloadType: String.self) { values in
+                    if let value = values.first { nasURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("从剪贴板粘贴 NAS 地址")
+            }
+            Text("当前配套 NAS 服务支持免口令同步，填写地址后即可测试、下载和上传。")
+                .font(.footnote).foregroundStyle(.secondary)
+            DisclosureGroup("兼容旧服务器（可选口令）") {
+                HStack {
+                    TextField("服务器启用了 SYNC_TOKEN 时填写", text: $nasToken)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    PasteButton(payloadType: String.self) { values in
+                        if let value = values.first { nasToken = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("从剪贴板粘贴 NAS 口令")
+                }
+                Text("免口令服务器保持空白即可。已有口令只用于兼容你主动配置了 SYNC_TOKEN 的旧服务器。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Toggle("自动同步", isOn: $nasAutoSync)
+            HStack {
+                Button(checkingNAS ? "正在检查…" : "测试连接") { testNAS() }.disabled(checkingNAS)
+                Spacer()
+                Button("安全同步") { Task { await store.synchronizeNASSafely() } }
+            }
+            HStack {
+                Button("从 NAS 下载") { confirmNASDownload = true }
+                Spacer()
+                Button("上传到 NAS") { confirmNASUpload = true }
+            }
+            Button(loadingNASHistory ? "正在读取历史版本…" : "查看 NAS 历史版本") { loadNASHistory() }
+                .disabled(loadingNASHistory || restoringNAS)
+            if !nasVersions.isEmpty {
+                ForEach(nasVersions) { version in
+                    Button {
+                        selectedNASVersion = version
+                        confirmNASRestore = true
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("版本 \(version.revision)")
+                                Text(version.updatedAt).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.uturn.backward.circle")
+                        }
+                    }.disabled(restoringNAS)
+                }
+            }
+            Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
+            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。原生空间为空时会先迁入 NAS 上可识别的网页账本；之后网页与原生各自同步，原生改动不会反向转换回网页格式。分时和日线缓存随原生账本同步。行情刷新和日线下载优先尝试 NAS 行情代理，失败时自动回退到 iPhone 直连。最近 10 个 NAS 历史版本可查看和恢复；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if !store.data.legacySettingsArchives.isEmpty {
+            Section("旧版设置与计划备查") {
+                ForEach(store.data.legacySettingsArchives) { item in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title).font(.subheadline)
+                        if item.id == "ai" {
+                            LegacyAIArchiveView(rawJSON: item.rawJSON)
+                        } else if item.id == "gridExperience" {
+                            LegacyGridExperienceView(rawJSON: item.rawJSON)
+                        } else {
+                            Text(item.rawJSON).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                .lineLimit(5).textSelection(.enabled)
+                        }
+                    }
+                }
+                Text("旧版 AI 缓存和网格经验可展开回看，但不会伪装成当前分析或参与原生网格参数建议。旧版个人偏好、未来交易计划和原始休市设置保留作参考；有效自定义休市日期已迁入并在日历中生效。旧计划不会在原生版自动执行，网页 AI 凭证不会迁入。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var notificationSection: some View {
+        Section("系统通知") {
+            Button(notificationBusy ? "正在请求权限…" : "开启并测试本地通知") { enableNotifications() }
+                .disabled(notificationBusy)
+            Text(notificationEnabled ? "已获得通知权限。价格提醒和数据源异常可发送本机通知；同类数据源提醒每天最多一次。行情后台监控和远程推送尚未实现。" : "通知权限由 iOS 管理。开启后可接收价格提醒和数据源异常通知。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func loadBackgroundPhoto(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task { @MainActor in
+            do {
+                guard let bytes = try await item.loadTransferable(type: Data.self) else { throw BackgroundImageError.invalidImage }
+                try NativeBackgroundStore.save(bytes)
+                backgroundMessage = "背景图已保存"
+            } catch { backgroundMessage = error.localizedDescription }
+        }
+    }
+
+    private func handleExportResult(_ result: Result<URL, Error>) {
+        if case .failure(let error) = result { message = error.localizedDescription }
+    }
+
+    /// 导入逻辑从 fileImporter 闭包里抽成方法，缩短 body 修饰符链。
+    private func handleImportResult(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            let bytes = try Data(contentsOf: url)
+            if let package = try? JSONDecoder().decode(NativeBackupEnvelope.self, from: bytes) {
+                if let image = package.backgroundImageData { try NativeBackgroundStore.save(image) }
+                store.replaceData(package.data, intradayBars: package.intradayBars, dailyBars: package.dailyBars)
+                message = "原生备份已恢复（含 \(package.intradayBars.count) 个分时点、\(package.dailyBars.count) 个日线点\(package.backgroundImageData == nil ? "；备份未含背景图，保留当前背景" : "和背景图")）"
+            } else {
+                let migrated = try LegacyMigration.decodePackage(bytes)
+                var nasMigrationNotice = ""
+                if let legacyNAS = migrated.nasConfig {
+                    let currentURL = nasURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    let legacyURL = legacyNAS.url.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    let currentToken = NASCredentialStore.load() ?? ""
+                    if (currentURL.isEmpty || currentURL == legacyURL) && currentToken.isEmpty {
+                        if currentURL.isEmpty { nasURL = legacyURL }
+                        let tokenSaved = NASCredentialStore.save(legacyNAS.token)
+                        nasToken = tokenSaved ? legacyNAS.token : ""
+                        if legacyNAS.automatic && !legacyNAS.token.isEmpty && tokenSaved { nasAutoSync = true }
+                        if !tokenSaved {
+                            nasMigrationNotice = "；NAS 地址已迁入，但系统未能保存同步口令"
+                        } else if legacyNAS.token.isEmpty {
+                            nasMigrationNotice = "；NAS 地址已迁入，旧备份未含同步口令"
+                        } else {
+                            nasMigrationNotice = "；NAS 地址和口令已迁入（口令存入 iOS Keychain）"
+                        }
+                    }
+                }
+                store.replaceData(migrated.data, intradayBars: migrated.intradayBars)
+                store.configureNASSync()
+                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 个只读档案、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
+            }
+        } catch { message = "导入失败：\(error.localizedDescription)" }
     }
 
     private func saveMarketHolidays() {
