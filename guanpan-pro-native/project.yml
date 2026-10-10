@@ -20,17 +20,11 @@ targets:
     info:
       path: Info.plist
       properties:
-        # CFBundleDisplayName 是桌面显示的名字（可任意，含中文没问题）。
-        # 注意：CFBundleName / CFBundleExecutable 保持「观盘 Pro」不动。
-        # 依据：v2.0（此命名）已实测安装成功，说明中文可执行名在签名链路里没问题，
-        # 不要为了「更保险」而改动它 —— 任何改动都会让签名链路多一个变量。
         CFBundleDisplayName: 观盘 Pro
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
-        # 版本保持 1.0(1)：与实测安装成功的 v2.0 完全一致。
-        # 升级版本号会改变签名产物，在免费 Apple ID 场景下容易触发描述文件不匹配。
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.1"
+        CFBundleVersion: "2"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
