@@ -140,7 +140,7 @@ struct PortfolioAnalysisView: View {
     // MARK: - 实时汇率
 
     /// 抓取实时汇率。非强制刷新时优先复用 24 小时内的缓存，避免每次进入页面都打接口。
-    private func refreshFX(force: Bool) async {
+    @MainActor private func refreshFX(force: Bool) async {
         guard !fxLoading else { return }
         if !force, let cached = ExchangeRateService.cached(), !ExchangeRateService.isStale(cached) {
             fxSnapshot = cached
