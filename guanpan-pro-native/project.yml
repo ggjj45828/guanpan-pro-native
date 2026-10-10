@@ -23,8 +23,8 @@ targets:
         CFBundleDisplayName: 观盘 Pro
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.1"
+        CFBundleVersion: "2"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
@@ -37,6 +37,7 @@ targets:
         NSLocalNetworkUsageDescription: "连接你在设置中填写的 NAS 地址，用于同步观盘 Pro 本机账本和行情历史缓存。"
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native
