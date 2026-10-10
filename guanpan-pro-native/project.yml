@@ -20,8 +20,11 @@ targets:
     info:
       path: Info.plist
       properties:
+        # CFBundleDisplayName 是桌面显示的名字（可任意，含中文没问题）。
+        # CFBundleName / CFBundleExecutable 会变成可执行文件名，保持 ASCII，
+        # 避免 Sideloadly / 签名环节处理中文可执行文件名时出错。
         CFBundleDisplayName: 观盘 Pro
-        CFBundleName: 观盘 Pro
+        CFBundleName: GuanpanPro
         CFBundleDevelopmentRegion: zh_CN
         CFBundleShortVersionString: "1.1"
         CFBundleVersion: "2"
@@ -42,7 +45,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        PRODUCT_NAME: 观盘 Pro
+        PRODUCT_NAME: GuanpanPro
         GENERATE_INFOPLIST_FILE: "NO"
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: "NO"
