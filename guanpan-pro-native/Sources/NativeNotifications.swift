@@ -13,6 +13,12 @@ final class GuanpanAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         BackgroundQuoteRefresh.perform(completion: completionHandler)
     }
 
+    /// K 线横屏大图：由 OrientationLock 动态决定当前允许的方向。
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        OrientationLock.shared.mask
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound, .badge])

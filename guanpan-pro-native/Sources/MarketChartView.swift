@@ -59,6 +59,7 @@ struct MarketChartView: View {
     @State private var instrumentAIMessage = ""
     @State private var instrumentAIBusy = false
     @State private var isLoading = false
+    @State private var showLandscapeChart = false
     @State private var message = ""
     @State private var backtestCapital = "100000"
     @State private var backtestFeePercent = "0.03"
@@ -516,7 +517,17 @@ struct MarketChartView: View {
             .navigationTitle("日K与指标")
             .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showLandscapeChart = true } label: {
+                        Label("横屏大图", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                }
+            }
+            .fullScreenCover(isPresented: $showLandscapeChart) {
+                LandscapeChartView(holding: holding)
+            }
             .sheet(isPresented: $showInstrumentAI) {
                 NavigationStack {
                     List {
@@ -556,10 +567,11 @@ struct MarketChartView: View {
     // MARK: - 日K 图（主图 + 成交量副图）
 
     // 四条均线色相尽量拉开，避免挤在相邻波段导致「看起来都是一个颜色」。
-    private var ma5Color: Color { Color(red: 1.0, green: 0.62, blue: 0.11) }    // 橙
-    private var ma10Color: Color { Color(red: 0.30, green: 0.66, blue: 1.0) }   // 蓝
-    private var ma20Color: Color { Color(red: 0.80, green: 0.36, blue: 1.0) }   // 紫
-    private var ma60Color: Color { Color(red: 0.16, green: 0.88, blue: 0.76) }  // 青绿
+    // 色值统一放在 ChartPalette，横屏大图与这里共用同一套，不会两处配色不一致。
+    private var ma5Color: Color { ChartPalette.ma5 }
+    private var ma10Color: Color { ChartPalette.ma10 }
+    private var ma20Color: Color { ChartPalette.ma20 }
+    private var ma60Color: Color { ChartPalette.ma60 }
 
     @ViewBuilder private var dailyChartSection: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -827,5 +839,197 @@ struct MarketChartView: View {
                 config: store.data.aiAnalysisConfig, holding: holding, quote: quote, bars: allBars,
                 intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText)
         } catch { instrumentAIMessage = error.localizedDescription }
+    }
+}
+
+// MARK: - 横屏大图
+
+/// 均线配色单一数据源。竖屏日K、横屏大图都从这里取，避免两处配色漂移。
+private enum ChartPalette {
+    static let ma5 = Color(red: 1.0, green: 0.62, blue: 0.11)    // 橙
+    static let ma10 = Color(red: 0.30, green: 0.66, blue: 1.0)   // 蓝
+    static let ma20 = Color(red: 0.80, green: 0.36, blue: 1.0)   // 紫
+    static let ma60 = Color(red: 0.16, green: 0.88, blue: 0.76)  // 青绿
+}
+
+/// 横屏 K 线大图。
+///
+/// 为什么单独写一个视图而不是复用 MarketChartView：
+/// 后者是塞了分时 / 副图 / 回测 / AI 的长 List，横屏下上半屏是列表、下半屏才是图，
+/// 图反而更小。这里只保留日K + 四条均线 + 成交量，横向铺满整屏，
+/// 并在 onAppear/onDisappear 里锁 / 解锁横屏。
+struct LandscapeChartView: View {
+    @EnvironmentObject private var store: PortfolioStore
+    @Environment(\.dismiss) private var dismiss
+    let holding: Holding
+
+    @State private var zoom: CGFloat = 1
+    @GestureState private var pinch: CGFloat = 1
+    @State private var showVolume = true
+
+    private var allBars: [DailyBar] { store.dailyBars[holding.code] ?? [] }
+
+    /// 缩放后实际显示的 K 线根数。下限 20 根：再少就没有形态可言了。
+    private var visibleBars: [DailyBar] {
+        guard !allBars.isEmpty else { return [] }
+        let target = Int((CGFloat(allBars.count) / (zoom * pinch)).rounded())
+        return Array(allBars.suffix(min(max(target, 20), allBars.count)))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                topBar
+                if visibleBars.isEmpty {
+                    Spacer(minLength: 0)
+                    Text("还没有日线数据，先在主界面打开一次行情")
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                } else {
+                    candleChart(height: geo.size.height * (showVolume ? 0.74 : 0.92))
+                    if showVolume {
+                        volumeChart(height: geo.size.height * 0.16)
+                    }
+                }
+            }
+        }
+        .background(Color(uiColor: .systemBackground))
+        .onAppear { OrientationLock.shared.lockLandscape() }
+        .onDisappear { OrientationLock.shared.unlock() }
+    }
+
+    private var topBar: some View {
+        let quote = store.data.quotes.first(where: { $0.code == holding.code })
+        return HStack(spacing: 10) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(holding.name.isEmpty ? holding.code : holding.name)
+                    .font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text("日K · \(visibleBars.count) 根")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Text((quote?.price ?? holding.current).num(3))
+                .font(.system(.headline, design: .rounded)).monospacedDigit()
+            if let quote {
+                Text((quote.changePct).pct(2))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(quote.changePct >= 0 ? .red : .green)
+            }
+            Spacer(minLength: 0)
+            maChip("MA5", ChartPalette.ma5)
+            maChip("MA10", ChartPalette.ma10)
+            maChip("MA20", ChartPalette.ma20)
+            maChip("MA60", ChartPalette.ma60)
+            Button { showVolume.toggle() } label: {
+                Image(systemName: showVolume ? "chart.bar.fill" : "chart.bar").font(.caption)
+            }.buttonStyle(.bordered)
+            Button("复位") { zoom = 1 }.buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    private func maChip(_ title: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 1).fill(color).frame(width: 10, height: 3)
+            Text(title).scaledFont(9, weight: .semibold).foregroundStyle(color)
+        }
+    }
+
+    private func candleChart(height: CGFloat) -> some View {
+        GeometryReader { geo in
+            let count = max(visibleBars.count, 1)
+            let slot = geo.size.width / CGFloat(count)
+            let bodyWidth = min(max(slot * 0.66, 1.0), 20)
+            Chart {
+                ForEach(visibleBars) { bar in
+                    let rising = bar.close >= bar.open
+                    let candleColor = rising ? Color.red : Color.green
+                    let lowBody = min(bar.open, bar.close)
+                    let highBody = max(bar.open, bar.close)
+                    // 一字线（开=收）时给最小高度，否则实体画不出来
+                    let pad = (highBody - lowBody) < highBody * 0.0008 ? highBody * 0.0008 : 0
+                    RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
+                        .foregroundStyle(candleColor.opacity(0.9))
+                        .lineStyle(StrokeStyle(lineWidth: max(0.8, bodyWidth * 0.16)))
+                    RectangleMark(x: .value("日期", bar.date),
+                                  yStart: .value("开盘", lowBody),
+                                  yEnd: .value("收盘", highBody + pad),
+                                  width: .fixed(bodyWidth))
+                        .foregroundStyle(candleColor)
+                }
+                ForEach(average(5, source: visibleBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
+                        .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 2))
+                }
+                ForEach(average(10, source: visibleBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
+                        .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 2))
+                }
+                ForEach(average(20, source: visibleBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
+                        .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 2))
+                }
+                ForEach(average(60, source: visibleBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
+                        .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 2))
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 8)) { _ in
+                    AxisValueLabel().font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 6)) { _ in
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.10))
+                    AxisValueLabel().font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            .gesture(magnifyGesture)
+        }
+        .frame(height: height)
+        .clipped()
+    }
+
+    private func volumeChart(height: CGFloat) -> some View {
+        GeometryReader { geo in
+            let count = max(visibleBars.count, 1)
+            let slot = geo.size.width / CGFloat(count)
+            let bodyWidth = min(max(slot * 0.66, 1.0), 20)
+            Chart {
+                ForEach(visibleBars) { bar in
+                    BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(bodyWidth))
+                        .foregroundStyle(bar.close >= bar.open ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
+                }
+            }
+            .chartXAxis(.hidden)
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 2)) { _ in
+                    AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(height: height)
+        .clipped()
+    }
+
+    private var magnifyGesture: some Gesture {
+        MagnificationGesture()
+            .updating($pinch) { value, state, _ in state = value }
+            .onEnded { value in zoom = min(max(zoom * value, 1), 12) }
+    }
+
+    private func average(_ window: Int, source: [DailyBar]) -> [IndicatorPoint] {
+        guard source.count >= window else { return [] }
+        var out: [IndicatorPoint] = []
+        for index in (window - 1)..<source.count {
+            let values = source[(index - window + 1)...index].map(\.close)
+            out.append(IndicatorPoint(date: source[index].date, value: values.reduce(0, +) / Double(window)))
+        }
+        return out
     }
 }

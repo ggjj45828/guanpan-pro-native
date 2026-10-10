@@ -2212,14 +2212,52 @@ struct AssetsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("账户总览") {
-                    LabeledContent("总资产", value: (store.totalAsset).cny())
-                    LabeledContent("证券/基金市值", value: (store.totalMarketValue).cny())
-                    LabeledContent("参考现金", value: (store.data.cash).cny())
-                    LabeledContent("持仓浮动盈亏", value: (store.totalPnL).cny())
-                    LabeledContent("已实现盈亏", value: (store.realizedPnL).cny())
-                    Button("记录现金转入 / 转出") { showCashFlow = true }
-                }
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("总资产").font(.caption).foregroundStyle(.secondary)
+                                Text((store.totalAsset).cny())
+                                    .scaledFont(28, weight: .bold, design: .rounded)
+                                    .monospacedDigit()
+                                    .minimumScaleFactor(0.7).lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(store.hasDayPnL ? (store.dayPnL).cny() : "--")
+                                    .scaledFont(15, weight: .semibold, design: .rounded)
+                                    .monospacedDigit()
+                                    .foregroundStyle(dayTone)
+                                Text(store.hasDayPnL ? (store.dayPnLRate?.pct(2) ?? "--") : "--")
+                                    .font(.caption).foregroundStyle(dayTone)
+                                Text("当日盈亏").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        assetComposition
+                        MetricGrid(columns: 3, cells: [
+                            MetricCell(title: "持仓市值", value: (store.totalMarketValue).cny()),
+                            MetricCell(title: "参考现金", value: (store.data.cash).cny()),
+                            MetricCell(title: "仓位", value: (store.positionPercent).pct(1)),
+                            MetricCell(title: "持仓浮盈", value: (store.totalPnL).cny(), toneValue: store.totalPnL),
+                            MetricCell(title: "盈亏比例", value: store.totalPnLRate.map { $0.pct(2) } ?? "--", toneValue: store.totalPnL),
+                            MetricCell(title: "总成本", value: (store.totalCost).cny()),
+                            MetricCell(title: "今日盈亏", value: store.hasDayPnL ? (store.dayPnL).cny() : "--",
+                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
+                            MetricCell(title: "今日幅度", value: store.hasDayPnL ? (store.dayPnLRate?.pct(2) ?? "--") : "--",
+                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
+                            MetricCell(title: "已实现盈亏", value: (store.realizedPnL).cny(), toneValue: store.realizedPnL),
+                            MetricCell(title: "ETF / 证券", value: (store.marketValue(of: .etf)).cny()),
+                            MetricCell(title: "场外基金", value: (store.marketValue(of: .fund)).cny()),
+                            MetricCell(title: "累计净转入", value: netDeposit.cny(), toneValue: netDeposit)
+                        ])
+                        Text("累计净转入 = 现金流记录里转入与转出相抵后的净额，只统计你手动记录过的流水。")
+                            .scaledFont(10).foregroundStyle(.secondary)
+                        Button("记录现金转入 / 转出") { showCashFlow = true }
+                    }
+                    .cardSurface()
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(Color.clear)
+                } header: { Text("账户总览") }
                 Section("历史快照") {
                     Button("记录/更新今日快照") { store.recordSnapshot() }
                     Text("快照之间的收益 = 总资产变化 − 期间现金净转入。没有快照覆盖的日期无法回溯；基金净值尚未更新时快照也会沿用当前账面值。")
@@ -2307,6 +2345,53 @@ struct AssetsView: View {
                     if selectedLedgerMonth.isEmpty { selectedLedgerMonth = store.ledgerMonths.first ?? "" }
                 }
                 .sheet(isPresented: $showCashFlow) { CashFlowEditor() }
+        }
+    }
+
+    // MARK: - 资产构成
+
+    /// 现金流记录里转入与转出相抵后的净额。没有记录时是 0，不臆测。
+    private var netDeposit: Double { store.data.cashFlows.reduce(0) { $0 + $1.amount } }
+
+    private var dayTone: Color {
+        guard store.hasDayPnL else { return .secondary }
+        return store.dayPnL >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                 : Color(red: 0.07, green: 0.77, blue: 0.55)
+    }
+
+    /// 市值按 ETF/证券、场外基金、现金三段拆分。比「一个总数」更能看出钱压在哪。
+    private var assetComposition: some View {
+        let total = max(store.totalAsset, 0.0001)
+        let etf = max(store.marketValue(of: .etf), 0)
+        let fund = max(store.marketValue(of: .fund), 0)
+        let cash = max(store.data.cash, 0)
+        return VStack(alignment: .leading, spacing: 7) {
+            GeometryReader { geo in
+                HStack(spacing: 2) {
+                    segment(Color(red: 0.22, green: 0.53, blue: 0.90), width: geo.size.width * (etf / total))
+                    segment(Color(red: 0.55, green: 0.42, blue: 0.90), width: geo.size.width * (fund / total))
+                    segment(Color(red: 0.15, green: 0.75, blue: 0.62), width: geo.size.width * (cash / total))
+                    Spacer(minLength: 0)
+                }
+            }
+            .frame(height: 9)
+            HStack(spacing: 12) {
+                legend(Color(red: 0.22, green: 0.53, blue: 0.90), "ETF/证券", etf / total)
+                legend(Color(red: 0.55, green: 0.42, blue: 0.90), "场外基金", fund / total)
+                legend(Color(red: 0.15, green: 0.75, blue: 0.62), "现金", cash / total)
+            }
+        }
+    }
+
+    private func segment(_ color: Color, width: CGFloat) -> some View {
+        Capsule().fill(color).frame(width: max(0, width))
+    }
+
+    private func legend(_ color: Color, _ title: String, _ ratio: Double) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(title).scaledFont(9).foregroundStyle(.secondary)
+            Text((ratio * 100).num(0) + "%").scaledFont(9, weight: .semibold).monospacedDigit()
         }
     }
 }
