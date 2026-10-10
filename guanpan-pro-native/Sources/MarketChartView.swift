@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import UIKit
 
 private struct IndicatorPoint: Identifiable {
     var date: String
@@ -573,6 +574,19 @@ struct MarketChartView: View {
     private var ma20Color: Color { ChartPalette.ma20 }
     private var ma60Color: Color { ChartPalette.ma60 }
 
+    // 日 K 区高度原来写死 390（主图 300 + 副图 82）。
+    // 固定值在 SE 上顶到屏幕外、在 Pro Max / iPad 上又只占中间一小块，
+    // 所以改成按屏幕高度取比例再夹一个区间：小屏保底 300，大屏最多 540。
+    private var chartBodyHeight: CGFloat {
+        min(max(UIScreen.main.bounds.height * 0.42, 300), 540)
+    }
+    private var volumeHeight: CGFloat {
+        min(max(chartBodyHeight * 0.21, 60), 120)
+    }
+    private var candleHeight: CGFloat {
+        max(180, chartBodyHeight - volumeHeight - 8)
+    }
+
     @ViewBuilder private var dailyChartSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
@@ -588,11 +602,11 @@ struct MarketChartView: View {
                 let slot = max(60, geo.size.width) / CGFloat(max(1, zoomedPeriodBars.count))
                 let bodyWidth = min(max(slot * 0.68, 1.2), 18)
                 VStack(spacing: 8) {
-                    candlePlot(bodyWidth: bodyWidth).frame(height: 300)
-                    volumePlot(bodyWidth: bodyWidth).frame(height: 82)
+                    candlePlot(bodyWidth: bodyWidth).frame(height: candleHeight)
+                    volumePlot(bodyWidth: bodyWidth).frame(height: volumeHeight)
                 }
             }
-            .frame(height: 390)
+            .frame(height: chartBodyHeight)
             .contentShape(Rectangle())
             .simultaneousGesture(MagnifyGesture()
                 .updating($pinchScale) { value, state, _ in state = value.magnification }

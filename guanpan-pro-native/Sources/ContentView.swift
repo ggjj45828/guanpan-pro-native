@@ -52,6 +52,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// 系统「降低透明度」：开启时自定义背景上的毛玻璃要换成不透明纯色
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
     /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
@@ -188,10 +190,13 @@ struct ContentView: View {
     /// 叠加 Material 毛玻璃后，底层被糊化，文字对比度不再依赖压暗强度。
     @ViewBuilder private var overlayTint: some View {
         ZStack {
-            Rectangle().fill(.thinMaterial).opacity(backgroundBlur)
-            currentTheme.isLight
-                ? Color.white.opacity(backgroundOverlayOpacity)
-                : Color.black.opacity(backgroundOverlayOpacity)
+            // 系统「降低透明度」开启时，毛玻璃是半透明效果的主要来源，必须换成不透明纯色，
+            // 否则前庭敏感 / 阅读困难的用户在自定义背景图上依然读不清文字。
+            if !reduceTransparency {
+                Rectangle().fill(.thinMaterial).opacity(backgroundBlur)
+            }
+            let tint = currentTheme.isLight ? Color.white : Color.black
+            tint.opacity(reduceTransparency ? max(backgroundOverlayOpacity, 0.92) : backgroundOverlayOpacity)
         }
     }
 }
@@ -364,7 +369,7 @@ struct DashboardView: View {
                 } header: { Text("账户") }
                 Section("行情状态") {
                     Label(store.sourceStatus, systemImage: "circle.fill").foregroundStyle(.secondary)
-                    Button("刷新行情") { store.refreshQuotes() }
+                    Button("刷新行情") { Haptics.push(); store.refreshQuotes() }
                 }
                 Section("自选与场内持仓情绪") {
                     if let mood = store.marketMood {
@@ -906,6 +911,7 @@ struct WatchEditor: View {
                             store.addWatch(code: code.trimmingCharacters(in: .whitespaces),
                                            name: name == "正在识别…" ? "" : name.trimmingCharacters(in: .whitespaces),
                                            group: resolvedGroup)
+                            Haptics.success()
                             dismiss()
                             store.refreshQuotes()
                         }.disabled(code.count != 6)
@@ -934,8 +940,21 @@ struct HoldingsView: View {
     @State private var deleteArchivedFundCode: String?
     @State private var undoTradeMessage: String?
     @State private var showPortfolioAdvice = false
+    @State private var searchText = ""
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
     private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    private var isSearching: Bool { !searchQuery.isEmpty }
+    /// 搜索时只按名称 / 代码过滤持仓行；其它分区在搜索态下隐藏，避免结果被无关内容淹没
+    private var searchedHoldings: [Holding] {
+        let base = holdings.filter { $0.quantity > 0 || kind == .fund }
+        guard isSearching else { return base }
+        let query = searchQuery.lowercased()
+        return base.filter { $0.name.lowercased().contains(query) || $0.code.contains(query) }
+    }
 
     private func fundTransactionLabel(_ trade: FundTransaction) -> String {
         switch trade.side {
@@ -1003,20 +1022,25 @@ struct HoldingsView: View {
     private var listContent: some View {
         NavigationStack {
             List {
-                moduleSummarySection
-                accountHintSection
-                if holdings.isEmpty {
-                    ContentUnavailableView("暂无\(title)", systemImage: "tray", description: Text("点右上角添加持仓。"))
-                }
-                holdingRowList
-                if kind == .fund {
-                    fundToolsSection
-                }
-                recentTradesSection
-                if kind == .fund {
-                    archivedFundSection
+                if isSearching {
+                    holdingRowList
+                } else {
+                    moduleSummarySection
+                    accountHintSection
+                    if holdings.isEmpty {
+                        ContentUnavailableView("暂无\(title)", systemImage: "tray", description: Text("点右上角添加持仓。"))
+                    }
+                    holdingRowList
+                    if kind == .fund {
+                        fundToolsSection
+                    }
+                    recentTradesSection
+                    if kind == .fund {
+                        archivedFundSection
+                    }
                 }
             }
+            .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle(title)
             .refreshable {
                 // 基金页下拉刷净值，ETF/证券页下拉刷行情，各自对应页面上真正会变的东西
@@ -1026,8 +1050,9 @@ struct HoldingsView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if kind == .fund {
-                        Button { store.refreshFundNAVs() } label: { Image(systemName: "arrow.clockwise") }
+                        Button { Haptics.push(); store.refreshFundNAVs() } label: { Image(systemName: "arrow.clockwise") }
                             .disabled(store.isRefreshingFunds)
+                            .accessibilityLabel("刷新基金净值")
                     }
                     Button { showAdd = true } label: { Image(systemName: "plus") }
                 }
@@ -1106,7 +1131,12 @@ struct HoldingsView: View {
     }
 
     @ViewBuilder private var holdingRowList: some View {
-        ForEach(holdings.filter { $0.quantity > 0 || kind == .fund }) { h in
+        let rows = searchedHoldings
+        if isSearching && rows.isEmpty {
+            Text("没有匹配「\(searchQuery)」的持仓")
+                .foregroundStyle(.secondary)
+        }
+        ForEach(rows) { h in
             holdingRow(h)
         }
     }
@@ -1166,8 +1196,8 @@ struct HoldingsView: View {
         }.padding(.vertical, 5)
         .contentShape(Rectangle())
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button("删除", role: .destructive) { store.removeHolding(h) }
-            Button("编辑") { editTarget = h }.tint(.blue)
+            Button("删除", role: .destructive) { Haptics.heavy(); store.removeHolding(h) }
+            Button("编辑") { Haptics.tap(); editTarget = h }.tint(.blue)
         }
     }
 
@@ -1401,14 +1431,24 @@ struct TradeLedgerManagementView: View {
     @State private var pending: LedgerEntry?
     @State private var showConfirm = false
     @State private var message = ""
+    @State private var searchText = ""
 
-    private var rows: [LedgerEntry] { store.data.ledger.sorted { $0.date > $1.date } }
+    private var searchQuery: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var allRows: [LedgerEntry] { store.data.ledger.sorted { $0.date > $1.date } }
+    private var rows: [LedgerEntry] {
+        guard !searchQuery.isEmpty else { return allRows }
+        let query = searchQuery.lowercased()
+        return allRows.filter { $0.name.lowercased().contains(query) || $0.code.contains(query) }
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section("全部流水 · \(rows.count) 笔") {
-                    if rows.isEmpty { Text("暂无交易流水").foregroundStyle(.secondary) }
+                    if rows.isEmpty {
+                        Text(searchQuery.isEmpty ? "暂无交易流水" : "没有匹配「\(searchQuery)」的流水")
+                            .foregroundStyle(.secondary)
+                    }
                     ForEach(rows) { entry in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -1436,11 +1476,13 @@ struct TradeLedgerManagementView: View {
                 }
                 if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.orange) } }
             }
+            .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle("交易流水")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .confirmationDialog("确认删除这笔流水？相关份额、成本和联动现金会按流水重算。", isPresented: $showConfirm, titleVisibility: .visible) {
                 Button("确认删除", role: .destructive) {
                     guard let entry = pending else { return }
+                    Haptics.heavy()
                     do {
                         if entry.affectsHoldings == false || (entry.kind ?? .etf) == .etf {
                             try store.deleteLedgerEntry(entry.id)
@@ -2709,6 +2751,8 @@ struct ToolsView: View {
     @State private var showReconciliation = false
     @State private var showTradeLedger = false
     @State private var showMonthlyReview = false
+    @State private var showYearlyReview = false
+    @State private var showValuation = false
     @State private var showCashForecast = false
     @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
@@ -2891,7 +2935,13 @@ struct ToolsView: View {
                 Button("现金 / 当日盈亏 / 成本 / 总盈亏对账") { showReconciliation = true }
                 Button("查看和管理全部交易流水（\(store.data.ledger.count) 笔）") { showTradeLedger = true }
                 Button("月度投资复盘") { showMonthlyReview = true }
+                Button("年度账单（胜率 / 费率 / 逐月）") { showYearlyReview = true }
                 Text("只读检查持仓、交易流水、基金、现金、快照和净值历史，不会自动修改账本。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("单只位置体检") {
+                Button("值不值得买：当前价格在历史区间的位置") { showValuation = true }
+                Text("只用本机日线回答「现价在自己近 120/250/640 日区间里处于什么位置」，不是 PE / PB 基本面估值，不包含财报，也不预测涨跌。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("券商成交历史导入") {
@@ -2946,6 +2996,8 @@ struct ToolsView: View {
             .sheet(isPresented: $showReconciliation) { ReconciliationView() }
             .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() }
             .sheet(isPresented: $showMonthlyReview) { MonthlyReviewView() }
+            .sheet(isPresented: $showYearlyReview) { YearlyReviewView() }
+            .sheet(isPresented: $showValuation) { ValuationView() }
             .sheet(isPresented: $showCashForecast) { CashForecastView() }
             .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() }
             .sheet(item: $targetEdit) { holding in
@@ -4255,6 +4307,7 @@ struct SettingsView: View {
                     ThemePreviewCard(appearance: item,
                                      accent: AccentPreset(rawValue: store.data.accentColorName)?.color ?? item.accentColor,
                                      selected: store.appearance == item) {
+                        Haptics.selection()
                         store.appearance = item
                     }
                 }
@@ -4264,7 +4317,7 @@ struct SettingsView: View {
         Section("强调色") {
             Picker("强调色", selection: Binding(
                 get: { store.data.accentColorName },
-                set: { store.data.accentColorName = $0; store.save(label: "修改账本或设置") })) {
+                set: { store.data.accentColorName = $0; Haptics.selection(); store.save(label: "修改账本或设置") })) {
                 ForEach(AccentPreset.allCases) { preset in Text(preset.title).tag(preset.rawValue) }
             }
             Text("选「跟随主题」时用主题自带强调色；选其他则覆盖全部主题。")
