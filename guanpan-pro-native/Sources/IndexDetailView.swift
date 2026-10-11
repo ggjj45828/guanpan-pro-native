@@ -358,11 +358,19 @@ struct IndexDetailView: View {
     }
 
     /// 用「现价站在哪几条均线之上」给一句人话结论，比单纯列数字好读。
+    ///
+    /// 别写成 `(close >= ma20 ? above : below).append("MA20")` ——
+    /// 三元表达式的结果是**不可变**的临时值，`append` 会报
+    /// 「cannot use mutating member on immutable value: result of conditional operator」。
     private func maPositionText(close: Double, ma20: Double?, ma60: Double?) -> String {
         var above: [String] = []
         var below: [String] = []
-        if let ma20 { (close >= ma20 ? above : below).append("MA20") }
-        if let ma60 { (close >= ma60 ? above : below).append("MA60") }
+        if let ma20 {
+            if close >= ma20 { above.append("MA20") } else { below.append("MA20") }
+        }
+        if let ma60 {
+            if close >= ma60 { above.append("MA60") } else { below.append("MA60") }
+        }
         if above.isEmpty && below.isEmpty { return "日 K 样本不足，还不能判断均线位置。" }
         if below.isEmpty { return "现价站在 \(above.joined(separator: "、")) 之上，中期结构偏强。" }
         if above.isEmpty { return "现价跌到 \(below.joined(separator: "、")) 之下，中期结构偏弱。" }

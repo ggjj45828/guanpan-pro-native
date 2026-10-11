@@ -70,13 +70,16 @@ enum MarketCalendar {
     ///
     /// 自定义休市日优先（用户手填的可以覆盖自动结果）；自动日历覆盖得到就用它，
     /// 覆盖不到再退回内置 2026 表。周末由 `isClosure(_ date:)` 那一版负责。
-    static func isClosure(_ isoDay: String, custom: Set<String> = []) -> Bool {
+    /// `custom` 用 `[String]` 而不是 `Set<String>`：调用方手里是
+    /// `PortfolioData.customMarketHolidays`（存的是数组），改成 Set 只会让每个调用点
+    /// 多一层 `Set(...)`。这里的量级是几十个日期，`contains` 走数组也毫无性能问题。
+    static func isClosure(_ isoDay: String, custom: [String] = []) -> Bool {
         if custom.contains(isoDay) { return true }
         if covers(isoDay) { return !loadTradingDays().contains(isoDay) }
         return mainlandClosures2026.contains(isoDay)
     }
 
-    static func isClosure(_ date: Date, custom: Set<String> = []) -> Bool {
+    static func isClosure(_ date: Date, custom: [String] = []) -> Bool {
         isWeekend(date) || isClosure(isoDay(date), custom: custom)
     }
 

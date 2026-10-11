@@ -1036,8 +1036,12 @@ final class PortfolioStore: ObservableObject {
     /// 所以周末打开也能看到一条完整曲线，而不是一张空图。
     func fetchIndexMinutes(quote: MarketIndexQuote) async -> [IntradayBar] {
         let tencent = MarketIndexStore.catalog.first { $0.secid == quote.symbol }?.tencent
-        if let tencent, let points = await fetchTencentMinutes(symbol: tencent), !points.isEmpty {
-            return points
+        // `fetchTencentMinutes` 返回的是**非可选**数组，所以这里不能写
+        // `let points = await ...` 去当可选绑定用（会报
+        // 「initializer for conditional binding must have Optional type」）。
+        if let tencent {
+            let points = await fetchTencentMinutes(symbol: tencent)
+            if !points.isEmpty { return points }
         }
         return await fetchEastmoneyMinutes(secid: quote.symbol)
     }

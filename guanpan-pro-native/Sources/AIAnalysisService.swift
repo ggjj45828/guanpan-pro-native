@@ -290,6 +290,7 @@ enum AIAnalysisService {
         \(dcaPlansText)
         【已保存的基金前十大成分与报告日期】
         \(fundCompositionText)
-        \(extrasText)"""
+        \(extrasText)
+        """
     }
 }
