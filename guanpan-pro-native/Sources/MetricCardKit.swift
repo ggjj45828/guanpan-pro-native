@@ -101,22 +101,29 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
         let usePhotoPanel = panelImprint && NativeBackgroundStore.hasActiveBackground
         let veil = min(0.72, max(0.12, 0.38 + overlayOpacity * 0.35))
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        // 用 AnyShapeStyle 统一两条分支的类型：Swift 的 opaque return type 要求
+        // 函数体所有 return 的底层类型一致，直接返回 LinearGradient / Color 会编译失败。
+        let fillStyle: AnyShapeStyle
+        let strokeStyle: AnyShapeStyle
+        let strokeWidth: CGFloat
         if let tone {
-            // 有色调时优先用色调渐变：即使叠在背景图上也能保留「这类卡片是什么」的视觉线索
-            return content
-                .background(shape.fill(LinearGradient(
-                    colors: [tone.opacity(scheme == .dark ? 0.30 : 0.17),
-                             tone.opacity(scheme == .dark ? 0.10 : 0.05)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing)))
-                .overlay(shape.strokeBorder(tone.opacity(scheme == .dark ? 0.38 : 0.30), lineWidth: 1))
-                .clipShape(shape)
+            // 有色调时优先用色调渐变（对齐网页版 .sum / .ai / .gauge 彩色区块）
+            fillStyle = AnyShapeStyle(LinearGradient(
+                colors: [tone.opacity(scheme == .dark ? 0.30 : 0.17),
+                         tone.opacity(scheme == .dark ? 0.10 : 0.05)],
+                startPoint: .topLeading, endPoint: .bottomTrailing))
+            strokeStyle = AnyShapeStyle(tone.opacity(scheme == .dark ? 0.38 : 0.30))
+            strokeWidth = 1
+        } else {
+            fillStyle = AnyShapeStyle(usePhotoPanel
+                ? (scheme == .dark ? Color.black : Color.white).opacity(veil)
+                : fallback)
+            strokeStyle = AnyShapeStyle(Color.primary.opacity(0.10))
+            strokeWidth = 0.5
         }
-        let fill = usePhotoPanel
-            ? (scheme == .dark ? Color.black : Color.white).opacity(veil)
-            : fallback
         return content
-            .background(shape.fill(fill))
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5))
+            .background(shape.fill(fillStyle))
+            .overlay(shape.strokeBorder(strokeStyle, lineWidth: strokeWidth))
             .clipShape(shape)
     }
 }
