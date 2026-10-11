@@ -70,14 +70,16 @@ struct MetricGrid: View {
     }
 }
 
-/// 半透明磨砂卡片底，配合自定义背景图也能读清。
+/// 半透明磨砂卡片底，配合自定义背景图也能读清。带 tone 时给卡片上色。
 private struct CardSurfaceModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    var tone: Color? = nil
     func body(content: Content) -> some View {
         content
             .padding(12)
             .photoPanelBackground(cornerRadius: 14,
-                fallback: scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.62))
+                fallback: scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.62),
+                tone: tone)
     }
 }
 
@@ -90,15 +92,28 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
     @AppStorage("guanpan.native.background.panelImprint") private var panelImprint = true
     let cornerRadius: CGFloat
     let fallback: Color
+    /// 非 nil 时给卡片上色（网页版 .sum / .ai / .gauge 那类彩色区块）。
+    /// App 原来所有卡片都是系统灰白，看起来「没有颜色」——不是苹果限制，只是没上色。
+    var tone: Color? = nil
 
     func body(content: Content) -> some View {
         let _ = backgroundRevision
         let usePhotoPanel = panelImprint && NativeBackgroundStore.hasActiveBackground
         let veil = min(0.72, max(0.12, 0.38 + overlayOpacity * 0.35))
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if let tone {
+            // 有色调时优先用色调渐变：即使叠在背景图上也能保留「这类卡片是什么」的视觉线索
+            return content
+                .background(shape.fill(LinearGradient(
+                    colors: [tone.opacity(scheme == .dark ? 0.30 : 0.17),
+                             tone.opacity(scheme == .dark ? 0.10 : 0.05)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing)))
+                .overlay(shape.strokeBorder(tone.opacity(scheme == .dark ? 0.38 : 0.30), lineWidth: 1))
+                .clipShape(shape)
+        }
         let fill = usePhotoPanel
             ? (scheme == .dark ? Color.black : Color.white).opacity(veil)
             : fallback
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return content
             .background(shape.fill(fill))
             .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5))
@@ -107,8 +122,8 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
 }
 
 extension View {
-    func cardSurface() -> some View { modifier(CardSurfaceModifier()) }
-    func photoPanelBackground(cornerRadius: CGFloat, fallback: Color) -> some View {
-        modifier(PhotoPanelBackgroundModifier(cornerRadius: cornerRadius, fallback: fallback))
+    func cardSurface(tone: Color? = nil) -> some View { modifier(CardSurfaceModifier(tone: tone)) }
+    func photoPanelBackground(cornerRadius: CGFloat, fallback: Color, tone: Color? = nil) -> some View {
+        modifier(PhotoPanelBackgroundModifier(cornerRadius: cornerRadius, fallback: fallback, tone: tone))
     }
 }

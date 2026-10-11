@@ -364,7 +364,7 @@ struct DashboardView: View {
                         Text("今日盈亏按最近一次拿到的涨跌幅反推昨收估算，没取到行情时显示 --，不臆测补数。")
                             .scaledFont(10).foregroundStyle(.secondary)
                     }
-                    .cardSurface()
+                    .cardSurface(tone: store.totalPnL > 0.005 ? PnLColor.up : store.totalPnL < -0.005 ? PnLColor.down : nil)
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
                 } header: { Text("账户") }
@@ -374,19 +374,32 @@ struct DashboardView: View {
                 }
                 Section("自选与场内持仓情绪") {
                     if let mood = store.marketMood {
+                        // marketMood.average 是小数比率（0.01 = 1%），阈值与显示都按百分数走
                         let strength = mood.average * 100
                         let label = strength >= 1.5 ? "偏强" : strength >= 0.3 ? "微暖" : strength > -0.3 ? "中性" : strength > -1.5 ? "偏弱" : "疲弱"
-                        HStack {
-                            Text("平均涨跌幅（\(mood.count) 只）")
-                            Spacer()
-                            Text("\((mood.average).directionMark()) \((mood.average * 100).pct(2))")
-                                .monospacedDigit()
-                                .foregroundStyle(mood.average >= 0 ? .red : .green)
-                            Text(label).foregroundStyle(.secondary)
+                        // 卡片配色跟情绪走（对齐网页版 .gauge 彩色卡）：微暖偏红、偏弱偏绿、中性灰
+                        let tone: Color = strength >= 0.3 ? PnLColor.up
+                            : strength <= -0.3 ? PnLColor.down
+                            : Color.gray
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("市场情绪（自选/持仓均涨幅）")
+                                    .scaledFont(12, weight: .semibold)
+                                Spacer(minLength: 8)
+                                Text("\(strength.directionMark()) \(strength.pct(2))")
+                                    .scaledFont(15, weight: .bold).monospacedDigit()
+                                    .foregroundStyle(tone == Color.gray ? Color.primary : tone)
+                                Text(label)
+                                    .scaledFont(12, weight: .semibold)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Capsule().fill(tone.opacity(0.18)))
+                                    .foregroundStyle(tone == Color.gray ? Color.secondary : tone)
+                            }
+                            MoodGauge(average: strength)
+                            Text("共 \(mood.count) 只标的等权计算，只反映最近一次成功获取的报价，不代表整个市场。")
+                                .scaledFont(10).foregroundStyle(.secondary)
                         }
-                        ProgressView(value: min(1, max(0, 0.5 + mood.average * 10)))
-                        Text("按自选与场内持仓标的等权计算，只反映最近一次成功获取的报价，不代表整个市场。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        .toneCard(tone, isLight: AppTheme.palette(for: store.appearance).isLight)
                     } else {
                         Text("获取行情后显示自选与场内持仓的平均涨跌幅。")
                             .foregroundStyle(.secondary)
@@ -595,7 +608,8 @@ struct DashboardView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .photoPanelBackground(cornerRadius: 16,
-            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72))
+            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
+            tone: accent)
         // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
         .combineAccessibility()
         .accessibilityLabel(watchSpokenLabel(q))
@@ -1119,6 +1133,8 @@ struct HoldingsView: View {
             let pnlValue = store.pnl(of: kind)
             let count = holdings.filter { $0.quantity > 0 }.count
             let dayValue = store.dayPnL(of: kind)
+            // 网页版的资产汇总卡是彩色区块（.sum）；这里按浮盈亏红绿上色，不再是一片灰白
+            let cardTone: Color? = pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1149,7 +1165,7 @@ struct HoldingsView: View {
                      : "只统计本页 ETF / 证券；场外基金不计入。账户页「总资产」才是两者合计。")
                     .scaledFont(10).foregroundStyle(.secondary)
             }
-            .cardSurface()
+            .cardSurface(tone: cardTone)
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
         }
@@ -1237,7 +1253,8 @@ struct HoldingsView: View {
         }
         .padding(12)
         .photoPanelBackground(cornerRadius: 16,
-            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72))
+            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
+            tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
         .contentShape(Rectangle())
         // 左滑动作对齐养基宝的「后面有很多」：删除仍是全滑直达，
         // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
@@ -2430,7 +2447,9 @@ struct AssetsView: View {
                             .scaledFont(10).foregroundStyle(.secondary)
                         Button("记录现金转入 / 转出") { showCashFlow = true }
                     }
-                    .cardSurface()
+                    .cardSurface(tone: store.hasDayPnL
+                                 ? (store.dayPnL > 0.005 ? PnLColor.up : store.dayPnL < -0.005 ? PnLColor.down : nil)
+                                 : (store.totalPnL > 0.005 ? PnLColor.up : store.totalPnL < -0.005 ? PnLColor.down : nil))
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
                 } header: { Text("账户总览") }
@@ -3620,8 +3639,8 @@ struct FundDCAReplayView: View {
                         LabeledContent("累计投入", value: (result.invested).cny())
                         LabeledContent("期末份额", value: (result.shares).num(2))
                         LabeledContent("按最近净值折算", value: (result.value).cny())
-                        LabeledContent("定投收益率", value: (result.dcaReturn / 100).pct(2))
-                        LabeledContent("一次性买入收益率", value: (result.lumpReturn / 100).pct(2))
+                        LabeledContent("定投收益率", value: result.dcaReturn.pct(2))
+                        LabeledContent("一次性买入收益率", value: result.lumpReturn.pct(2))
                         LabeledContent("最近已公布净值", value: (result.latestNAV).num(4))
                     }
                 } else if !funds.isEmpty {
@@ -3978,6 +3997,11 @@ struct AIAnalysisView: View {
                             .font(.subheadline)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .photoPanelBackground(cornerRadius: 14,
+                                fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
+                                tone: Color(red: 0.61, green: 0.42, blue: 1.0))
                     }
                 }
                 Section("投资偏好（会随分析请求发送）") {
@@ -4079,6 +4103,11 @@ struct AIAnalysisView: View {
                 if !result.isEmpty {
                     Section("分析结果") {
                         Text(result).textSelection(.enabled)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .photoPanelBackground(cornerRadius: 14,
+                                fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
+                                tone: Color(red: 0.61, green: 0.42, blue: 1.0))
                         Text("模型输出可能有误。价格/净值可能延迟；请核对行情与基金净值，不要仅依据模型文字交易。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }

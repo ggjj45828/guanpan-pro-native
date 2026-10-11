@@ -249,7 +249,7 @@ enum AIAnalysisService {
         let weighted = data.holdings.reduce(0.0) { $0 + $1.marketValue }
         let exposureText = data.holdings.sorted { $0.marketValue > $1.marketValue }.map { item in
             let weight = data.cash + weighted > 0 ? item.marketValue / (data.cash + weighted) * 100 : 0
-            return "\(item.name)占总资产约\(weight.num(1))%（账面盈亏\(fmt(item.pnl)），单标的上限\(fmt(p.maxPositionPercent))%）"
+            return "\(item.name)占总资产约\(weight.num(1))%（账面盈亏\(fmt(item.pnl))，单标的上限\(fmt(p.maxPositionPercent))%）"
         }.joined(separator: "\n")
         let exposureSummary = exposureText.isEmpty ? "暂无持仓" : exposureText
         return """
