@@ -130,6 +130,8 @@ struct PortfolioAnalysisView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("资产穿透与压力测试")
             .keyboardDoneToolbar()
             .task { await refreshFX(force: false) }

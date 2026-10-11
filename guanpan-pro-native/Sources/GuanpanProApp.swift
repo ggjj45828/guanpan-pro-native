@@ -9,13 +9,12 @@ struct GuanpanProApp: App {
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
 
     init() {
-        // 让 App 内所有 List / Form 都透明，自定义背景图与主题底色才能真正透出来。
-        // SwiftUI 的 `.scrollContentBackground(.hidden)` 只能作用于单个 List，
-        // 不会沿视图层级传递 —— 之前只加在根 TabView 上，29 个 List 全部保持不透明背景，
-        // 表现就是「换背景没反应」「背景透明度不起作用」。
-        // iOS 17 的 List 底层是 UICollectionView，Form 是 UITableView，统一改 appearance 即可全局生效。
+        // UIKit appearance 只负责清理滚动容器和列表 cell 的底色；每个 List / Form
+        // 还必须单独隐藏 scrollContentBackground，否则它自己的系统背景仍会盖住主题图。
         UIScrollView.appearance().backgroundColor = .clear
         UICollectionView.appearance().backgroundColor = .clear
+        UICollectionViewCell.appearance().backgroundColor = .clear
+        UICollectionViewListCell.appearance().backgroundColor = .clear
         UITableView.appearance().backgroundColor = .clear
         UITableViewCell.appearance().backgroundColor = .clear
         UINavigationBar.appearance().backgroundColor = .clear

@@ -63,6 +63,8 @@ struct FundReconciliationView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("基金流水核对")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }

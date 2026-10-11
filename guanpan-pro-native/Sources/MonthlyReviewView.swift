@@ -86,6 +86,8 @@ struct MonthlyReviewView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("月度投资复盘")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { ShareLink(item: reportText) { Image(systemName: "square.and.arrow.up") } }

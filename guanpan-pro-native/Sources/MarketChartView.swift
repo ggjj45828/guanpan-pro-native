@@ -52,7 +52,8 @@ private struct PriceLevelSummary {
 private enum MAVisibility {
     static let key = "guanpan.native.ma.visible"
     static func read() -> Set<Int> {
-        let raw = UserDefaults.standard.string(forKey: key) ?? "5,10,20,60"
+        // 日K 默认只显示两条常用线，避免初次打开就遮住K线；其余可在图例按需打开。
+        let raw = UserDefaults.standard.string(forKey: key) ?? "5,20"
         return Set(raw.split(separator: ",").compactMap { Int($0) })
     }
     static func write(_ set: Set<Int>) {
@@ -398,7 +399,7 @@ struct MarketChartView: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 4) {
                             if let quote {
-                                Text((quote.changePct).pct(2))
+                                Text((quote.changePct * 100).pct(2))
                                     .foregroundStyle(quote.changePct >= 0 ? .red : .green).font(.headline)
                             } else {
                                 Text("涨跌幅待更新").font(.caption).foregroundStyle(.secondary)
@@ -628,6 +629,9 @@ struct MarketChartView: View {
             .navigationTitle("日K与指标")
             .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
+            .scrollContentBackground(.hidden)
+            .background(.clear)
+            .presentationBackground(.ultraThinMaterial)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 ToolbarItem(placement: .topBarLeading) {
@@ -649,6 +653,9 @@ struct MarketChartView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .navigationTitle("\(holding.name) · AI 分析")
+                    .scrollContentBackground(.hidden)
+                    .background(.clear)
+                    .presentationBackground(.ultraThinMaterial)
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { showInstrumentAI = false } } }
                     .task { await analyzeInstrument() }
                 }
@@ -710,8 +717,8 @@ struct MarketChartView: View {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
-        for source in [average(5, source: bars), average(10, source: bars),
-                       average(20, source: bars), average(60, source: bars)] {
+        for window in [5, 10, 20, 60] where maVisible.contains(window) {
+            let source = average(window, source: bars)
             for point in source {
                 low = min(low, point.value)
                 high = max(high, point.value)
@@ -854,25 +861,25 @@ struct MarketChartView: View {
             }
             if maVisible.contains(5) {
                 ForEach(average(5, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
+                    LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
                         .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
             if maVisible.contains(10) {
                 ForEach(average(10, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
+                    LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
                         .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
             if maVisible.contains(20) {
                 ForEach(average(20, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
+                    LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
                         .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
             if maVisible.contains(60) {
                 ForEach(average(60, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
+                    LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
                         .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 2))
                 }
             }
@@ -1024,10 +1031,12 @@ struct MarketChartView: View {
         instrumentAIMessage = ""
         defer { instrumentAIBusy = false }
         let quote = store.data.quotes.first(where: { $0.code == holding.code })
+        let actualHolding = store.data.holdings.first(where: { $0.code == holding.code && $0.kind == .etf }) ?? holding
         do {
             instrumentAIResult = try await AIAnalysisService.analyzeInstrument(
-                config: store.data.aiAnalysisConfig, holding: holding, quote: quote, bars: allBars,
-                intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText)
+                config: store.data.aiAnalysisConfig, holding: actualHolding, quote: quote, bars: allBars,
+                intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText,
+                profile: store.data.investmentProfile, totalAsset: store.totalAsset)
         } catch { instrumentAIMessage = error.localizedDescription }
     }
 }
@@ -1073,8 +1082,9 @@ struct LandscapeChartView: View {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
-        for source in [average(5, source: bars), average(10, source: bars),
-                       average(20, source: bars), average(60, source: bars)] {
+        let visibleWindows = [5, 10, 20, 60].filter { maVisible.contains($0) }
+        for window in visibleWindows {
+            let source = average(window, source: bars)
             for point in source {
                 low = min(low, point.value)
                 high = max(high, point.value)
@@ -1105,7 +1115,8 @@ struct LandscapeChartView: View {
                 }
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(.clear)
+        .presentationBackground(.ultraThinMaterial)
         .onAppear { OrientationLock.shared.lockLandscape() }
         .onDisappear { OrientationLock.shared.unlock() }
     }
@@ -1118,6 +1129,7 @@ struct LandscapeChartView: View {
                     .font(.title3).foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("关闭横屏图表")
             VStack(alignment: .leading, spacing: 1) {
                 Text(holding.name.isEmpty ? holding.code : holding.name)
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
@@ -1127,7 +1139,7 @@ struct LandscapeChartView: View {
             Text((quote?.price ?? holding.current).num(3))
                 .font(.system(.headline, design: .rounded)).monospacedDigit()
             if let quote {
-                Text((quote.changePct).pct(2))
+                Text((quote.changePct * 100).pct(2))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(quote.changePct >= 0 ? .red : .green)
             }
@@ -1139,6 +1151,7 @@ struct LandscapeChartView: View {
             Button { showVolume.toggle() } label: {
                 Image(systemName: showVolume ? "chart.bar.fill" : "chart.bar").font(.caption)
             }.buttonStyle(.bordered)
+                .accessibilityLabel(showVolume ? "隐藏成交量" : "显示成交量")
             Button("复位") { zoom = 1 }.buttonStyle(.bordered)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
@@ -1184,25 +1197,25 @@ struct LandscapeChartView: View {
                 }
                 if maVisible.contains(5) {
                     ForEach(average(5, source: visibleBars)) { point in
-                        LineMark(x: .value("日期", point.date), y: .value("MA5", point.value))
+                        LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
                             .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 2))
                     }
                 }
                 if maVisible.contains(10) {
                     ForEach(average(10, source: visibleBars)) { point in
-                        LineMark(x: .value("日期", point.date), y: .value("MA10", point.value))
+                        LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
                             .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 2))
                     }
                 }
                 if maVisible.contains(20) {
                     ForEach(average(20, source: visibleBars)) { point in
-                        LineMark(x: .value("日期", point.date), y: .value("MA20", point.value))
+                        LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
                             .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 2))
                     }
                 }
                 if maVisible.contains(60) {
                     ForEach(average(60, source: visibleBars)) { point in
-                        LineMark(x: .value("日期", point.date), y: .value("MA60", point.value))
+                        LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
                             .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 2))
                     }
                 }

@@ -5,6 +5,7 @@ struct Quote: Codable, Identifiable {
     var code: String
     var name: String
     var price: Double
+    /// 涨跌比例按小数存储：0.0123 表示上涨 1.23%；用于界面百分数时需乘 100。
     var changePct: Double
     var updatedAt: Date?
     /// 自选分组名。空串归入「未分组」。
@@ -509,7 +510,7 @@ struct AIAnalysisConfig: Codable {
     var endpoint = "https://api.deepseek.com"
     var model = "deepseek-flash"
     var timeoutSeconds = 45
-    var systemPrompt = "你是一个谨慎的投资研究助手。依据给定数据总结趋势、风险与待核对信息，不预测确定收益，不替用户下单。明确区分事实和推断。"
+    var systemPrompt = "你是一个谨慎但有判断力的投资研究助手。结合用户真实持仓、成本、仓位约束与投资期限，给出有条件、可执行的下一步计划和失效条件；不要逐项复述指标。只依据输入，区分事实和推断，说明数据缺口，不编造外部消息，不承诺收益，不自动交易。"
 
     private enum CodingKeys: String, CodingKey { case endpoint, model, timeoutSeconds, systemPrompt }
 
@@ -521,7 +522,7 @@ struct AIAnalysisConfig: Codable {
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         timeoutSeconds = min(180, max(5, try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds) ?? 45))
         systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
-            ?? "你是一个谨慎的投资研究助手。依据给定数据总结趋势、风险与待核对信息，不预测确定收益，不替用户下单。明确区分事实和推断。"
+            ?? "你是一个谨慎但有判断力的投资研究助手。结合用户真实持仓、成本、仓位约束与投资期限，给出有条件、可执行的下一步计划和失效条件；不要逐项复述指标。只依据输入，区分事实和推断，说明数据缺口，不编造外部消息，不承诺收益，不自动交易。"
     }
 }
 

@@ -247,6 +247,7 @@ struct DashboardView: View {
     @EnvironmentObject var store: PortfolioStore
     @AppStorage("guanpan.native.watch.sort") private var sortMode: WatchSortMode = .manual
     @AppStorage("guanpan.native.watch.grouping") private var groupEnabled = false
+    @Environment(\.colorScheme) private var colorScheme
     @State private var searchText = ""
     /// 非 nil 时为「新建分组」弹窗的目标标的代码
     @State private var groupEditor: String?
@@ -378,7 +379,7 @@ struct DashboardView: View {
                         HStack {
                             Text("平均涨跌幅（\(mood.count) 只）")
                             Spacer()
-                            Text("\((mood.average).directionMark()) \((mood.average).pct(2))")
+                            Text("\((mood.average).directionMark()) \((mood.average * 100).pct(2))")
                                 .monospacedDigit()
                                 .foregroundStyle(mood.average >= 0 ? .red : .green)
                             Text(label).foregroundStyle(.secondary)
@@ -430,7 +431,9 @@ struct DashboardView: View {
                         for index in offsets { store.removeQuoteAlert(rows[index]) }
                     }
                 }
-            }.navigationTitle("总览")
+            }
+            .scrollContentBackground(.hidden)
+            .background(.clear).navigationTitle("总览")
             .navigationBarTitleDisplayMode(.large)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .refreshable { await store.refreshQuotesAndWait() }
@@ -541,7 +544,7 @@ struct DashboardView: View {
                             .font(.system(.title3, design: .rounded, weight: .semibold))
                             .monospacedDigit()
                         // 方向符号：色盲 / 灰度打印时也能分辨涨跌，不单靠红绿
-                        Text("\((q.changePct).directionMark()) \((q.changePct).pct(2))")
+                        Text("\((q.changePct).directionMark()) \((q.changePct * 100).pct(2))")
                             .font(.caption.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(accent)
@@ -591,10 +594,8 @@ struct DashboardView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground).opacity(0.72),
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .stroke(Color.primary.opacity(0.06), lineWidth: 1))
+        .photoPanelBackground(cornerRadius: 16,
+            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72))
         // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
         .combineAccessibility()
         .accessibilityLabel(watchSpokenLabel(q))
@@ -603,7 +604,7 @@ struct DashboardView: View {
     /// 自选卡片的读屏文案。价格可能缺失，缺了就说「无报价」而不是念 0。
     private func watchSpokenLabel(_ q: Quote) -> String {
         let price = q.price > 0 ? "现价 \(q.price.num(3))" : "无报价"
-        return "\(displayName(q))，代码 \(q.code)，\(price)，\(spokenPercent(q.changePct))"
+        return "\(displayName(q))，代码 \(q.code)，\(price)，\(spokenPercent(q.changePct * 100))"
     }
 
     @ViewBuilder private func watchContextMenu(_ q: Quote) -> some View {
@@ -691,6 +692,8 @@ struct MoreHubView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("更多")
             .navigationBarTitleDisplayMode(.large)
             .sheet(isPresented: $showTools) { ToolsView() }
@@ -835,6 +838,8 @@ struct QuoteAlertEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 if !error.isEmpty { Text(error).foregroundStyle(.red) }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("价格提醒")
             .keyboardDoneToolbar()
             .toolbar {
@@ -905,7 +910,9 @@ struct WatchEditor: View {
                     Text("分组只影响自选列表的显示与排序，不影响行情与持仓。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-            }.navigationTitle("添加自选").keyboardDoneToolbar()
+            }
+            .scrollContentBackground(.hidden)
+            .background(.clear).navigationTitle("添加自选").keyboardDoneToolbar()
                 .task(id: code) {
                     let requested = code.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard requested.count == 6 else { name = ""; return }
@@ -1067,6 +1074,8 @@ struct HoldingsView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle(title)
             .refreshable {
@@ -1082,6 +1091,7 @@ struct HoldingsView: View {
                             .accessibilityLabel("刷新基金净值")
                     }
                     Button { showAdd = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel(kind == .fund ? "添加基金持仓" : "添加 ETF / 证券持仓")
                 }
             }
         }
@@ -1166,7 +1176,7 @@ struct HoldingsView: View {
                 .foregroundStyle(.secondary)
         }
         ForEach(rows) { h in
-            holdingRow(h)
+            holdingRow(h).listRowBackground(Color.clear)
         }
     }
 
@@ -1176,7 +1186,7 @@ struct HoldingsView: View {
         // 缺当日行情时显示 --，不把「没数据」画成 0。
         let dayValue = store.dayPnL(of: h)
         let hasDay = store.marketChanges[h.code] != nil
-        let dayPercent: Double? = hasDay ? (store.marketChanges[h.code]) : nil
+        let dayPercent: Double? = hasDay ? store.marketChanges[h.code].map { $0 * 100 } : nil
         let costBasis = h.quantity * store.displayedCost(for: h)
         let holdingPnL = store.holdingPnL(h)
         let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
@@ -1207,9 +1217,10 @@ struct HoldingsView: View {
                     Text("最新净值日期：\(latest.date)").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            HStack {
+            // 小屏/大字号下将操作按钮自动换行，避免“基金工具 / 定投 / 编辑”等入口被挤出屏幕。
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 82, maximum: 150), alignment: .leading)],
+                      alignment: .leading, spacing: 4) {
                 Button("买入 / 卖出") { tradeTarget = h }
-                Spacer()
                 if kind == .fund {
                     if h.quantity > 0 && !store.data.fundTransactions.contains(where: { $0.code == h.code && $0.side == .buy }) {
                         Button("补录起点") { backfillTarget = h }
@@ -1221,8 +1232,12 @@ struct HoldingsView: View {
                     Button("日K与指标") { marketChartTarget = h }
                 }
                 Button("编辑") { editTarget = h }
-            }.buttonStyle(.borderless).font(.subheadline)
-        }.padding(.vertical, 5)
+            }
+            .buttonStyle(.borderless).font(.subheadline)
+        }
+        .padding(12)
+        .photoPanelBackground(cornerRadius: 16,
+            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72))
         .contentShape(Rectangle())
         // 左滑动作对齐养基宝的「后面有很多」：删除仍是全滑直达，
         // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
@@ -1457,6 +1472,8 @@ struct TradeCSVImportView: View {
                 }
                 if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("导入成交历史")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -1537,6 +1554,8 @@ struct TradeLedgerManagementView: View {
                 }
                 if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.orange) } }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle("交易流水")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -1606,6 +1625,8 @@ struct ArchivedFundHistoryView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle(item.name)
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -1637,6 +1658,8 @@ struct FundBackfillView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("补录基金历史起点")
             .keyboardDoneToolbar()
             .toolbar {
@@ -1691,6 +1714,8 @@ struct FundDCAPlanEditor: View {
                 Text("这是本机定投计划记账，不连接券商、不下单，也不改变参考现金。份额按（计划金额 − 申购费）÷ 对应日已公布净值计算，计划金额计入基金成本。默认申购费率 0.15%，请按基金实际费率修改。每周/每月休市时顺延到同周/当月首个可用净值日；没有对应净值时不猜价、不补成交。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("设置自动定投")
             .keyboardDoneToolbar()
             .toolbar {
@@ -1754,6 +1779,8 @@ struct FundFeePolicyEditor: View {
                 }
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("\(fund.name)赎回费率")
             .keyboardDoneToolbar()
             .toolbar {
@@ -1813,6 +1840,8 @@ struct FundDividendEditor: View {
                 Text("分红会计入累计收益。红利再投资按填写净值增加基金份额和成本；现金分红默认不改参考现金，只有确认资金也记在本程序现金中时才打开上面的开关。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("记录基金分红")
             .keyboardDoneToolbar()
             .onAppear { nav = nav.isEmpty ? String(holding.current) : nav }
@@ -1853,9 +1882,9 @@ struct FundIncomeCalendarView: View {
             List {
                 Section {
                     HStack {
-                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }
+                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.accessibilityLabel("上个月")
                         Spacer(); Text(monthKey).font(.headline)
-                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }
+                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }.accessibilityLabel("下个月")
                     }
                     LabeledContent("本月已记录日收益合计", value: (total).cny())
                     Text("共 \(days.count) 个有数据的净值日。这里只展示已公布净值覆盖且有已确认申购/补录份额依据的基金。")
@@ -1877,6 +1906,8 @@ struct FundIncomeCalendarView: View {
                 Text("日收益按前一净值日已确认份额计算；当日买入不计入当日净值变化，当日赎回份额仍计入；分红金额和申赎费用按流水日计入。手动持仓若缺少历史买入流水，会被排除，因此历史可能不完整。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("基金收益日历")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
@@ -1978,14 +2009,29 @@ struct FundQuantView: View {
                     ForEach(store.data.fundDCAPlans) { plan in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack { Text(plan.name); Spacer(); Text(plan.enabled ? "运行中" : "已暂停").foregroundStyle(plan.enabled ? Color.green : Color.secondary) }
-                            Text("每期 \((plan.amount).cny()) · 已记 \(plan.processedDates.count) 期 · 开始于 \(plan.startDate)")
+                            Text("每期 \(plan.amount.cny()) · 已记 \(plan.processedDates.count) 期 · 开始于 \(plan.startDate)")
                                 .font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button(plan.enabled ? "暂停计划" : "恢复计划") {
+                                    store.setDCAPlan(plan, enabled: !plan.enabled)
+                                }.buttonStyle(.bordered)
+                                Button("删除计划", role: .destructive) { store.removeDCAPlan(plan) }
+                                    .buttonStyle(.bordered)
+                            }.font(.caption)
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("删除", systemImage: "trash", role: .destructive) { store.removeDCAPlan(plan) }
+                            Button(plan.enabled ? "暂停" : "恢复", systemImage: plan.enabled ? "pause.fill" : "play.fill") {
+                                store.setDCAPlan(plan, enabled: !plan.enabled)
+                            }.tint(.orange)
                         }
                     }
                     Text("执行期数依据本机已记录的定投流水，不推断错过期次，也不连接销售平台。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("基金量化体检")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
@@ -2062,6 +2108,8 @@ struct FundNAVHistoryView: View {
                 Text("历史净值变化只反映单位净值变化；“按当前份额折算”没有还原过去每天的实际份额，不能当作历史账户收益。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle(fund.name)
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -2126,6 +2174,8 @@ struct HoldingEditor: View {
                     : "这里只维护本机基金持仓，不连接销售平台或执行申赎。净值以最近已公布数据为准，可在基金页刷新。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .onChange(of: code) { oldValue, newValue in
                 if oldValue != newValue, let initial, initial.code != newValue {
                     name = ""
@@ -2218,6 +2268,8 @@ struct TradeEditor: View {
                 Text(holding.kind == .etf ? "ETF 手续费默认按每笔 0.10 元填写，可按券商实收修改；卖出盈亏按当前成本价计算。是否联动参考现金逐笔选择。" : "基金申赎费优先以实际扣费为准。可按基金合同配置费率与赎回批次策略；估算不等于销售平台最终扣费，交易不会连接销售平台。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("记一笔交易")
             .keyboardDoneToolbar()
             .onChange(of: quantity) { _, _ in clearFundFeeEstimate() }
@@ -2296,6 +2348,8 @@ private struct FundFeeReconciliationEditor: View {
                 }
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("核对实际赎回费")
             .keyboardDoneToolbar()
             .toolbar {
@@ -2461,7 +2515,9 @@ struct AssetsView: View {
                         }
                     }
                 }
-            }.navigationTitle("资产")
+            }
+            .scrollContentBackground(.hidden)
+            .background(.clear).navigationTitle("资产")
                 .refreshable { await store.refreshQuotesAndWait() }
                 .onAppear {
                     if selectedSnapshotMonth.isEmpty { selectedSnapshotMonth = store.snapshotMonths.first ?? "" }
@@ -2540,6 +2596,8 @@ struct CashFlowEditor: View {
                 Text("这里只记录账户外部转入/转出，用于从快照变化中剔除入金影响；不会连接券商。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("现金流记录")
             .keyboardDoneToolbar()
             .toolbar {
@@ -2625,9 +2683,9 @@ struct ETFIncomeCalendarView: View {
             List {
                 Section {
                     HStack {
-                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }
+                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.accessibilityLabel("上个月")
                         Spacer(); Text(monthKey).font(.headline)
-                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }
+                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }.accessibilityLabel("下个月")
                     }
                     Picker("显示", selection: $showRate) {
                         Text("金额").tag(false); Text("收益率").tag(true)
@@ -2699,6 +2757,8 @@ struct ETFIncomeCalendarView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("ETF 收益日历")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
@@ -2815,8 +2875,6 @@ struct ToolsView: View {
     @State private var showTradeLedger = false
     @State private var showMonthlyReview = false
     @State private var showYearlyReview = false
-    @State private var showValuation = false
-    @State private var showCashForecast = false
     @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
     var body: some View {
@@ -2853,13 +2911,6 @@ struct ToolsView: View {
                 Button("收益来源拆解") { showReturnSource = true }
                 Button("历史状态回放") { showHistoricalReplay = true }
                 Text("按日 K 与可用交易流水估算历史持仓收益；缺少行情覆盖的日期会留空，休市日期会标出。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("定投资金安排") {
-                LabeledContent("未来 30 天计划投入", value: (store.plannedDCAAmount(next: 30)).cny())
-                LabeledContent("未来 90 天计划投入", value: (store.plannedDCAAmount(next: 90)).cny())
-                Button("查看未来 30 天现金流明细") { showCashForecast = true }
-                Text("金额汇总按启用的定投计划与工作日粗算；下方明细包含已知休市顺延和未完成交易计划。预测只做情景展示，不检查外部余额、不下单或实际扣减参考现金。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("目标仓位与再平衡参考") {
@@ -2985,7 +3036,7 @@ struct ToolsView: View {
             }
             Section("AI 账户分析") {
                 Button("配置接口并分析") { showAIAnalysis = true }
-                Text("只在你点击分析时，将已保存的投资偏好、当前持仓、自选行情、现金和最近 20 条快照发送给你配置的模型接口。结果供研究参考，不会自动交易。")
+                Text("本机可先给出全账户规则建议；只有点击大模型深度分析时，才会发送投资偏好、持仓、自选行情、场内/场外基金流水、定投、基金成分、现金流和快照。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("日线量化信号") {
@@ -3005,11 +3056,6 @@ struct ToolsView: View {
             Section("AI 账户智能画像") {
                 Button("看系统怎么评价我的操作习惯") { showPortrait = true }
                 Text("对齐网页版「私人顾问 · 画像」：从交易流水推断风格、胜率、费用拖累、集中度与定投纪律，规则引擎本机先算，配了密钥可让大模型深度推断。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("单只位置体检") {
-                Button("值不值得买：当前价格在历史区间的位置") { showValuation = true }
-                Text("只用本机日线回答「现价在自己近 120/250/640 日区间里处于什么位置」，不是 PE / PB 基本面估值，不包含财报，也不预测涨跌。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("券商成交历史导入") {
@@ -3044,7 +3090,9 @@ struct ToolsView: View {
             }
             Text("AI 分析只读取本机已记录的数据；缺少有效日线或资讯时，不会提供相应技术判断或新闻结论。")
                 .font(.footnote).foregroundStyle(.secondary)
-        }.navigationTitle("工具")
+        }
+        .scrollContentBackground(.hidden)
+        .background(.clear).navigationTitle("工具")
             .sheet(isPresented: $showGrid) { DayGridView() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
             .sheet(isPresented: $showPortrait) { AccountPortraitView() }
@@ -3066,8 +3114,6 @@ struct ToolsView: View {
             .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() }
             .sheet(isPresented: $showMonthlyReview) { MonthlyReviewView() }
             .sheet(isPresented: $showYearlyReview) { YearlyReviewView() }
-            .sheet(isPresented: $showValuation) { ValuationView() }
-            .sheet(isPresented: $showCashForecast) { CashForecastView() }
             .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() }
             .sheet(item: $targetEdit) { holding in
                 AllocationTargetEditor(holding: holding,
@@ -3242,6 +3288,8 @@ struct PortfolioScenarioView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("换仓情景试算")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
@@ -3323,6 +3371,8 @@ struct DividendCalendarView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("分红日历")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
@@ -3363,6 +3413,8 @@ struct LedgerHealthView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("账本体检")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
@@ -3482,6 +3534,8 @@ struct ETFOverlapView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("ETF 持仓穿透")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
@@ -3575,6 +3629,8 @@ struct FundDCAReplayView: View {
                         .font(.footnote).foregroundStyle(.secondary) }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("历史定投回放")
             .keyboardDoneToolbar()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -3637,6 +3693,8 @@ struct AddCashSimulationView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("加仓试算")
             .keyboardDoneToolbar()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -3717,14 +3775,25 @@ struct TradePlansView: View {
                                 .font(.footnote).foregroundStyle(variance >= 0 ? .green : .orange)
                         }
                         if !plan.review.isEmpty { Text("复盘：\(plan.review)").font(.footnote).foregroundStyle(.secondary) }
-                        HStack {
-                            if plan.status != .cancelled { Button(plan.status == .reviewed ? "修改复盘" : "记录执行/复盘") { reviewTarget = plan } }
-                            if plan.status == .planned { Button("取消计划", role: .destructive) { update(plan, status: .cancelled) } }
-                            Button("删除", role: .destructive) { store.data.tradePlans.removeAll { $0.id == plan.id }; store.save(label: "修改账本或设置") }
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), alignment: .leading)], alignment: .leading, spacing: 8) {
+                            if plan.status != .cancelled {
+                                Button(plan.status == .reviewed ? "修改复盘" : "记录执行/复盘") { reviewTarget = plan }
+                                    .buttonStyle(.bordered)
+                            }
+                            if plan.status == .planned {
+                                Button("取消计划", role: .destructive) { update(plan, status: .cancelled) }
+                                    .buttonStyle(.bordered)
+                            }
+                            Button("删除", role: .destructive) {
+                                store.data.tradePlans.removeAll { $0.id == plan.id }
+                                store.save(label: "修改账本或设置")
+                            }.buttonStyle(.bordered)
                         }.font(.caption)
                     }.padding(.vertical, 4)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("交易计划与复盘")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
@@ -3793,6 +3862,8 @@ private struct TradePlanEditor: View {
                     if !message.isEmpty { Text(message).foregroundStyle(.red) }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("新建交易计划")
             .keyboardDoneToolbar()
             .toolbar {
@@ -3844,6 +3915,8 @@ private struct TradePlanReviewEditor: View {
                 Section("复盘") { TextField("记录执行结果与判断依据", text: $review, axis: .vertical).lineLimit(4...8) }
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("交易复盘")
             .keyboardDoneToolbar()
             .toolbar {
@@ -3873,6 +3946,8 @@ struct AIAnalysisView: View {
     @State private var model = ""
     @State private var timeoutSeconds = 45
     @State private var systemPrompt = ""
+    @State private var showPortrait = false
+    @State private var advisorResult = ""
     @State private var investmentProfile = InvestmentProfile()
     @State private var token = ""
     @State private var keySaved = false
@@ -3883,6 +3958,28 @@ struct AIAnalysisView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("先看账户画像") {
+                    Button { showPortrait = true } label: {
+                        Label("打开 AI 智能画像", systemImage: "person.text.rectangle")
+                    }
+                    Text("画像先依据本机持仓和流水分析；只有你主动点击大模型深度推断时才会发送画像数据。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("私人顾问 · 全账户建议") {
+                    Button {
+                        advisorResult = LocalAdvisorEngine.review(data: store.data, totalAsset: store.totalAsset)
+                    } label: {
+                        Label("给我建议", systemImage: "sparkles")
+                    }
+                    Text("本机先检查全部持仓、现金、已设置的单仓上限、可用基金成分和真实流水，并按交易画像给出优先动作；无需 API Key。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if !advisorResult.isEmpty {
+                        Text(advisorResult)
+                            .font(.subheadline)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Section("投资偏好（会随分析请求发送）") {
                     Picker("交易风格", selection: $investmentProfile.style) {
                         Text("超短线").tag("day"); Text("波段").tag("swing"); Text("中线").tag("mid"); Text("长线定投").tag("long")
@@ -3972,10 +4069,10 @@ struct AIAnalysisView: View {
                     Button { Task { await runAnalysis() } } label: {
                         HStack {
                             if busy { ProgressView().padding(.trailing, 4) }
-                            Text(busy ? "正在分析…" : "开始 AI 分析")
+                            Text(busy ? "正在分析…" : "大模型深度分析")
                         }
                     }.disabled(busy || !keySaved)
-                    Text("点击后会把投资偏好、当前持仓、自选行情、参考现金及最近 20 条快照发送至上述接口。请不要在提示中加入账户密码或其他敏感信息。")
+                    Text("点击后会把投资偏好、全部持仓、自选报价、场内与场外基金流水、定投计划、基金成分报告、参考现金、最近快照和现金流记录发送至上述接口。请不要在提示中加入账户密码或其他敏感信息。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary) }
@@ -3989,6 +4086,10 @@ struct AIAnalysisView: View {
             }
             .navigationTitle("AI 账户分析")
             .keyboardDoneToolbar()
+            .scrollContentBackground(.hidden)
+            .background(.clear)
+            .presentationBackground(.ultraThinMaterial)
+            .sheet(isPresented: $showPortrait) { AccountPortraitView() }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear {
                 endpoint = store.data.aiAnalysisConfig.endpoint
@@ -4037,6 +4138,8 @@ struct AllocationTargetEditor: View {
                     Button("删除目标", role: .destructive) { store.removeAllocationTarget(for: holding); dismiss() }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("设置目标仓位")
             .keyboardDoneToolbar()
             .toolbar {
@@ -4206,6 +4309,8 @@ struct DayGridView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("日内网格 / 复盘")
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
@@ -4275,6 +4380,7 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
+    @AppStorage("guanpan.native.background.panelImprint") private var backgroundPanelImprint = true
     /// 背景毛玻璃强度。和压暗分离：压暗只降亮度，毛玻璃把底图糊化，亮图上的白字才不会糊。
     @AppStorage("guanpan.native.background.blur") private var backgroundBlur = 0.32
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
@@ -4364,6 +4470,9 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .keyboardDoneToolbar()
+            .scrollContentBackground(.hidden)
+            .background(.clear)
+            .presentationBackground(.ultraThinMaterial)
         }
     }
 
@@ -4558,10 +4667,22 @@ struct SettingsView: View {
                 Button("清除背景", role: .destructive) { NativeBackgroundStore.remove() }
             }
             if !backgroundMessage.isEmpty { Text(backgroundMessage).font(.footnote).foregroundStyle(.secondary) }
+            Toggle("图片融合到面板（网页版风格）", isOn: $backgroundPanelImprint)
+            Text("开启后，行情卡片和汇总卡会透出背景图；透明度滑块同时调整背景遮罩和卡片保护层。")
+                .font(.footnote).foregroundStyle(.secondary)
+            Button {
+                backgroundPanelImprint = true
+                backgroundOverlayOpacity = 0.08
+                backgroundBlur = 0
+            } label: {
+                Label("网页版通透背景", systemImage: "sparkles.rectangle.stack")
+            }
+            Text("一键启用网页版式的图片面板融合，降低背景遮罩并关闭毛玻璃；下方仍可分别微调。")
+                .font(.footnote).foregroundStyle(.secondary)
             VStack(alignment: .leading) {
                 HStack { Text("背景透明度"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
-                // 下限 0.08 → 0.15：低于此值时亮背景图上的文字对比度不足。
-                Slider(value: $backgroundOverlayOpacity, in: 0.15...0.82, step: 0.02)
+                // 可降至 2%，适合想让图片清晰透出的用户；需要更强对比可提高遮罩或毛玻璃。
+                Slider(value: $backgroundOverlayOpacity, in: 0.02...0.82, step: 0.02)
             }
             VStack(alignment: .leading) {
                 HStack { Text("背景毛玻璃"); Spacer(); Text("\(Int(backgroundBlur * 100))%") }.font(.subheadline)
@@ -4952,6 +5073,8 @@ struct OperationHistoryView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("操作记录")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -4998,6 +5121,9 @@ private struct ManualQuoteOverrideEditor: View {
                     ManualQuoteOverrideRow(instrument: item, value: store.data.manualQuoteOverrides[item.code])
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
+            .keyboardDoneToolbar()
             .navigationTitle("手动填价")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }

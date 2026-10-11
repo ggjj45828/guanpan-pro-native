@@ -110,6 +110,8 @@ struct DataTrustView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("数据可信度")
         }
     }

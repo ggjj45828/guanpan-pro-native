@@ -37,7 +37,8 @@ struct AccountPortrait {
     var suggestedHorizon: String = "1-3个月"
     var inferredMethod: String = ""
     var sampleSize: Int = 0
-    var hasData: Bool { sampleSize > 0 }
+    var hasAccountData = false
+    var hasData: Bool { sampleSize > 0 || hasAccountData }
 }
 
 // MARK: 规则推断引擎
@@ -45,6 +46,7 @@ struct AccountPortrait {
 enum PortraitEngine {
     static func compute(data: PortfolioData, totalAsset: Double) -> AccountPortrait {
         var out = AccountPortrait()
+        out.hasAccountData = !data.holdings.isEmpty || data.cash > 0 || !data.snapshots.isEmpty
 
         // ---- 交易样本：ETF 台账 + 基金流水（分红不算交易；自动定投单独标记）----
         let etfBuys = data.ledger.filter { $0.side == .buy }
@@ -116,8 +118,8 @@ enum PortraitEngine {
         if let fr = feeRate, fr >= 0.5 { out.tags.append(PortraitTag(text: "费用拖累 \(fr.num(2))%", tone: -1)) }
 
         // ---- 指标行 ----
-        out.metrics.append(PortraitMetric(title: "手动交易笔数", value: "\(manualTrades) 笔", tone: nil))
-        out.metrics.append(PortraitMetric(title: "交易频率", value: "\(perMonth.num(1)) 笔/月", tone: perMonth >= 8 ? false : nil))
+        out.metrics.append(PortraitMetric(title: "手动交易笔数", value: manualTrades == 0 && out.hasAccountData ? "暂无流水" : "\(manualTrades) 笔", tone: nil))
+        out.metrics.append(PortraitMetric(title: "交易频率", value: manualTrades == 0 && out.hasAccountData ? "样本不足" : "\(perMonth.num(1)) 笔/月", tone: manualTrades == 0 ? nil : perMonth >= 8 ? false : nil))
         out.metrics.append(PortraitMetric(title: "卖出胜负", value: wins + losses == 0 ? "暂无卖出" : "\(wins) 胜 \(losses) 负", tone: nil))
         if let wr = winRate {
             out.metrics.append(PortraitMetric(title: "卖出胜率", value: wr.pct(1), tone: wr >= 50 ? true : false))
@@ -137,8 +139,10 @@ enum PortraitEngine {
             lines.append("平均每月 \(perMonth.num(1)) 笔手动交易，节奏适中。保持「计划先行」的习惯比增加次数更有价值。")
         } else if out.sampleSize > 0 {
             lines.append("手动交易很少（\(manualTrades) 笔），更接近低频 / 定投风格。账户波动主要来自持仓本身而非操作。")
+        } else if out.hasAccountData {
+            lines.append("目前缺少买卖流水，无法判断交易频率或胜率；以下只按当前持仓集中度和现金比例分析账户结构。补录流水后再生成行为结论。")
         } else {
-            lines.append("账本里还没有足够的交易记录，画像先按持仓结构推断；录 入流水后会越来越准。")
+            lines.append("账本里还没有持仓、现金或交易记录，暂时无法形成画像。")
         }
         if maxWeight >= 45 {
             let top = data.holdings.max { $0.marketValue < $1.marketValue }
@@ -152,6 +156,16 @@ enum PortraitEngine {
         }
         if cashRatio <= 3 && totalAsset > 0 {
             lines.append("现金只剩 \(cashRatio.pct(1))，几乎满仓。留 5–10% 现金不是为了收益，是为了在下跌时有子弹、在急涨时不被迫卖。")
+        }
+        if manualTrades == 0 && out.hasAccountData && maxWeight >= 30 {
+            let top = data.holdings.max { $0.marketValue < $1.marketValue }
+            lines.append("当前最大单仓占总资产 \(maxWeight.num(1))%\(top.map { "（\($0.name)）" } ?? "")。新买入前先检查它是否已接近你设定的单标的上限，避免仓位继续集中。")
+        }
+        if manualTrades == 0 && out.hasAccountData && totalAsset > 0 && cashRatio < 5 {
+            lines.append("参考现金占比只有 \(cashRatio.num(1))%，可用缓冲较少。若计划加仓，先核对现金安排和仓位上限，避免为了补仓被迫卖出其他资产。")
+        }
+        if manualTrades == 0 && out.hasAccountData && totalAsset > 0 && cashRatio >= 40 {
+            lines.append("参考现金占比为 \(cashRatio.num(1))%，现金缓冲较充足；可以先按目标仓位分批计划，不必因短期波动一次性投入。")
         }
         out.conclusions = lines
 
@@ -180,14 +194,20 @@ enum PortraitEngine {
             "- \($0.name)（\($0.code)）：市值 \(fmt($0.marketValue))，浮盈亏 \(fmt($0.pnl))"
         }.joined(separator: "\n")
         let holdingsText = holdings.isEmpty ? "（暂无）" : holdings
+        let inferenceSummary: String
+        if p.sampleSize > 0 {
+            inferenceSummary = "本机规则初步推断（请验证或反驳）：风格「\(p.suggestedStyle)」，风险「\(p.suggestedRisk)」，单仓上限参考 \(Int(p.suggestedMaxPosition))%。"
+        } else {
+            inferenceSummary = "目前没有可用买卖流水，不要推断交易风格或胜率；只根据当前持仓市值与现金比例给出结构性建议。"
+        }
         return """
-        请基于以下本机账本统计，推断这位投资者的交易画像，按「画像标签、行为习惯、主要问题、改进建议」分段，每段不超过 4 行，语气直接犀利但不嘲讽。只依据给出的数据，不要编造。
+        请基于以下本机账本统计，给出有判断、有因果链的账户诊断，不要把行为指标或持仓逐项念出来。先区分「流水能证明的行为」与「当前结构反映的风险」，再挑出最值得处理的一到两个问题，说明它们为何比其他问题优先。按「行为画像（样本足够时）、关键问题及证据、接下来怎么做、什么信号出现要暂停/复核」组织；每条建议必须写明触发条件、动作和边界。明确区分事实与推断；没有买卖流水时说明无法判断胜率和操作习惯，只分析当前持仓结构。语气直接，不嘲讽，不承诺收益，不编造数据。
         总资产：\(fmt(totalAsset))，现金 \(fmt(data.cash))。
         行为指标：
         \(metrics)
         当前持仓：
         \(holdingsText)
-        本机规则引擎的初步推断（请验证或反驳）：风格「\(p.suggestedStyle)」，风险「\(p.suggestedRisk)」，单仓上限建议 \(Int(p.suggestedMaxPosition))%。
+        \(inferenceSummary)
         """
     }
 }
@@ -212,7 +232,7 @@ struct AccountPortraitView: View {
                     tagsSection(p)
                     metricsSection(p)
                     conclusionsSection(p)
-                    suggestionSection(p)
+                    if p.sampleSize > 0 { suggestionSection(p) }
                     aiSection(p)
                 } else {
                     Section {
@@ -227,6 +247,9 @@ struct AccountPortraitView: View {
             }
             .navigationTitle("AI 智能画像")
             .keyboardDoneToolbar()
+            .scrollContentBackground(.hidden)
+            .background(.clear)
+            .presentationBackground(.ultraThinMaterial)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear { recompute() }
         }

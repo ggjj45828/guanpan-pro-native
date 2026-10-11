@@ -76,17 +76,39 @@ private struct CardSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.62))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
-            )
+            .photoPanelBackground(cornerRadius: 14,
+                fallback: scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.62))
+    }
+}
+
+/// Applies the web app's photo-imprinted translucent panel style to native cards.
+/// The opacity slider now changes both the wallpaper veil and the card scrim.
+private struct PhotoPanelBackgroundModifier: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+    @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
+    @AppStorage("guanpan.native.background.overlayOpacity") private var overlayOpacity = 0.48
+    @AppStorage("guanpan.native.background.panelImprint") private var panelImprint = true
+    let cornerRadius: CGFloat
+    let fallback: Color
+
+    func body(content: Content) -> some View {
+        let _ = backgroundRevision
+        let usePhotoPanel = panelImprint && NativeBackgroundStore.hasActiveBackground
+        let veil = min(0.72, max(0.12, 0.38 + overlayOpacity * 0.35))
+        let fill = usePhotoPanel
+            ? (scheme == .dark ? Color.black : Color.white).opacity(veil)
+            : fallback
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return content
+            .background(shape.fill(fill))
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5))
+            .clipShape(shape)
     }
 }
 
 extension View {
     func cardSurface() -> some View { modifier(CardSurfaceModifier()) }
+    func photoPanelBackground(cornerRadius: CGFloat, fallback: Color) -> some View {
+        modifier(PhotoPanelBackgroundModifier(cornerRadius: cornerRadius, fallback: fallback))
+    }
 }

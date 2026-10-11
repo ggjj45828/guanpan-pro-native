@@ -36,11 +36,10 @@ extension BinaryFloatingPoint {
         return nf.string(from: NSNumber(value: Double(self))) ?? String(format: "%.*f", digits, Double(self))
     }
 
-    /// 把「已经是百分数」的值格式化成字符串：-1.05 → "-1.05%"。
+    /// 把「百分数」格式化成字符串：-1.05 → "-1.05%"。
     ///
     /// 千万不要用 NumberFormatter 的 .percent 样式：那个样式约定输入是 0.0105 这类小数，
-    /// 会自动再 ×100。而本工程所有调用方（pnlRate / positionPercent / changePct / winRate…）
-    /// 传入的都是百分数，二次相乘就会显示成 "-104.56%" 这种百倍错误（2026-10 用户实测发现）。
+    /// 会自动再 ×100。调用方必须传百分数单位；行情模型的 changePct 是小数比例，使用前要乘 100。
     func pct(_ digits: Int) -> String {
         let nf = NumberFormatter()
         nf.numberStyle = .decimal

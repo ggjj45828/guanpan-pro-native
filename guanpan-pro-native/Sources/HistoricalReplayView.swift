@@ -84,6 +84,8 @@ struct HistoricalReplayView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("历史状态回放")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }

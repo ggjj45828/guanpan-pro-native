@@ -243,6 +243,8 @@ struct YearlyReviewView: View {
                 Section("年度提示") { tipsBody }
                 Section { disclaimerBody }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .listStyle(.insetGrouped)
             .navigationTitle("\(year) 年度账单")
             .navigationBarTitleDisplayMode(.inline)

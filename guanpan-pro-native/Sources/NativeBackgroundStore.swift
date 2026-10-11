@@ -19,6 +19,10 @@ enum NativeBackgroundStore {
         guard let rawValue = UserDefaults.standard.string(forKey: gradientKey) else { return nil }
         return NativeGradientPreset(rawValue: rawValue)
     }
+    static var hasActiveBackground: Bool {
+        selectedPreset != nil || selectedGradient != nil
+            || fileURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+    }
 
     static var backupData: Data? {
         if let fileURL, let data = try? Data(contentsOf: fileURL) { return data }

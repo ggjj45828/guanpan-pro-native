@@ -81,9 +81,11 @@ final class PortfolioStore: ObservableObject {
         data.holdings.filter { $0.kind == kind }.reduce(0) { $0 + dayPnL(of: $1) }
     }
     func dayPnL(of holding: Holding) -> Double {
+        // Quote.changePct / marketChanges 使用小数比率（0.01 = 1%），
+        // 这里不能再除以 100，否则当日盈亏会被缩小约 100 倍。
         guard let pct = marketChanges[holding.code], pct.isFinite,
-              abs(pct) > 0.0001, (1 + pct / 100) != 0 else { return 0 }
-        let previousClose = holding.current / (1 + pct / 100)
+              abs(pct) > 0.000001, (1 + pct) != 0 else { return 0 }
+        let previousClose = holding.current / (1 + pct)
         return holding.quantity * (holding.current - previousClose)
     }
     /// 全部持仓当日盈亏。
@@ -220,7 +222,7 @@ final class PortfolioStore: ObservableObject {
         ]
         var lastError: Error = URLError(.cannotLoadFromNetwork)
         for endpoint in endpoints {
-            var components = URLComponents(string: endpoint)!
+            guard var components = URLComponents(string: endpoint) else { continue }
             components.queryItems = [URLQueryItem(name: "param", value: "\(symbol),day,,,\(min(max(count, 30), 640)),qfq")]
             guard let url = components.url else { continue }
             do {
@@ -889,7 +891,8 @@ final class PortfolioStore: ObservableObject {
                 do {
                     let bytes: Data
                     do {
-                        var request = URLRequest(url: URL(string: "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=\(fund.code)&topline=50&year=&month=")!)
+                        guard let url = URL(string: "https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=\(fund.code)&topline=50&year=&month=") else { throw URLError(.badURL) }
+                        var request = URLRequest(url: url)
                         request.timeoutInterval = 18
                         request.setValue("https://fundf10.eastmoney.com/", forHTTPHeaderField: "Referer")
                         let (body, response) = try await URLSession.shared.data(for: request)
@@ -1586,35 +1589,6 @@ final class PortfolioStore: ObservableObject {
 
     var ledgerMonths: [String] {
         Array(Set(data.ledger.filter { $0.kind == .etf }.map { String(dayString($0.date).prefix(7)) })).sorted(by: >)
-    }
-
-    func plannedDCAAmount(next days: Int) -> Double {
-        guard days > 0 else { return 0 }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let start = calendar.startOfDay(for: .now)
-        var total = 0.0
-        for offset in 1...days {
-            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else { continue }
-            let weekday = calendar.component(.weekday, from: date)
-            let day = calendar.component(.day, from: date)
-            let dayString = self.dayString(date)
-            for plan in data.fundDCAPlans where plan.enabled && dayString >= plan.startDate {
-                let due: Bool
-                switch plan.frequency {
-                case .daily: due = (2...6).contains(weekday)
-                case .weekly: due = weekday == plan.weekday
-                case .biweekly:
-                    if let planStart = parseDay(plan.startDate) {
-                        let offset = calendar.dateComponents([.day], from: calendar.startOfDay(for: planStart), to: date).day ?? -1
-                        due = offset >= 0 && offset % 14 == 0
-                    } else { due = false }
-                case .monthly: due = day == plan.monthDay
-                }
-                if due { total += plan.amount }
-            }
-        }
-        return total
     }
 
     func adjustCash(amount: Double, memo: String) throws {

@@ -102,6 +102,8 @@ struct ReconciliationView: View {
                 costSection
                 totalPnLSection
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("账务对账")
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
@@ -269,6 +271,8 @@ private struct CostOverrideEditor: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationTitle("成本校准")
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
