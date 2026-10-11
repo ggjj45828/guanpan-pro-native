@@ -70,6 +70,41 @@ extension View {
     }
 }
 
+/// 情绪分档的统一口径：阈值和文案只定义一次。
+///
+/// 首页的「市场情绪」和持仓页各模块的「本模块今日涨跌」都用这一套 ——
+/// 分开写两份的话，同一个平均涨跌幅在两个页面迟早出现不同的标签或颜色。
+/// 入参统一是**百分数**（例如 0.42 表示 +0.42%），与 `pct()` 的口径一致。
+enum MoodScale {
+    /// 偏强 / 微暖 / 中性 / 偏弱 / 疲弱
+    static func label(_ strength: Double) -> String {
+        if strength >= 1.5 { return "偏强" }
+        if strength >= 0.3 { return "微暖" }
+        if strength > -0.3 { return "中性" }
+        if strength > -1.5 { return "偏弱" }
+        return "疲弱"
+    }
+
+    /// 卡片底色：国内红涨绿跌，中性走灰。
+    static func tone(_ strength: Double) -> Color {
+        if strength >= 0.3 { return PnLColor.up }
+        if strength <= -0.3 { return PnLColor.down }
+        return Color.gray
+    }
+
+    /// 文字/角标的前景色。中性时回落到次要色 ——
+    /// 纯灰 `.gray` 在浅色主题的灰卡上会糊成一片，读不出来。
+    static func foreground(_ strength: Double) -> Color {
+        let tone = tone(strength)
+        return tone == Color.gray ? Color.secondary : tone
+    }
+
+    /// 角标底：跟着前景色走，中性时用次级填充。
+    static func badgeBackground(_ strength: Double) -> Color {
+        tone(strength).opacity(0.18)
+    }
+}
+
 /// 情绪量尺：绿（弱）→ 灰（中）→ 红（强）渐变条 + 白色指针。
 /// 与网页版 .gbar 是同一套观感；中国市场惯例红涨绿跌。
 struct MoodGauge: View {

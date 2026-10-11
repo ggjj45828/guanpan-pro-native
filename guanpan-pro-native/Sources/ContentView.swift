@@ -376,11 +376,8 @@ struct DashboardView: View {
                     if let mood = store.marketMood {
                         // marketMood.average 是小数比率（0.01 = 1%），阈值与显示都按百分数走
                         let strength = mood.average * 100
-                        let label = strength >= 1.5 ? "偏强" : strength >= 0.3 ? "微暖" : strength > -0.3 ? "中性" : strength > -1.5 ? "偏弱" : "疲弱"
-                        // 卡片配色跟情绪走（对齐网页版 .gauge 彩色卡）：微暖偏红、偏弱偏绿、中性灰
-                        let tone: Color = strength >= 0.3 ? PnLColor.up
-                            : strength <= -0.3 ? PnLColor.down
-                            : Color.gray
+                        // 分档阈值与文案统一走 MoodScale，和持仓页各模块的量尺同口径
+                        let tone = MoodScale.tone(strength)
                         VStack(alignment: .leading, spacing: 9) {
                             HStack(alignment: .firstTextBaseline) {
                                 Text("市场情绪（自选/持仓均涨幅）")
@@ -389,11 +386,11 @@ struct DashboardView: View {
                                 Text("\(strength.directionMark()) \(strength.pct(2))")
                                     .scaledFont(15, weight: .bold).monospacedDigit()
                                     .foregroundStyle(tone == Color.gray ? Color.primary : tone)
-                                Text(label)
+                                Text(MoodScale.label(strength))
                                     .scaledFont(12, weight: .semibold)
                                     .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Capsule().fill(tone.opacity(0.18)))
-                                    .foregroundStyle(tone == Color.gray ? Color.secondary : tone)
+                                    .background(Capsule().fill(MoodScale.badgeBackground(strength)))
+                                    .foregroundStyle(MoodScale.foreground(strength))
                             }
                             MoodGauge(average: strength)
                             Text("共 \(mood.count) 只标的等权计算，只反映最近一次成功获取的报价，不代表整个市场。")
@@ -1164,6 +1161,29 @@ struct HoldingsView: View {
                      ? "只统计本页场外基金；ETF / 证券不计入。账户页「总资产」才是两者合计。"
                      : "只统计本页 ETF / 证券；场外基金不计入。账户页「总资产」才是两者合计。")
                     .scaledFont(10).foregroundStyle(.secondary)
+
+                // 本模块自己的情绪量尺：口径与首页「市场情绪」一致（等权平均涨跌幅），
+                // 但范围收窄到本页持仓 —— 两个模块的资产/盈亏本来就分开算，情绪也该各看各的。
+                if let mood = store.marketMood(of: kind) {
+                    let strength = mood.average * 100
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("本模块今日涨跌").scaledFont(10).foregroundStyle(.secondary)
+                            Spacer(minLength: 6)
+                            Text("\(strength.directionMark()) \(strength.pct(2))")
+                                .scaledFont(11, weight: .semibold).monospacedDigit()
+                                .foregroundStyle(PnLColor.of(strength))
+                            Text(MoodScale.label(strength))
+                                .scaledFont(10, weight: .semibold)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(MoodScale.badgeBackground(strength)))
+                                .foregroundStyle(MoodScale.foreground(strength))
+                        }
+                        MoodGauge(average: strength)
+                        Text("按本模块 \(mood.count) 只标的等权计算，只反映最近一次成功获取的报价。")
+                            .scaledFont(9).foregroundStyle(.secondary)
+                    }
+                }
             }
             .cardSurface(tone: cardTone)
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))

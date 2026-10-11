@@ -150,6 +150,21 @@ final class PortfolioStore: ObservableObject {
         return (values.reduce(0, +) / Double(values.count), values.count)
     }
 
+    /// 单个模块（ETF / 证券，或场外基金）自己的情绪均涨幅。
+    ///
+    /// 与 `marketMood` 同口径（能取到涨跌幅的标的等权平均），只是把范围收窄到
+    /// 本模块有份额的持仓 —— 两个模块的资产和盈亏本来就是分开算的，情绪也应该各看各的。
+    /// 取不到涨跌幅时返回 nil，不用 0 冒充「持平」。
+    func marketMood(of kind: Holding.Kind) -> (average: Double, count: Int)? {
+        let codes = data.holdings.filter { $0.kind == kind && $0.quantity > 0 }.map(\.code)
+        guard !codes.isEmpty else { return nil }
+        let values = codes.compactMap { code in
+            marketChanges[code] ?? data.quotes.first(where: { $0.code == code })?.changePct
+        }
+        guard !values.isEmpty else { return nil }
+        return (values.reduce(0, +) / Double(values.count), values.count)
+    }
+
     func load() {
         guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
         data = value
