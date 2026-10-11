@@ -23,6 +23,7 @@ struct FundReconciliationView: View {
         }
     }
     private var difference: Double { fund.quantity - ledgerShares }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -33,13 +34,16 @@ struct FundReconciliationView: View {
                     LabeledContent("持仓减流水", value: (difference).num(4))
                     LabeledContent("待确认记录", value: "\(transactions.filter { $0.status == .pending }.count) 笔")
                     if abs(difference) <= 0.01 {
-                        Label("当前份额与已确认流水基本一致", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        Label("当前份额与已确认流水基本一致", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(CardTone.ok)
                     } else {
-                        Label("份额存在差异", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Label("份额存在差异", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(CardTone.warn)
                         Text("差额可能来自未录入的历史老仓、手动修改、缺失流水或待确认记录。请先核对原始记录。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                .toneCard(abs(difference) <= 0.01 ? CardTone.ok : CardTone.warn, isLight: isLight)
                 Section("流水明细") {
                     if transactions.isEmpty {
                         ContentUnavailableView("没有基金流水", systemImage: "list.bullet.rectangle")
@@ -58,10 +62,12 @@ struct FundReconciliationView: View {
                         }
                     }
                 }
+                .plainCard(isLight: isLight)
                 Section {
                     Text("此页只读核对已确认流水的份额加总，不会修改持仓、成本、现金或基金批次。历史起点补录会计入流水；现金分红不改变份额，红利再投会增加份额。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

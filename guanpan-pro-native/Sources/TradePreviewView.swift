@@ -35,6 +35,7 @@ struct TradePreviewView: View {
     private var postCash: Double { store.data.cash + cashDelta }
     private var postTotal: Double { max(0, store.totalAsset + (postValue - (selected?.marketValue ?? 0)) + cashDelta) }
     private var weight: Double { postTotal > 0 ? postValue / postTotal : 0 }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
     private var validation: String? {
         guard let holding = selected else { return "请先添加至少一项持仓。" }
         guard quantity.isFinite, quantity > 0, price.isFinite, price > 0, feeInput.isFinite, feeInput >= 0 else { return "请输入有效数量、价格和非负费用。" }
@@ -66,6 +67,7 @@ struct TradePreviewView: View {
                     Text("交易前沙盘只预演，不写账、不改现金或持仓。基金申购默认使用外部资金，不联动参考现金。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 if let holding = selected {
                     Section("试算结果 · \(holding.name)") {
                         LabeledContent("成交金额", value: (gross).cny())
@@ -79,14 +81,17 @@ struct TradePreviewView: View {
                         LabeledContent("交易后参考现金", value: (postCash).cny())
                         LabeledContent("交易后资产占比", value: (weight * 100).pct(1))
                     }
+                    .toneCard(CardTone.accent, isLight: isLight)
                 }
                 if let validation {
-                    Section { Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                    Section { Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(CardTone.warn) }
+                        .toneCard(CardTone.warn, isLight: isLight)
                 }
                 Section {
                     Text("确认结果后请回到持仓页，在对应持仓卡片打开“买入 / 卖出”并再次核对。沙盘不会自动打开或提交正式流水。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

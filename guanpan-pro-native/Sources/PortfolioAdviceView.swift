@@ -11,6 +11,10 @@ struct PortfolioAdviceView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 有高优先提示时整卡转琥珀，否则用「状态良好」的蓝绿。
+    private var tipsTone: Color { items.contains { $0.highPriority } ? CardTone.warn : CardTone.ok }
+
     private var items: [PortfolioAdviceItem] {
         var result: [PortfolioAdviceItem] = []
         let total = store.totalAsset
@@ -75,21 +79,24 @@ struct PortfolioAdviceView: View {
             List {
                 Section("本地规则提示") {
                     if items.isEmpty {
-                        Label("当前没有触发已设置规则的提示", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        Label("当前没有触发已设置规则的提示", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(CardTone.ok)
                     } else {
                         ForEach(items) { item in
                             VStack(alignment: .leading, spacing: 4) {
                                 Label(item.title, systemImage: item.highPriority ? "exclamationmark.triangle.fill" : "info.circle")
-                                    .foregroundStyle(item.highPriority ? .orange : .primary)
+                                    .foregroundStyle(item.highPriority ? CardTone.warn : Color.primary)
                                 Text(item.detail).font(.footnote).foregroundStyle(.secondary)
                             }.padding(.vertical, 3)
                         }
                     }
                 }
+                .toneCard(items.isEmpty ? CardTone.ok : tipsTone, isLight: isLight)
                 Section {
                     Text("只根据已保存的仓位上限、现金、基金定期报告和赎回费率流水生成提示，不使用 PE 估值、不预测涨跌，也不会自动买卖。基金重叠受报告日期和前十大覆盖范围限制；赎回费只是本地估算。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

@@ -7,31 +7,66 @@ import SwiftUI
 // 「全是白卡片，没有颜色」——这不是苹果的限制，只是没给行背景上色。
 // 这里统一提供彩色卡片背景与情绪量尺，颜色跟随主题深浅自动调整透明度。
 
+/// 页面级配色：把「某段数值该用什么颜色」收敛到一处，
+/// 免得每个页面各写一遍红涨绿跌的阈值（阈值不一致时同一页会出现两种红）。
+enum CardTone {
+    /// 网页版 `.ai` 区块的强调紫，用于顾问/AI 结果卡。
+    static let accent = Color(red: 0.61, green: 0.42, blue: 1.0)
+    /// 网页版警示/待确认区块的琥珀色。
+    static let warn = Color(red: 0.98, green: 0.66, blue: 0.20)
+    /// 数据新鲜、对账一致等「状态良好」的蓝绿。
+    static let ok = Color(red: 0.16, green: 0.68, blue: 0.80)
+
+    /// 按金额/百分比取涨跌色。`epsilon` 用于吸收浮点噪声，
+    /// 避免 0.001 元也被染成红色。
+    static func pnl(_ value: Double, epsilon: Double = 0.005) -> Color? {
+        value > epsilon ? PnLColor.up : value < -epsilon ? PnLColor.down : nil
+    }
+
+    /// 条件成立时用警示色，否则不加色。
+    /// 直接写 `flag ? warn : nil` 也能编译，但三元里混 `Color` 与 `nil`
+    /// 在复杂表达式里偶尔会让类型检查器报 "mismatching types"，包一层更稳。
+    static func warnIf(_ flag: Bool) -> Color? { flag ? warn : nil }
+}
+
 /// 彩色卡片底：低透明度渐变 + 同色描边，让卡片从背景里托起来。
 struct ToneCardBackground: View {
-    let tone: Color
+    let tone: Color?
     let isLight: Bool
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(LinearGradient(
-                colors: [tone.opacity(isLight ? 0.18 : 0.26),
-                         tone.opacity(isLight ? 0.06 : 0.10)],
-                startPoint: .topLeading, endPoint: .bottomTrailing))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(tone.opacity(isLight ? 0.26 : 0.34), lineWidth: 1)
-            )
-            .padding(.vertical, 4)
-            .padding(.horizontal, 2)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        Group {
+            if let tone {
+                shape
+                    .fill(LinearGradient(
+                        colors: [tone.opacity(isLight ? 0.18 : 0.26),
+                                 tone.opacity(isLight ? 0.06 : 0.10)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.26 : 0.34), lineWidth: 1))
+            } else {
+                // 中性卡面：仍然给一张「看得见的卡」，
+                // 否则浅色主题下 Section 会直接融进白底，又变成用户说的「全是白的」。
+                shape
+                    .fill((isLight ? Color.white : Color.black).opacity(isLight ? 0.52 : 0.30))
+                    .overlay(shape.strokeBorder(Color.primary.opacity(isLight ? 0.07 : 0.10), lineWidth: 0.5))
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 2)
     }
 }
 
 extension View {
-    /// 给列表行套一张彩色卡片。用 listRowBackground 注入，不参与行内容布局，
-    /// 因此不会像背景图那样把页面撑乱。
-    func toneCard(_ tone: Color, isLight: Bool) -> some View {
+    /// 给列表行套一张卡片。用 listRowBackground 注入，不参与行内容布局，
+    /// 因此不会像背景图那样把页面撑乱。`tone` 为 nil 时只画中性卡面。
+    func toneCard(_ tone: Color?, isLight: Bool) -> some View {
         listRowBackground(ToneCardBackground(tone: tone, isLight: isLight))
+    }
+
+    /// 给整段 Section 铺中性卡面（不染色），用于页面里那些纯叙述性的分区。
+    func plainCard(isLight: Bool) -> some View {
+        listRowBackground(ToneCardBackground(tone: nil, isLight: isLight))
     }
 }
 

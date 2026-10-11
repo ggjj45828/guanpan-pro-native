@@ -36,6 +36,9 @@ struct HistoricalReplayView: View {
 
     private var day: String { format(selectedDate) }
     private var replay: Replay { reconstruct() }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 回放日的已实现结果（场内 + 基金 + 现金分红），用于给流水卡取色。
+    private var replayedRealized: Double { replay.realizedETF + replay.realizedFund + replay.cashDividends }
     private var valuedTotal: Double? {
         guard replay.cashKnown, replay.positions.allSatisfy({ $0.value != nil }) else { return nil }
         return replay.cash + replay.positions.reduce(0) { $0 + ($1.value ?? 0) }
@@ -60,16 +63,19 @@ struct HistoricalReplayView: View {
                     Text("持仓份额和现金按所选日期之后的流水反推；估值使用该日或此前最近的本地日线/基金净值。此结果是历史重建估算，不代表当日快照。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("场内持仓") {
                     let rows = replay.positions.filter { $0.kind == .etf && $0.quantity > 1e-8 }
                     if rows.isEmpty { Text("该日没有可还原的场内持仓").foregroundStyle(.secondary) }
                     ForEach(rows) { positionRow($0) }
                 }
+                .plainCard(isLight: isLight)
                 Section("场外基金") {
                     let rows = replay.positions.filter { $0.kind == .fund && $0.quantity > 1e-8 }
                     if rows.isEmpty { Text("该日没有可还原的基金持仓").foregroundStyle(.secondary) }
                     ForEach(rows) { positionRow($0) }
                 }
+                .plainCard(isLight: isLight)
                 Section("该日累计流水") {
                     LabeledContent("场内已实现盈亏", value: (replay.realizedETF).cny())
                     LabeledContent("基金已实现盈亏", value: (replay.realizedFund).cny())
@@ -78,10 +84,12 @@ struct HistoricalReplayView: View {
                     LabeledContent("此后买入金额", value: (replay.laterBuys).cny())
                     LabeledContent("此后卖出到账", value: (replay.laterSells).cny())
                 }
+                .toneCard(CardTone.pnl(replayedRealized), isLight: isLight)
                 if !replay.warnings.isEmpty {
                     Section("还原限制") {
                         ForEach(replay.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
+                    .toneCard(CardTone.warn, isLight: isLight)
                 }
             }
             .scrollContentBackground(.hidden)

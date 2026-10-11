@@ -86,6 +86,13 @@ struct ReconciliationView: View {
         }
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 填了券商金额才判色：一致=蓝绿，有差额=琥珀，没填=中性。
+    private var cashTone: Color? {
+        guard let broker = Double(brokerCash), broker.isFinite else { return nil }
+        return abs(store.data.cash - broker) < 0.005 ? CardTone.ok : CardTone.warn
+    }
+
     private func dayString(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -118,6 +125,7 @@ struct ReconciliationView: View {
 
     @ViewBuilder private var cashSection: some View {
         Section("现金对账") { cashSectionBody }
+            .toneCard(cashTone, isLight: isLight)
     }
 
     @ViewBuilder private var cashSectionBody: some View {
@@ -141,7 +149,7 @@ struct ReconciliationView: View {
             let difference = store.data.cash - broker
             LabeledContent("观盘 − 券商", value: (difference).cny())
             Text(cashDifferenceText(difference))
-                .font(.footnote).foregroundStyle(abs(difference) < 0.005 ? Color.secondary : Color.orange)
+                .font(.footnote).foregroundStyle(abs(difference) < 0.005 ? Color.secondary : CardTone.warn)
         }
     }
 
@@ -194,6 +202,7 @@ struct ReconciliationView: View {
             Text("ETF 昨收优先取手填昨收，否则由行情现价和涨跌幅反推；同花顺口径按当日成交额，不扣手续费。基金只按最近两期已公布净值变化估算，可能滞后。旧网页的当日盈亏口径设置会迁入；不重建日内成交时点，结果可能与券商不同。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+        .plainCard(isLight: isLight)
     }
 
     @ViewBuilder private var costSection: some View {
@@ -215,6 +224,7 @@ struct ReconciliationView: View {
             Text("可用券商成本覆盖显示口径或取消覆盖。原始加权成本、成交流水和历史已实现盈亏不被改写。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+        .plainCard(isLight: isLight)
     }
 
     @ViewBuilder private var totalPnLSection: some View {
@@ -234,6 +244,7 @@ struct ReconciliationView: View {
             Text("优先核对差异较大的持仓份额、成本和行情；此处只对比浮动盈亏，不包含已实现盈亏及外部现金流。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+        .toneCard(CardTone.pnl(store.totalPnL), isLight: isLight)
     }
 
     /// 差额文案用普通方法返回，避免在 ViewBuilder 的 if 分支里做赋值。

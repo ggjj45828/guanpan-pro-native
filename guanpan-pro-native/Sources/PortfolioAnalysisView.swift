@@ -30,6 +30,7 @@ struct PortfolioAnalysisView: View {
         }.sorted { $0.value > $1.value }
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
     private var total: Double { exposures.reduce(0) { $0 + $1.value } + max(0, store.data.cash) }
     private var foreignValue: Double { exposures.filter { $0.currency == "USD" || $0.currency == "HKD" }.reduce(0) { $0 + $1.value } }
     private var fundValue: Double {
@@ -80,6 +81,7 @@ struct PortfolioAnalysisView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                .plainCard(isLight: isLight)
                 Section("实时汇率") {
                     if let snapshot = fxSnapshot, !snapshot.rates.isEmpty {
                         ForEach(snapshot.rates) { rate in
@@ -116,6 +118,7 @@ struct PortfolioAnalysisView: View {
                         Button("重新获取实时汇率") { Task { await refreshFX(force: true) } }
                     }
                 }
+                .plainCard(isLight: isLight)
                 Section("组合压力情景（手动设定）") {
                     shockField("A 股", value: $equityShock)
                     shockField("港股", value: $hkShock)
@@ -123,12 +126,13 @@ struct PortfolioAnalysisView: View {
                     shockField("黄金", value: $goldShock)
                     shockField("债券", value: $bondShock)
                     shockField("人民币升值", value: $rmbAppreciation)
-                    LabeledContent("持仓估算影响", value: (impact).cny())
-                        .foregroundStyle(impact < 0 ? .green : .red)
+                    LabeledContent("持仓估算影响", value: "\((impact).directionMark()) \((impact).cny())")
+                        .foregroundStyle(PnLColor.of(impact))
                     LabeledContent("占总资产", value: (total > 0 ? impact / total * 100 : 0).pct(2))
                     Text("仅对当前持仓市值做静态情景估算；外币冲击按汇率折算近似计算。现金不受冲击。ETF 分类使用代码表或名称关键词，未知品种会标为未分类；基金未穿透。不是行情预测或最大亏损保证。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(CardTone.pnl(impact), isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

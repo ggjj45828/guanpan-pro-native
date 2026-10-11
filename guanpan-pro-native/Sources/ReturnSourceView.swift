@@ -31,6 +31,7 @@ struct ReturnSourceView: View {
 
     private var result: Breakdown { calculate() }
     private var canCalculate: Bool { result.start != nil && result.end != nil }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -44,18 +45,22 @@ struct ReturnSourceView: View {
                         Button("今年") { fromDate = Calendar.current.dateInterval(of: .year, for: .now)?.start ?? .now; toDate = .now }
                     }
                 }
+                .plainCard(isLight: isLight)
                 if canCalculate {
                     Section("快照核算结果") {
                         LabeledContent("实际快照区间", value: "\(result.start!.date) → \(result.end!.date)")
                         LabeledContent("净外部投入", value: (result.flow).cny())
                         LabeledContent("扣除净投入后的账户变化", value: (result.account).cny())
-                        LabeledContent("加回账外现金分红的经济收益", value: (result.economic).cny())
-                            .foregroundStyle(result.economic >= 0 ? .red : .green)
+                        LabeledContent("加回账外现金分红的经济收益",
+                                       value: "\((result.economic).directionMark()) \((result.economic).cny())")
+                            .foregroundStyle(PnLColor.of(result.economic))
                     }
+                    .toneCard(CardTone.pnl(result.economic), isLight: isLight)
                 } else {
                     Section("快照不足") {
                         ContentUnavailableView("此区间至少需要两个全账户快照", systemImage: "chart.xyaxis.line", description: Text("只会使用所选区间内实际存在的快照；不会按行情补造缺失日期。"))
                     }
+                    .plainCard(isLight: isLight)
                 }
                 Section("流水解释") {
                     LabeledContent("卖出/赎回已实现盈亏", value: (result.realized).cny())
@@ -70,20 +75,24 @@ struct ReturnSourceView: View {
                         LabeledContent("未单独归因的持仓变化", value: (residual).cny())
                     }
                 }
+                .toneCard(CardTone.pnl(result.realized), isLight: isLight)
                 if !result.perCode.isEmpty {
                     Section("分标的已实现盈亏") {
                         ForEach(Array(result.perCode.enumerated()), id: \.offset) { _, item in
                             LabeledContent(item.0, value: (item.1).cny())
                         }
                     }
+                    .plainCard(isLight: isLight)
                 }
                 if !result.warnings.isEmpty {
                     Section("口径提示") { ForEach(result.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) } }
+                        .toneCard(CardTone.warn, isLight: isLight)
                 }
                 Section {
                     Text("总收益由两端实际全账户快照和外部投入计算。汇率、ETF 折溢价、择时及持仓浮盈变化没有独立历史快照时，会留在“未单独归因的持仓变化”，不会伪造拆分。费用已经反映在快照净结果中，只单列展示。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

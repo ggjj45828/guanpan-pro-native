@@ -53,6 +53,10 @@ struct DataTrustView: View {
 
     private var latestQuoteTime: Date? { quoteRows.compactMap(\.timestamp).max() }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 交易时段内超过 3 分钟没更新的报价条数（含「时间未知」）。
+    private var staleCount: Int { quoteRows.filter { isStale($0.timestamp) }.count }
+
     var body: some View {
         NavigationStack {
             List {
@@ -80,6 +84,7 @@ struct DataTrustView: View {
                     Text("非交易时段会返回上一交易时段的收盘或最近报价。数据源没有给出时间戳时，原生版会标记未知时间。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(staleCount > 0 ? CardTone.warn : CardTone.ok, isLight: isLight)
                 Section("场外基金已公布净值") {
                     if activeFunds.isEmpty { Text("没有当前场外基金持仓。").foregroundStyle(.secondary) }
                     Button(store.isRefreshingFunds ? "正在更新净值…" : "更新已公布净值") { store.refreshFundNAVs() }
@@ -96,12 +101,14 @@ struct DataTrustView: View {
                     Text("这里展示已公布净值及日期，不含基金盘中估值。QDII 等海外资产净值可能有时差。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("历史行情覆盖") {
                     LabeledContent("本机缓存日线", value: "\(store.dailyBars.values.reduce(0) { $0 + $1.count }) 条 · \(store.dailyBars.count) 个代码")
                     LabeledContent("本机永久分时", value: "\(store.gridBarCount) 点 · \(store.gridTradingDays.count) 个交易日")
                     Text("历史图表仅使用本机已有的行情缓存。缓存缺失的日期或品种不会用插值补齐。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("NAS 同步") {
                     LabeledContent("自动同步", value: nasAutoSync ? "已开启" : "已关闭")
                     LabeledContent("服务器地址", value: nasURL.isEmpty ? "未配置" : "已配置（地址已隐藏）")
@@ -109,6 +116,7 @@ struct DataTrustView: View {
                     Text("NAS 免口令模式无需填写口令；若服务器主动启用 SYNC_TOKEN，口令会保存在本机钥匙串。同步状态按客户端最近结果显示；iOS 后台不会保证准时同步。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

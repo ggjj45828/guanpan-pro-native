@@ -32,6 +32,7 @@ struct MonthlyReviewView: View {
     private var monthStart: String { "\(month)-01" }
     private var nextMonthStart: String { Self.nextMonthStart(month) }
     private var summary: MonthlyReviewSummary { makeSummary() }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
     private var reportText: String {
         let s = summary
         return "观盘 Pro · \(month) 月度投资复盘\n买入 \(s.buy.cny()) / 卖出到账 \(s.sell.cny()) / 净投入 \(s.netFlow.cny())\n已实现 \(s.realized.cny()) / 现金分红 \(s.cashDividend.cny()) / 记录费用 \(s.fee.cny())\n买入 \(s.buyCount) 笔 / 卖出 \(s.sellCount) 笔 / 操作日 \(s.operationDays.count) 天"
@@ -63,6 +64,7 @@ struct MonthlyReviewView: View {
                     }
                     LabeledContent("操作日期", value: "\(summary.operationDays.count) 天")
                 }
+                .toneCard(CardTone.pnl(summary.netResult), isLight: isLight)
                 Section("已有全账户快照") {
                     if let start = summary.snapshotStart, let end = summary.snapshotEnd, start.id != end.id {
                         LabeledContent("快照区间", value: "\(start.date) → \(end.date)")
@@ -75,12 +77,14 @@ struct MonthlyReviewView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .toneCard(CardTone.pnl(summary.adjustedChange ?? 0), isLight: isLight)
                 Section("复盘提示") {
                     ForEach(Array(summary.tips.enumerated()), id: \.offset) { _, tip in
                         Label(tip, systemImage: tip.hasPrefix("提醒") ? "exclamationmark.triangle" : "checkmark.circle")
                             .font(.subheadline)
                     }
                 }
+                .toneCard(summary.tips.contains { $0.hasPrefix("提醒") } ? CardTone.warn : CardTone.ok, isLight: isLight)
                 Section {
                     Text("复盘只汇总本机已有的交易、分红、资金流和快照，不反推缺失的月末持仓或收益，也不修改账本。费用不再从已实现盈亏中重复扣除。")
                         .font(.footnote).foregroundStyle(.secondary)

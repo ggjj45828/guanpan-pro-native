@@ -197,6 +197,9 @@ struct YearlyReviewView: View {
     private var yearStart: String { "\(year)-01-01" }
     private var nextYearStart: String { "\(year + 1)-01-01" }
 
+    /// 主题深浅决定卡片色的透明度档位（浅色底上要更淡才不刺眼）。
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     private var aggregate: PeriodLedgerAggregate {
         LedgerPeriodAggregator.aggregate(data: store.data, from: yearStart, to: nextYearStart)
     }
@@ -235,13 +238,21 @@ struct YearlyReviewView: View {
             List {
                 Section { yearSwitcherBody }
                 Section("全年结果") { headlineBody }
+                    .toneCard(CardTone.pnl(aggregate.netResult), isLight: isLight)
                 Section("交易活跃度") { activityBody }
+                    .plainCard(isLight: isLight)
                 Section("全账户快照") { snapshotBody }
+                    .toneCard(CardTone.pnl(aggregate.adjustedChange ?? 0), isLight: isLight)
                 Section("逐月已实现盈亏 + 现金分红") { monthlyChartBody }
+                    .plainCard(isLight: isLight)
                 Section("逐月明细") { monthlyTableBody }
+                    .plainCard(isLight: isLight)
                 Section("全年标的表现") { rankingBody }
+                    .toneCard(CardTone.pnl(aggregate.realized), isLight: isLight)
                 Section("年度提示") { tipsBody }
+                    .toneCard(tips.contains { $0.hasPrefix("提醒") } ? CardTone.warn : CardTone.ok, isLight: isLight)
                 Section { disclaimerBody }
+                    .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

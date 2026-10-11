@@ -51,6 +51,28 @@ struct QuantitativeEngineView: View {
         Self.evaluate(store.dailyBars[item.code] ?? [])
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
+    /// 偏强（score ≥ 56）/ 偏弱（score ≤ 44）标的数，与 `localMarketReview` 同口径。
+    /// 只用于给「技术复盘」卡取色，不影响任何计算结论。
+    private var signalBreadth: (bullish: Int, bearish: Int) {
+        var bullish = 0
+        var bearish = 0
+        for item in instruments {
+            guard let s = signal(for: item) else { continue }
+            if s.score >= 56 { bullish += 1 } else if s.score <= 44 { bearish += 1 }
+        }
+        return (bullish, bearish)
+    }
+
+    /// 多空谁占优，映射成卡片色；势均力敌时回到中性卡面。
+    private var reviewTone: Color? {
+        let breadth = signalBreadth
+        if breadth.bullish > breadth.bearish { return PnLColor.up }
+        if breadth.bearish > breadth.bullish { return PnLColor.down }
+        return nil
+    }
+
     private var localMarketReview: String {
         let available = instruments.compactMap { item -> (QuantEngineInstrument, QuantEngineSignal)? in
             guard let signal = signal(for: item) else { return nil }
@@ -100,6 +122,7 @@ struct QuantitativeEngineView: View {
                     Text("本地规则因子：均线排列、收盘位置、5 日动量、RSI、MACD 和量能变化。分数用于排序和复核，不是收益概率或自动买卖指令。")
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("量化扫描") }
+                    .plainCard(isLight: isLight)
 
                 Section("技术复盘 · 本机量化引擎") {
                     Text(localMarketReview)
@@ -108,6 +131,7 @@ struct QuantitativeEngineView: View {
                     Text("由日线信号和可用行情在本机生成，无需 API Key。评分是规则信号，不是收益概率；数据缺失时会明确提示。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(reviewTone, isLight: isLight)
 
                 if instruments.isEmpty {
                     ContentUnavailableView("暂无扫描标的", systemImage: "chart.xyaxis.line",
@@ -120,6 +144,7 @@ struct QuantitativeEngineView: View {
                             }.buttonStyle(.plain)
                         }
                     }
+                    .plainCard(isLight: isLight)
                 }
 
                 Section("AI 深度分析") {
@@ -127,6 +152,7 @@ struct QuantitativeEngineView: View {
                     Text("量化分数由本机即时计算，不需要 API 密钥；AI 分析需要用户主动触发并已配置接口。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(CardTone.accent, isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

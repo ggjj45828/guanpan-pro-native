@@ -1893,6 +1893,7 @@ struct FundIncomeCalendarView: View {
     }
     private var days: [FundDailyPerformance] { store.fundDailyPerformance(month: monthKey) }
     private var total: Double { days.reduce(0) { $0 + $1.profit } }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -1903,23 +1904,30 @@ struct FundIncomeCalendarView: View {
                         Spacer(); Text(monthKey).font(.headline)
                         Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }.accessibilityLabel("下个月")
                     }
-                    LabeledContent("本月已记录日收益合计", value: (total).cny())
+                    LabeledContent("本月已记录日收益合计", value: "\((total).directionMark()) \((total).cny())")
+                        .foregroundStyle(PnLColor.of(total))
                     Text("共 \(days.count) 个有数据的净值日。这里只展示已公布净值覆盖且有已确认申购/补录份额依据的基金。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(CardTone.pnl(total), isLight: isLight)
                 Section("每日收益") {
                     if days.isEmpty {
                         ContentUnavailableView("暂无可核算收益", systemImage: "calendar", description: Text("需要先导入基金买卖流水，并获取覆盖对应日期的已公布净值历史。手动录入但没有买入日期的持仓不会被猜测成历史收益。"))
                     }
                     ForEach(days.reversed()) { day in
                         VStack(alignment: .leading, spacing: 4) {
-                            HStack { Text(day.date); Spacer(); Text((day.profit).cny()) }
-                                .foregroundStyle(day.profit >= 0 ? .red : .green)
+                            HStack {
+                                Text(day.date)
+                                Spacer()
+                                Text("\((day.profit).directionMark()) \((day.profit).cny())")
+                            }
+                            .foregroundStyle(PnLColor.of(day.profit))
                             Text("净值基数 \((day.baseValue).cny()) · \(day.fundCount) 只基金")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
+                .plainCard(isLight: isLight)
                 Text("日收益按前一净值日已确认份额计算；当日买入不计入当日净值变化，当日赎回份额仍计入；分红金额和申赎费用按流水日计入。手动持仓若缺少历史买入流水，会被排除，因此历史可能不完整。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -1957,6 +1965,10 @@ struct FundQuantView: View {
             .reduce(0) { $0 + $1.amount }
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 基金模块的浮盈，用于给「组合概览」卡取色。
+    private var fundPnLTotal: Double { totalValue - totalCost }
+
     var body: some View {
         NavigationStack {
             List {
@@ -1964,11 +1976,13 @@ struct FundQuantView: View {
                     LabeledContent("当前基金数", value: "\(funds.count)")
                     LabeledContent("当前市值", value: (totalValue).cny())
                     LabeledContent("持仓成本", value: (totalCost).cny())
-                    LabeledContent("持仓浮盈", value: (totalValue - totalCost).cny())
+                    LabeledContent("持仓浮盈", value: "\((fundPnLTotal).directionMark()) \((fundPnLTotal).cny())")
+                        .foregroundStyle(PnLColor.of(fundPnLTotal))
                     if totalCost > 0 {
                         LabeledContent("成本收益率", value: ((totalValue - totalCost) / totalCost * 100).pct(2))
                     }
                 }
+                .toneCard(CardTone.pnl(fundPnLTotal), isLight: isLight)
                 Section("持仓集中度与表现") {
                     if funds.isEmpty { Text("没有份额大于 0 的基金持仓。").foregroundStyle(.secondary) }
                     ForEach(funds) { fund in
@@ -1989,9 +2003,10 @@ struct FundQuantView: View {
                     }
                     if funds.contains(where: { totalValue > 0 && $0.marketValue / totalValue >= 0.5 }) {
                         Text("有单只基金占当前基金市值一半或以上；这只是集中度提示，不代表买卖建议。")
-                            .font(.footnote).foregroundStyle(.orange)
+                            .font(.footnote).foregroundStyle(CardTone.warn)
                     }
                 }
+                .plainCard(isLight: isLight)
                 Section("费用与分红流水") {
                     LabeledContent("已记录申购/赎回费用", value: (recordedFees).cny())
                     LabeledContent("已记录现金分红", value: (cashDividends).cny())
@@ -1999,6 +2014,7 @@ struct FundQuantView: View {
                     Text("只汇总本机已确认流水；不包含销售平台未录入的费用、分红或管理费。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("整笔赎回费可估性") {
                     ForEach(funds) { fund in
                         VStack(alignment: .leading, spacing: 4) {
@@ -2021,6 +2037,7 @@ struct FundQuantView: View {
                     Text("这是按当前份额整笔赎回的估算，不会记账或下单；最终费用以销售平台确认结果为准。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("定投执行记录") {
                     if store.data.fundDCAPlans.isEmpty { Text("暂无原生定投计划。").foregroundStyle(.secondary) }
                     ForEach(store.data.fundDCAPlans) { plan in
@@ -2485,12 +2502,13 @@ struct AssetsView: View {
                             if index > 0 {
                                 let prior = sortedSnapshots[index - 1]
                                 let result = store.snapshotReturn(from: prior, to: s)
-                                Text("较上次快照收益（已扣除现金流） \((result).cny())")
-                                    .font(.caption).foregroundStyle(result >= 0 ? .red : .green)
+                                Text("较上次快照收益（已扣除现金流） \((result).directionMark()) \((result).cny())")
+                                    .font(.caption).foregroundStyle(PnLColor.of(result))
                             }
                         }
                     }
                 }
+                .toneCard(CardTone.pnl(snapshotMonthPnL ?? 0), isLight: isLight)
                 Section("ETF / 证券已实现收益") {
                     if store.ledgerMonths.isEmpty {
                         Text("暂无带类别标记的 ETF / 证券卖出流水。历史未标记流水不会被猜测归类。")
@@ -2500,7 +2518,9 @@ struct AssetsView: View {
                             ForEach(store.ledgerMonths, id: \.self) { Text($0).tag($0) }
                         }
                         let daily = store.ledgerDailyRealized(month: selectedLedgerMonth)
-                        LabeledContent("本月已实现盈亏", value: (daily.reduce(0) { $0 + $1.profit }).cny())
+                        let realizedTotal = daily.reduce(0) { $0 + $1.profit }
+                        LabeledContent("本月已实现盈亏", value: "\((realizedTotal).directionMark()) \((realizedTotal).cny())")
+                            .foregroundStyle(PnLColor.of(realizedTotal))
                         if daily.isEmpty {
                             Text("本月没有已记录的 ETF / 证券卖出流水。买入和持仓浮盈不包含在这里。")
                                 .font(.footnote).foregroundStyle(.secondary)
@@ -2511,8 +2531,8 @@ struct AssetsView: View {
                                     Text(day.date)
                                     Text("\(day.trades) 笔流水").font(.caption).foregroundStyle(.secondary)
                                     Spacer()
-                                    Text((day.profit).cny())
-                                        .foregroundStyle(day.profit >= 0 ? .red : .green)
+                                    Text("\((day.profit).directionMark()) \((day.profit).cny())")
+                                        .foregroundStyle(PnLColor.of(day.profit))
                                 }
                             }
                         }
@@ -2520,6 +2540,7 @@ struct AssetsView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                .toneCard(CardTone.pnl(ledgerMonthRealized), isLight: isLight)
                 Section("近期现金流") {
                     if store.data.cashFlows.isEmpty { Text("暂无转入或转出记录").foregroundStyle(.secondary) }
                     ForEach(store.data.cashFlows.sorted { $0.date > $1.date }.prefix(10)) { flow in
@@ -2530,10 +2551,11 @@ struct AssetsView: View {
                             }
                             Spacer()
                             Text((flow.amount).cny())
-                                .foregroundStyle(flow.amount >= 0 ? .red : .green)
+                                .foregroundStyle(flow.amount >= 0 ? PnLColor.up : PnLColor.down)
                         }
                     }
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear).navigationTitle("资产")
@@ -2550,6 +2572,15 @@ struct AssetsView: View {
 
     /// 现金流记录里转入与转出相抵后的净额。没有记录时是 0，不臆测。
     private var netDeposit: Double { store.data.cashFlows.reduce(0) { $0 + $1.amount } }
+
+    /// 主题深浅决定卡片色的透明度档位。
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 「历史快照」卡的取色依据：所选区间的实测收益（没有快照时为 nil → 中性卡面）。
+    private var snapshotMonthPnL: Double? { store.snapshotMonthSummary(selectedSnapshotMonth)?.pnl }
+    /// 「ETF / 证券已实现收益」卡的取色依据：所选月份已落袋盈亏合计。
+    private var ledgerMonthRealized: Double {
+        store.ledgerDailyRealized(month: selectedLedgerMonth).reduce(0) { $0 + $1.profit }
+    }
 
     private var dayTone: Color {
         guard store.hasDayPnL else { return .secondary }
@@ -2696,6 +2727,7 @@ struct ETFIncomeCalendarView: View {
         guard !daily.isEmpty else { return nil }
         return (daily.reduce(1.0) { $0 * (1 + $1.profit / $1.base) } - 1) * 100
     }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -2713,9 +2745,10 @@ struct ETFIncomeCalendarView: View {
                         Text("本月没有足够的日 K 或持仓数据可核算。")
                             .font(.footnote).foregroundStyle(.secondary)
                     } else if !days.isEmpty {
-                        LabeledContent("月累计收益", value: (monthlyProfit).cny())
+                        LabeledContent("月累计收益", value: "\((monthlyProfit).directionMark()) \((monthlyProfit).cny())")
+                            .foregroundStyle(PnLColor.of(monthlyProfit))
                         if let monthlyRate {
-                            LabeledContent("复合收益率", value: monthlyRate.pct(2))
+                            LabeledContent("复合收益率", value: monthlyRate.directionMark() + monthlyRate.pct(2))
                         } else { LabeledContent("复合收益率", value: "—") }
                     }
                     if loading { ProgressView("正在读取 ETF 日 K…") }
@@ -2726,6 +2759,7 @@ struct ETFIncomeCalendarView: View {
                     Text("按前复权日 K 收盘价及交易流水反推每日持仓；不拆分成交价差与手续费，也不写入账本。没有完整流水的手动初始持仓按当前份额估算。“休市”按周末及已取得日 K 的覆盖区间推断，覆盖区间外或缺少行情的日期显示横线。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(CardTone.pnl(monthlyProfit), isLight: isLight)
                 Section("交易日") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 7), spacing: 4) {
                         ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { Text($0).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity) }
@@ -2896,6 +2930,40 @@ struct ToolsView: View {
     @State private var showYearlyReview = false
     @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
+
+    /// 主题深浅决定卡片色的透明度档位。
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    /// 统一冲击情景下全部持仓的假设损失（正数）。
+    /// 提到视图层是为了让 Section 的 `.toneCard(...)` 能取到它——
+    /// Section 的修饰器在闭包之外，读不到闭包里 `let loss = …` 的局部变量。
+    private var shockLoss: Double {
+        store.data.holdings.reduce(0.0) { $0 + max(0, $1.marketValue) * Double(shockPercent) / 100 }
+    }
+    /// 单只仓位上限 / 均线提示里已触发的条数。
+    private var limitBreachCount: Int {
+        store.data.holdings.filter { holding in
+            guard holding.kind == .etf else { return false }
+            if let limit = holding.maxPositionPercent, store.allocationActualPercent(for: holding) > limit { return true }
+            if let period = holding.maWarningPeriod {
+                let bars = store.dailyBars[holding.code] ?? []
+                if bars.count >= period, let latest = bars.last {
+                    let ma = bars.suffix(period).map(\.close).reduce(0, +) / Double(period)
+                    if latest.close < ma { return true }
+                }
+            }
+            return false
+        }.count
+    }
+    /// 已达到再平衡偏离阈值的持仓数（与「再平衡偏离提醒」分区同口径）。
+    private var rebalanceBreachCount: Int {
+        let threshold = Double(store.data.rebalanceAlertThreshold)
+        return store.data.holdings.filter { holding in
+            guard let target = store.data.allocationTargets
+                .first(where: { $0.code == holding.code && $0.kind == holding.kind })?.targetPercent else { return false }
+            return abs(store.allocationActualPercent(for: holding) - target) >= threshold
+        }.count
+    }
+
     var body: some View {
         NavigationStack { List {
             Section("账户压力测试") {
@@ -2904,7 +2972,7 @@ struct ToolsView: View {
                 Picker("统一下跌情景", selection: $shockPercent) {
                     Text("−10%").tag(10); Text("−20%").tag(20); Text("−30%").tag(30); Text("−50%").tag(50)
                 }.pickerStyle(.segmented)
-                let loss = store.data.holdings.reduce(0.0) { $0 + max(0, $1.marketValue) * Double(shockPercent) / 100 }
+                let loss = shockLoss
                 LabeledContent("假设持仓损失", value: (loss).cny())
                 LabeledContent("假设压力后总资产", value: (max(0, store.totalAsset - loss)).cny())
                 ForEach(Array(store.data.holdings.enumerated()), id: \.offset) { item in
@@ -2913,17 +2981,19 @@ struct ToolsView: View {
                     HStack {
                         Text(holding.name)
                         Spacer()
-                        Text("−\((itemLoss).cny())").foregroundStyle(.green)
+                        Text("−\((itemLoss).cny())").foregroundStyle(PnLColor.down)
                     }
                 }
                 Text("统一冲击全部当前持仓，现金不变；这是静态压力情景，不是行情预测，不包含相关性、流动性、费用或基金估值滞后。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .toneCard(PnLColor.down, isLight: isLight)
             Section("数据状态") {
                 Button("数据可信度与更新状态") { showDataTrust = true }
                 Text("查看行情时间戳、基金净值日期、历史数据覆盖和 NAS 同步状态。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("收益日历") {
                 Button("ETF 每日收益日历") { showETFIncomeCalendar = true }
                 Button("分红日历与年度现金流") { showDividendCalendar = true }
@@ -2932,6 +3002,7 @@ struct ToolsView: View {
                 Text("按日 K 与可用交易流水估算历史持仓收益；缺少行情覆盖的日期会留空，休市日期会标出。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("目标仓位与再平衡参考") {
                 let configured = store.data.allocationTargets.reduce(0) { $0 + $1.targetPercent }
                 LabeledContent("已配置目标合计", value: configured.pct(1))
@@ -2953,6 +3024,7 @@ struct ToolsView: View {
                 Text("占比按总资产（含参考现金）计算。偏差只作为手动复核参考，不会自动买卖；场外基金采用最近已公布净值，净值滞后时偏差也会滞后。目标总和超过 100% 时请自行调整。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("单只仓位上限与均线提示") {
                 let configured = store.data.holdings.filter { $0.kind == .etf && ($0.maxPositionPercent != nil || $0.maWarningPeriod != nil) }
                 if configured.isEmpty { Text("可在场内持仓的编辑页设置单只仓位上限或均线提示。") .font(.footnote).foregroundStyle(.secondary) }
@@ -2980,6 +3052,7 @@ struct ToolsView: View {
                 Text("按总资产计算上限；均线条件只根据本机已保存日线显示，不会后台推送或自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .toneCard(CardTone.warnIf(limitBreachCount > 0), isLight: isLight)
             if store.data.positionHintsEnabled {
                 Section("全局仓位提示") {
                     if store.totalAsset > 0 {
@@ -3012,6 +3085,7 @@ struct ToolsView: View {
                     Text("基于当前本地价格计算，仅在打开工具页时显示；不推送、不自动买卖。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             Section("再平衡偏离提醒") {
                 Stepper(value: Binding(get: { Double(store.data.rebalanceAlertThreshold) }, set: {
@@ -3047,22 +3121,26 @@ struct ToolsView: View {
                 Text("只在打开工具页时按最近账面价格计算偏离，不是后台推送；价格、基金净值滞后时偏离也会滞后。不会自动买卖。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .toneCard(CardTone.warnIf(rebalanceBreachCount > 0), isLight: isLight)
             Section("日内网格与分时回放") {
                 LabeledContent("本地分时记录", value: "\(store.gridBarCount) 点 · \(store.gridTradingDays.count) 个交易日")
                 Button("网格计划、分时导入与复盘") { showGrid = true }
                 Text("回放使用选定日期实际导入或前台采集的数据，结果是路径模拟，不是可实现收益保证。只在穿越网格价位时记模拟成交；不会修改主账户现金、持仓或流水。iOS 切后台可能暂停采集。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("AI 账户分析") {
                 Button("配置接口并分析") { showAIAnalysis = true }
                 Text("本机可先给出全账户规则建议；只有点击大模型深度分析时，才会发送投资偏好、持仓、自选行情、场内/场外基金流水、定投、基金成分、现金流和快照。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .toneCard(CardTone.accent, isLight: isLight)
             Section("日线量化信号") {
                 Button("打开量化引擎并扫描全部自选/持仓") { showQuantEngine = true }
                 Text("本地规则因子对自选与持仓排序；每只标的详情内可打开 AI 深度分析。量化扫描不依赖模型密钥，不预测未来，也不自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("本地数据检查") {
                 Button("运行账本体检") { showLedgerHealth = true }
                 Button("现金 / 当日盈亏 / 成本 / 总盈亏对账") { showReconciliation = true }
@@ -3072,41 +3150,49 @@ struct ToolsView: View {
                 Text("只读检查持仓、交易流水、基金、现金、快照和净值历史，不会自动修改账本。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("AI 账户智能画像") {
                 Button("看系统怎么评价我的操作习惯") { showPortrait = true }
                 Text("对齐网页版「私人顾问 · 画像」：从交易流水推断风格、胜率、费用拖累、集中度与定投纪律，规则引擎本机先算，配了密钥可让大模型深度推断。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .toneCard(CardTone.accent, isLight: isLight)
             Section("券商成交历史导入") {
                 Button("导入成交 CSV / 表格") { showTradeCSVImport = true }
                 Text("先解析并预览，再由你确认入账。只增加 ETF/证券历史流水并计算可核实的已实现盈亏，不修改当前持仓或现金；需提供从首次买入开始的完整记录，避免把历史成交重复加到当前余额。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("交易计划与复盘") {
                 Button("打开计划记录（\(store.data.tradePlans.count)）") { showTradePlans = true }
                 Text("记录交易理由、计划价和失效条件；手动成交后可复盘执行偏差，不会自动下单或修改真实账本。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("ETF 底层持仓穿透") {
                 Button("查看成分股重叠") { showOverlap = true }
                 Text("ETF 使用截至 2026-06-30 的内置快照；场外基金可拉取定期报告重仓并统计 ETF/基金交叉重叠。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("新增资金加仓试算") {
                 Button("计算买入份额") { showAddCash = true }
                 Text("按目标仓位缺口、整手和预算约束试算；不会下单或改动持仓。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("换仓情景试算") {
                 Button("调整假设份额并比较组合") { showPortfolioScenario = true }
                 Text("临时调整 ETF/证券份额，比较市值、已知年分红、股息率和集中度；只作试算，不写入真实持仓。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Section("历史定投回放") {
                 Button("按已公布基金净值回放") { showFundReplay = true }
                 Text("只用已公布历史净值和用户选择的月投金额，不包含基金盘中估值；结果不代表未来表现。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            .plainCard(isLight: isLight)
             Text("AI 分析只读取本机已记录的数据；缺少有效日线或资讯时，不会提供相应技术判断或新闻结论。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -3240,6 +3326,8 @@ struct PortfolioScenarioView: View {
         return "其他 ETF / 证券"
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             List {
@@ -3286,6 +3374,7 @@ struct PortfolioScenarioView: View {
                         }
                     }
                 }
+                .plainCard(isLight: isLight)
 
                 Section("当前持仓 → 模拟组合") {
                     let before = metrics(useBaseline: true)
@@ -3306,6 +3395,7 @@ struct PortfolioScenarioView: View {
                     Text("波动率只使用所有模拟持仓都有记录的共同日线日期，至少 20 个共同收益点才显示；数据不足时不填默认相关系数。分红只汇总原生账本中的每份年分红设置或近 365 天已录入 ETF 分红事件；缺失的分红不会外推。集中度仅按 ETF/证券市值计算。模拟不会改变账户现金、持仓、交易记录或同步数据。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(CardTone.accent, isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
@@ -3355,6 +3445,8 @@ struct DividendCalendarView: View {
         }
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             List {
@@ -3363,6 +3455,7 @@ struct DividendCalendarView: View {
                     LabeledContent("ETF 事件金额估算", value: (etfEvents.reduce(0) { $0 + $1.2 }).cny())
                     LabeledContent("当前持仓年分红估算", value: (annualEstimateRows.reduce(0) { $0 + $1.0.quantity * $1.1 }).cny())
                 } header: { Text("年度汇总") }
+                    .plainCard(isLight: isLight)
                 Section("场内 ETF 历史事件") {
                     if etfEvents.isEmpty { Text("没有迁入该年度的 ETF 分红事件。") .foregroundStyle(.secondary) }
                     ForEach(Array(etfEvents.enumerated()), id: \.offset) { item in
@@ -3376,6 +3469,7 @@ struct DividendCalendarView: View {
                     Text("旧版分红事件由复权因子推算；金额按当前份额估算，不是当年实际到账，也不计入账本收益。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("当前持仓分红参考") {
                     if annualEstimateRows.isEmpty { Text("没有有效的年分红参考，可在场内持仓编辑页填写每份年分红修正。") .foregroundStyle(.secondary) }
                     ForEach(Array(annualEstimateRows.enumerated()), id: \.offset) { item in
@@ -3389,6 +3483,7 @@ struct DividendCalendarView: View {
                     Text("默认按最近 365 天迁入的历史事件合计；可手动修正每份年分红。年金额仍按当前份额估算，不代表未来承诺。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
@@ -3405,16 +3500,20 @@ struct LedgerHealthView: View {
     private var findings: [LedgerHealthFinding] { store.ledgerHealthReport() }
     private var errors: Int { findings.filter { $0.severity.rawValue == LedgerHealthFinding.Severity.error.rawValue }.count }
     private var warnings: Int { findings.filter { $0.severity.rawValue == LedgerHealthFinding.Severity.warning.rawValue }.count }
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
 
     var body: some View {
         NavigationStack {
             List {
                 Section("检查结果") {
                     LabeledContent("错误", value: "\(errors)")
+                        .foregroundStyle(errors > 0 ? PnLColor.up : Color.primary)
                     LabeledContent("提醒", value: "\(warnings)")
+                        .foregroundStyle(warnings > 0 ? CardTone.warn : Color.primary)
                     Text("检查只读取本机数据。发现异常时，请先导出备份，再根据原始交易记录人工核对。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(errors > 0 ? PnLColor.up : (warnings > 0 ? CardTone.warn : CardTone.ok), isLight: isLight)
                 Section("详细项目") {
                     ForEach(findings) { finding in
                         VStack(alignment: .leading, spacing: 4) {
@@ -3431,6 +3530,7 @@ struct LedgerHealthView: View {
                         .padding(.vertical, 3)
                     }
                 }
+                .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
@@ -3511,6 +3611,8 @@ struct ETFOverlapView: View {
         return etfWeight + fundWeight
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             List {
@@ -3522,6 +3624,7 @@ struct ETFOverlapView: View {
                     Text("ETF 快照：\(ETFConstituentLibrary.asOf)；场外基金按定期报告前十大（可取得时最多 50 只），报告日期见下方。未覆盖部分不代表没有重复持仓。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 if !store.data.holdings.filter({ $0.kind == .fund }).isEmpty {
                     Section("场外基金重仓") {
                         Button(store.isRefreshingFundHoldings ? "正在获取…" : "更新基金定期报告重仓") {
@@ -3538,6 +3641,7 @@ struct ETFOverlapView: View {
                             }.padding(.vertical, 2)
                         }
                     }
+                    .plainCard(isLight: isLight)
                 }
                 Section("跨 ETF / 场外基金重复成分 · \(duplicates.count) 只") {
                     if duplicates.isEmpty { Text(covered.count + store.data.fundConstituentSnapshots.count < 2 ? "至少需要两只已有成分快照的持仓才能比较。" : "现有前十大快照中未发现重复成分。")
@@ -3552,6 +3656,7 @@ struct ETFOverlapView: View {
                         }.padding(.vertical, 3)
                     }
                 }
+                .toneCard(CardTone.warnIf(!duplicates.isEmpty), isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
@@ -3618,6 +3723,8 @@ struct FundDCAReplayView: View {
             value: value, lumpValue: lumpValue, latestNAV: end.nav)
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -3633,19 +3740,22 @@ struct FundDCAReplayView: View {
                     Text("按每月 15 日或之后首个有净值的日期投入；若历史月份缺少该日期，使用该月最后一条已公布净值。一次性对照在首个定投日投入同样总额。未计申购费、赎回费、税费与现金分红再投。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 if let result = summary {
                     Section("历史结果 · \(result.firstDate) 至 \(result.lastDate)") {
                         LabeledContent("定投次数", value: "\(result.contributions)")
                         LabeledContent("累计投入", value: (result.invested).cny())
                         LabeledContent("期末份额", value: (result.shares).num(2))
                         LabeledContent("按最近净值折算", value: (result.value).cny())
-                        LabeledContent("定投收益率", value: result.dcaReturn.pct(2))
-                        LabeledContent("一次性买入收益率", value: result.lumpReturn.pct(2))
+                        LabeledContent("定投收益率", value: result.dcaReturn.directionMark() + result.dcaReturn.pct(2))
+                        LabeledContent("一次性买入收益率", value: result.lumpReturn.directionMark() + result.lumpReturn.pct(2))
                         LabeledContent("最近已公布净值", value: (result.latestNAV).num(4))
                     }
+                    .toneCard(CardTone.pnl(result.dcaReturn), isLight: isLight)
                 } else if !funds.isEmpty {
                     Section { Text("当前净值历史不足以完成所选区间的回放，或投入金额无效。先刷新基金净值或缩短区间。")
                         .font(.footnote).foregroundStyle(.secondary) }
+                        .toneCard(CardTone.warn, isLight: isLight)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -3681,6 +3791,8 @@ struct AddCashSimulationView: View {
     @State private var spent = 0.0
     @State private var message = ""
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -3692,13 +3804,18 @@ struct AddCashSimulationView: View {
                     Text("ETF 使用 100 份整手。目标比例读取已设的持仓目标；未设置目标的标的按当前持仓占总资产比例分配。目标金额按总资产（含现金和基金）计算，场外基金不会被建议买卖。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                if !message.isEmpty { Section { Text(message).foregroundStyle(.orange) } }
+                .plainCard(isLight: isLight)
+                if !message.isEmpty {
+                    Section { Text(message).foregroundStyle(CardTone.warn) }
+                        .toneCard(CardTone.warn, isLight: isLight)
+                }
                 if hasRun {
                     Section("预算") {
                         LabeledContent("可投入", value: (investable).cny())
                         LabeledContent("计划支出", value: (spent).cny())
                         LabeledContent("剩余", value: (max(0, (Double(cashText) ?? 0) - spent)).cny())
                     }
+                    .plainCard(isLight: isLight)
                     Section("试算结果") {
                         ForEach(rows) { row in
                             VStack(alignment: .leading, spacing: 4) {
@@ -3710,6 +3827,7 @@ struct AddCashSimulationView: View {
                             }.padding(.vertical, 3)
                         }
                     }
+                    .toneCard(CardTone.accent, isLight: isLight)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -3974,6 +4092,8 @@ struct AIAnalysisView: View {
     @State private var result = ""
     @State private var message = ""
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -3984,6 +4104,7 @@ struct AIAnalysisView: View {
                     Text("画像先依据本机持仓和流水分析；只有你主动点击大模型深度推断时才会发送画像数据。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .toneCard(CardTone.accent, isLight: isLight)
                 Section("私人顾问 · 全账户建议") {
                     Button {
                         advisorResult = LocalAdvisorEngine.review(data: store.data, totalAsset: store.totalAsset)
@@ -4215,6 +4336,8 @@ struct DayGridView: View {
         return Array(Dictionary((etfs + watches + plans).map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first }).values).sorted { $0.code < $1.code }
     }
 
+    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -4243,6 +4366,7 @@ struct DayGridView: View {
                     Text("每档按 100 份整数手模拟。每档资金小于 1 手时会显示资金不足原因；计划仍可保存，调整资金或减少档数即可。计划预设不要求市场已开盘。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section("分时数据") {
                     Button("导入分时 CSV") { showImporter = true }
                     Text("CSV 支持 code,date,time,price,volume 或 code,timestamp,price；无 code 列时使用当前选择标的；timestamp/time 列需包含完整日期和时间（yyyy-MM-dd HH:mm[:ss]）。应用在前台且取得有效报价时才采集；已保存的分时历史不会按交易日数自动删除。")
@@ -4254,17 +4378,23 @@ struct DayGridView: View {
                         Button("复盘所选日期") { runReplay() }.disabled(code.isEmpty || selectedDay.isEmpty)
                     }
                 }
+                .plainCard(isLight: isLight)
                 if let result {
                     Section("路径模拟结果 · \(result.day)") {
-                        LabeledContent("模拟盈亏", value: (result.profit).cny())
+                        LabeledContent("模拟盈亏", value: "\((result.profit).directionMark()) \((result.profit).cny())")
+                            .foregroundStyle(PnLColor.of(result.profit))
                         LabeledContent("买入 / 卖出", value: "\(result.buyCount) / \(result.sellCount) 笔")
                         LabeledContent("估算费用", value: (result.fees).cny())
                         LabeledContent("分时覆盖", value: (result.coverage * 100).pct(0))
                         Text(result.fills == 0 ? "该日没有触发网格成交。若资金不足以买入 100 份一手、网格间距超出当日波动，或数据缺点，结果可能没有代表性。" : "回放按时间顺序计算，含逐笔固定费用；不含排队、成交量、滑点、涨跌停和真实券商规则。历史最佳参数会有过拟合，不能直接当作明日建议。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    .toneCard(CardTone.pnl(result.profit), isLight: isLight)
                 }
-                if !message.isEmpty { Section { Text(message).font(.footnote) } }
+                if !message.isEmpty {
+                    Section { Text(message).font(.footnote) }
+                        .toneCard(CardTone.warn, isLight: isLight)
+                }
                 Section("已保存计划") {
                     if store.data.dayGridPlans.isEmpty { Text("暂无计划") }
                     ForEach(store.data.dayGridPlans) { plan in
@@ -4277,6 +4407,7 @@ struct DayGridView: View {
                         }
                     }
                 }
+                .plainCard(isLight: isLight)
                 if !store.data.legacyGridArchives.isEmpty {
                     Section("旧版网格记录（只读归档）") {
                         ForEach(store.data.legacyGridArchives) { record in
