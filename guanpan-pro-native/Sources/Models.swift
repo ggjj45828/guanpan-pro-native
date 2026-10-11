@@ -47,7 +47,8 @@ struct Quote: Codable, Identifiable {
 /// 不塞进 `PortfolioData`（塞进去会被写进备份、被 NAS 同步当账本推来推去）。
 struct MarketIndexQuote: Codable, Identifiable, Hashable {
     var id: String { symbol }
-    /// 腾讯行情代码，本 App 里指数一律带市场前缀：sh / sz / hk / us。
+    /// 唯一标识 = 东方财富 secid（`1.000001`、`100.N225`）。
+    /// 列表行情和详情页的 K 线 / 分时都拿它去取数；对应的腾讯代码见 `MarketIndexStore.catalog`。
     var symbol: String
     var name: String
     var price: Double
@@ -61,17 +62,59 @@ struct MarketIndexQuote: Codable, Identifiable, Hashable {
 /// 缓存只为了「冷启动时这一排不是空的」：指数条每次进首页都会重新取，
 /// 拿不到新数据时就继续显示上次的值，用户至少知道上次是什么水平。
 enum MarketIndexStore {
-    /// 顺序即展示顺序：先 A 股宽基，再港股，再美股 —— 手机上一屏先看到自己常看的。
-    static let catalog: [(symbol: String, name: String)] = [
-        ("sh000001", "上证指数"),
-        ("sz399001", "深证成指"),
-        ("sz399006", "创业板指"),
-        ("sh000300", "沪深300"),
-        ("hkHSI", "恒生指数"),
-        ("usIXIC", "纳斯达克"),
-        ("usDJI", "道琼斯"),
-        ("usINX", "标普500")
+    /// 一条指数：东财 secid（稳定主键，也是缓存对齐用的键）+ 腾讯代码 + 新浪代码。
+    /// 三个源都填 nil 不可能出现 —— 至少得有一个拿得到数。
+    struct Entry {
+        let secid: String
+        let tencent: String?
+        let name: String
+        /// 新浪全球指数代码（`int_nikkei` / `b_TOPIX`）。腾讯没有日经与东证，
+        /// 而东财 `push2` 在本机会被风控，所以这几个只能靠新浪。
+        let sina: String?
+
+        init(secid: String, tencent: String?, name: String, sina: String? = nil) {
+            self.secid = secid
+            self.tencent = tencent
+            self.name = name
+            self.sina = sina
+        }
+    }
+
+    /// 顺序即展示顺序：先 A 股宽基，再港股，再美股，最后日韩 ——
+    /// 手机上一屏先看到自己常看的，剩下的左滑。
+    ///
+    /// **为什么三个源都要**（都是实测结论，不是推测）：
+    /// · 腾讯 `qt.gtimg.cn` 覆盖 A 股 / 港股 / 美股，但**没有**日经与东证 ——
+    ///   试过 jp/nk/us 各前缀 × 一批指数名，命中的全是同名美股
+    ///   （例如 `usDAX` 其实是 DAX 德国指数 ETF）。
+    /// · 东方财富 `push2` 覆盖面最全，但本机出口 IP 已被风控（连续请求直接断连），
+    ///   所以只能当作「有就用」的备选，不能当作主力。
+    /// · 新浪 `hq.sinajs.cn` 的 `int_nikkei` 给日经、`b_TOPIX` 给东证、`b_KOSPI` 给韩国，
+    ///   正好补上腾讯的缺口（注意 `int_topix` / `int_kospi` 是空的，必须用 `b_` 前缀）。
+    /// 三个源**并行**取、后写的覆盖先写的：谁挂都不至于让整排空白。
+    ///
+    /// 台湾加权、英国富时、德国 DAX 已按用户要求下线（「太偏了」）。
+    static let catalog: [Entry] = [
+        Entry(secid: "1.000001", tencent: "sh000001", name: "上证指数"),
+        Entry(secid: "0.399001", tencent: "sz399001", name: "深证成指"),
+        Entry(secid: "0.399006", tencent: "sz399006", name: "创业板指"),
+        Entry(secid: "1.000300", tencent: "sh000300", name: "沪深300"),
+        Entry(secid: "1.000688", tencent: "sh000688", name: "科创50"),
+        Entry(secid: "100.HSI", tencent: "hkHSI", name: "恒生指数", sina: "b_HSI"),
+        Entry(secid: "100.HSCEI", tencent: "hkHSCEI", name: "国企指数", sina: "b_HSCEI"),
+        Entry(secid: "124.HSTECH", tencent: "hkHSTECH", name: "恒生科技"),
+        Entry(secid: "100.NDX", tencent: "usIXIC", name: "纳斯达克"),
+        Entry(secid: "100.SPX", tencent: "usINX", name: "标普500", sina: "b_SPX"),
+        Entry(secid: "100.DJIA", tencent: "usDJI", name: "道琼斯"),
+        Entry(secid: "100.N225", tencent: nil, name: "日经225", sina: "int_nikkei"),
+        Entry(secid: "100.TOPIX", tencent: nil, name: "东证TOPIX", sina: "b_TOPIX"),
+        Entry(secid: "100.KS11", tencent: nil, name: "韩国KOSPI", sina: "b_KOSPI")
     ]
+
+    /// secid → 展示名，方便别处按 secid 反查。
+    static func name(for secid: String) -> String? {
+        catalog.first { $0.secid == secid }?.name
+    }
 
     private static let cacheKey = "guanpan.native.index.quotes"
 
@@ -80,9 +123,9 @@ enum MarketIndexStore {
               let list = try? JSONDecoder().decode([MarketIndexQuote].self, from: data) else { return [] }
         // 只保留仍在代码表里的项，并按代码表顺序重排 ——
         // 改过代码表之后，老缓存里多出来的项不该继续占位置。
-        // 注意：元组不支持 `map(\.symbol)` 这种键路径写法，必须用闭包。
-        let order = catalog.map { $0.symbol }
-        return order.compactMap { symbol in list.first { $0.symbol == symbol } }
+        // （`Entry` 是 struct，可以走键路径；这里用闭包写法与工程其他处保持一致。）
+        let order = catalog.map { $0.secid }
+        return order.compactMap { secid in list.first { $0.symbol == secid } }
     }
 
     static func save(_ list: [MarketIndexQuote]) {

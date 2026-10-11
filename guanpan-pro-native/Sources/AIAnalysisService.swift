@@ -71,8 +71,15 @@ enum AIAnalysisService {
         return token
     }
 
-    static func analyze(config: AIAnalysisConfig, portfolio: PortfolioData) async throws -> String {
-        try await request(config: config, prompt: portfolioPrompt(portfolio))
+    /// 组合分析。
+    ///
+    /// `extraSections` 是本机算好的补充材料（交易行为画像、大盘环境、技术面、组合风险），
+    /// 由 `AIContextBuilder` 拼装 —— 这一层只负责「怎么问」，不关心 store 里有什么。
+    static func analyze(config: AIAnalysisConfig, portfolio: PortfolioData,
+                        extraSections: [String] = []) async throws -> String {
+        let prompt = portfolioPrompt(portfolio, extraSections: extraSections)
+            + "\n\n" + AISuggestionParser.formatInstruction
+        return try await request(config: config, prompt: prompt)
     }
 
     /// 通用对话入口：供「账户智能画像」等本机规则先行、可选大模型深挖的功能复用。
@@ -151,7 +158,11 @@ enum AIAnalysisService {
         【本机分时样本】（最多 180 点）：
         \(minuteHistoryText)
         """
-        return try await request(config: config, prompt: prompt)
+        // 个股页同样要机器可读建议（这里最可能给出具体价位），
+        // 但代码列只能是当前这一只，避免模型顺手带上别的标的。
+        let suggestionTail = "\n\n" + AISuggestionParser.formatInstruction
+            + "\n本次只分析这一个标的，建议行的代码列只能填 \(holding.code)，名称只能填 \(holding.name)。"
+        return try await request(config: config, prompt: prompt + suggestionTail)
     }
 
     private static func request(config: AIAnalysisConfig, prompt: String) async throws -> String {
@@ -194,7 +205,7 @@ enum AIAnalysisService {
         return content
     }
 
-    private static func portfolioPrompt(_ data: PortfolioData) -> String {
+    private static func portfolioPrompt(_ data: PortfolioData, extraSections: [String] = []) -> String {
         let fmt: (Double) -> String = { String(format: "%.2f", $0) }
         let holdings = data.holdings.map { h -> String in
             let kindText = h.kind == .fund ? "场外基金" : "ETF/证券"
@@ -252,6 +263,7 @@ enum AIAnalysisService {
             return "\(item.name)占总资产约\(weight.num(1))%（账面盈亏\(fmt(item.pnl))，单标的上限\(fmt(p.maxPositionPercent))%）"
         }.joined(separator: "\n")
         let exposureSummary = exposureText.isEmpty ? "暂无持仓" : exposureText
+        let extrasText = extraSections.isEmpty ? "" : "\n" + extraSections.joined(separator: "\n") + "\n"
         return """
         请做组合决策分析，而不是把持仓、自选、成交和快照逐项改写。先从持仓金额、成本、现金、期限和报价质量中找出最影响下一步的一到两个矛盾或风险，解释因果关系和优先级。
         按以下结构回答：1. 核心判断：一两句话说明组合最需要处理的事、置信度和关键数据限制。2. 优先行动：最多 3 项；每项写清“问题/证据为何重要 → 触发条件 → 执行步骤与仓位边界 → 何时复核或撤销”，不要为了凑数逐只下结论。3. 组合结构：讨论现金缓冲、集中度/可能重复暴露、风险偏好与期限；没有基金成分或相关性数据时标为待核实，不得断言重仓同一行业。4. 反证与核对：说明哪些变化会推翻判断，以及最值得补充的数据。
@@ -278,6 +290,6 @@ enum AIAnalysisService {
         \(dcaPlansText)
         【已保存的基金前十大成分与报告日期】
         \(fundCompositionText)
-        """
+        \(extrasText)"""
     }
 }

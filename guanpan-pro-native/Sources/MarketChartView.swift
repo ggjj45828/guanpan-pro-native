@@ -131,6 +131,10 @@ struct MarketChartView: View {
     @State private var instrumentAIResult = ""
     @State private var instrumentAIMessage = ""
     @State private var instrumentAIBusy = false
+    /// AI 建议一键转计划时的预填载体（同时充当 sheet 开关）。
+    @State private var planPrefill: AISuggestion?
+    @State private var handledSuggestionIDs: Set<UUID> = []
+    @State private var suggestionNote = ""
     @State private var isLoading = false
     @State private var showLandscapeChart = false
     @State private var message = ""
@@ -731,7 +735,7 @@ struct MarketChartView: View {
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .background(.clear)
-            .presentationBackground(.clear)
+            .themedSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 ToolbarItem(placement: .topBarLeading) {
@@ -748,16 +752,38 @@ struct MarketChartView: View {
                     List {
                         if instrumentAIBusy { ProgressView("正在分析此标的…") }
                         if !instrumentAIMessage.isEmpty { Text(instrumentAIMessage).foregroundStyle(.secondary) }
-                        if !instrumentAIResult.isEmpty { Text(instrumentAIResult).textSelection(.enabled) }
+                        if !instrumentAIResult.isEmpty {
+                            // 展示剥掉机器可读段的人话版本；解析仍读完整原文。
+                            Text(AISuggestionParser.displayText(instrumentAIResult)).textSelection(.enabled)
+                        }
+                        if !instrumentAISuggestions.isEmpty {
+                            Section("可执行建议（\(instrumentAISuggestions.count) 条）") {
+                                ForEach(instrumentAISuggestions) { suggestion in
+                                    instrumentSuggestionRow(suggestion)
+                                }
+                                if !suggestionNote.isEmpty {
+                                    Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
+                            .toneCard(CardTone.accent, isLight: AppTheme.palette(for: store.appearance).isLight)
+                        }
                         Text("只依据本机现有行情、日线/支撑压力参考和所选交易日已有分时点生成分析；缺少的数据不会补造。模型输出可能有误，不构成买卖指令。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .navigationTitle("\(holding.name) · AI 分析")
                     .scrollContentBackground(.hidden)
                     .background(.clear)
-                    .presentationBackground(.clear)
+                    .themedSheetBackground()
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { showInstrumentAI = false } } }
                     .task { await analyzeInstrument() }
+                    .sheet(item: $planPrefill) { suggestion in
+                        TradePlanEditor(prefill: suggestion, onSave: { plan in
+                            store.data.tradePlans.append(plan)
+                            store.save(label: "AI 建议转交易计划")
+                            handledSuggestionIDs.insert(suggestion.id)
+                            suggestionNote = "已存入「交易计划与复盘」，到复盘日期前都可以修改或取消。"
+                        })
+                    }
                 }
             }
             .onAppear {
@@ -1049,23 +1075,19 @@ struct MarketChartView: View {
 
     @MainActor private func fetchTencentMinute() async {
         let today = shanghaiDay(.now)
-        let calendarFormatter = DateFormatter(); calendarFormatter.locale = Locale(identifier: "en_US_POSIX")
-        calendarFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); calendarFormatter.dateFormat = "yyyy-MM-dd"
-        if let date = calendarFormatter.date(from: today), MarketCalendar.isWeekend(date)
-            || MarketCalendar.mainlandClosures2026.contains(today) || store.data.customMarketHolidays.contains(today) {
-            minuteStatus = "休市 · 最近交易日历史分时仍可查看"
-            return
+        // 休市 / 非交易时段**不提前返回**：腾讯的分时接口在这两种情况下仍会返回
+        // 最近一个交易日的完整分时（实测周末请求 sh000001 能拿到上一交易日 242 个点），
+        // 直接画出来比留一张空图有用得多。状态文案在拿到数据后按实际日期写
+        // —— 见末尾「休市 · 最近交易日 xx-xx」那一行。
+        // 指数代码自带市场前缀（sh000001 / usIXIC），个股 / ETF 才是 6 位纯数字。
+        let symbol: String
+        if holding.code.allSatisfy(\.isNumber) {
+            let shanghaiPrefixes = ["6", "9", "5", "11", "50", "51", "56", "58"]
+            let exchange = shanghaiPrefixes.contains(where: { holding.code.hasPrefix($0) }) ? "sh" : "sz"
+            symbol = exchange + holding.code
+        } else {
+            symbol = holding.code
         }
-        var shanghaiCalendar = Calendar(identifier: .gregorian); shanghaiCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let components = shanghaiCalendar.dateComponents([.hour, .minute], from: .now)
-        let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
-        guard (570...690).contains(minutes) || (780...900).contains(minutes) else {
-            minuteStatus = "非交易时段 · 最近交易日历史分时仍可查看"
-            return
-        }
-        let shanghaiPrefixes = ["6", "9", "5", "11", "50", "51", "56", "58"]
-        let exchange = shanghaiPrefixes.contains(where: { holding.code.hasPrefix($0) }) ? "sh" : "sz"
-        let symbol = exchange + holding.code
         guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=min_data_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else { return }
         do {
             let data: Data
@@ -1174,6 +1196,9 @@ struct MarketChartView: View {
         guard !instrumentAIBusy else { return }
         instrumentAIBusy = true
         instrumentAIMessage = ""
+        // 新一轮分析：上一轮建议的处理标记与提示都作废。
+        handledSuggestionIDs.removeAll()
+        suggestionNote = ""
         defer { instrumentAIBusy = false }
         let quote = store.data.quotes.first(where: { $0.code == holding.code })
         let actualHolding = store.data.holdings.first(where: { $0.code == holding.code && $0.kind == .etf }) ?? holding
@@ -1183,6 +1208,76 @@ struct MarketChartView: View {
                 intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText,
                 profile: store.data.investmentProfile, totalAsset: store.totalAsset)
         } catch { instrumentAIMessage = error.localizedDescription }
+    }
+
+    // MARK: - AI 可执行建议 → 计划 / 提醒
+
+    private var instrumentAISuggestions: [AISuggestion] {
+        AISuggestionParser.parse(instrumentAIResult)
+    }
+
+    /// 单条建议的展示与两个落地动作。与组合分析页同一套口径（买=红、卖=绿）。
+    private func instrumentSuggestionRow(_ suggestion: AISuggestion) -> some View {
+        let tone: Color = suggestion.side == .buy ? PnLColor.up : PnLColor.down
+        let handled = handledSuggestionIDs.contains(suggestion.id)
+        let light = AppTheme.palette(for: store.appearance).isLight
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(suggestion.side.label)
+                    .scaledFont(11, weight: .semibold)
+                    .foregroundStyle(tone)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(tone.opacity(light ? 0.14 : 0.24), in: Capsule())
+                Text(suggestion.displayName)
+                    .scaledFont(14, weight: .semibold)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                Spacer(minLength: 4)
+                if handled {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(CardTone.ok)
+                        .accessibilityLabel("已处理")
+                }
+            }
+            if let price = suggestion.price {
+                Text("参考价 \(price.num(3))").scaledFont(12).monospacedDigit().foregroundStyle(.secondary)
+            }
+            if !suggestion.reason.isEmpty { Text(suggestion.reason).font(.footnote) }
+            HStack(spacing: 10) {
+                Button("存入计划记录") {
+                    Haptics.tap()
+                    planPrefill = suggestion
+                }
+                .buttonStyle(.bordered)
+                .disabled(handled)
+                Button("设为价格提醒") { createInstrumentAlert(from: suggestion) }
+                    .buttonStyle(.bordered)
+                    // 场外基金不走实时行情，提醒永远不会触发 —— 与其建一条哑的，不如不给按。
+                    .disabled(handled || suggestion.price == nil || holding.kind == .fund)
+            }
+            .font(.caption)
+            if holding.kind == .fund {
+                Text("场外基金按净值成交，没有实时价格提醒；可以转成计划记录，到净值公布后自己核对。")
+                    .scaledFont(11).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    /// 个股页提醒：买入等回落到参考价（below），卖出等涨到参考价（above）。
+    /// 这里只用「参考价」而不用目标价/失效价 —— 单标的页给出的第一个价位就是它建议的动手点。
+    private func createInstrumentAlert(from suggestion: AISuggestion) {
+        guard let target = suggestion.price else { return }
+        let direction: QuoteAlert.Direction = suggestion.side == .buy ? .below : .above
+        do {
+            try store.addQuoteAlert(code: suggestion.code,
+                                    name: suggestion.displayName,
+                                    target: target,
+                                    direction: direction)
+            handledSuggestionIDs.insert(suggestion.id)
+            suggestionNote = "已添加价格提醒：\(suggestion.displayName) \(direction == .below ? "跌到" : "涨到") \(target.num(3)) 时通知（一次性，触发后需手动重启）。"
+        } catch {
+            suggestionNote = error.localizedDescription
+        }
     }
 }
 
@@ -1263,7 +1358,7 @@ struct LandscapeChartView: View {
             }
         }
         .background(.clear)
-        .presentationBackground(.clear)
+        .themedSheetBackground()
         .onAppear { OrientationLock.shared.lockLandscape() }
         .onDisappear { OrientationLock.shared.unlock() }
     }

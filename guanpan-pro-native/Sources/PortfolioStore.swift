@@ -92,14 +92,129 @@ final class PortfolioStore: ObservableObject {
         return holding.quantity * (holding.current - previousClose)
     }
     /// 全部持仓当日盈亏。
+    ///
+    /// **注意口径**：`marketChanges` 只有场内代码（自选 + ETF 持仓），场外基金不在里面，
+    /// 所以这个值实际上等于 `intradayPnL`（场内）。场外基金的当日盈亏请用 `fundDayPnL`。
+    /// 界面上别把这两个数混着叫「今日盈亏」，否则会出现「没算场外却像是全账户」的误读。
     var dayPnL: Double { data.holdings.reduce(0) { $0 + dayPnL(of: $1) } }
     /// 当日盈亏是否可算：至少要有一只拿到当日涨跌幅，否则显示「--」而不是 0。
-    var hasDayPnL: Bool { data.holdings.contains { marketChanges[$0.code] != nil } }
+    var hasDayPnL: Bool { hasIntradayPnL }
     /// 今日幅度 = 当日盈亏 / 昨收市值。
-    var dayPnLRate: Double? {
-        let base = totalMarketValue - dayPnL
+    var dayPnLRate: Double? { intradayPnLRate }
+
+    // MARK: - 当日盈亏：场内与场外必须分开看
+
+    /// 场内（ETF / 证券）当日盈亏。
+    ///
+    /// 数据来自 `marketChanges`，即最近一次行情请求拿到的涨跌幅。
+    /// 休市时腾讯仍会返回**上一交易日收盘**的涨跌幅，所以周末 / 夜里这个数不是空的，
+    /// 只是它的「今天」= 上一交易日 —— 界面必须用 `intradayQuoteDate` 把日期写出来。
+    var intradayPnL: Double { dayPnL(of: .etf) }
+
+    /// 场内当日盈亏是否可算：至少要有一只 ETF / 证券拿到涨跌幅。
+    var hasIntradayPnL: Bool {
+        data.holdings.contains { $0.kind == .etf && marketChanges[$0.code] != nil }
+    }
+
+    /// 场内行情对应的最近一个交易日（取所有场内持仓里最新的行情时间戳）。
+    var intradayQuoteDate: Date? {
+        data.holdings.compactMap { $0.kind == .etf ? $0.marketUpdatedAt : nil }.max()
+    }
+
+    /// 场内行情是不是**今天**的数据。
+    ///
+    /// 休市（周末 / 节假日）时行情源不会空手而归，它照旧返回**上一交易日收盘价**，
+    /// 所以「有没有数字」根本分不出今天还是上周五 —— 必须比日期。
+    /// 界面靠这个决定写「今日盈亏」还是「休市 · MM-dd 盈亏」：
+    /// 场外基金在休市时是没数的（净值要 T+1 才出），场内却还在跳，
+    /// 不标清楚就会被读成「今天场内赚了这么多」。
+    var isIntradayQuoteToday: Bool {
+        guard let date = intradayQuoteDate else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar.isDateInToday(date)
+    }
+
+    /// 当前是否处于 A 股连续竞价时段（09:30–11:30 / 13:00–15:00 的工作日）。
+    var isMarketOpenNow: Bool { Self.isRegularTradingSession(.now) }
+
+    /// 今天是否休市。
+    ///
+    /// 三层判断，逐级降级 —— 任何一层缺数据都不至于把交易日误判成休市：
+    /// ①周末：最可靠；
+    /// ②上证指数日 K 反推的交易日历：覆盖得到就听它（跨年、临时休市都自动跟上）；
+    /// ③场内行情时间戳：开市日行情带今天的日期，休市日会停在上一交易日。
+    var isMarketClosedToday: Bool {
+        if MarketCalendar.isWeekend(.now) { return true }
+        let today = MarketCalendar.isoDay(.now)
+        if MarketCalendar.covers(today) { return !MarketCalendar.loadTradingDays().contains(today) }
+        if MarketCalendar.mainlandClosures2026.contains(today) { return true }
+        if hasIntradayPnL, !isIntradayQuoteToday { return true }
+        return false
+    }
+
+    /// 场内今日幅度 = 场内当日盈亏 / 场内昨收市值。
+    var intradayPnLRate: Double? {
+        let base = marketValue(of: .etf) - intradayPnL
         guard base > 0, base.isFinite else { return nil }
-        return dayPnL / base * 100
+        return intradayPnL / base * 100
+    }
+
+    /// 单只场外基金「最近一个净值日」的盈亏 = 份额 ×（最新净值 − 上一净值）。
+    ///
+    /// 场外基金一天只公布一次净值（通常 T+1 晚），没有盘中行情，
+    /// 所以它和场内 ETF 永远不可能共用同一个「今天」。这里按净值日单独算，
+    /// 界面必须把净值日写出来，否则又会被读成「今天的场外盈亏」。
+    func fundDayPnL(of holding: Holding) -> Double {
+        guard holding.kind == .fund, holding.quantity > 0 else { return 0 }
+        let points = data.fundNAVHistory.filter { $0.code == holding.code }.sorted { $0.date < $1.date }
+        guard points.count >= 2 else { return 0 }
+        let latest = points[points.count - 1], previous = points[points.count - 2]
+        guard latest.nav.isFinite, previous.nav.isFinite, previous.nav > 0 else { return 0 }
+        return holding.quantity * (latest.nav - previous.nav)
+    }
+
+    /// 全部场外基金「最近一个净值日」的盈亏合计。
+    var fundDayPnL: Double {
+        data.holdings.filter { $0.kind == .fund }.reduce(0) { $0 + fundDayPnL(of: $1) }
+    }
+
+    /// 场外基金当日盈亏是否可算：至少有一只基金存了两个净值点。
+    var hasFundDayPnL: Bool {
+        data.holdings.contains { holding in
+            holding.kind == .fund && data.fundNAVHistory.filter { $0.code == holding.code }.count >= 2
+        }
+    }
+
+    /// 场外今日幅度 = 场外当日盈亏 / 场外昨收市值（按上一净值折算）。
+    var fundDayNAVRate: Double? {
+        let base = marketValue(of: .fund) - fundDayPnL
+        guard base > 0, base.isFinite else { return nil }
+        return fundDayPnL / base * 100
+    }
+
+    /// 最近一个已公布净值日（yyyy-MM-dd），供界面标注。
+    var latestFundNAVDate: String? {
+        let codes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code))
+        guard !codes.isEmpty else { return nil }
+        return data.fundNAVHistory.filter { codes.contains($0.code) }.map(\.date).max()
+    }
+
+    /// 当日盈亏合计 = 场内（按最近行情）+ 场外基金（按最新净值日）。
+    ///
+    /// 两个分项的数据日期不同（场内是交易日收盘、场外是净值公布日），
+    /// 所以这个合计只是「用户最想看的那个总数」；界面上必须把两个分项一起列出来，
+    /// 只留一个合计就又会变成「不知道算的是谁」。
+    var dayPnLGross: Double { intradayPnL + fundDayPnL }
+
+    /// 合计是否可算：场内或场外任一有数即可，两边都没有才显示 --。
+    var hasDayPnLGross: Bool { hasIntradayPnL || hasFundDayPnL }
+
+    /// 合计今日幅度 = 合计当日盈亏 / 全部持仓昨收市值。
+    var dayPnLGrossRate: Double? {
+        let base = totalMarketValue - dayPnLGross
+        guard base > 0, base.isFinite else { return nil }
+        return dayPnLGross / base * 100
     }
     /// 仓位（持仓市值 / 总资产）。
     var positionPercent: Double {
@@ -229,9 +344,12 @@ final class PortfolioStore: ObservableObject {
     }
     func fetchDailyBars(code rawCode: String, count: Int = 640, force: Bool = false) async throws -> [DailyBar] {
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard code.count == 6, code.allSatisfy(\.isNumber) else { throw URLError(.badURL) }
+        // 个股 / ETF 是 6 位纯数字；指数是带市场前缀的腾讯代码（sh000001 / usIXIC）。
+        // 交易日历要拿上证指数的日 K，所以这里不能再假设「代码一定全是数字」。
+        let isPrefixed = !code.allSatisfy(\.isNumber)
+        guard isPrefixed ? code.count >= 6 : code.count == 6 else { throw URLError(.badURL) }
         if !force, let cached = dailyBars[code], !cached.isEmpty { return cached }
-        let symbol = tencentSymbol(code)
+        let symbol = isPrefixed ? code : tencentSymbol(code)
         // 行情走 iPhone 直连优先，NAS 仅作兜底（NAS 地址是给多设备同步用的，不应成为行情必经链路）
         let endpoints = [
             "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
@@ -261,6 +379,25 @@ final class PortfolioStore: ObservableObject {
         }
         if let cached = dailyBars[code], !cached.isEmpty { return cached }
         throw lastError
+    }
+
+    /// 用上证指数日 K 反推交易日历：**有 K 线的日期就是交易日**。
+    ///
+    /// 这样不用人工维护年度休市表：交易所怎么安排，K 线里就怎么体现 ——
+    /// 跨年不用补表，临时的休市（纪念日、台风）也能自动跟上。
+    /// 拉到就整体覆盖；拉不到就保留上一次的，不清空（宁可旧，也不要空）。
+    @discardableResult
+    func refreshTradingCalendar(force: Bool = false) async -> Bool {
+        if !force, MarketCalendar.fetchedToday { return false }
+        do {
+            let bars = try await fetchDailyBars(code: MarketCalendar.probeSymbol, count: 640, force: true)
+            let days = Set(bars.map(\.date))
+            // 太少说明这次没取全，覆盖上去反而会把交易日误判成休市。
+            guard days.count > 120 else { return false }
+            MarketCalendar.saveTradingDays(days)
+            MarketCalendar.markFetched()
+            return true
+        } catch { return false }
     }
 
     private func parseDailyBars(_ bytes: Data, code: String, symbol: String) -> [DailyBar]? {
@@ -669,41 +806,307 @@ final class PortfolioStore: ObservableObject {
     /// ①指数不在自选/持仓里，一条没有也不该让整个请求早退（新装用户没有自选时也要看得到大盘）；
     /// ②指数不需要写进账本、不需要触发提醒、不需要抓分时，共用 `performQuoteRefresh`
     /// 会把 `data.quotes` / `marketChanges` 弄脏。
+    ///
+    /// v2.13 起改成**腾讯 + 东财 + 新浪三源并行**：腾讯覆盖 A 股 / 港股 / 美股，
+    /// 新浪补腾讯没有的日经与东证，东财最后兜底。三个请求分开发是有意的 ——
+    /// 任一源被限流或抽风，另一边的指数照常显示，不会因为「一条请求全挂」让整排变空白。
     @discardableResult
     func performIndexRefresh() async -> Bool {
         guard !isRefreshingIndices else { return false }
         isRefreshingIndices = true
         defer { isRefreshingIndices = false }
-        // 元组数组不能用 `map(\.symbol)`（键路径指不到元组元素），一律走闭包。
-        let symbols = MarketIndexStore.catalog.map { $0.symbol }
-        guard let url = URL(string: "https://qt.gtimg.cn/q=" + symbols.joined(separator: ",")
-                            + "&_t=" + String(Int(Date().timeIntervalSince1970))) else { return false }
-        var request = URLRequest(url: url); request.timeoutInterval = 12
-        let bytes: Data
-        do {
-            let (directBytes, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            bytes = directBytes
-        } catch {
-            // 与个股行情同一条兜底链路：直连失败才走 NAS 行情代理
-            if let proxied = try? await NASSyncService.marketProxyData(
-                path: "quote", queryItems: [URLQueryItem(name: "codes", value: symbols.joined(separator: ","))]) {
-                bytes = proxied
-            } else { return false }
-        }
-        let values = parseTencent(decodeTencent(bytes))
-        let updated = MarketIndexStore.catalog.compactMap { item -> MarketIndexQuote? in
-            guard let quote = values[item.symbol], quote.price > 0 else { return nil }
-            return MarketIndexQuote(symbol: item.symbol,
-                                    name: quote.name.isEmpty ? item.name : quote.name,
-                                    price: quote.price, changePct: quote.changePct,
-                                    updatedAt: quote.timestamp)
-        }
+
+        async let fromTencent = fetchTencentIndexQuotes()
+        async let fromSina = fetchSinaIndexQuotes()
+        async let fromEastmoney = fetchEastmoneyIndexQuotes()
+        let (tencentQuotes, sinaQuotes, eastmoneyQuotes) = await (fromTencent, fromSina, fromEastmoney)
+
+        // 按「东财 → 新浪 → 腾讯」的顺序写入，后面的覆盖前面的：
+        // 腾讯的时间戳最贴近实时，新浪次之，东财在本机常年被风控排最后。
+        var merged: [String: MarketIndexQuote] = [:]
+        for quote in eastmoneyQuotes + sinaQuotes + tencentQuotes { merged[quote.symbol] = quote }
+
+        let updated = MarketIndexStore.catalog.compactMap { merged[$0.secid] }
         // 一个都没解析出来说明这次请求白跑，保留上一次的值比清空更诚实。
         guard !updated.isEmpty else { return false }
         indexQuotes = updated
         MarketIndexStore.save(updated)
+
+        // 顺带维护交易日历（内部一天只跑一次，见 MarketCalendar.fetchedToday）。
+        Task { await refreshTradingCalendar() }
         return true
+    }
+
+    /// 腾讯源：`qt.gtimg.cn` 一条请求覆盖 A 股 / 港股 / 美股指数。
+    private func fetchTencentIndexQuotes() async -> [MarketIndexQuote] {
+        let entries = MarketIndexStore.catalog.filter { $0.tencent != nil }
+        guard !entries.isEmpty else { return [] }
+        let symbols = entries.compactMap { $0.tencent }
+        guard let url = URL(string: "https://qt.gtimg.cn/q=" + symbols.joined(separator: ",")
+                            + "&_t=" + String(Int(Date().timeIntervalSince1970))) else { return [] }
+        var request = URLRequest(url: url); request.timeoutInterval = 12
+        var bytes: Data?
+        if let direct = try? await URLSession.shared.data(for: request),
+           (direct.1 as? HTTPURLResponse)?.statusCode == 200 {
+            bytes = direct.0
+        } else if let proxied = try? await NASSyncService.marketProxyData(
+            path: "quote", queryItems: [URLQueryItem(name: "codes", value: symbols.joined(separator: ","))]) {
+            // 直连失败才走 NAS 行情代理兜底（返回的也是腾讯格式）
+            bytes = proxied
+        }
+        guard let bytes else { return [] }
+        let values = parseTencent(decodeTencent(bytes))
+        return entries.compactMap { entry -> MarketIndexQuote? in
+            guard let symbol = entry.tencent, let quote = values[symbol], quote.price > 0 else { return nil }
+            return MarketIndexQuote(symbol: entry.secid,
+                                    name: quote.name.isEmpty ? entry.name : quote.name,
+                                    price: quote.price, changePct: quote.changePct,
+                                    updatedAt: quote.timestamp)
+        }
+    }
+
+    /// 新浪源：`hq.sinajs.cn` 一次请求覆盖全部代码，用来补腾讯**没有**的日经与东证。
+    ///
+    /// **两个坑**（都是实测踩出来的）：
+    /// ① 必须带 `Referer: https://finance.sina.com.cn`，否则返回空 body；
+    /// ② `int_topix` / `int_kospi` 是空的，东证与韩国要用 `b_` 前缀（`b_TOPIX` / `b_KOSPI`）。
+    ///
+    /// 返回格式是「名称,现价,涨跌额,涨跌幅百分数,……」四段起步，长短不一：
+    /// `b_HSI` 只有 6 段，`b_TOPIX` 有 13 段，但**前四段含义一致**，所以只读前四段。
+    /// 时间戳各源位置不同，靠扫「哪一段长得像日期/时间」拿到，拿不到就留 nil。
+    private func fetchSinaIndexQuotes() async -> [MarketIndexQuote] {
+        let entries = MarketIndexStore.catalog.filter { $0.sina != nil }
+        guard !entries.isEmpty else { return [] }
+        let codes = entries.compactMap { $0.sina }
+        guard let url = URL(string: "https://hq.sinajs.cn/list=" + codes.joined(separator: ",")) else { return [] }
+        var request = URLRequest(url: url); request.timeoutInterval = 12
+        request.setValue("https://finance.sina.com.cn", forHTTPHeaderField: "Referer")
+        guard let direct = try? await URLSession.shared.data(for: request),
+              (direct.1 as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        let values = parseSina(decodeTencent(direct.0))
+        return entries.compactMap { entry -> MarketIndexQuote? in
+            guard let code = entry.sina, let quote = values[code], quote.price > 0 else { return nil }
+            return MarketIndexQuote(symbol: entry.secid,
+                                    name: entry.name,
+                                    price: quote.price, changePct: quote.changePct,
+                                    updatedAt: quote.timestamp)
+        }
+    }
+
+    private func parseSina(_ text: String) -> [String: (price: Double, changePct: Double, timestamp: Date?)] {
+        var result: [String: (Double, Double, Date?)] = [:]
+        let pattern = #"hq_str_([A-Za-z0-9_]+)="([^"]*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return result }
+        let ns = text as NSString
+        let dayPattern = try? NSRegularExpression(pattern: #"\d{4}-\d{2}-\d{2}"#)
+        let timePattern = try? NSRegularExpression(pattern: #"\d{2}:\d{2}:\d{2}"#)
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) where match.numberOfRanges == 3 {
+            let code = ns.substring(with: match.range(at: 1))
+            let fields = ns.substring(with: match.range(at: 2))
+                .split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            // 前四段：名称、现价、涨跌额、涨跌幅百分数。少于四段说明是空占位（`hq_str_x=""`）。
+            guard fields.count >= 4,
+                  let price = Double(fields[1]), price > 0,
+                  let percent = Double(fields[3]) else { continue }
+            // 时间戳：在各段里找第一个「日期」和第一个「时刻」，两个都有才算得出时间。
+            var day: String?
+            var clock: String?
+            for field in fields {
+                let range = NSRange(location: 0, length: (field as NSString).length)
+                if day == nil, let m = dayPattern?.firstMatch(in: field, range: range) {
+                    day = (field as NSString).substring(with: m.range)
+                }
+                if clock == nil, let m = timePattern?.firstMatch(in: field, range: range) {
+                    clock = (field as NSString).substring(with: m.range)
+                }
+            }
+            var stamp: Date?
+            if let day, let clock {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+                formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                stamp = formatter.date(from: "\(day) \(clock)")
+            }
+            result[code] = (price, percent / 100, stamp)
+        }
+        return result
+    }
+
+    /// 东财源：`push2` 一条请求覆盖全部指数（含日经 225、韩国 KOSPI、东证 TOPIX）。
+    ///
+    /// 本机出口 IP 长期被风控（连续请求直接断连），所以只当兜底 —— 拿得到更好，
+    /// 拿不到也有腾讯与新浪顶着，不影响指数条。
+    ///
+    /// **单位陷阱**：`f3` 已经是**百分数**（1.85 表示 +1.85%），而 `MarketIndexQuote.changePct`
+    /// 存的是小数比例（0.0185），所以这里必须除以 100。反过来写指数条就会显示百倍涨幅。
+    private func fetchEastmoneyIndexQuotes() async -> [MarketIndexQuote] {
+        let secids = MarketIndexStore.catalog.map { $0.secid }
+        guard !secids.isEmpty,
+              var components = URLComponents(string: "https://push2.eastmoney.com/api/qt/ulist.np/get")
+        else { return [] }
+        components.queryItems = [
+            URLQueryItem(name: "fltt", value: "2"),
+            URLQueryItem(name: "secids", value: secids.joined(separator: ",")),
+            URLQueryItem(name: "fields", value: "f2,f3,f12,f13,f14,f124"),
+            URLQueryItem(name: "ut", value: "fa5fd1943c7b386f172d6893dbfba10b")
+        ]
+        guard let url = components.url else { return [] }
+        var request = URLRequest(url: url); request.timeoutInterval = 12
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        guard let direct = try? await URLSession.shared.data(for: request),
+              (direct.1 as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: direct.0) as? [String: Any],
+              let data = root["data"] as? [String: Any],
+              let rows = data["diff"] as? [[String: Any]] else { return [] }
+        return rows.compactMap { row -> MarketIndexQuote? in
+            guard let market = (row["f13"] as? NSNumber)?.intValue,
+                  let code = row["f12"] as? String,
+                  let price = (row["f2"] as? NSNumber)?.doubleValue, price > 0 else { return nil }
+            let secid = "\(market).\(code)"
+            let stamp = (row["f124"] as? NSNumber)?.doubleValue ?? 0
+            return MarketIndexQuote(symbol: secid,
+                                    name: (row["f14"] as? String) ?? MarketIndexStore.name(for: secid) ?? code,
+                                    price: price,
+                                    changePct: ((row["f3"] as? NSNumber)?.doubleValue ?? 0) / 100,
+                                    updatedAt: stamp > 0 ? Date(timeIntervalSince1970: stamp) : nil)
+        }
+    }
+
+    // MARK: - 指数详情：日 K 与分时
+
+    /// 东财接口的公共 token（网页版前端写死的那个，不是密钥）。
+    static let eastmoneyToken = "fa5fd1943c7b386f172d6893dbfba10b"
+
+    /// "20261009" → "2026-10-09"；已是标准格式就原样返回。
+    static func normalizedDay(_ raw: String) -> String {
+        guard raw.count == 8, raw.allSatisfy(\.isNumber) else { return raw }
+        return "\(raw.prefix(4))-\(raw.dropFirst(4).prefix(2))-\(raw.suffix(2))"
+    }
+
+    /// 指数日 K。腾讯有该指数就用腾讯（更稳），否则走东财 secid。
+    ///
+    /// 两条路都要的原因：腾讯 `ifzq` 支持 sh/sz/hk/us 前缀，但**没有**日经、韩国；
+    /// 东财的 secid 号称全覆盖，只是本机出口 IP 被风控、实际常年取不到。
+    /// 所以日经 225 / 东证 TOPIX / 韩国 KOSPI 这三条**两个分支都会返回空**，
+    /// 这是预期行为 —— `IndexDetailView` 会据此显示「暂无分时与日 K」的说明，
+    /// 而不是画一张空图。
+    func fetchIndexDailyBars(quote: MarketIndexQuote, count: Int = 300) async -> [DailyBar] {
+        let tencent = MarketIndexStore.catalog.first { $0.secid == quote.symbol }?.tencent
+        if let tencent, let bars = try? await fetchDailyBars(code: tencent, count: count, force: true),
+           !bars.isEmpty {
+            return bars
+        }
+        return await fetchEastmoneyDailyBars(secid: quote.symbol, count: count)
+    }
+
+    /// 东财日 K。`klines` 每行是「日期,开,收,高,低,成交量,成交额,涨跌幅%」。
+    private func fetchEastmoneyDailyBars(secid: String, count: Int) async -> [DailyBar] {
+        guard var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")
+        else { return [] }
+        components.queryItems = [
+            URLQueryItem(name: "secid", value: secid),
+            URLQueryItem(name: "ut", value: Self.eastmoneyToken),
+            URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6"),
+            URLQueryItem(name: "fields2", value: "f51,f52,f53,f54,f55,f56,f57,f58"),
+            URLQueryItem(name: "klt", value: "101"),
+            URLQueryItem(name: "fqt", value: "1"),
+            URLQueryItem(name: "beg", value: "0"),
+            URLQueryItem(name: "end", value: "20500101"),
+            URLQueryItem(name: "lmt", value: String(min(max(count, 60), 1000)))
+        ]
+        guard let url = components.url else { return [] }
+        var request = URLRequest(url: url); request.timeoutInterval = 15
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        guard let direct = try? await URLSession.shared.data(for: request),
+              (direct.1 as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: direct.0) as? [String: Any],
+              let data = root["data"] as? [String: Any],
+              let rows = data["klines"] as? [String] else { return [] }
+        return rows.compactMap { row -> DailyBar? in
+            let f = row.split(separator: ",").map(String.init)
+            guard f.count >= 6, let open = Double(f[1]), let close = Double(f[2]),
+                  let high = Double(f[3]), let low = Double(f[4]), close > 0 else { return nil }
+            return DailyBar(code: secid, date: f[0], open: open, close: close,
+                            high: high, low: low, volume: Double(f[5]) ?? 0)
+        }
+    }
+
+    /// 指数分时。同样腾讯优先、东财兜底 —— 两边在休市时都会返回**最近交易日**的完整分时，
+    /// 所以周末打开也能看到一条完整曲线，而不是一张空图。
+    func fetchIndexMinutes(quote: MarketIndexQuote) async -> [IntradayBar] {
+        let tencent = MarketIndexStore.catalog.first { $0.secid == quote.symbol }?.tencent
+        if let tencent, let points = await fetchTencentMinutes(symbol: tencent), !points.isEmpty {
+            return points
+        }
+        return await fetchEastmoneyMinutes(secid: quote.symbol)
+    }
+
+    /// 腾讯分时（与 `MarketChartView` 同一条接口，抽到 store 里给指数详情页复用）。
+    func fetchTencentMinutes(symbol: String) async -> [IntradayBar] {
+        guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=m&code=\(symbol)") else { return [] }
+        var request = URLRequest(url: url); request.timeoutInterval = 12
+        guard let direct = try? await URLSession.shared.data(for: request),
+              let raw = String(data: direct.0, encoding: .utf8),
+              let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
+              let root = try? JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any],
+              let nodes = root["data"] as? [String: Any],
+              let node = nodes[symbol] as? [String: Any],
+              let payload = node["data"] as? [String: Any],
+              let rows = payload["data"] as? [String] else { return [] }
+        let day = Self.normalizedDay((payload["date"] as? String) ?? "")
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var parsed: [IntradayBar] = []
+        var previousVolume = 0.0
+        for row in rows {
+            let fields = row.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard fields.count >= 2, let price = Double(fields[1]), price > 0,
+                  let date = formatter.date(from: "\(day) \(fields[0])") else { continue }
+            let cumulative = fields.count > 2 ? Double(fields[2]) : nil
+            let delta = cumulative.map { max(0, $0 - previousVolume) }
+            if let cumulative { previousVolume = cumulative }
+            parsed.append(IntradayBar(code: symbol, timestamp: date, price: price, volume: delta, day: day))
+        }
+        return parsed
+    }
+
+    /// 东财分时。每行是「时间,开,收,高,低,成交量,成交额,均价」——
+    /// **收盘价在第 3 列**（不是第 2 列），别照腾讯的字段顺序读。
+    private func fetchEastmoneyMinutes(secid: String) async -> [IntradayBar] {
+        guard var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/trends2/get")
+        else { return [] }
+        components.queryItems = [
+            URLQueryItem(name: "secid", value: secid),
+            URLQueryItem(name: "ut", value: Self.eastmoneyToken),
+            URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"),
+            URLQueryItem(name: "fields2", value: "f51,f52,f53,f54,f55,f56,f57,f58"),
+            URLQueryItem(name: "ndays", value: "1"),
+            URLQueryItem(name: "iscr", value: "0")
+        ]
+        guard let url = components.url else { return [] }
+        var request = URLRequest(url: url); request.timeoutInterval = 15
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        guard let direct = try? await URLSession.shared.data(for: request),
+              (direct.1 as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: direct.0) as? [String: Any],
+              let data = root["data"] as? [String: Any],
+              let rows = data["trends"] as? [String] else { return [] }
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var parsed: [IntradayBar] = []
+        var previousVolume = 0.0
+        for row in rows {
+            let f = row.split(separator: ",").map(String.init)
+            guard f.count >= 7, let price = Double(f[2]), price > 0,
+                  let date = formatter.date(from: f[0]) else { continue }
+            let cumulative = Double(f[5])
+            let delta = cumulative.map { max(0, $0 - previousVolume) }
+            if let cumulative { previousVolume = cumulative }
+            parsed.append(IntradayBar(code: secid, timestamp: date, price: price,
+                                      volume: delta, day: String(f[0].prefix(10))))
+        }
+        return parsed
     }
 
     private func performQuoteRefresh(captureIntraday: Bool) async -> Bool {

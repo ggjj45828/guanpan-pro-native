@@ -213,15 +213,12 @@ struct DashboardView: View {
 
     // 拿不到当日涨跌幅时显示 --，避免把「没数据」画成 0。
     private var pnlRateText: String { store.totalPnLRate.map { $0.pct(2) } ?? "--" }
-    private var dayPnLText: String { store.hasDayPnL ? store.dayPnL.cny() : "--" }
-    private var dayPnLRateText: String {
-        guard store.hasDayPnL, let rate = store.dayPnLRate else { return "--" }
-        return rate.pct(2)
-    }
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAdd = false
     @State private var showAlertEditor = false
     @State private var chartTarget: Holding?
+    /// 顶部指数条里被点开的那一格（nil = 没打开详情）。
+    @State private var indexDetailTarget: MarketIndexQuote?
 
     // MARK: - 自选：搜索 / 排序 / 分组
 
@@ -405,7 +402,8 @@ struct DashboardView: View {
             } }
             .sheet(isPresented: $showAdd) { WatchEditor() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() }
-            .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding) }
+            .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
+            .sheet(item: $indexDetailTarget) { index in IndexDetailView(index: index).themedSheetBackground() }
             .alert("新建分组", isPresented: groupEditorBinding) {
                 TextField("分组名", text: $groupDraft)
                 Button("确定") {
@@ -435,7 +433,7 @@ struct DashboardView: View {
 
     // MARK: - 首页顶部指数条
 
-    /// 顶部指数条：横向可滑，一屏放不下的往左划。
+    /// 顶部指数条：横向可滑，一屏放不下的往左划；点一格进该指数的详情页。
     ///
     /// 对齐网页版最上面那一排「上证指数 / 纳斯达克…」。指数不在自选里，
     /// 走 `PortfolioStore.performIndexRefresh()` 单独取，取不到就继续显示上次缓存的值。
@@ -443,6 +441,8 @@ struct DashboardView: View {
     /// 下面那行小字是原来的「行情状态」Section：一整段 Section 只为显示一句话，
     /// 占的高度和信息量不成比例。这里压成「一个小圆点 + 一行 10px 文本」，
     /// 颜色反映数据新鲜度；刷新按钮挪到导航栏右上角，只剩一个符号。
+    /// 行尾那句「左滑 · 点开看走势」是必要的：ScrollView 默认不给任何可滑提示，
+    /// 一屏只露得出三四个指数，不加这句话用户不会知道右边还有、而且能点。
     private var marketStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             if store.indexQuotes.isEmpty {
@@ -452,7 +452,12 @@ struct DashboardView: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(store.indexQuotes) { item in marketIndexChip(item) }
+                        ForEach(store.indexQuotes) { item in
+                            Button { Haptics.tap(); indexDetailTarget = item } label: {
+                                marketIndexChip(item)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 2)
@@ -461,7 +466,12 @@ struct DashboardView: View {
             HStack(spacing: 5) {
                 Circle().fill(statusDotColor).frame(width: 5, height: 5)
                 Text(store.sourceStatus).scaledFont(10).foregroundStyle(.secondary).lineLimit(1)
-                Spacer(minLength: 0)
+                Spacer(minLength: 6)
+                if !store.indexQuotes.isEmpty {
+                    Text("左滑 · 点开看走势")
+                        .scaledFont(9).foregroundStyle(.tertiary)
+                        .lineLimit(1).layoutPriority(-1)
+                }
             }
             .padding(.horizontal, 16)
         }
@@ -501,52 +511,88 @@ struct DashboardView: View {
 
     // MARK: - 首页账户卡
 
-    /// 一张卡装下总资产、今日盈亏和 3×3 明细。
+    /// 首页账户卡：一行「总资产 / 当日盈亏」+ 3×3 明细。
     ///
-    /// v2.12 之前这里是两张卡：上面一张蓝色渐变卡写「总资产 + 持仓浮盈 + 已实现 + 参考现金」，
-    /// 下面一张 9 宫格又有「持仓市值 / 参考现金 / 今日盈亏…」。同一个账户的数被拆到两张卡里：
-    /// 参考现金出现两次、持仓市值又只比总资产少一项现金，等于同一个数看两遍、版面还拉得更长。
-    /// 现在合成一张：上面一行是总资产与今日盈亏（盘中看得最多的一个数），
-    /// 下面九宫格每个数只出现一次，卡面颜色跟着总盈亏走。
+    /// v2.12 把两张卡合成了一张，但「今日盈亏」当时只统计了场内 ETF，却和「总资产」
+    /// 并排放在最显眼的位置，很容易被读成「全部账户的今日盈亏」。
+    ///
+    /// v2.13 按主流基金 App 的账户卡重排：主区域只留两个数 —— 左边总资产、右边当日盈亏，
+    /// **并把数据日期写进标签**（「10-09 当日盈亏」），一眼能分辨谁是谁；
+    /// 场内 / 场外各自的盈亏压到下面宫格里分成两格，主区域不再堆第二、第三行。
     private var accountSummaryCard: some View {
-        let dayTone = store.hasDayPnL ? PnLColor.of(store.dayPnL) : Color.secondary
+        let grossTone = store.hasDayPnLGross ? PnLColor.of(store.dayPnLGross) : Color.secondary
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("总资产").scaledFont(11).foregroundStyle(.secondary)
                     Text((store.totalAsset).cny())
-                        .scaledFont(29, weight: .bold, design: .rounded)
+                        .scaledFont(28, weight: .bold, design: .rounded)
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                 }
                 Spacer(minLength: 6)
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text("今日盈亏").scaledFont(11).foregroundStyle(.secondary)
-                    Text(dayPnLText)
-                        .scaledFont(18, weight: .bold, design: .rounded)
+                    Text(dayPnLLabel).scaledFont(11).foregroundStyle(.secondary)
+                    Text(store.hasDayPnLGross ? store.dayPnLGross.cny() : "--")
+                        .scaledFont(20, weight: .bold, design: .rounded)
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                        .foregroundStyle(dayTone)
-                    Text(store.hasDayPnL ? "\(store.dayPnL.directionMark()) \(dayPnLRateText)" : "--")
+                        .foregroundStyle(grossTone)
+                    Text(store.hasDayPnLGross
+                         ? "\(store.dayPnLGross.directionMark()) \(store.dayPnLGrossRate.map { $0.pct(2) } ?? "--")"
+                         : "--")
                         .scaledFont(11, weight: .semibold)
                         .monospacedDigit().lineLimit(1)
-                        .foregroundStyle(dayTone)
+                        .foregroundStyle(grossTone)
                 }
             }
             Divider().opacity(0.4)
             MetricGrid(columns: 3, cells: [
                 MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
                 MetricCell(title: "参考现金", value: store.data.cash.cny()),
-                MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
+                MetricCell(title: "仓位", value: store.positionPercent.pct(1)),
                 MetricCell(title: "持仓浮盈", value: store.totalPnL.cny(), toneValue: store.totalPnL),
-                MetricCell(title: "已实现", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
+                MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
                 MetricCell(title: "总成本", value: store.totalCost.cny()),
-                MetricCell(title: "ETF / 证券", value: store.marketValue(of: .etf).cny()),
-                MetricCell(title: "场外基金", value: store.marketValue(of: .fund).cny()),
-                MetricCell(title: "仓位", value: store.positionPercent.pct(1))
+                MetricCell(title: "已实现", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
+                MetricCell(title: "场内盈亏", value: store.hasIntradayPnL ? store.intradayPnL.cny() : "--",
+                           toneValue: store.hasIntradayPnL ? store.intradayPnL : nil),
+                MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
+                           toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
             ])
-            Text("持仓市值 + 参考现金 = 总资产；今日盈亏按最近一次拿到的涨跌幅反推昨收估算，没取到行情时显示 --，不臆测补数。")
+            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 场外基金（\(fundNAVDateNote)），两处数据日期不同，合计数即两者相加；没取到数显示 --，不臆测补数。")
                 .scaledFont(10).foregroundStyle(.secondary)
         }
         .cardSurface(tone: CardTone.pnl(store.totalPnL))
+    }
+
+    /// 当日盈亏的标签。核心是**别让人以为是当天**：
+    /// 休市时行情源照旧返回上一交易日收盘价，而场外基金要 T+1 才有净值 ——
+    /// 场内还在跳、场外是空的，很容易被读成「今天场内赚了这么多」。
+    /// 所以标签按数据时点分档写死：今日盈亏 / 今日收盘盈亏 / 休市 · MM-dd 盈亏。
+    private var dayPnLLabel: String {
+        guard store.hasDayPnLGross else { return "当日盈亏" }
+        if store.hasIntradayPnL, let day = store.intradayQuoteDate.map({ shortDay($0) }) {
+            if !store.isIntradayQuoteToday { return "休市 · \(day) 盈亏" }
+            return store.isMarketOpenNow ? "今日盈亏" : "今日收盘盈亏"
+        }
+        // 只有场外基金：净值通常 T+1 公布，永远晚于当天，直接标净值日。
+        if store.hasFundDayPnL, let day = store.latestFundNAVDate.map({ shortDay($0) }) {
+            return "净值 \(day) 盈亏"
+        }
+        return "当日盈亏"
+    }
+
+    /// 场内行情的时点说明。休市时行情源仍会返回上一交易日收盘价 ——
+    /// 必须写死状态，否则周末看到的数字会被当成当天的。
+    private var intradayDateNote: String {
+        guard store.hasIntradayPnL, let date = store.intradayQuoteDate else { return "无行情" }
+        if !store.isIntradayQuoteToday { return "休市 · \(shortDay(date)) 收盘" }
+        return store.isMarketOpenNow ? "实时" : "\(shortDay(date)) 收盘"
+    }
+
+    /// 场外基金最新公布净值日。"2026-10-08" → "净值 10-08"。
+    private var fundNAVDateNote: String {
+        guard store.hasFundDayPnL, let date = store.latestFundNAVDate else { return "无净值" }
+        return "净值 \(shortDay(date))"
     }
 
     // MARK: - 自选行渲染
@@ -1171,7 +1217,15 @@ struct HoldingsView: View {
             let value = store.marketValue(of: kind)
             let pnlValue = store.pnl(of: kind)
             let count = holdings.filter { $0.quantity > 0 }.count
-            let dayValue = store.dayPnL(of: kind)
+            // 场内与场外的「当日盈亏」不是一个口径，不能共用 `dayPnL(of:)`：
+            // 行情接口只认场内代码，`marketChanges` 里根本没有基金代码，
+            // 所以之前场外这一格无论涨跌永远显示 0。场外改按最新净值日两点的净值差算。
+            let dayValue = kind == .fund ? store.fundDayPnL : store.intradayPnL
+            let hasDayValue = kind == .fund ? store.hasFundDayPnL : store.hasIntradayPnL
+            let dayTitle = kind == .fund ? "净值日盈亏" : "今日盈亏"
+            let dayDateNote = kind == .fund
+                ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
+                : "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
             // 网页版的资产汇总卡是彩色区块（.sum）；这里按浮盈亏红绿上色，不再是一片灰白
             let cardTone: Color? = pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil
             VStack(alignment: .leading, spacing: 10) {
@@ -1195,13 +1249,13 @@ struct HoldingsView: View {
                 MetricGrid(columns: 3, cells: [
                     MetricCell(title: "成本收益率", value: store.pnlRate(of: kind).map { $0.pct(2) } ?? "--",
                                toneValue: pnlValue),
-                    MetricCell(title: "今日盈亏", value: store.hasDayPnL ? dayValue.cny() : "--",
-                               toneValue: store.hasDayPnL ? dayValue : nil),
+                    MetricCell(title: dayTitle, value: hasDayValue ? dayValue.cny() : "--",
+                               toneValue: hasDayValue ? dayValue : nil),
                     MetricCell(title: "持仓数", value: "\(count) 只")
                 ])
                 Text(kind == .fund
-                     ? "只统计本页场外基金；ETF / 证券不计入。账户页「总资产」才是两者合计。"
-                     : "只统计本页 ETF / 证券；场外基金不计入。账户页「总资产」才是两者合计。")
+                     ? "只统计本页场外基金；ETF / 证券不计入。净值日盈亏 = 最新两个公布净值之差（\(dayDateNote)）。"
+                     : "只统计本页 ETF / 证券；场外基金不计入。今日盈亏按最近一次行情反推昨收（\(dayDateNote)）。")
                     .scaledFont(10).foregroundStyle(.secondary)
 
                 // 本模块自己的情绪量尺：口径与首页「市场情绪」一致（等权平均涨跌幅），
@@ -2514,12 +2568,15 @@ struct AssetsView: View {
                             }
                             Spacer(minLength: 8)
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text(store.hasDayPnL ? "\((store.dayPnL).directionMark()) \((store.dayPnL).cny())" : "--")
+                                Text(store.hasDayPnLGross
+                                     ? "\((store.dayPnLGross).directionMark()) \((store.dayPnLGross).cny())" : "--")
                                     .scaledFont(15, weight: .semibold, design: .rounded)
                                     .monospacedDigit()
                                     .foregroundStyle(dayTone)
-                                    .accessibilityLabel(store.hasDayPnL ? "当日盈亏 \(spokenMoney(store.dayPnL))" : "当日盈亏暂无数据")
-                                Text(store.hasDayPnL ? (store.dayPnLRate?.pct(2) ?? "--") : "--")
+                                    .accessibilityLabel(store.hasDayPnLGross
+                                        ? "当日盈亏 \(spokenDirection(store.dayPnLGross)) \(spokenMoney(abs(store.dayPnLGross)))"
+                                        : "当日盈亏暂无数据")
+                                Text(store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--")
                                     .font(.caption).foregroundStyle(dayTone)
                                 Text("当日盈亏").font(.caption2).foregroundStyle(.secondary)
                             }
@@ -2532,10 +2589,10 @@ struct AssetsView: View {
                             MetricCell(title: "持仓浮盈", value: (store.totalPnL).cny(), toneValue: store.totalPnL),
                             MetricCell(title: "盈亏比例", value: store.totalPnLRate.map { $0.pct(2) } ?? "--", toneValue: store.totalPnL),
                             MetricCell(title: "总成本", value: (store.totalCost).cny()),
-                            MetricCell(title: "今日盈亏", value: store.hasDayPnL ? (store.dayPnL).cny() : "--",
-                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
-                            MetricCell(title: "今日幅度", value: store.hasDayPnL ? (store.dayPnLRate?.pct(2) ?? "--") : "--",
-                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
+                            MetricCell(title: "当日盈亏", value: store.hasDayPnLGross ? (store.dayPnLGross).cny() : "--",
+                                      toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
+                            MetricCell(title: "当日幅度", value: store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--",
+                                      toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
                             MetricCell(title: "已实现盈亏", value: (store.realizedPnL).cny(), toneValue: store.realizedPnL),
                             MetricCell(title: "ETF / 证券", value: (store.marketValue(of: .etf)).cny()),
                             MetricCell(title: "场外基金", value: (store.marketValue(of: .fund)).cny()),
@@ -2545,14 +2602,24 @@ struct AssetsView: View {
                             .scaledFont(10).foregroundStyle(.secondary)
                         Button("记录现金转入 / 转出") { showCashFlow = true }
                     }
-                    .cardSurface(tone: store.hasDayPnL
-                                 ? (store.dayPnL > 0.005 ? PnLColor.up : store.dayPnL < -0.005 ? PnLColor.down : nil)
+                    .cardSurface(tone: store.hasDayPnLGross
+                                 ? (store.dayPnLGross > 0.005 ? PnLColor.up : store.dayPnLGross < -0.005 ? PnLColor.down : nil)
                                  : (store.totalPnL > 0.005 ? PnLColor.up : store.totalPnL < -0.005 ? PnLColor.down : nil))
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
                 } header: { Text("账户总览") }
                 Section("历史快照") {
-                    Button("记录/更新今日快照") { store.recordSnapshot() }
+                    // 休市日不给记录入口：这天的总资产和上一交易日几乎一样
+                    // （场外净值不更新、场内是上一交易日的收盘价），记了只会让
+                    // 收益曲线多出一段平线，还会把「区间收益」的分母算歪。
+                    if store.isMarketClosedToday {
+                        Label("今天休市，不用记录快照", systemImage: "moon.zzz")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text("休市日的总资产与上一交易日基本一致，交易日再记即可。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Button("记录/更新今日快照") { store.recordSnapshot() }
+                    }
                     Text("快照之间的收益 = 总资产变化 − 期间现金净转入。没有快照覆盖的日期无法回溯；基金净值尚未更新时快照也会沿用当前账面值。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !store.snapshotMonths.isEmpty {
@@ -2663,10 +2730,10 @@ struct AssetsView: View {
         store.ledgerDailyRealized(month: selectedLedgerMonth).reduce(0) { $0 + $1.profit }
     }
 
+    /// 「账户总览」卡的当日盈亏取色依据：场内 + 场外的合计数（都没有时中性）。
     private var dayTone: Color {
-        guard store.hasDayPnL else { return .secondary }
-        return store.dayPnL >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-                                 : Color(red: 0.07, green: 0.77, blue: 0.55)
+        guard store.hasDayPnLGross else { return .secondary }
+        return PnLColor.of(store.dayPnLGross)
     }
 
     /// 市值按 ETF/证券、场外基金、现金三段拆分。比「一个总数」更能看出钱压在哪。
@@ -2972,8 +3039,7 @@ struct ETFIncomeCalendarView: View {
     }
     private func statusText(for date: String) -> String {
         guard let parsed = parseDay(date) else { return "—" }
-        if MarketCalendar.isWeekend(parsed) || MarketCalendar.mainlandClosures2026.contains(date)
-            || store.data.customMarketHolidays.contains(date) { return "休市" }
+        if MarketCalendar.isClosure(parsed, custom: store.data.customMarketHolidays) { return "休市" }
         if let coverageStart, let coverageEnd, date >= coverageStart, date <= coverageEnd,
            !tradingDates.contains(date) { return "休市" }
         return "—"
@@ -3329,8 +3395,8 @@ struct ToolsView: View {
         .buttonStyle(.plain)
         .background(.clear).navigationTitle("工具")
             .toolbarBackground(.hidden, for: .navigationBar)
-            .sheet(isPresented: $showGrid) { DayGridView().presentationBackground(.clear) }
-            .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).presentationBackground(.clear) }
+            .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
+            .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
             .sheet(isPresented: $showPortrait) { AccountPortraitView() }
             .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() }
@@ -4092,9 +4158,20 @@ struct TradePlansView: View {
     }
 }
 
-private struct TradePlanEditor: View {
+/// 新建 / 编辑交易计划。
+///
+/// **不再是 `private`**：个股页（`MarketChartView`）的 AI 建议也要一键转成计划，
+/// 而 file-scope `private` 只在同文件可见。改成模块内可见。
+struct TradePlanEditor: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 由 AI 建议一键转过来时带上的预填内容。金额一定让用户自己填 ——
+    /// AI 没给仓位金额，App 不能替它编一个。
+    ///
+    /// 声明顺序有意放在 `onSave` **前面**：memberwise init 要求实参按声明顺序写，
+    /// 而 `onSave` 放最后才能让「尾随闭包」这种普通用法继续成立
+    /// （`TradePlanEditor { ... }`）。
+    var prefill: AISuggestion? = nil
     var onSave: (TradePlan) -> Void
     @State private var selectedAsset = ""
     @State private var side: LedgerEntry.Side = .buy
@@ -4140,8 +4217,39 @@ private struct TradePlanEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { save() }.disabled(instruments.isEmpty) }
             }
-            .onAppear { if selectedAsset.isEmpty { selectedAsset = instruments.first?.id ?? "" } }
+            .onAppear {
+                applyPrefillIfNeeded()
+                if selectedAsset.isEmpty { selectedAsset = instruments.first?.id ?? "" }
+            }
         }
+    }
+    /// 把 AI 建议预填进来：标的、方向、参考价/目标价/失效价、理由都带上，
+    /// 复盘日期默认给两周后（可改）；**金额留空**，由用户自己决定下多少。
+    private func applyPrefillIfNeeded() {
+        guard let prefill else { return }
+        if let match = instruments.first(where: { $0.code == prefill.code }) {
+            selectedAsset = match.id
+        } else {
+            // 不在自选/持仓里的代码不硬塞一个假 id —— 那样保存时会报「请填写有效金额」，
+            // 把人引到错误的排查方向上。如实说清缺什么。
+            message = "\(prefill.code) 还不在你的自选或持仓里，请先在「自选」里添加，再回到这里保存计划。"
+        }
+        side = prefill.side.ledgerSide
+        price = prefill.price.map { numText($0) } ?? ""
+        target = prefill.target.map { numText($0) } ?? ""
+        invalid = prefill.invalid.map { numText($0) } ?? ""
+        reason = prefill.reason
+        trigger = prefill.hasAnyPrice ? "价格触及上述参考价时按计划执行；未触及不动作。" : ""
+        reviewDate = Calendar.current.date(byAdding: .day, value: 14, to: .now) ?? .now
+        includeReviewDate = true
+    }
+    /// 去掉多余的 ".0"，让预填的输入框好看一点（"3.85" 而不是 "3.850000"）。
+    private func numText(_ value: Double) -> String {
+        let text = String(format: "%.4f", value)
+        var trimmed = text
+        while trimmed.contains("."), trimmed.hasSuffix("0") { trimmed.removeLast() }
+        if trimmed.hasSuffix(".") { trimmed.removeLast() }
+        return trimmed
     }
     private func save() {
         guard let amountValue = Double(amount), amountValue.isFinite, amountValue > 0,
@@ -4224,8 +4332,16 @@ struct AIAnalysisView: View {
     @State private var busy = false
     @State private var result = ""
     @State private var message = ""
+    /// 一键转计划时的预填载体（同时充当 sheet(item:) 的开关）。
+    @State private var planPrefill: AISuggestion?
+    /// 已经处理过的建议 id，防止同一行被反复转成多条提醒。
+    @State private var handledSuggestionIDs: Set<UUID> = []
+    @State private var suggestionNote = ""
 
     private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+
+    /// 从模型回答末尾解析出的可执行建议。解析失败就是空数组，界面自然不出现这一段。
+    private var suggestions: [AISuggestion] { AISuggestionParser.parse(result) }
 
     var body: some View {
         NavigationStack {
@@ -4350,13 +4466,14 @@ struct AIAnalysisView: View {
                             Text(busy ? "正在分析…" : "大模型深度分析")
                         }
                     }.disabled(busy || !keySaved)
-                    Text("点击后会把投资偏好、全部持仓、自选报价、场内与场外基金流水、定投计划、基金成分报告、参考现金、最近快照和现金流记录发送至上述接口。请不要在提示中加入账户密码或其他敏感信息。")
+                    Text("点击后会把投资偏好、全部持仓、自选报价、场内与场外基金流水、定投计划、基金成分报告、参考现金、最近快照和现金流记录发送至上述接口。此外还会在本机额外算出三段补充材料一并发送：交易行为画像（按你的历史流水统计的胜率、盈亏比、平均持有天数、加仓与卖出时点习惯）、大盘指数与组合集中度、已缓存标的的均线位置。这些都在手机本地计算，不额外发起请求。请不要在提示中加入账户密码或其他敏感信息。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary) }
                 if !result.isEmpty {
                     Section("分析结果") {
-                        Text(result).textSelection(.enabled)
+                        // 展示用剥掉机器可读段的人话版本；解析仍然读完整的 result。
+                        Text(AISuggestionParser.displayText(result)).textSelection(.enabled)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .cardPanelBackground(cornerRadius: 14,
@@ -4365,14 +4482,37 @@ struct AIAnalysisView: View {
                         Text("模型输出可能有误。价格/净值可能延迟；请核对行情与基金净值，不要仅依据模型文字交易。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    if !suggestions.isEmpty {
+                        Section("可执行建议（\(suggestions.count) 条）") {
+                            Text("模型在回答末尾给出了可落地的价位。转成计划会进「交易计划与复盘」等待你复核，转成提醒会在行情刷新时通知；两者都不会自动下单。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            ForEach(suggestions) { suggestion in
+                                suggestionRow(suggestion)
+                            }
+                            if !suggestionNote.isEmpty {
+                                Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        .toneCard(CardTone.accent, isLight: isLight)
+                    }
                 }
             }
             .navigationTitle("AI 账户分析")
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .background(.clear)
-            .presentationBackground(.clear)
+            .themedSheetBackground()
             .sheet(isPresented: $showPortrait) { AccountPortraitView() }
+            .sheet(item: $planPrefill) { suggestion in
+                // 显式写 onSave: —— TradePlanEditor 的参数顺序是 (onSave, prefill)，
+                // 尾随闭包语法会绑到最后一个参数（prefill）上，类型对不上。
+                TradePlanEditor(prefill: suggestion, onSave: { plan in
+                    store.data.tradePlans.append(plan)
+                    store.save(label: "AI 建议转交易计划")
+                    handledSuggestionIDs.insert(suggestion.id)
+                    suggestionNote = "已存入「交易计划与复盘」，到复盘日期前都可以修改或取消。"
+                })
+            }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear {
                 endpoint = store.data.aiAnalysisConfig.endpoint
@@ -4396,9 +4536,114 @@ struct AIAnalysisView: View {
         store.save(label: "修改账本或设置")
         busy = true
         message = ""
+        // 新一轮分析：上一轮建议的处理标记与提示都作废，否则新答案里的条目会
+        // 顶着旧标记显示成「已处理」。
+        handledSuggestionIDs.removeAll()
+        suggestionNote = ""
         defer { busy = false }
-        do { result = try await AIAnalysisService.analyze(config: config, portfolio: store.data) }
-        catch { message = error.localizedDescription }
+        // 补充材料在本机算好再塞进 prompt：交易行为画像（按历史流水统计的习惯）、
+        // 大盘指数、组合结构风险、已缓存标的的技术面。全部零网络请求，
+        // 拿不到的段落直接不出现，不让模型拿到编出来的数。
+        let extras = AIContextBuilder.portfolioSections(store: store)
+        do {
+            result = try await AIAnalysisService.analyze(config: config, portfolio: store.data,
+                                                         extraSections: extras)
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    // MARK: - 可执行建议 → 计划 / 提醒
+
+    /// 单条建议的展示与两个落地动作。
+    ///
+    /// 配色沿用工程口径：买=红、卖=绿（国内习惯），不吃系统 `Color.red`。
+    private func suggestionRow(_ suggestion: AISuggestion) -> some View {
+        let tone: Color = suggestion.side == .buy ? PnLColor.up : PnLColor.down
+        let handled = handledSuggestionIDs.contains(suggestion.id)
+        // 在 ViewBuilder 之外先算好，少一处「闭包里能不能写 let」的疑问。
+        let prices = priceParts(suggestion)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(suggestion.side.label)
+                    .scaledFont(11, weight: .semibold)
+                    .foregroundStyle(tone)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(tone.opacity(isLight ? 0.14 : 0.24), in: Capsule())
+                Text("\(suggestion.displayName) · \(suggestion.code)")
+                    .scaledFont(14, weight: .semibold)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                Spacer(minLength: 4)
+                if handled {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(CardTone.ok)
+                        .accessibilityLabel("已处理")
+                }
+            }
+            if !prices.isEmpty {
+                Text(prices.joined(separator: " · "))
+                    .scaledFont(12).monospacedDigit().foregroundStyle(.secondary)
+            }
+            if !suggestion.reason.isEmpty {
+                Text(suggestion.reason).font(.footnote)
+            }
+            HStack(spacing: 10) {
+                Button("存入计划记录") {
+                    Haptics.tap()
+                    planPrefill = suggestion
+                }
+                .buttonStyle(.bordered)
+                .disabled(handled)
+
+                Button("设为价格提醒") {
+                    createAlert(from: suggestion)
+                }
+                .buttonStyle(.bordered)
+                .disabled(handled || alertTarget(suggestion) == nil || isFund(suggestion.code))
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 3)
+    }
+
+    /// 「参考价 3.85 · 目标 4.20 · 失效 3.70」，没填的项不出现。
+    private func priceParts(_ suggestion: AISuggestion) -> [String] {
+        var parts: [String] = []
+        if let price = suggestion.price { parts.append("参考价 \(price.num(3))") }
+        if let target = suggestion.target { parts.append("目标 \(target.num(3))") }
+        if let invalid = suggestion.invalid { parts.append("失效 \(invalid.num(3))") }
+        return parts
+    }
+
+    /// 提醒挂在哪个价位：优先参考价，其次目标价/失效价 —— 有哪个用哪个。
+    private func alertTarget(_ suggestion: AISuggestion) -> Double? {
+        suggestion.price ?? suggestion.target ?? suggestion.invalid
+    }
+
+    /// 这个代码是不是场外基金。基金按净值成交、没有实时价，价格提醒对它无意义。
+    private func isFund(_ code: String) -> Bool {
+        store.data.holdings.contains { $0.code == code && $0.kind == .fund }
+    }
+
+    /// 把建议转成价格提醒。买入等回落到参考价（below），卖出等涨到参考价（above）。
+    private func createAlert(from suggestion: AISuggestion) {
+        guard let target = alertTarget(suggestion) else { return }
+        // 场外基金没有实时价，提醒引擎永远碰不到它 —— 建一条哑提醒不如说清楚。
+        if store.data.holdings.contains(where: { $0.code == suggestion.code && $0.kind == .fund }) {
+            suggestionNote = "\(suggestion.displayName) 是场外基金，按净值成交、没有实时价，价格提醒不会触发；请用「存入计划记录」，到净值公布后自己核对。"
+            return
+        }
+        let direction: QuoteAlert.Direction = suggestion.side == .buy ? .below : .above
+        do {
+            try store.addQuoteAlert(code: suggestion.code,
+                                    name: suggestion.displayName,
+                                    target: target,
+                                    direction: direction)
+            handledSuggestionIDs.insert(suggestion.id)
+            suggestionNote = "已添加价格提醒：\(suggestion.displayName) \(direction == .below ? "跌到" : "涨到") \(target.num(3)) 时通知（一次性，触发后需手动重启）。"
+        } catch {
+            suggestionNote = error.localizedDescription
+        }
     }
 }
 
@@ -4624,7 +4869,7 @@ struct DayGridView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
-            .presentationBackground(.clear)
+            .themedSheetBackground()
             .listRowBackground(Color.clear)
             .buttonStyle(.plain)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -4642,7 +4887,7 @@ struct DayGridView: View {
                 } catch { message = error.localizedDescription }
             }
             .sheet(isPresented: $showStrategicGridPlanner) {
-                StrategicGridPlannerView().environmentObject(store).presentationBackground(.clear)
+                StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
             }
         }
     }
@@ -4980,7 +5225,7 @@ struct SettingsView: View {
             .background(.clear)
         }
         // presentationBackground 要挂在 sheet 的导航根上；挂在 Form 内层会留下系统默认的不透明白底。
-        .presentationBackground(.clear)
+        .themedSheetBackground()
     }
 
     @ViewBuilder private var appearanceSection: some View {
@@ -5116,7 +5361,7 @@ struct SettingsView: View {
             Toggle("交易默认联动现金", isOn: Binding(get: { store.data.cashLinkedByDefault }, set: { store.data.cashLinkedByDefault = $0; store.save(label: "修改账本或设置") }))
         }
         Section("交易所休市日") {
-            Text("每行填写一个日期（YYYY-MM-DD）。自定义日期会随原生备份和 NAS 同步；2026 年内置休市安排已载入。后续年份请按交易所公告补充。")
+            Text("**通常不用填**：App 会用上证指数的日 K 自动识别交易日 —— 有 K 线的日期就是交易日，没有的就是休市，跨年和临时休市都会自动跟上。这里只用于手动覆盖（例如交易所临时调休、或你想把某天排除在外）。每行一个日期（YYYY-MM-DD），自定义日期会随原生备份和 NAS 同步。")
                 .font(.footnote).foregroundStyle(.secondary)
             // 全局把 UIScrollView 背景设为透明后，TextEditor（UIScrollView 子类）也跟着透明了，
             // 输入框会看不见。这里单独恢复不透明底。
