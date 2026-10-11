@@ -190,13 +190,13 @@ struct ContentView: View {
     /// 叠加 Material 毛玻璃后，底层被糊化，文字对比度不再依赖压暗强度。
     @ViewBuilder private var overlayTint: some View {
         ZStack {
-            // 系统「降低透明度」开启时，毛玻璃是半透明效果的主要来源，必须换成不透明纯色，
-            // 否则前庭敏感 / 阅读困难的用户在自定义背景图上依然读不清文字。
+            // 系统「降低透明度」开启时只关闭毛玻璃；用户仍可用遮罩滑块按需调整图片透出程度。
             if !reduceTransparency {
                 Rectangle().fill(.thinMaterial).opacity(backgroundBlur)
             }
             let tint = currentTheme.isLight ? Color.white : Color.black
-            tint.opacity(reduceTransparency ? max(backgroundOverlayOpacity, 0.92) : backgroundOverlayOpacity)
+            // 遮罩透明度始终由滑块控制，不被系统辅助功能设置覆盖。
+            tint.opacity(backgroundOverlayOpacity)
         }
     }
 }
@@ -2148,7 +2148,18 @@ struct FundNAVHistoryView: View {
                                 .foregroundStyle(Color.accentColor.opacity(0.10))
                         }
                         .chartYScale(domain: chartDomain)
-                        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
+                        .chartXAxis {
+                            AxisMarks(values: sampledNAVAxisDates) { value in
+                                AxisGridLine().foregroundStyle(Color.primary.opacity(0.07))
+                                AxisValueLabel {
+                                    if let date = value.as(String.self) {
+                                        Text(String(date.dropFirst(5)).replacingOccurrences(of: "-", with: "/"))
+                                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
                         .frame(height: 280)
                         .chartXSelection(value: $selectedDate)
                         .accessibilityLabel("\(fund.name)历史单位净值曲线")
@@ -2166,6 +2177,14 @@ struct FundNAVHistoryView: View {
             .background(.clear)
             .navigationTitle(fund.name)
             .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var sampledNAVAxisDates: [String] {
+        guard chartPoints.count > 1 else { return chartPoints.map(\.date) }
+        let count = min(4, chartPoints.count)
+        return (0..<count).map { index in
+            chartPoints[(index * (chartPoints.count - 1)) / (count - 1)].date
         }
     }
 }
@@ -2924,10 +2943,19 @@ struct ETFIncomeCalendarView: View {
     }
 }
 
+private struct ToolShortcut: Identifiable {
+    let title: String
+    let anchor: String
+    var id: String { anchor }
+}
+
 struct ToolsView: View {
     @EnvironmentObject var store: PortfolioStore
     @State private var shockPercent = 20
+    @State private var showShockDetails = false
+    @State private var showRebalanceDetails = false
     @State private var showGrid = false
+    @State private var showLongGridPlanner = false
     @State private var showAIAnalysis = false
     @State private var showPortrait = false
     @State private var showLedgerHealth = false
@@ -2984,8 +3012,32 @@ struct ToolsView: View {
         }.count
     }
 
+    private let toolAnchors: [ToolShortcut] = [
+        ToolShortcut(title: "风险", anchor: "tools-risk"),
+        ToolShortcut(title: "收益", anchor: "tools-returns"),
+        ToolShortcut(title: "目标", anchor: "tools-targets"),
+        ToolShortcut(title: "网格", anchor: "tools-grid"),
+        ToolShortcut(title: "AI", anchor: "tools-ai"),
+        ToolShortcut(title: "数据", anchor: "tools-data"),
+        ToolShortcut(title: "交易", anchor: "tools-trades"),
+        ToolShortcut(title: "基金", anchor: "tools-funds")
+    ]
     var body: some View {
-        NavigationStack { List {
+        NavigationStack { ScrollViewReader { proxy in List {
+            Section("快速定位") {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(toolAnchors) { item in
+                            Button(item.title) {
+                                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(item.anchor, anchor: .top) }
+                            }
+                            .font(.subheadline.weight(.medium))
+                            .padding(.horizontal, 13).padding(.vertical, 8)
+                            .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        }
+                    }.padding(.vertical, 3)
+                }
+            }
             Section("账户压力测试") {
                 Button("资产穿透与分市场压力测试") { showPortfolioAnalysis = true }
                 Button("交易前沙盘（只预演）") { showTradePreview = true }
@@ -2995,19 +3047,22 @@ struct ToolsView: View {
                 let loss = shockLoss
                 LabeledContent("假设持仓损失", value: (loss).cny())
                 LabeledContent("假设压力后总资产", value: (max(0, store.totalAsset - loss)).cny())
-                ForEach(Array(store.data.holdings.enumerated()), id: \.offset) { item in
-                    let holding = item.element
-                    let itemLoss = max(0, holding.marketValue) * Double(shockPercent) / 100
-                    HStack {
-                        Text(holding.name)
-                        Spacer()
-                        Text("−\((itemLoss).cny())").foregroundStyle(PnLColor.down)
+                DisclosureGroup("查看各持仓冲击明细（\(store.data.holdings.count)）", isExpanded: $showShockDetails) {
+                    ForEach(Array(store.data.holdings.enumerated()), id: \.offset) { item in
+                        let holding = item.element
+                        let itemLoss = max(0, holding.marketValue) * Double(shockPercent) / 100
+                        HStack {
+                            Text(holding.name)
+                            Spacer()
+                            Text("−\((itemLoss).cny())").foregroundStyle(PnLColor.down)
+                        }
                     }
+                    Text("统一冲击全部当前持仓，现金不变；这是静态压力情景，不是行情预测，不包含相关性、流动性、费用或基金估值滞后。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("统一冲击全部当前持仓，现金不变；这是静态压力情景，不是行情预测，不包含相关性、流动性、费用或基金估值滞后。")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(PnLColor.down, isLight: isLight)
+            .id("tools-risk")
             Section("数据状态") {
                 Button("数据可信度与更新状态") { showDataTrust = true }
                 Text("查看行情时间戳、基金净值日期、历史数据覆盖和 NAS 同步状态。")
@@ -3023,10 +3078,12 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
+            .id("tools-returns")
             Section("目标仓位与再平衡参考") {
                 let configured = store.data.allocationTargets.reduce(0) { $0 + $1.targetPercent }
                 LabeledContent("已配置目标合计", value: configured.pct(1))
                 LabeledContent("未分配目标比例", value: max(0, 100 - configured).pct(1))
+                DisclosureGroup("查看持仓目标与偏差（\(store.data.holdings.count)）", isExpanded: $showRebalanceDetails) {
                 ForEach(store.data.holdings) { holding in
                     let target = store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }
                     let targetPercent = target?.targetPercent ?? 0
@@ -3043,8 +3100,10 @@ struct ToolsView: View {
                 }
                 Text("占比按总资产（含参考现金）计算。偏差只作为手动复核参考，不会自动买卖；场外基金采用最近已公布净值，净值滞后时偏差也会滞后。目标总和超过 100% 时请自行调整。")
                     .font(.footnote).foregroundStyle(.secondary)
+                }
             }
             .plainCard(isLight: isLight)
+            .id("tools-targets")
             Section("单只仓位上限与均线提示") {
                 let configured = store.data.holdings.filter { $0.kind == .etf && ($0.maxPositionPercent != nil || $0.maWarningPeriod != nil) }
                 if configured.isEmpty { Text("可在场内持仓的编辑页设置单只仓位上限或均线提示。") .font(.footnote).foregroundStyle(.secondary) }
@@ -3142,19 +3201,22 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(CardTone.warnIf(rebalanceBreachCount > 0), isLight: isLight)
-            Section("日内网格与分时回放") {
+            Section("网格工具") {
                 LabeledContent("本地分时记录", value: "\(store.gridBarCount) 点 · \(store.gridTradingDays.count) 个交易日")
-                Button("网格计划、分时导入与复盘") { showGrid = true }
+                Button("日内网格参数、分时导入与回放") { showGrid = true }
+                Button("中长期网格计划") { showLongGridPlanner = true }
                 Text("回放使用选定日期实际导入或前台采集的数据，结果是路径模拟，不是可实现收益保证。只在穿越网格价位时记模拟成交；不会修改主账户现金、持仓或流水。iOS 切后台可能暂停采集。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
+            .id("tools-grid")
             Section("AI 账户分析") {
                 Button("配置接口并分析") { showAIAnalysis = true }
                 Text("本机可先给出全账户规则建议；只有点击大模型深度分析时，才会发送投资偏好、持仓、自选行情、场内/场外基金流水、定投、基金成分、现金流和快照。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(CardTone.accent, isLight: isLight)
+            .id("tools-ai")
             Section("日线量化信号") {
                 Button("打开量化引擎并扫描全部自选/持仓") { showQuantEngine = true }
                 Text("本地规则因子对自选与持仓排序；每只标的详情内可打开 AI 深度分析。量化扫描不依赖模型密钥，不预测未来，也不自动交易。")
@@ -3171,12 +3233,14 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
+            .id("tools-data")
             Section("AI 账户智能画像") {
                 Button("看系统怎么评价我的操作习惯") { showPortrait = true }
                 Text("对齐网页版「私人顾问 · 画像」：从交易流水推断风格、胜率、费用拖累、集中度与定投纪律，规则引擎本机先算，配了密钥可让大模型深度推断。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(CardTone.accent, isLight: isLight)
+            .id("tools-ai-portrait")
             Section("券商成交历史导入") {
                 Button("导入成交 CSV / 表格") { showTradeCSVImport = true }
                 Text("先解析并预览，再由你确认入账。只增加 ETF/证券历史流水并计算可核实的已实现盈亏，不修改当前持仓或现金；需提供从首次买入开始的完整记录，避免把历史成交重复加到当前余额。")
@@ -3189,6 +3253,7 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
+            .id("tools-trades")
             Section("ETF 底层持仓穿透") {
                 Button("查看成分股重叠") { showOverlap = true }
                 Text("ETF 使用截至 2026-06-30 的内置快照；场外基金可拉取定期报告重仓并统计 ETF/基金交叉重叠。")
@@ -3213,12 +3278,17 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
+            .id("tools-funds")
             Text("AI 分析只读取本机已记录的数据；缺少有效日线或资讯时，不会提供相应技术判断或新闻结论。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         .scrollContentBackground(.hidden)
+        .listRowBackground(Color.clear)
+        .buttonStyle(.plain)
         .background(.clear).navigationTitle("工具")
-            .sheet(isPresented: $showGrid) { DayGridView() }
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showGrid) { DayGridView().presentationBackground(.clear) }
+            .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).presentationBackground(.clear) }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
             .sheet(isPresented: $showPortrait) { AccountPortraitView() }
             .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() }
@@ -3244,6 +3314,7 @@ struct ToolsView: View {
                 AllocationTargetEditor(holding: holding,
                     targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
             }
+        }
         }
     }
 }
@@ -4258,7 +4329,7 @@ struct AIAnalysisView: View {
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .background(.clear)
-            .presentationBackground(.ultraThinMaterial)
+            .presentationBackground(.clear)
             .sheet(isPresented: $showPortrait) { AccountPortraitView() }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear {
@@ -4348,15 +4419,20 @@ struct DayGridView: View {
     @State private var message = ""
     @State private var recommendationText = ""
     @State private var showImporter = false
+    @State private var showStrategicGridPlanner = false
 
     private var instruments: [GridInstrument] {
+        let quotes = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
         let etfs = store.data.holdings.filter { $0.kind == .etf }.map { GridInstrument(code: $0.code, name: $0.name, price: $0.current) }
-        let watches = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
         let plans = store.data.dayGridPlans.map { GridInstrument(code: $0.code, name: $0.name, price: $0.anchor) }
-        return Array(Dictionary((etfs + watches + plans).map { ($0.code, $0) }, uniquingKeysWith: { first, _ in first }).values).sorted { $0.code < $1.code }
+        // 优先使用最新行情，其次持仓现价；保存计划里的锚点只作为最后兜底。
+        return Array(Dictionary((quotes + etfs + plans).map { ($0.code, $0) }, uniquingKeysWith: { first, second in
+            first.price > 0 ? first : second
+        }).values).sorted { $0.code < $1.code }
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var currentInstrument: GridInstrument? { instruments.first { $0.code == code } }
 
     var body: some View {
         NavigationStack {
@@ -4371,15 +4447,21 @@ struct DayGridView: View {
                         .onChange(of: code) { _, value in
                             if let item = instruments.first(where: { $0.code == value }) {
                                 name = item.name
-                                if anchor.isEmpty || anchor == "0" { anchor = item.price > 0 ? String(format: "%.3f", item.price) : "" }
+                                anchor = item.price > 0 ? String(format: "%.4f", item.price) : ""
+                                result = nil
+                                recommendationText = "已切换到\(item.name)（\(item.code)），中枢价已按该标的最新行情重置。"
                             }
                         }
                     }
-                    TextField("计划资金（元）", text: $capital).keyboardType(.decimalPad)
-                    TextField("网格中枢价", text: $anchor).keyboardType(.decimalPad)
-                    TextField("每档间距（%）", text: $step).keyboardType(.decimalPad)
-                    TextField("上下档数（各侧）", text: $levels).keyboardType(.numberPad)
-                    TextField("每笔费用（元）", text: $fee).keyboardType(.decimalPad)
+                    if let item = currentInstrument {
+                        LabeledContent("当前标的", value: "\(item.name) · \(item.code)")
+                        LabeledContent("最新参考价", value: item.price > 0 ? item.price.num(4) : "暂无有效行情")
+                    }
+                    labeledGridField("计划资金（元）", hint: "可用于买入网格的总资金", text: $capital, keyboard: .decimalPad)
+                    labeledGridField("网格中枢价", hint: "初始参考价；切换标的会更新", text: $anchor, keyboard: .decimalPad)
+                    labeledGridField("每档间距（%）", hint: "每相邻网格档位的涨跌幅", text: $step, keyboard: .decimalPad)
+                    labeledGridField("上下档数（各侧）", hint: "中枢上方和下方分别几档", text: $levels, keyboard: .numberPad)
+                    labeledGridField("每笔费用（元）", hint: "每次模拟成交扣除的固定费用", text: $fee, keyboard: .decimalPad)
                     Button("根据历史分时生成规则建议") { suggestParameters() }.disabled(code.isEmpty)
                     if !recommendationText.isEmpty { Text(recommendationText).font(.footnote).foregroundStyle(.secondary) }
                     Button("保存/更新本地计划") { savePlan() }.disabled(code.isEmpty)
@@ -4399,6 +4481,11 @@ struct DayGridView: View {
                     }
                 }
                 .plainCard(isLight: isLight)
+                Section("中长期网格计划（独立于日内回放）") {
+                    Button("打开中长期网格规划") { showStrategicGridPlanner = true }
+                    Text("按近 60 日价格区间、波动幅度和可选资金生成上下买卖档；不使用分时回放数据，也不会自动下单。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 if let result {
                     Section("路径模拟结果 · \(result.day)") {
                         LabeledContent("模拟盈亏", value: "\((result.profit).directionMark()) \((result.profit).cny())")
@@ -4492,11 +4579,15 @@ struct DayGridView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("日内网格 / 复盘")
+            .toolbarBackground(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
+            .presentationBackground(.clear)
+            .listRowBackground(Color.clear)
+            .buttonStyle(.plain)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .onAppear {
-                if code.isEmpty, let first = instruments.first { code = first.code; name = first.name; anchor = first.price > 0 ? String(format: "%.3f", first.price) : "" }
+                if code.isEmpty, let first = instruments.first { code = first.code; name = first.name; anchor = first.price > 0 ? String(format: "%.4f", first.price) : "" }
                 if selectedDay.isEmpty { selectedDay = store.gridTradingDays.first ?? "" }
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { response in
@@ -4508,6 +4599,16 @@ struct DayGridView: View {
                     message = "已导入 \(count) 个分时点。"
                 } catch { message = error.localizedDescription }
             }
+            .sheet(isPresented: $showStrategicGridPlanner) {
+                StrategicGridPlannerView().environmentObject(store).presentationBackground(.clear)
+            }
+        }
+    }
+
+    private func labeledGridField(_ title: String, hint: String, text: Binding<String>, keyboard: UIKeyboardType) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline.weight(.medium))
+            TextField(hint, text: text).keyboardType(keyboard)
         }
     }
 
@@ -4552,6 +4653,195 @@ struct DayGridView: View {
             let oneLot = plan.anchor * 100 + plan.feePerOrder
             message = budget < oneLot ? "资金不够：每档约 \((budget).cny())，按当前中枢买入 100 份约需 \((oneLot).cny())。减少档数或增加计划资金后复盘。" : "数据中没有穿越网格档位；也可能是该日分时覆盖不足。"
         }
+    }
+}
+
+private struct StrategicGridLevel: Identifiable {
+    let index: Int
+    let price: Double
+    let distancePercent: Double
+    var id: Int { index }
+}
+
+private struct StrategicGridResult {
+    let current: Double
+    let atrPercent: Double
+    let gridPercent: Double
+    let lower: Double
+    let upper: Double
+    let count: Int
+    let buyCount: Int
+    let sellCount: Int
+    let budgetPerBuy: Double
+    let sellLot: Int
+    let requiredShares: Int
+    let ownedShares: Double
+    let ma250: Double?
+    let levels: [StrategicGridLevel]
+}
+
+/// 网页版的静态/中长期网格规划，和日内网格分时 CSV 回放是两项独立工具。
+private struct StrategicGridPlannerView: View {
+    @EnvironmentObject private var store: PortfolioStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+    @State private var capital = "3000"
+    @State private var gapPercent = ""
+    @State private var ownedShares = ""
+    @State private var result: StrategicGridResult?
+    @State private var message = ""
+
+    private var instruments: [GridInstrument] {
+        let quotes = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
+        let holdings = store.data.holdings.filter { $0.kind == .etf }.map { GridInstrument(code: $0.code, name: $0.name, price: $0.current) }
+        return Array(Dictionary((quotes + holdings).map { ($0.code, $0) }, uniquingKeysWith: { first, second in first.price > 0 ? first : second }).values)
+            .sorted { $0.code < $1.code }
+    }
+    private var selected: GridInstrument? { instruments.first { $0.code == code } }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("标的与预算") {
+                    Picker("标的", selection: $code) {
+                        ForEach(instruments) { item in Text("\(item.name) · \(item.code)").tag(item.code) }
+                    }
+                    if let selected {
+                        LabeledContent("当前行情", value: selected.price > 0 ? selected.price.num(4) : "暂无")
+                        LabeledContent("日线数据", value: "\(store.dailyBars[code]?.count ?? 0) 根")
+                    }
+                    TextField("可用投入资金（元）", text: $capital).keyboardType(.decimalPad)
+                    TextField("目标每格幅度（%，留空自动估算）", text: $gapPercent).keyboardType(.decimalPad)
+                    TextField("现有持仓（份，用于检查卖档）", text: $ownedShares).keyboardType(.numberPad)
+                    Button("生成中长期网格") { generate() }.disabled(code.isEmpty)
+                    if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.orange) }
+                }
+                if let result {
+                    Section("规划摘要") {
+                        LabeledContent("参考现价", value: result.current.num(4))
+                        LabeledContent("60 日价格区间", value: "\(result.lower.num(3)) – \(result.upper.num(3))（\(result.count) 格）")
+                        LabeledContent("目标格距 / 区间格距", value: "\(result.gridPercent.num(2))% / \(((result.upper - result.lower) / Double(result.count) / result.current * 100).num(2))%")
+                        LabeledContent("近 14 日 ATR 波动", value: "\(result.atrPercent.num(2))%")
+                        LabeledContent("每个买档预算", value: result.budgetPerBuy.cny(0))
+                        LabeledContent("买档 / 卖档", value: "\(result.buyCount) / \(result.sellCount)")
+                        LabeledContent("卖档预计需要", value: "\(result.requiredShares) 份 · 当前 \(Int(result.ownedShares)) 份")
+                        if let ma = result.ma250 { LabeledContent("MA250趋势参考", value: result.current >= ma ? "现价在线上（MA250 \(ma.num(3))）" : "现价在线下（MA250 \(ma.num(3))）") }
+                        else { LabeledContent("MA250趋势参考", value: "日线不足 250 根") }
+                    }
+                    Section("价位表 · 上方卖档 / 下方买档") {
+                        ForEach(result.levels.reversed()) { level in
+                            let isBuy = level.price < result.current
+                            HStack {
+                                Text(isBuy ? "买入" : "卖出").foregroundStyle(isBuy ? .green : .red)
+                                Text(level.price.num(3)).monospacedDigit()
+                                Spacer()
+                                Text("\(level.distancePercent >= 0 ? "+" : "")\(level.distancePercent.num(2))%")
+                                    .foregroundStyle(.secondary).monospacedDigit()
+                                if isBuy {
+                                    let rawShares = result.budgetPerBuy > 0 && level.price.isFinite && level.price > 0
+                                        ? result.budgetPerBuy / (level.price * 100) : 0
+                                    let shares = rawShares.isFinite ? Int(min(1_000_000_000, max(0, rawShares))) * 100 : 0
+                                    Text("约 \(shares) 份").font(.caption).foregroundStyle(.secondary)
+                                } else if abs(level.price - result.current) > result.current * 0.001 {
+                                    Text("约 \(result.sellLot) 份").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    Section {
+                        Text("静态参数规划，不代表收益预测。单边上涨可能过早卖出，单边下跌可能持续买入；档位成交还受整手、费用、流动性和涨跌停影响。MA250仅作为趋势背景，不是买卖指令。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .listRowBackground(Color.clear)
+            .buttonStyle(.plain)
+            .background(.clear)
+            .navigationTitle("中长期网格计划")
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .onAppear {
+                if code.isEmpty, let first = instruments.first { code = first.code; selectInstrument(first.code) }
+                else { selectInstrument(code) }
+            }
+            .onChange(of: code) { _, value in gapPercent = ""; selectInstrument(value) }
+            .task(id: code) {
+                guard !code.isEmpty, (store.dailyBars[code]?.count ?? 0) < 250 else { return }
+                do { _ = try await store.fetchDailyBars(code: code, count: 640, force: true) }
+                catch { message = "日线加载失败：\(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private func selectInstrument(_ value: String) {
+        guard !value.isEmpty else { return }
+        let bars = store.dailyBars[value] ?? []
+        let owned = store.data.holdings.first { $0.code == value && $0.kind == .etf }?.quantity ?? 0
+        ownedShares = owned.isFinite && owned > 0 ? String(Int(min(owned, 1_000_000_000))) : "0"
+        result = nil
+        if bars.count >= 15 {
+            let recent = Array(bars.suffix(14))
+            let ranges = recent.enumerated().map { index, bar -> Double in
+                let previous = index > 0 ? recent[index - 1].close : (bars.dropLast(14).last?.close ?? bar.close)
+                return max(max(bar.high - bar.low, abs(bar.high - previous)), abs(bar.low - previous))
+            }
+            let current = selected?.price ?? bars.last?.close ?? 0
+            if current > 0, gapPercent.isEmpty {
+                gapPercent = String(format: "%.2f", min(6, max(1.5, ranges.reduce(0, +) / Double(ranges.count) / current * 120)))
+            }
+        }
+    }
+
+    private func generate() {
+        guard let selected, selected.price.isFinite, selected.price > 0 else { message = "当前标的没有有效价格，请先刷新行情。"; return }
+        let bars = store.dailyBars[code] ?? []
+        guard bars.count >= 60 else { message = "日线少于 60 根，无法生成完整 60 日区间；先刷新该标的日K。"; return }
+        guard let cash = Double(capital), cash.isFinite, cash > 0, cash <= 1_000_000_000_000 else {
+            message = "可用资金需大于 0 且不超过 1 万亿元。"; return
+        }
+        let current = selected.price
+        let recent = Array(bars.suffix(60))
+        let high60 = recent.map(\.high).max() ?? current
+        let low60 = recent.map(\.low).min() ?? current
+        let last14 = Array(bars.suffix(15))
+        var trueRanges: [Double] = []
+        if last14.count > 1 {
+            for i in 1..<last14.count {
+                let bar = last14[i], previous = last14[i - 1].close
+                trueRanges.append(max(max(bar.high - bar.low, abs(bar.high - previous)), abs(bar.low - previous)))
+            }
+        }
+        let atr = trueRanges.isEmpty ? current * 0.02 : trueRanges.reduce(0, +) / Double(trueRanges.count)
+        let atrPercent = atr / current * 100
+        let gap = (Double(gapPercent) ?? min(6, max(1.5, atrPercent * 1.2)))
+        guard gap.isFinite, gap >= 0.1, gap <= 100 else { message = "每格幅度需在 0.1% 到 100% 之间。"; return }
+        let upper = min(high60 > current ? high60 : current * 1.15, current * (1 + gap * 4 / 100))
+        let lower = max(low60 < current ? low60 : current * 0.85, current * (1 - gap * 4 / 100))
+        let finalUpper = upper > current ? upper : current * (1 + gap * 2 / 100)
+        let finalLower = lower < current ? lower : current * (1 - gap * 2 / 100)
+        let rawCount = ((finalUpper - finalLower) / (current * gap / 100)).rounded()
+        guard rawCount.isFinite else { message = "参数范围过大，无法生成网格。"; return }
+        let count = rawCount >= 12 ? 12 : (rawCount <= 3 ? 3 : Int(rawCount))
+        let step = (finalUpper - finalLower) / Double(count)
+        let levels = (0...count).map { i in
+            let price = finalLower + step * Double(i)
+            return StrategicGridLevel(index: i, price: price, distancePercent: (price / current - 1) * 100)
+        }
+        let buys = levels.filter { $0.price < current }.count
+        let sells = levels.filter { $0.price > current }.count
+        let perBuy = buys > 0 ? cash / Double(buys) : 0
+        let rawLots = perBuy > 0 ? perBuy / (current * 100) : 0
+        let sellLot = rawLots.isFinite ? Int(min(1_000_000, max(0, rawLots))) * 100 : 0
+        let sharesInput = Double(ownedShares) ?? 0
+        let shares = sharesInput.isFinite && sharesInput > 0 ? min(sharesInput, 1_000_000_000) : 0
+        let ma = bars.count >= 250 ? bars.suffix(250).map(\.close).reduce(0, +) / 250 : nil
+        result = StrategicGridResult(current: current, atrPercent: atrPercent, gridPercent: gap,
+            lower: finalLower, upper: finalUpper, count: count, buyCount: buys, sellCount: sells,
+            budgetPerBuy: perBuy, sellLot: sellLot, requiredShares: sellLot * sells,
+            ownedShares: shares, ma250: ma, levels: levels)
+        message = shares < Double(sellLot * sells) ? "规划已生成；当前持仓低于全部卖档预留份数。" : "规划已生成。"
     }
 }
 
@@ -4638,8 +4928,9 @@ struct SettingsView: View {
     private var formContent: some View {
         NavigationStack {
             Form {
+                // 订阅背景选择版本；切换图片后让选中标记和背景状态立即刷新。
+                let _ = backgroundRevision
                 appearanceSection
-                backgroundSection
                 ledgerSection
                 quoteSection
                 accountingSection
@@ -4649,16 +4940,21 @@ struct SettingsView: View {
                 if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
             }
             .navigationTitle("设置")
+            .toolbarBackground(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .listRowBackground(Color.clear)
+            .buttonStyle(.plain)
             .background(.clear)
-            .presentationBackground(.ultraThinMaterial)
         }
+        // presentationBackground 要挂在 sheet 的导航根上；挂在 Form 内层会留下系统默认的不透明白底。
+        .presentationBackground(.clear)
     }
 
     @ViewBuilder private var appearanceSection: some View {
-        Section("外观主题") {
-            // 每个主题给一块真实配色预览，不用只看名字盲选。
+        Section("主题与背景") {
+            Text("配色主题")
+                .font(.subheadline.weight(.semibold))
             let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(allThemes, id: \.rawValue) { item in
@@ -4671,6 +4967,90 @@ struct SettingsView: View {
                 }
             }
             .padding(.vertical, 4)
+
+            Divider().padding(.vertical, 5)
+            Text("图片背景")
+                .font(.subheadline.weight(.semibold))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ForEach(NativeBackgroundPreset.allCases) { preset in
+                    Button { NativeBackgroundStore.select(preset) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image(preset.assetName).resizable().scaledToFill()
+                                .frame(height: 82).frame(maxWidth: .infinity).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            HStack(spacing: 5) {
+                                Text(preset.title).lineLimit(1)
+                                Spacer(minLength: 0)
+                                if NativeBackgroundStore.selectedPreset == preset {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+                                }
+                            }.font(.caption)
+                        }
+                        .padding(7)
+                        .background(NativeBackgroundStore.selectedPreset == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text("渐变背景")
+                .font(.subheadline.weight(.semibold))
+                .padding(.top, 4)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ForEach(NativeGradientPreset.allCases) { preset in
+                    Button { NativeBackgroundStore.select(preset) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            LinearGradient(colors: preset.hexColors.map { hex in
+                                Color(red: Double((hex >> 16) & 0xff) / 255,
+                                      green: Double((hex >> 8) & 0xff) / 255,
+                                      blue: Double(hex & 0xff) / 255)
+                            }, startPoint: .topLeading, endPoint: .bottomTrailing)
+                            .frame(height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
+                            HStack {
+                                Text(preset.title).font(.caption)
+                                Spacer()
+                                if NativeBackgroundStore.selectedGradient == preset {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+                                }
+                            }
+                        }
+                        .padding(7)
+                        .background(NativeBackgroundStore.selectedGradient == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }.buttonStyle(.plain)
+                }
+            }
+
+            PhotosPicker(selection: $backgroundPhoto, matching: .images) {
+                Label("从照片中选择背景", systemImage: "photo")
+            }
+            if NativeBackgroundStore.hasActiveBackground {
+                Button("清除背景", role: .destructive) { NativeBackgroundStore.remove() }
+                Toggle("卡片融合背景图", isOn: $backgroundPanelImprint)
+                Button {
+                    backgroundPanelImprint = true
+                    backgroundOverlayOpacity = 0.08
+                    backgroundBlur = 0
+                } label: {
+                    Label("一键通透", systemImage: "sparkles.rectangle.stack")
+                }
+                VStack(alignment: .leading) {
+                    HStack { Text("背景遮罩"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
+                    Slider(value: $backgroundOverlayOpacity, in: 0.02...0.82, step: 0.02)
+                }
+                VStack(alignment: .leading) {
+                    HStack { Text("背景毛玻璃"); Spacer(); Text("\(Int(backgroundBlur * 100))%") }.font(.subheadline)
+                    Slider(value: $backgroundBlur, in: 0...0.9, step: 0.02)
+                }
+                Text("遮罩数值越低，背景越清晰；毛玻璃越低，背景越锐利。系统降低透明度开启时会关闭毛玻璃，但不再覆盖此处的遮罩设置。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("自定义图片保存在本机；导出的原生 JSON 备份会包含当前背景图。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Text("先选择上方的图片或渐变背景，再调整背景遮罩和卡片融合效果。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         }
         Section("强调色") {
             Picker("强调色", selection: Binding(
@@ -4697,17 +5077,13 @@ struct SettingsView: View {
         }
         Section("字号") {
             Picker("字号", selection: $fontScale) {
-                ForEach(FontScalePreset.allCases) { preset in
-                    Text(preset.title).tag(preset.value)
-                }
+                ForEach(FontScalePreset.allCases) { preset in Text(preset.title).tag(preset.value) }
             }
             .pickerStyle(.segmented)
             Text("App 内字号倍率，会与系统「设置 → 显示与亮度 → 文字大小」叠加。改大后部分紧凑网格会自动换行。")
                 .scaledFont(10).foregroundStyle(.secondary)
-            // 同一段文字用当前倍率渲染，选档位时能直接看到效果，不用退出去猜。
             HStack {
-                Text("预览：总资产 ¥1,234,567.89")
-                    .scaledFont(13, weight: .semibold, design: .rounded)
+                Text("预览：总资产 ¥1,234,567.89").scaledFont(13, weight: .semibold, design: .rounded)
                 Spacer(minLength: 0)
             }
         }
@@ -4779,101 +5155,6 @@ struct SettingsView: View {
         }
     }
 }
-
-    @ViewBuilder private var backgroundSection: some View {
-        Section("网页内置图片主题") {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(NativeBackgroundPreset.allCases) { preset in
-                    Button {
-                        NativeBackgroundStore.select(preset)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Image(preset.assetName).resizable().scaledToFill()
-                                .frame(height: 82).frame(maxWidth: .infinity).clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            HStack(spacing: 5) {
-                                Text(preset.title).lineLimit(1)
-                                Spacer(minLength: 0)
-                                if NativeBackgroundStore.selectedPreset == preset {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                                }
-                            }.font(.caption)
-                        }
-                        .padding(7)
-                        .background(NativeBackgroundStore.selectedPreset == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            Text("已迁入网页的四张内置背景图；选择后会作为原生背景并纳入原生 JSON 备份。")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-        Section("网页渐变背景") {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(NativeGradientPreset.allCases) { preset in
-                    Button {
-                        NativeBackgroundStore.select(preset)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            LinearGradient(colors: preset.hexColors.map { hex in
-                                Color(red: Double((hex >> 16) & 0xff) / 255,
-                                      green: Double((hex >> 8) & 0xff) / 255,
-                                      blue: Double(hex & 0xff) / 255)
-                            }, startPoint: .topLeading, endPoint: .bottomTrailing)
-                            .frame(height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
-                            HStack {
-                                Text(preset.title).font(.caption)
-                                Spacer()
-                                if NativeBackgroundStore.selectedGradient == preset {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                                }
-                            }
-                        }
-                        .padding(7)
-                        .background(NativeBackgroundStore.selectedGradient == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }.buttonStyle(.plain)
-                }
-            }
-            Text("已迁入网页的渐变背景。更换背景不会改变外观主题；自定义图片和内置图片仍可单独选择。")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-        Section("自定义背景图") {
-            PhotosPicker(selection: $backgroundPhoto, matching: .images) {
-                Label("从照片中选择背景", systemImage: "photo")
-            }
-            if NativeBackgroundStore.load() != nil || NativeBackgroundStore.selectedGradient != nil {
-                Button("清除背景", role: .destructive) { NativeBackgroundStore.remove() }
-            }
-            if !backgroundMessage.isEmpty { Text(backgroundMessage).font(.footnote).foregroundStyle(.secondary) }
-            Toggle("图片融合到面板（网页版风格）", isOn: $backgroundPanelImprint)
-            Text("开启后，行情卡片和汇总卡会透出背景图；透明度滑块同时调整背景遮罩和卡片保护层。")
-                .font(.footnote).foregroundStyle(.secondary)
-            Button {
-                backgroundPanelImprint = true
-                backgroundOverlayOpacity = 0.08
-                backgroundBlur = 0
-            } label: {
-                Label("网页版通透背景", systemImage: "sparkles.rectangle.stack")
-            }
-            Text("一键启用网页版式的图片面板融合，降低背景遮罩并关闭毛玻璃；下方仍可分别微调。")
-                .font(.footnote).foregroundStyle(.secondary)
-            VStack(alignment: .leading) {
-                HStack { Text("背景透明度"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
-                // 可降至 2%，适合想让图片清晰透出的用户；需要更强对比可提高遮罩或毛玻璃。
-                Slider(value: $backgroundOverlayOpacity, in: 0.02...0.82, step: 0.02)
-            }
-            VStack(alignment: .leading) {
-                HStack { Text("背景毛玻璃"); Spacer(); Text("\(Int(backgroundBlur * 100))%") }.font(.subheadline)
-                Slider(value: $backgroundBlur, in: 0...0.9, step: 0.02)
-            }
-            Text("毛玻璃会糊化背景图，让文字对比度不再依赖压暗强度；想要背景更清晰就把毛玻璃调低。")
-                .scaledFont(10).foregroundStyle(.secondary)
-            Text("自定义图片保存在本机并自动压缩至 1800 像素以内；原网页备份不含当前背景选择，原生 JSON 备份会包含背景图。iOS 状态栏颜色由系统按深浅外观自动适配。")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-    }
 
     @ViewBuilder private var ledgerSection: some View {
         Section("现金账本") {

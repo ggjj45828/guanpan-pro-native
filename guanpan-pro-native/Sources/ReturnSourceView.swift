@@ -7,6 +7,12 @@ struct ReturnSourceView: View {
     @State private var fromDate = Calendar.current.date(byAdding: .month, value: -1, to: .now) ?? .now
     @State private var toDate = Date.now
 
+    private struct CodeBreakdown: Identifiable {
+        let name: String
+        let amount: Double
+        var id: String { name }
+    }
+
     private struct Breakdown {
         var start: PortfolioSnapshot?
         var end: PortfolioSnapshot?
@@ -21,7 +27,7 @@ struct ReturnSourceView: View {
         var fees = 0.0
         var buys = 0
         var sells = 0
-        var perCode: [(String, Double)] = []
+        var perCode: [CodeBreakdown] = []
         var warnings: [String] = []
     }
 
@@ -29,11 +35,10 @@ struct ReturnSourceView: View {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .current; f.dateFormat = "yyyy-MM-dd"; return f
     }
 
-    private var result: Breakdown { calculate() }
-    private var canCalculate: Bool { result.start != nil && result.end != nil }
     private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
-
     var body: some View {
+        let result = calculate()
+        let canCalculate = result.start != nil && result.end != nil
         NavigationStack {
             List {
                 Section("区间") {
@@ -48,7 +53,9 @@ struct ReturnSourceView: View {
                 .plainCard(isLight: isLight)
                 if canCalculate {
                     Section("快照核算结果") {
-                        LabeledContent("实际快照区间", value: "\(result.start!.date) → \(result.end!.date)")
+                        if let start = result.start, let end = result.end {
+                            LabeledContent("实际快照区间", value: "\(start.date) → \(end.date)")
+                        }
                         LabeledContent("净外部投入", value: (result.flow).cny())
                         LabeledContent("扣除净投入后的账户变化", value: (result.account).cny())
                         LabeledContent("加回账外现金分红的经济收益",
@@ -78,8 +85,8 @@ struct ReturnSourceView: View {
                 .toneCard(CardTone.pnl(result.realized), isLight: isLight)
                 if !result.perCode.isEmpty {
                     Section("分标的已实现盈亏") {
-                        ForEach(Array(result.perCode.enumerated()), id: \.offset) { _, item in
-                            LabeledContent(item.0, value: (item.1).cny())
+                        ForEach(result.perCode) { item in
+                            LabeledContent(item.name, value: (item.amount).cny())
                         }
                     }
                     .plainCard(isLight: isLight)
@@ -97,6 +104,8 @@ struct ReturnSourceView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("收益来源拆解")
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .presentationBackground(.clear)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
     }
@@ -125,7 +134,7 @@ struct ReturnSourceView: View {
                         r.sells += 1
                         if !trade.linkedCash { r.flow -= max(0, trade.gross - trade.fee) }
                         r.realizedETF += trade.realizedPnL
-                        r.perCode.append((trade.name, trade.realizedPnL))
+                        r.perCode.append(CodeBreakdown(name: trade.name, amount: trade.realizedPnL))
                     }
                 }
                 for trade in store.data.fundTransactions {
@@ -141,7 +150,7 @@ struct ReturnSourceView: View {
                         r.sells += 1
                         if !trade.linkedCash { r.flow -= max(0, trade.amount - trade.fee) }
                         r.realizedFund += trade.realizedPnL
-                        r.perCode.append((trade.name, trade.realizedPnL))
+                        r.perCode.append(CodeBreakdown(name: trade.name, amount: trade.realizedPnL))
                     case .dividend:
                         guard trade.status == .confirmed else { continue }
                         if trade.dividendMode == .cash && !trade.linkedCash { r.cashDividends += trade.amount }
@@ -159,7 +168,7 @@ struct ReturnSourceView: View {
         if store.data.holdings.contains(where: { $0.kind == .etf }) && store.data.ledger.contains(where: { $0.kind == nil }) {
             r.warnings.append("部分旧版交易流水没有资产类别，场内/基金代码相同的记录可能无法可靠区分。")
         }
-        if !canCalculate {
+        if r.start == nil || r.end == nil {
             let from = dateFormatter.string(from: min(fromDate, toDate))
             let to = dateFormatter.string(from: max(fromDate, toDate))
             let ledger = store.data.ledger.filter { trade in
@@ -174,10 +183,12 @@ struct ReturnSourceView: View {
             r.fees = ledger.reduce(0) { $0 + $1.fee } + funds.reduce(0) { $0 + max(0, $1.fee) }
             r.buys = ledger.filter { $0.side == .buy }.count + funds.filter { $0.side == .buy && !$0.isBackfill }.count
             r.sells = ledger.filter { $0.side == .sell }.count + funds.filter { $0.side == .sell && $0.status == .confirmed }.count
-            r.perCode = ledger.filter { $0.side == .sell }.map { ($0.name, $0.realizedPnL) }
-                + funds.filter { $0.side == .sell && $0.status == .confirmed }.map { ($0.name, $0.realizedPnL) }
+            r.perCode = ledger.filter { $0.side == .sell }.map { CodeBreakdown(name: $0.name, amount: $0.realizedPnL) }
+                + funds.filter { $0.side == .sell && $0.status == .confirmed }.map { CodeBreakdown(name: $0.name, amount: $0.realizedPnL) }
         }
-        r.perCode = Dictionary(grouping: r.perCode, by: \.0).map { ($0.key, $0.value.reduce(0) { $0 + $1.1 }) }.sorted { abs($0.1) > abs($1.1) }
+        r.perCode = Dictionary(grouping: r.perCode, by: \.name).map { pair in
+            CodeBreakdown(name: pair.key, amount: pair.value.reduce(0) { $0 + $1.amount })
+        }.sorted { abs($0.amount) > abs($1.amount) }
         return r
     }
 }

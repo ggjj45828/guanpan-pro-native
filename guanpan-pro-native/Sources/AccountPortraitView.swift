@@ -249,7 +249,7 @@ struct AccountPortraitView: View {
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .background(.clear)
-            .presentationBackground(.ultraThinMaterial)
+            .presentationBackground(.clear)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear { recompute() }
         }

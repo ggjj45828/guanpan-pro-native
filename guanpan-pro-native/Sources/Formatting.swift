@@ -18,6 +18,7 @@ extension BinaryFloatingPoint {
     }
 
     func cny(_ digits: Int = 2) -> String {
+        guard Double(self).isFinite else { return "—" }
         let nf = NumberFormatter()
         nf.numberStyle = .currency
         nf.currencyCode = "CNY"
@@ -28,6 +29,7 @@ extension BinaryFloatingPoint {
     }
 
     func num(_ digits: Int) -> String {
+        guard Double(self).isFinite else { return "—" }
         let nf = NumberFormatter()
         nf.numberStyle = .decimal
         nf.locale = Locale(identifier: "zh_CN")
@@ -47,6 +49,7 @@ extension BinaryFloatingPoint {
         nf.minimumFractionDigits = digits
         nf.maximumFractionDigits = digits
         let v = Double(self)
+        guard v.isFinite else { return "—" }
         return (nf.string(from: NSNumber(value: v)) ?? String(format: "%.*f", digits, v)) + "%"
     }
 }

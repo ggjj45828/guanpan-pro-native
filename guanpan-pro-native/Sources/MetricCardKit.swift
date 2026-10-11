@@ -99,7 +99,8 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         let _ = backgroundRevision
         let usePhotoPanel = panelImprint && NativeBackgroundStore.hasActiveBackground
-        let veil = min(0.72, max(0.12, 0.38 + overlayOpacity * 0.35))
+        // Slider 值直接控制面板遮罩；之前强行限制在 38% 以上，拖到最透明也几乎看不出变化。
+        let veil = min(0.82, max(0.04, overlayOpacity))
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         // 用 AnyShapeStyle 统一两条分支的类型：Swift 的 opaque return type 要求
         // 函数体所有 return 的底层类型一致，直接返回 LinearGradient / Color 会编译失败。

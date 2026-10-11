@@ -140,7 +140,8 @@ extension PortfolioStore {
     /// Transparent rule-based sizing helper. It is deliberately not labelled AI:
     /// it estimates a spacing from saved intraday ranges and refuses sparse data.
     func gridRecommendation(code: String, capital: Double, feePerOrder: Double) -> GridRecommendation? {
-        guard capital.isFinite, capital > 0, feePerOrder.isFinite, feePerOrder >= 0 else { return nil }
+        guard capital.isFinite, capital > 0, capital <= 1_000_000_000_000,
+              feePerOrder.isFinite, feePerOrder >= 0 else { return nil }
         let grouped = Dictionary(grouping: intradayBars.filter { $0.code == code }, by: \.day)
         let reliableDays: [[IntradayBar]] = grouped.values.compactMap { dayBars in
             let sorted = dayBars.sorted { $0.timestamp < $1.timestamp }
@@ -160,7 +161,10 @@ extension PortfolioStore {
         let stepFraction = max(0.0005, min(0.01, max(medianRange * 0.25, feeFloor)))
         guard stepFraction <= medianRange * 0.8 else { return nil }
         let lotCost = anchor * 100 + feePerOrder
-        let maximumLevels = Int(floor((capital / lotCost - 2) / 2))
+        guard lotCost.isFinite, lotCost > 0 else { return nil }
+        let rawMaximumLevels = floor((capital / lotCost - 2) / 2)
+        guard rawMaximumLevels.isFinite else { return nil }
+        let maximumLevels = rawMaximumLevels >= 5 ? 5 : Int(rawMaximumLevels)
         guard maximumLevels >= 1 else { return nil }
         let levels = min(5, maximumLevels)
         let averageCoverage = reliableDays.map { min(1, Double($0.count) / 240) }.reduce(0, +) / Double(reliableDays.count)

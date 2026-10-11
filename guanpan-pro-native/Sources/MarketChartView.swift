@@ -20,6 +20,19 @@ private struct MinuteBucket: Identifiable {
     var id: Date { start }
 }
 
+private struct IntradayIOPVPoint: Identifiable {
+    let timestamp: Date
+    let value: Double
+    var id: Date { timestamp }
+}
+
+private struct IntradayETFQuoteSummary {
+    let turnoverPercent: Double?
+    let amplitudePercent: Double?
+    let amountYi: Double?
+    let marketCapYi: Double?
+}
+
 private enum IntradaySubchart: String, CaseIterable, Identifiable {
     case macd = "分时 MACD", volume = "分时量"
     var id: String { rawValue }
@@ -51,10 +64,18 @@ private struct PriceLevelSummary {
 /// MA 均线显示开关（竖屏/横屏共用同一份 UserDefaults，点图例 chip 切换）。
 private enum MAVisibility {
     static let key = "guanpan.native.ma.visible"
+    static let ma250DefaultMigrationKey = "guanpan.native.ma250.default.migrated"
     static func read() -> Set<Int> {
-        // 日K 默认只显示两条常用线，避免初次打开就遮住K线；其余可在图例按需打开。
-        let raw = UserDefaults.standard.string(forKey: key) ?? "5,20"
-        return Set(raw.split(separator: ",").compactMap { Int($0) })
+        // MA250 默认显示；旧版本已有的均线选择仅迁移一次，之后仍允许用户手动关闭。
+        let defaults = UserDefaults.standard
+        let raw = defaults.string(forKey: key) ?? "5,20"
+        var visible = Set(raw.split(separator: ",").compactMap { Int($0) })
+        if !defaults.bool(forKey: ma250DefaultMigrationKey) {
+            visible.insert(250)
+            write(visible)
+            defaults.set(true, forKey: ma250DefaultMigrationKey)
+        }
+        return visible
     }
     static func write(_ set: Set<Int>) {
         UserDefaults.standard.set(set.sorted().map(String.init).joined(separator: ","), forKey: key)
@@ -99,6 +120,7 @@ private func xAxisLabel(_ date: String, _ bars: [DailyBar]) -> String {
 struct MarketChartView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     let holding: Holding
     @State private var selectedIntradayDay = ""
     @State private var selectedChartPeriod: NativeChartPeriod = .intraday
@@ -117,6 +139,12 @@ struct MarketChartView: View {
     @State private var backtestResult: StrategyBacktestResult?
     @State private var backtestMessage = ""
     @State private var minuteStatus = "正在加载当日分时…"
+    @State private var intradayIOPV: Double?
+    @State private var intradayPremiumPercent: Double?
+    @State private var intradayIOPVDay = ""
+    @State private var intradayIOPVPoints: [IntradayIOPVPoint] = []
+    @State private var intradayETFQuoteSummary: IntradayETFQuoteSummary?
+    @State private var intradayETFQuoteSummaryDay = ""
     @State private var chartZoom = 1.0
     @GestureState private var pinchScale = 1.0
     @State private var chartPanOffset = 0
@@ -204,6 +232,23 @@ struct MarketChartView: View {
         }
         return nil
     }
+    private var intradayLatestPrice: Double? {
+        selectedIntradayBars.last?.price ?? store.data.quotes.first(where: { $0.code == holding.code })?.price
+    }
+    private var selectedDayIOPV: Double? { intradayIOPVDay == selectedIntradayDay ? intradayIOPV : nil }
+    private var selectedDayPremium: Double? { intradayIOPVDay == selectedIntradayDay ? intradayPremiumPercent : nil }
+    private var selectedDayIOPVPoints: [IntradayIOPVPoint] {
+        guard intradayIOPVDay == selectedIntradayDay else { return [] }
+        return intradayIOPVPoints
+    }
+    private var selectedDayETFQuoteSummary: IntradayETFQuoteSummary? {
+        intradayETFQuoteSummaryDay == selectedIntradayDay ? intradayETFQuoteSummary : nil
+    }
+    private var intradayChangeText: String {
+        guard let latest = intradayLatestPrice, let previous = intradayPrevClose, previous > 0 else { return "涨跌暂无" }
+        let change = latest - previous
+        return "\(change >= 0 ? "+" : "")\(change.num(3))  \((change / previous * 100).pct(3))"
+    }
 
     private var minuteBuckets: [MinuteBucket] {
         let width: TimeInterval
@@ -273,6 +318,15 @@ struct MarketChartView: View {
         average(window, source: bars)
     }
     private func average(_ window: Int, source: [DailyBar]) -> [IndicatorPoint] {
+        if window == 250 {
+            let visibleDates = Set(source.map(\.date))
+            guard allBars.count >= 250 else { return [] }
+            return allBars.indices.compactMap { index in
+                guard index + 1 >= window, visibleDates.contains(allBars[index].date) else { return nil }
+                let values = allBars[(index + 1 - window)...index].map(\.close)
+                return IndicatorPoint(date: allBars[index].date, value: values.reduce(0, +) / Double(window))
+            }
+        }
         guard source.count >= window else { return [] }
         return source.indices.compactMap { index in
             guard index + 1 >= window else { return nil }
@@ -424,17 +478,37 @@ struct MarketChartView: View {
                         Text("60日").tag(60); Text("120日").tag(120); Text("250日").tag(250); Text("640日").tag(640)
                     }.pickerStyle(.segmented)
                     if selectedChartPeriod == .intraday {
+                        HStack(spacing: 12) {
+                            Text("均价 \(intradayAvgPoints.last?.price.num(3) ?? "暂无")").foregroundStyle(.orange)
+                            Text("最新 \(intradayLatestPrice?.num(3) ?? "暂无")").foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                            Text(intradayChangeText).foregroundStyle((intradayLatestPrice ?? 0) >= (intradayPrevClose ?? .infinity) ? .red : .green)
+                        }
+                        .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
+                        HStack(spacing: 12) {
+                            Text("实时参考净值 (IOPV)：\(selectedDayIOPV?.num(4) ?? "暂无")").foregroundStyle(.purple)
+                            Text("溢价率：\(selectedDayPremium?.pct(2) ?? "暂无")")
+                                .foregroundStyle((selectedDayPremium ?? 0) >= 0 ? .red : .green)
+                        }
+                        .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                        if let stats = selectedDayETFQuoteSummary {
+                            Text("换手 \(stats.turnoverPercent.map { $0.pct(2) } ?? "暂无")  ·  振幅 \(stats.amplitudePercent.map { $0.pct(2) } ?? "暂无")  ·  成交额 \(stats.amountYi.map { "\($0.num(2))亿" } ?? "暂无")  ·  规模 \(stats.marketCapYi.map { "\($0.num(2))亿" } ?? "暂无")")
+                                .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(2).minimumScaleFactor(0.75)
+                        }
                         if selectedIntradayBars.count > 1 {
                             Chart(selectedIntradayBars) { point in
                                 LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
-                                    .foregroundStyle(intradayLineColor).interpolationMethod(.linear)
-                                    // 默认线宽约 1pt，在浅色背景上发虚；加粗到 2.4pt 才有券商 App 的实心感
-                                    .lineStyle(StrokeStyle(lineWidth: 2.4))
-                                // 均价线：累计成交额 / 累计成交量（对齐养基宝分时的橙线）
+                                    .foregroundStyle(colorScheme == .dark ? Color.white : Color.black).interpolationMethod(.linear)
+                                    .lineStyle(StrokeStyle(lineWidth: 1.25))
+                                // 均价线：累计成交额 / 累计成交量
                                 ForEach(intradayAvgPoints) { avg in
                                     LineMark(x: .value("时间", avg.timestamp), y: .value("均价", avg.price))
                                         .foregroundStyle(Color.orange)
-                                        .lineStyle(StrokeStyle(lineWidth: 1.4))
+                                        .lineStyle(StrokeStyle(lineWidth: 1.1))
+                                }
+                                ForEach(selectedDayIOPVPoints) { point in
+                                    LineMark(x: .value("时间", point.timestamp), y: .value("IOPV", point.value))
+                                        .foregroundStyle(Color.purple)
+                                        .lineStyle(StrokeStyle(lineWidth: 1.1))
                                 }
                                 // 昨收基准虚线，一眼看出现在相对昨天是红是绿
                                 if let prev = intradayPrevClose {
@@ -631,7 +705,7 @@ struct MarketChartView: View {
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .background(.clear)
-            .presentationBackground(.ultraThinMaterial)
+            .presentationBackground(.clear)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 ToolbarItem(placement: .topBarLeading) {
@@ -655,7 +729,7 @@ struct MarketChartView: View {
                     .navigationTitle("\(holding.name) · AI 分析")
                     .scrollContentBackground(.hidden)
                     .background(.clear)
-                    .presentationBackground(.ultraThinMaterial)
+                    .presentationBackground(.clear)
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { showInstrumentAI = false } } }
                     .task { await analyzeInstrument() }
                 }
@@ -669,7 +743,9 @@ struct MarketChartView: View {
                 store.save(label: "修改分时副图")
             }
             .task {
-                if allBars.isEmpty { await load(force: false) }
+                // 显示区间可以只有 60 日，但 MA250 需要更早的 250 根收盘价作计算窗口。
+                // 本地历史不足时主动拉取最多 640 根，缩放/缩短横坐标范围不影响均线计算。
+                if allBars.count < 250 { await load(force: !allBars.isEmpty) }
                 while !Task.isCancelled {
                     await fetchTencentMinute()
                     try? await Task.sleep(for: .seconds(15))
@@ -717,7 +793,7 @@ struct MarketChartView: View {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
-        for window in [5, 10, 20, 60] where maVisible.contains(window) {
+        for window in [5, 10, 20, 60, 250] where maVisible.contains(window) {
             let source = average(window, source: bars)
             for point in source {
                 low = min(low, point.value)
@@ -819,6 +895,7 @@ struct MarketChartView: View {
             maChip("MA10", 10, ma10Color)
             maChip("MA20", 20, ma20Color)
             maChip("MA60", 60, ma60Color)
+            maChip("MA250", 250, ChartPalette.ma250)
             Spacer(minLength: 0)
         }.font(.caption2)
     }
@@ -862,25 +939,31 @@ struct MarketChartView: View {
             if maVisible.contains(5) {
                 ForEach(average(5, source: zoomedPeriodBars)) { point in
                     LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
-                        .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 2))
+                        .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 1.2))
                 }
             }
             if maVisible.contains(10) {
                 ForEach(average(10, source: zoomedPeriodBars)) { point in
                     LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
-                        .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 2))
+                        .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 1.2))
                 }
             }
             if maVisible.contains(20) {
                 ForEach(average(20, source: zoomedPeriodBars)) { point in
                     LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
-                        .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 2))
+                        .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 1.2))
                 }
             }
             if maVisible.contains(60) {
                 ForEach(average(60, source: zoomedPeriodBars)) { point in
                     LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
-                        .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 2))
+                        .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 1.2))
+                }
+            }
+            if maVisible.contains(250) {
+                ForEach(average(250, source: zoomedPeriodBars)) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("MA250", point.value), series: .value("均线", "MA250"))
+                        .foregroundStyle(ChartPalette.ma250).lineStyle(StrokeStyle(lineWidth: 1.2))
                 }
             }
         }
@@ -993,6 +1076,37 @@ struct MarketChartView: View {
                 parsed.append(IntradayBar(code: holding.code, timestamp: date, price: price, volume: delta, day: day))
             }
             guard !parsed.isEmpty else { minuteStatus = "今日尚无分钟数据，或市场休市"; return }
+            // 腾讯分时响应另含 ETF 汇总行情 qt；折溢价率字段为百分数。
+            // 仅在品种确认为 ETF 且数值有效时计算 IOPV，缺字段不以昨收净值代替。
+            if let qt = root["qt"] as? [String: Any], let values = qt[symbol] as? [Any],
+               values.count > 63, (values[61] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ETF" {
+                func field(_ index: Int) -> Double? {
+                    guard values.indices.contains(index) else { return nil }
+                    if let text = values[index] as? String { return Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    return (values[index] as? NSNumber)?.doubleValue
+                }
+                let amountInTenThousands = field(37)
+                intradayETFQuoteSummary = IntradayETFQuoteSummary(
+                    turnoverPercent: field(38), amplitudePercent: field(43),
+                    amountYi: amountInTenThousands.map { $0 / 10_000 }, marketCapYi: field(44))
+                intradayETFQuoteSummaryDay = day
+                if let premium = field(63), premium.isFinite, (-50...50).contains(premium),
+                   let last = parsed.last?.price, last.isFinite, last > 0, (1 + premium / 100) > 0 {
+                    let iopv = last / (1 + premium / 100)
+                    if iopv.isFinite, iopv > 0 {
+                        intradayIOPV = iopv
+                        intradayPremiumPercent = premium
+                        if let time = parsed.last?.timestamp {
+                            let currentDay = parsed.last?.day ?? day
+                            if intradayIOPVDay != currentDay { intradayIOPVPoints = [] }
+                            intradayIOPVDay = currentDay
+                            intradayIOPVPoints.removeAll { Calendar.current.isDate($0.timestamp, equalTo: time, toGranularity: .minute) }
+                            intradayIOPVPoints.append(IntradayIOPVPoint(timestamp: time, value: iopv))
+                            if intradayIOPVPoints.count > 400 { intradayIOPVPoints.removeFirst(intradayIOPVPoints.count - 400) }
+                        }
+                    }
+                }
+            }
             store.mergeIntradayBars(parsed)
             selectedIntradayDay = day
             minuteStatus = day == today ? "更新于 \(Date.now.formatted(date: .omitted, time: .shortened))" : "休市 · 最近交易日 \(day)"
@@ -1049,6 +1163,7 @@ private enum ChartPalette {
     static let ma10 = Color(red: 0.30, green: 0.66, blue: 1.0)   // 蓝
     static let ma20 = Color(red: 0.80, green: 0.36, blue: 1.0)   // 紫
     static let ma60 = Color(red: 0.16, green: 0.88, blue: 0.76)  // 青绿
+    static let ma250 = Color(red: 0.96, green: 0.35, blue: 0.58) // 玫红
 }
 
 /// 横屏 K 线大图。
@@ -1082,7 +1197,7 @@ struct LandscapeChartView: View {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
-        let visibleWindows = [5, 10, 20, 60].filter { maVisible.contains($0) }
+        let visibleWindows = [5, 10, 20, 60, 250].filter { maVisible.contains($0) }
         for window in visibleWindows {
             let source = average(window, source: bars)
             for point in source {
@@ -1116,7 +1231,7 @@ struct LandscapeChartView: View {
             }
         }
         .background(.clear)
-        .presentationBackground(.ultraThinMaterial)
+        .presentationBackground(.clear)
         .onAppear { OrientationLock.shared.lockLandscape() }
         .onDisappear { OrientationLock.shared.unlock() }
     }
@@ -1148,6 +1263,7 @@ struct LandscapeChartView: View {
             maChip("MA10", 10, ChartPalette.ma10)
             maChip("MA20", 20, ChartPalette.ma20)
             maChip("MA60", 60, ChartPalette.ma60)
+            maChip("MA250", 250, ChartPalette.ma250)
             Button { showVolume.toggle() } label: {
                 Image(systemName: showVolume ? "chart.bar.fill" : "chart.bar").font(.caption)
             }.buttonStyle(.bordered)
@@ -1198,25 +1314,31 @@ struct LandscapeChartView: View {
                 if maVisible.contains(5) {
                     ForEach(average(5, source: visibleBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
-                            .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 2))
+                            .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(10) {
                     ForEach(average(10, source: visibleBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
-                            .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 2))
+                            .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(20) {
                     ForEach(average(20, source: visibleBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
-                            .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 2))
+                            .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(60) {
                     ForEach(average(60, source: visibleBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
-                            .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 2))
+                            .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 1.2))
+                    }
+                }
+                if maVisible.contains(250) {
+                    ForEach(average(250, source: visibleBars)) { point in
+                        LineMark(x: .value("日期", point.date), y: .value("MA250", point.value), series: .value("均线", "MA250"))
+                            .foregroundStyle(ChartPalette.ma250).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
             }
@@ -1275,6 +1397,15 @@ struct LandscapeChartView: View {
     }
 
     private func average(_ window: Int, source: [DailyBar]) -> [IndicatorPoint] {
+        if window == 250 {
+            let visibleDates = Set(source.map(\.date))
+            guard allBars.count >= 250 else { return [] }
+            return allBars.indices.compactMap { index in
+                guard index + 1 >= window, visibleDates.contains(allBars[index].date) else { return nil }
+                let values = allBars[(index + 1 - window)...index].map(\.close)
+                return IndicatorPoint(date: allBars[index].date, value: values.reduce(0, +) / Double(window))
+            }
+        }
         guard source.count >= window else { return [] }
         var out: [IndicatorPoint] = []
         for index in (window - 1)..<source.count {
