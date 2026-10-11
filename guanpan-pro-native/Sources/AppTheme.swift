@@ -53,6 +53,48 @@ struct AppTheme {
     }
 }
 
+// MARK: - 弹出界面的主题底色
+
+private struct AppAppearanceKey: EnvironmentKey {
+    static let defaultValue = AppAppearance.system
+}
+
+extension EnvironmentValues {
+    /// 当前配色主题。由 App 根视图注入，供 sheet / fullScreenCover 自己补底色用。
+    ///
+    /// 走环境而不是让每个弹窗各自去取 `store`：弹窗有四十来处，
+    /// 只有少数几处需要它，而它们分布在不同的文件里，不能保证都能拿到 `store`。
+    var appAppearance: AppAppearance {
+        get { self[AppAppearanceKey.self] }
+        set { self[AppAppearanceKey.self] = newValue }
+    }
+}
+
+/// 弹出界面（sheet / fullScreenCover）的主题底色。
+///
+/// **为什么弹窗必须自己画底**：`GuanpanProApp.init()` 为了让页面主题色透出来，
+/// 把 `UITableView` / `UINavigationBar` 等的全局外观底色统一清成了 clear；
+/// 再看那几处 `.presentationBackground(.clear)` —— 两边一叠加，
+/// 弹窗自己就一点都不画了，**底下那一页的列表会直接穿过弹窗显示出来**
+/// （设置页就是这样：能看到「月供与规划」「投资偏好…」这些上一页的文字叠在自己行之间，
+/// 看起来像两张页面糊在一起、内容显示不全）。
+/// 所以凡是显式设成 clear 的弹窗，都要用这个把主题底色补回来。
+struct ThemedSheetBackground: View {
+    @Environment(\.appAppearance) private var appearance
+
+    var body: some View {
+        AppTheme.palette(for: appearance).gradient
+            .ignoresSafeArea()
+    }
+}
+
+extension View {
+    /// 给 sheet / fullScreenCover 补上主题底色（替代 `.presentationBackground(.clear)`）。
+    func themedSheetBackground() -> some View {
+        presentationBackground { ThemedSheetBackground() }
+    }
+}
+
 // MARK: - 主题自带的深浅模式与强调色
 
 extension AppAppearance {

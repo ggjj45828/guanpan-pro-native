@@ -28,9 +28,10 @@ struct DataTrustView: View {
 
     private var activeFunds: [Holding] { store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 } }
     private var isRegularSession: Bool {
-        let now = Date.now, day = formatted(Date.now)
-        guard !MarketCalendar.isWeekend(now), !MarketCalendar.mainlandClosures2026.contains(day),
-              !store.data.customMarketHolidays.contains(day) else { return false }
+        let now = Date.now
+        // 休市判断统一走 MarketCalendar：它优先用「上证指数日 K 反推的交易日历」，
+        // 不再依赖那张写死的年度表，跨年和临时休市都能自动跟上。
+        guard !MarketCalendar.isClosure(now, custom: store.data.customMarketHolidays) else { return false }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let parts = calendar.dateComponents([.hour, .minute], from: now)
@@ -39,9 +40,9 @@ struct DataTrustView: View {
     }
     private var sessionDescription: String {
         let now = Date.now
-        let day = formatted(now)
-        if MarketCalendar.isWeekend(now) || MarketCalendar.mainlandClosures2026.contains(day)
-            || store.data.customMarketHolidays.contains(day) { return "休市日；显示的证券价格不会继续刷新。" }
+        if MarketCalendar.isClosure(now, custom: store.data.customMarketHolidays) {
+            return "休市日；显示的证券价格不会继续刷新。"
+        }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let parts = calendar.dateComponents([.hour, .minute], from: now)

@@ -91,3 +91,21 @@ extension Int {
     func num(_ digits: Int) -> String { Double(self).num(digits) }
     func pct(_ digits: Int) -> String { Double(self).pct(digits) }
 }
+
+// MARK: - 日期短格式
+
+/// 行情时间戳 → "10-09"。界面标注数据日期用（休市时它就是上一交易日）。
+///
+/// 固定用上海时区：行情源给的时间戳是交易所时间，用本机时区会在跨时区时差一天。
+func shortDay(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    formatter.dateFormat = "MM-dd"
+    return formatter.string(from: date)
+}
+
+/// "2026-10-08" → "10-08"。净值历史里存的是 `yyyy-MM-dd` 字符串，长度不够时原样返回。
+func shortDay(_ isoDay: String) -> String {
+    isoDay.count >= 10 ? String(isoDay.dropFirst(5)) : isoDay
+}

@@ -105,7 +105,7 @@ struct ReturnSourceView: View {
             .background(.clear)
             .navigationTitle("收益来源拆解")
             .toolbarBackground(.hidden, for: .navigationBar)
-            .presentationBackground(.clear)
+            .themedSheetBackground()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
     }
