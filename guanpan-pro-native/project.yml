@@ -23,8 +23,8 @@ targets:
         CFBundleDisplayName: 观盘 Pro
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
-        CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: "1.2"
+        CFBundleVersion: "3"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。
@@ -45,10 +45,9 @@ targets:
         UIBackgroundModes:
           - fetch
         NSLocalNetworkUsageDescription: "连接你在设置中填写的 NAS 地址，用于同步观盘 Pro 本机账本和行情历史缓存。"
-        # 设置页选背景图用了 PhotosPicker。虽然 PHPicker 本身免授权，
-        # 但缺这个 key 时 iOS 会直接终止访问而不是弹授权框。
-        NSPhotoLibraryUsageDescription: "用于选择一张图片作为观盘 Pro 的 App 背景。"
-        NSPhotoLibraryAddUsageDescription: "用于把导出的账本备份文件保存到你的相册或文件夹。"
+        # v2.12 起图片背景整组下线，设置页里已经没有相册入口（代码里也不再引用
+        # PhotosPicker / UIImagePickerController），所以 NSPhotoLibrary* 两条一并删掉：
+        # 留着等于向用户和审核声明一个用不到的权限。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSAllowsArbitraryLoads: true

@@ -103,6 +103,24 @@ enum NativeBackgroundStore {
         UserDefaults.standard.removeObject(forKey: gradientKey)
         UserDefaults.standard.set(revision + 1, forKey: revisionKey)
     }
+
+    // MARK: - v2.12：背景图功能整体下线
+
+    private static let removalMigrationKey = "guanpan.native.background.removedInV212"
+
+    /// 一次性清掉老版本留下的图片背景 / 渐变背景。
+    ///
+    /// v2.12 起只保留「配色主题」，设置页里已经没有背景图的任何入口。
+    /// 但 `hasActiveBackground` 仍会被 `MetricCardKit` 用来决定卡片是否走
+    /// 「背景图 + 卡片半透明透出来」那套样式 —— 用户本机若还留着上次选的图，
+    /// 界面会继续铺着它，用户却既看不到入口也撤不掉。所以升级后的第一次启动必须清干净。
+    static func removeLegacyBackgroundIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: removalMigrationKey) else { return }
+        defaults.set(true, forKey: removalMigrationKey)
+        guard hasActiveBackground else { return }
+        remove()
+    }
 }
 
 enum NativeBackgroundPreset: String, CaseIterable, Identifiable {

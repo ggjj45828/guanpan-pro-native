@@ -152,17 +152,30 @@ struct MarketChartView: View {
     private var allBars: [DailyBar] { store.dailyBars[holding.code] ?? [] }
     private var range: Int { store.data.dailyChartRangeDays }
     private var bars: [DailyBar] { Array(allBars.suffix(range)) }
-    private var periodBars: [DailyBar] {
+    /// 当前周期、只取用户选的显示区间（横坐标就画这么多根）。
+    private var periodBars: [DailyBar] { aggregated(bars) }
+    /// 当前周期、但用**本机全部**日线聚合。
+    ///
+    /// 均线一律用这一份来算。显示区间可以只有 60 根，但 MA60 / MA250 需要更早的收盘价
+    /// 才能算出区间左端的值 —— 之前只有 MA250 走了这条路，MA5/10/20/60 是拿 `bars`
+    /// 当计算源，于是捏合放大到「可见根数 < 窗口长度」时，`source.count >= window`
+    /// 不成立，整条线直接消失；拖动去看更早的历史也一样。
+    private var periodAllBars: [DailyBar] { aggregated(allBars) }
+
+    /// 把日线聚合成当前周期（日 / 周 / 月）。
+    /// 传 `bars` 得到显示区间的序列，传 `allBars` 得到全量序列，两者口径完全一致 ——
+    /// 只有口径一致，均线「用全量算、按可见日期取」才对得上横坐标。
+    private func aggregated(_ source: [DailyBar]) -> [DailyBar] {
         switch selectedChartPeriod {
-        case .intraday: return []
-        case .day: return bars
+        case .intraday, .minute30, .minute60: return []
+        case .day: return source
         case .week, .month:
             let calendar = Calendar(identifier: .iso8601)
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
             formatter.dateFormat = "yyyy-MM-dd"
-            let grouped = Dictionary(grouping: bars) { bar -> String in
+            let grouped = Dictionary(grouping: source) { bar -> String in
                 guard let date = formatter.date(from: bar.date) else { return bar.date }
                 if selectedChartPeriod == .month { return String(bar.date.prefix(7)) }
                 let parts = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
@@ -176,7 +189,6 @@ struct MarketChartView: View {
                     high: sorted.map(\.high).max() ?? last.high, low: sorted.map(\.low).min() ?? last.low,
                     volume: sorted.reduce(0) { $0 + $1.volume })
             }.sorted { $0.date < $1.date }
-        case .minute30, .minute60: return []
         }
     }
     private var intradayDays: [String] {
@@ -314,25 +326,39 @@ struct MarketChartView: View {
         return "枢轴参考日 \(levels.sourceDay)：P \(levels.pivot)，S1/S2 \(levels.support1)/\(levels.support2)，R1/R2 \(levels.resistance1)/\(levels.resistance2)。近 20 个完整日线高低 \(levels.channelHigh)/\(levels.channelLow)，收盘区间位置 \(String(format: "%.1f", levels.channelPosition))%；布林上中下 \(levels.bollingerUpper)/\(levels.bollingerMiddle)/\(levels.bollingerLower)。"
     }
     private var latest: DailyBar? { bars.last }
+    /// 单参数版：直接在「显示区间的日线」上算，供 MA20 / MA60 这类只看当前值的
+    /// 文字展示使用（不画线，不需要往前借历史，也就不受显示区间长短影响）。
     private func average(_ window: Int) -> [IndicatorPoint] {
-        average(window, source: bars)
-    }
-    private func average(_ window: Int, source: [DailyBar]) -> [IndicatorPoint] {
-        if window == 250 {
-            let visibleDates = Set(source.map(\.date))
-            guard allBars.count >= 250 else { return [] }
-            return allBars.indices.compactMap { index in
-                guard index + 1 >= window, visibleDates.contains(allBars[index].date) else { return nil }
-                let values = allBars[(index + 1 - window)...index].map(\.close)
-                return IndicatorPoint(date: allBars[index].date, value: values.reduce(0, +) / Double(window))
-            }
-        }
-        guard source.count >= window else { return [] }
-        return source.indices.compactMap { index in
+        guard window > 0, bars.count >= window else { return [] }
+        return bars.indices.compactMap { index in
             guard index + 1 >= window else { return nil }
-            let values = source[(index + 1 - window)...index].map(\.close)
-            return IndicatorPoint(date: source[index].date, value: values.reduce(0, +) / Double(window))
+            let values = bars[(index + 1 - window)...index].map(\.close)
+            return IndicatorPoint(date: bars[index].date, value: values.reduce(0, +) / Double(window))
         }
+    }
+
+    /// 画线用的均线：**计算源永远是当前周期的全量序列（`full`），`source` 只用来决定画哪些日期**。
+    ///
+    /// v2.11 及以前只有 MA250 是这么算的，MA5/10/20/60 拿可见窗口当计算源，
+    /// 于是捏合放大到「可见根数 < 窗口长度」时 `source.count >= window` 不成立，
+    /// 整条线直接返回空 —— 用户看到的正是「只有 250 一直显示，其它线一放大就没了」；
+    /// 往左拖去看更早的历史，从区间左端起整段变空也是同一个原因。
+    /// 现在所有窗口统一走这条路：够不够长看全量，画哪些点看可见。
+    ///
+    /// `full` 显式传参而不是在函数体里取 `periodAllBars`：全量聚合要按日期字符串分组，
+    /// 一条曲线调一次，五条均线加 Y 轴自适应会调十次，捏合时每帧都重算会拖慢手势。
+    /// 所以由调用方（`candlePlot`）算一次、五条线共用。
+    private func average(_ window: Int, source: [DailyBar], full: [DailyBar]) -> [IndicatorPoint] {
+        guard window > 0, full.count >= window, !source.isEmpty else { return [] }
+        let visibleDates = Set(source.map(\.date))
+        guard !visibleDates.isEmpty else { return [] }
+        var out: [IndicatorPoint] = []
+        out.reserveCapacity(visibleDates.count)
+        for index in (window - 1)..<full.count where visibleDates.contains(full[index].date) {
+            let values = full[(index - window + 1)...index].map(\.close)
+            out.append(IndicatorPoint(date: full[index].date, value: values.reduce(0, +) / Double(window)))
+        }
+        return out
     }
     private var drawdown: Double? {
         guard !bars.isEmpty else { return nil }
@@ -789,12 +815,15 @@ struct MarketChartView: View {
     /// 缩放时变化不明显，看起来就像高低区间是死的。
     /// 显式给 domain 后，捏合和拖动都会立即重算上下界。
     /// 均线也一并纳入，避免 MA60 在窗口外被裁掉。
-    private func yDomain(for bars: [DailyBar]) -> ClosedRange<Double> {
+    ///
+    /// `full` 由调用方传进来（同一次渲染里与 `candlePlot` 共用一份全量聚合），
+    /// 不在函数里现取，理由见 `average(_:source:full:)`。
+    private func yDomain(for bars: [DailyBar], full: [DailyBar]) -> ClosedRange<Double> {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
         for window in [5, 10, 20, 60, 250] where maVisible.contains(window) {
-            let source = average(window, source: bars)
+            let source = average(window, source: bars, full: full)
             for point in source {
                 low = min(low, point.value)
                 high = max(high, point.value)
@@ -919,8 +948,20 @@ struct MarketChartView: View {
     }
 
     private func candlePlot(bodyWidth: CGFloat) -> some View {
-        Chart {
-            ForEach(zoomedPeriodBars) { bar in
+        // 全量序列与可见窗口都只取一次，五条均线和 Y 轴自适应共用。
+        // 全量聚合要按日期字符串逐根分组，若每条线各自去取，捏合时每帧要多跑十次聚合。
+        let full = periodAllBars
+        let visible = zoomedPeriodBars
+        func maSeries(_ window: Int) -> [IndicatorPoint] {
+            maVisible.contains(window) ? average(window, source: visible, full: full) : []
+        }
+        let ma5 = maSeries(5)
+        let ma10 = maSeries(10)
+        let ma20 = maSeries(20)
+        let ma60 = maSeries(60)
+        let ma250 = maSeries(250)
+        return Chart {
+            ForEach(visible) { bar in
                 let rising = bar.close >= bar.open
                 let candleColor = rising ? Color.red : Color.green
                 let lowBody = min(bar.open, bar.close)
@@ -936,46 +977,36 @@ struct MarketChartView: View {
                               width: .fixed(bodyWidth))
                     .foregroundStyle(candleColor)
             }
-            if maVisible.contains(5) {
-                ForEach(average(5, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
-                        .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 1.2))
-                }
+            ForEach(ma5) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
+                    .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 1.2))
             }
-            if maVisible.contains(10) {
-                ForEach(average(10, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
-                        .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 1.2))
-                }
+            ForEach(ma10) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
+                    .foregroundStyle(ma10Color).lineStyle(StrokeStyle(lineWidth: 1.2))
             }
-            if maVisible.contains(20) {
-                ForEach(average(20, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
-                        .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 1.2))
-                }
+            ForEach(ma20) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
+                    .foregroundStyle(ma20Color).lineStyle(StrokeStyle(lineWidth: 1.2))
             }
-            if maVisible.contains(60) {
-                ForEach(average(60, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
-                        .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 1.2))
-                }
+            ForEach(ma60) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
+                    .foregroundStyle(ma60Color).lineStyle(StrokeStyle(lineWidth: 1.2))
             }
-            if maVisible.contains(250) {
-                ForEach(average(250, source: zoomedPeriodBars)) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA250", point.value), series: .value("均线", "MA250"))
-                        .foregroundStyle(ChartPalette.ma250).lineStyle(StrokeStyle(lineWidth: 1.2))
-                }
+            ForEach(ma250) { point in
+                LineMark(x: .value("日期", point.date), y: .value("MA250", point.value), series: .value("均线", "MA250"))
+                    .foregroundStyle(ChartPalette.ma250).lineStyle(StrokeStyle(lineWidth: 1.2))
             }
         }
         // Y 轴显式跟随可见窗口：捏合/拖动后上下界立即重算（含均线），不再是一整段区间
-        .chartYScale(domain: yDomain(for: zoomedPeriodBars))
+        .chartYScale(domain: yDomain(for: visible, full: full))
         // X 轴按月抽稀：不再逐根显示日期，标签互相压叠又看不清
         .chartXAxis {
-            AxisMarks(values: xAxisDates(zoomedPeriodBars)) { value in
+            AxisMarks(values: xAxisDates(visible)) { value in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
                 AxisValueLabel {
                     if let date = value.as(String.self) {
-                        Text(xAxisLabel(date, zoomedPeriodBars))
+                        Text(xAxisLabel(date, visible))
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
@@ -1192,14 +1223,15 @@ struct LandscapeChartView: View {
         return Array(allBars.suffix(min(max(target, 20), allBars.count)))
     }
 
-    /// 与主视图同口径：Y 轴显式跟随可见窗口（含均线），放大缩小都实时重算
+    /// 与主视图同口径：Y 轴显式跟随可见窗口（含均线），放大缩小都实时重算。
+    /// 横屏只有日K，`allBars` 就是字典取值、没有聚合开销，所以直接在这里取全量。
     private func yDomain(for bars: [DailyBar]) -> ClosedRange<Double> {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
         let visibleWindows = [5, 10, 20, 60, 250].filter { maVisible.contains($0) }
         for window in visibleWindows {
-            let source = average(window, source: bars)
+            let source = average(window, source: bars, full: allBars)
             for point in source {
                 low = min(low, point.value)
                 high = max(high, point.value)
@@ -1291,11 +1323,12 @@ struct LandscapeChartView: View {
 
     private func candleChart(height: CGFloat) -> some View {
         GeometryReader { geo in
-            let count = max(visibleBars.count, 1)
+            let bars = visibleBars
+            let count = max(bars.count, 1)
             let slot = geo.size.width / CGFloat(count)
             let bodyWidth = min(max(slot * 0.74, 2.2), 30)
             Chart {
-                ForEach(visibleBars) { bar in
+                ForEach(bars) { bar in
                     let rising = bar.close >= bar.open
                     let candleColor = rising ? Color.red : Color.green
                     let lowBody = min(bar.open, bar.close)
@@ -1312,44 +1345,44 @@ struct LandscapeChartView: View {
                         .foregroundStyle(candleColor)
                 }
                 if maVisible.contains(5) {
-                    ForEach(average(5, source: visibleBars)) { point in
+                    ForEach(average(5, source: bars, full: allBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
                             .foregroundStyle(ChartPalette.ma5).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(10) {
-                    ForEach(average(10, source: visibleBars)) { point in
+                    ForEach(average(10, source: bars, full: allBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA10", point.value), series: .value("均线", "MA10"))
                             .foregroundStyle(ChartPalette.ma10).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(20) {
-                    ForEach(average(20, source: visibleBars)) { point in
+                    ForEach(average(20, source: bars, full: allBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA20", point.value), series: .value("均线", "MA20"))
                             .foregroundStyle(ChartPalette.ma20).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(60) {
-                    ForEach(average(60, source: visibleBars)) { point in
+                    ForEach(average(60, source: bars, full: allBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA60", point.value), series: .value("均线", "MA60"))
                             .foregroundStyle(ChartPalette.ma60).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
                 if maVisible.contains(250) {
-                    ForEach(average(250, source: visibleBars)) { point in
+                    ForEach(average(250, source: bars, full: allBars)) { point in
                         LineMark(x: .value("日期", point.date), y: .value("MA250", point.value), series: .value("均线", "MA250"))
                             .foregroundStyle(ChartPalette.ma250).lineStyle(StrokeStyle(lineWidth: 1.2))
                     }
                 }
             }
             // 横屏同样显式跟随可见窗口
-            .chartYScale(domain: yDomain(for: visibleBars))
+            .chartYScale(domain: yDomain(for: bars))
             .chartXAxis {
-                AxisMarks(values: xAxisDates(visibleBars)) { value in
+                AxisMarks(values: xAxisDates(bars)) { value in
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
                     AxisValueLabel {
                         if let date = value.as(String.self) {
-                            Text(xAxisLabel(date, visibleBars))
+                            Text(xAxisLabel(date, bars))
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
@@ -1396,21 +1429,17 @@ struct LandscapeChartView: View {
             .onEnded { value in zoom = min(max(zoom * value, 1), 12) }
     }
 
-    private func average(_ window: Int, source: [DailyBar]) -> [IndicatorPoint] {
-        if window == 250 {
-            let visibleDates = Set(source.map(\.date))
-            guard allBars.count >= 250 else { return [] }
-            return allBars.indices.compactMap { index in
-                guard index + 1 >= window, visibleDates.contains(allBars[index].date) else { return nil }
-                let values = allBars[(index + 1 - window)...index].map(\.close)
-                return IndicatorPoint(date: allBars[index].date, value: values.reduce(0, +) / Double(window))
-            }
-        }
-        guard source.count >= window else { return [] }
+    /// 横屏大图的均线。横屏只有日K，所以「全量序列」就是 `allBars`，
+    /// 口径与竖屏 `MarketChartView` 的那一份完全一致（详见那边的注释）。
+    private func average(_ window: Int, source: [DailyBar], full: [DailyBar]) -> [IndicatorPoint] {
+        guard window > 0, full.count >= window, !source.isEmpty else { return [] }
+        let visibleDates = Set(source.map(\.date))
+        guard !visibleDates.isEmpty else { return [] }
         var out: [IndicatorPoint] = []
-        for index in (window - 1)..<source.count {
-            let values = source[(index - window + 1)...index].map(\.close)
-            out.append(IndicatorPoint(date: source[index].date, value: values.reduce(0, +) / Double(window)))
+        out.reserveCapacity(visibleDates.count)
+        for index in (window - 1)..<full.count where visibleDates.contains(full[index].date) {
+            let values = full[(index - window + 1)...index].map(\.close)
+            out.append(IndicatorPoint(date: full[index].date, value: values.reduce(0, +) / Double(window)))
         }
         return out
     }

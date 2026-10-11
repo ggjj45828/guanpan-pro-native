@@ -77,19 +77,20 @@ private struct CardSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(12)
-            .photoPanelBackground(cornerRadius: 14,
+            .cardPanelBackground(cornerRadius: 14,
                 fallback: scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.62),
                 tone: tone)
     }
 }
 
-/// Applies the web app's photo-imprinted translucent panel style to native cards.
-/// The opacity slider now changes both the wallpaper veil and the card scrim.
-private struct PhotoPanelBackgroundModifier: ViewModifier {
+/// 卡片底：带 tone 时给卡片上色，否则铺一层中性卡面。
+///
+/// v2.12 起图片 / 渐变背景整组下线，原来只服务于「背景图 + 半透明卡片」的
+/// `overlayOpacity` / `panelImprint` 两个开关也一并没了入口，所以这里不再读它们，
+/// 也不再有「照片面板」分支 —— 直接给固定的中性卡面：浅色主题偏白、深色主题偏亮，
+/// 保证卡片在纯配色背景上仍能立起来。
+private struct CardPanelBackgroundModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
-    @AppStorage("guanpan.native.background.overlayOpacity") private var overlayOpacity = 0.48
-    @AppStorage("guanpan.native.background.panelImprint") private var panelImprint = true
     let cornerRadius: CGFloat
     let fallback: Color
     /// 非 nil 时给卡片上色（网页版 .sum / .ai / .gauge 那类彩色区块）。
@@ -97,10 +98,6 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
     var tone: Color? = nil
 
     func body(content: Content) -> some View {
-        let _ = backgroundRevision
-        let usePhotoPanel = panelImprint && NativeBackgroundStore.hasActiveBackground
-        // Slider 值直接控制面板遮罩；之前强行限制在 38% 以上，拖到最透明也几乎看不出变化。
-        let veil = min(0.82, max(0.04, overlayOpacity))
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         // 用 AnyShapeStyle 统一两条分支的类型：Swift 的 opaque return type 要求
         // 函数体所有 return 的底层类型一致，直接返回 LinearGradient / Color 会编译失败。
@@ -116,9 +113,7 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
             strokeStyle = AnyShapeStyle(tone.opacity(scheme == .dark ? 0.38 : 0.30))
             strokeWidth = 1
         } else {
-            fillStyle = AnyShapeStyle(usePhotoPanel
-                ? (scheme == .dark ? Color.black : Color.white).opacity(veil)
-                : fallback)
+            fillStyle = AnyShapeStyle(fallback)
             strokeStyle = AnyShapeStyle(Color.primary.opacity(0.10))
             strokeWidth = 0.5
         }
@@ -131,7 +126,7 @@ private struct PhotoPanelBackgroundModifier: ViewModifier {
 
 extension View {
     func cardSurface(tone: Color? = nil) -> some View { modifier(CardSurfaceModifier(tone: tone)) }
-    func photoPanelBackground(cornerRadius: CGFloat, fallback: Color, tone: Color? = nil) -> some View {
-        modifier(PhotoPanelBackgroundModifier(cornerRadius: cornerRadius, fallback: fallback, tone: tone))
+    func cardPanelBackground(cornerRadius: CGFloat, fallback: Color, tone: Color? = nil) -> some View {
+        modifier(CardPanelBackgroundModifier(cornerRadius: cornerRadius, fallback: fallback, tone: tone))
     }
 }

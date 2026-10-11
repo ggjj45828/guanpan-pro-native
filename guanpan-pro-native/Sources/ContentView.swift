@@ -52,27 +52,16 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    /// 系统「降低透明度」：开启时自定义背景上的毛玻璃要换成不透明纯色
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
     /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
     @State private var padTab: PadTab? = .watchlist
-    @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
-    @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
-    /// 毛玻璃强度：让背景图糊化而不是单纯压暗。糊化后文字对比度更稳定（亮图上白字也不会糊），观感也更高级。
-    @AppStorage("guanpan.native.background.blur") private var backgroundBlur = 0.32
     /// 定时自动切换深浅时，需要一个随时间推进的驱动器，否则计划时间到了也不会变。
     @State private var themeTick = 0
     private let themeTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
     var body: some View {
         ZStack {
-            // backgroundRevision 是 @AppStorage，选择/清除背景时会递增。
-            // NativeBackgroundStore 读的是 UserDefaults + 沙盒文件，SwiftUI 无法自动追踪，
-            // 因此必须显式依赖 revision，并用 .id(revision) 让背景视图随选择重建 —— 
-            // 原先的 `if backgroundRevision >= 0` 恒为真且未参与视图构建，导致「换背景没反应」。
             backgroundLayer
-                .id(backgroundRevision)
             if useSplitLayout {
                 padSplitRoot
             } else {
@@ -156,48 +145,17 @@ struct ContentView: View {
         }
     }
 
+    /// 页面底色。
+    ///
+    /// v2.12 起只由「配色主题」决定：图片背景 / 渐变背景 / 遮罩 / 毛玻璃 / 卡片融合
+    /// 这一整组已经移除（用户要求「只留配色主题」）。原来这里会叠一层图片或渐变，
+    /// 再靠 `overlayTint` 压暗、靠卡片半透明透出来；界线很难调到每种主题都好看，
+    /// 而且一旦铺了图，主题底色就完全看不见了。
+    /// 老用户本机残留的背景文件由 `NativeBackgroundStore.removeLegacyBackgroundIfNeeded()` 一次性清掉，
+    /// 否则设置页里已经没有入口，界面却还铺着那张图，既看不见也撤不掉。
     @ViewBuilder private var backgroundLayer: some View {
-        // 主题底色兜底：即使没有自定义背景，换主题也能立刻看到差异。
         currentTheme.gradient
             .ignoresSafeArea()
-            .overlay {
-                // 关键点：Image 的 ideal size 是图片原始像素（1080x1440），
-// 直接放进 ZStack 且不加尺寸约束时，会把根布局撑开，表现为「上传背景后界面错乱」。
-// 用 GeometryReader 显式给出屏幕尺寸并 clipped，图片只做填充不再参与布局计算。
-                GeometryReader { geo in
-                    if let image = NativeBackgroundStore.load() {
-                        Image(uiImage: image).resizable().scaledToFill()
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipped()
-                            .overlay { overlayTint }
-                    } else if let gradient = NativeBackgroundStore.selectedGradient {
-                        LinearGradient(colors: gradient.hexColors.map { hex in
-                            Color(red: Double((hex >> 16) & 0xff) / 255,
-                                  green: Double((hex >> 8) & 0xff) / 255,
-                                  blue: Double(hex & 0xff) / 255)
-                        }, startPoint: .topLeading, endPoint: .bottomTrailing)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .clipped()
-                        .overlay { overlayTint }
-                    }
-                }
-                .ignoresSafeArea()
-            }
-    }
-
-    /// 背景图上的蒙版：毛玻璃 + 压暗/提亮两层叠加。
-    /// 只用纯色压暗时，亮背景图配低透明度会让白字读不清；
-    /// 叠加 Material 毛玻璃后，底层被糊化，文字对比度不再依赖压暗强度。
-    @ViewBuilder private var overlayTint: some View {
-        ZStack {
-            // 系统「降低透明度」开启时只关闭毛玻璃；用户仍可用遮罩滑块按需调整图片透出程度。
-            if !reduceTransparency {
-                Rectangle().fill(.thinMaterial).opacity(backgroundBlur)
-            }
-            let tint = currentTheme.isLight ? Color.white : Color.black
-            // 遮罩透明度始终由滑块控制，不被系统辅助功能设置覆盖。
-            tint.opacity(backgroundOverlayOpacity)
-        }
     }
 }
 
@@ -317,60 +275,16 @@ struct DashboardView: View {
         NavigationStack {
             List {
                 Section {
-                    VStack(alignment: .leading, spacing: 14) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("总资产").font(.subheadline).foregroundStyle(.white.opacity(0.8))
-                            Text((store.totalAsset).cny())
-                                .scaledFont(32, weight: .bold, design: .rounded)
-                                .minimumScaleFactor(0.75).lineLimit(1)
-                                .foregroundStyle(.white)
-                        }
-                        HStack(spacing: 0) {
-                            dashboardMetric("持仓浮盈", value: store.totalPnL)
-                            Spacer(minLength: 12)
-                            dashboardMetric("已实现", value: store.realizedPnL)
-                            Spacer(minLength: 12)
-                            dashboardMetric("参考现金", value: store.data.cash)
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(LinearGradient(colors: [Color(red: 0.18, green: 0.37, blue: 0.73), Color(red: 0.26, green: 0.52, blue: 0.76)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    .listRowBackground(Color.clear)
-
-                    // 账户明细网格：对齐网页版持仓页汇总卡（市值/现金/盈亏比例/今日盈亏/仓位…）。
-                    // 原来只有 3 个大数字，这里补齐到 9 格，标签 10px、数值 13px，密度接近网页版。
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("账户明细").font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Text("市值 + 现金 = 总资产").font(.caption2).foregroundStyle(.secondary)
-                        }
-                        MetricGrid(columns: 3, cells: [
-                            MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
-                            MetricCell(title: "参考现金", value: store.data.cash.cny()),
-                            MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
-                            MetricCell(title: "今日盈亏", value: dayPnLText,
-                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
-                            MetricCell(title: "今日幅度", value: dayPnLRateText,
-                                      toneValue: store.hasDayPnL ? store.dayPnL : nil),
-                            MetricCell(title: "总成本", value: store.totalCost.cny()),
-                            MetricCell(title: "ETF / 证券", value: store.marketValue(of: .etf).cny()),
-                            MetricCell(title: "场外基金", value: store.marketValue(of: .fund).cny()),
-                            MetricCell(title: "仓位", value: store.positionPercent.pct(1))
-                        ])
-                        Text("今日盈亏按最近一次拿到的涨跌幅反推昨收估算，没取到行情时显示 --，不臆测补数。")
-                            .scaledFont(10).foregroundStyle(.secondary)
-                    }
-                    .cardSurface(tone: store.totalPnL > 0.005 ? PnLColor.up : store.totalPnL < -0.005 ? PnLColor.down : nil)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-                    .listRowBackground(Color.clear)
-                } header: { Text("账户") }
-                Section("行情状态") {
-                    Label(store.sourceStatus, systemImage: "circle.fill").foregroundStyle(.secondary)
-                    Button("刷新行情") { Haptics.push(); store.refreshQuotes() }
+                    marketStrip
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 2, trailing: 0))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+                Section("账户") {
+                    accountSummaryCard
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
                 Section("自选与场内持仓情绪") {
                     if let mood = store.marketMood {
@@ -446,7 +360,11 @@ struct DashboardView: View {
             .background(.clear).navigationTitle("总览")
             .navigationBarTitleDisplayMode(.large)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
-            .refreshable { await store.refreshQuotesAndWait() }
+            .refreshable {
+                // 下拉刷新与右上角那个按钮做同一件事：个股 + 指数。
+                await store.refreshQuotesAndWait()
+                await store.performIndexRefresh()
+            }
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("添加自选", systemImage: "plus") { showAdd = true }
@@ -473,6 +391,18 @@ struct DashboardView: View {
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
             } }
+            // 刷新：从「行情状态」那一整段 Section 里挪到右上角，只留一个符号。
+            // 放在菜单之后，所以它落在最右 —— 与用户说的「刷新就只是个刷新符号，在右上角」一致。
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.push()
+                    store.refreshEverything()
+                } label: {
+                    Image(systemName: "arrow.clockwise").imageScale(.small)
+                }
+                .accessibilityLabel("刷新行情")
+                .accessibilityHint("同时刷新自选、持仓和顶部指数")
+            } }
             .sheet(isPresented: $showAdd) { WatchEditor() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() }
             .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding) }
@@ -491,20 +421,132 @@ struct DashboardView: View {
             .task {
                 while !Task.isCancelled {
                     let interval = store.data.quoteRefreshSeconds
-                    if scenePhase == .active && interval > 0 { store.refreshQuotes() }
+                    if scenePhase == .active && interval > 0 {
+                        store.refreshQuotes()
+                        // 指数与个股是两条请求，这里跟着自动刷新一起走，
+                        // 否则只有手动点右上角时顶部那一排才会变。
+                        store.refreshIndexQuotes()
+                    }
                     try? await Task.sleep(for: .seconds(interval > 0 ? interval : 60))
                 }
             }
         }
     }
 
-    private func dashboardMetric(_ title: String, value: Double) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption2).foregroundStyle(.white.opacity(0.76)).lineLimit(1)
-            Text((value).cny())
-                .font(.system(.caption, design: .rounded, weight: .semibold))
-                .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.7)
+    // MARK: - 首页顶部指数条
+
+    /// 顶部指数条：横向可滑，一屏放不下的往左划。
+    ///
+    /// 对齐网页版最上面那一排「上证指数 / 纳斯达克…」。指数不在自选里，
+    /// 走 `PortfolioStore.performIndexRefresh()` 单独取，取不到就继续显示上次缓存的值。
+    ///
+    /// 下面那行小字是原来的「行情状态」Section：一整段 Section 只为显示一句话，
+    /// 占的高度和信息量不成比例。这里压成「一个小圆点 + 一行 10px 文本」，
+    /// 颜色反映数据新鲜度；刷新按钮挪到导航栏右上角，只剩一个符号。
+    private var marketStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if store.indexQuotes.isEmpty {
+                Text("点右上角刷新按钮获取指数行情")
+                    .scaledFont(11).foregroundStyle(.secondary)
+                    .padding(.horizontal, 16).padding(.vertical, 5)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(store.indexQuotes) { item in marketIndexChip(item) }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+                }
+            }
+            HStack(spacing: 5) {
+                Circle().fill(statusDotColor).frame(width: 5, height: 5)
+                Text(store.sourceStatus).scaledFont(10).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
         }
+    }
+
+    /// 行情源状态圆点：蓝绿=刚更新过，琥珀=正在刷新/等待，红=上一次失败，灰=还没刷过。
+    ///
+    /// 这里的红是「出错」的红，不是红涨绿跌的红。圆点旁边没有任何数字，
+    /// 所以直接用系统红而不走 `PnLColor` —— 走 PnLColor 反而会让人把它读成涨跌。
+    private var statusDotColor: Color {
+        if store.sourceStatus.contains("失败") { return .red }
+        if store.isRefreshingQuotes || store.sourceStatus.contains("正在") { return CardTone.warn }
+        if store.sourceStatus.contains("已更新") { return CardTone.ok }
+        return Color.secondary.opacity(0.6)
+    }
+
+    private func marketIndexChip(_ item: MarketIndexQuote) -> some View {
+        let tone = PnLColor.of(item.changePct)
+        let percent = (item.changePct * 100).pct(2)
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(item.name).scaledFont(10).foregroundStyle(.secondary).lineLimit(1)
+            Text((item.price).num(2))
+                .scaledFont(14, weight: .semibold, design: .rounded)
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                .foregroundStyle(tone)
+            Text("\(item.changePct.directionMark()) \(percent)")
+                .scaledFont(10, weight: .medium).monospacedDigit().lineLimit(1)
+                .foregroundStyle(tone)
+        }
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .frame(minWidth: 84, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tone.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tone.opacity(0.24), lineWidth: 0.5))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.name) \((item.price).num(2))，\(item.changePct.directionMark())\(percent)")
+    }
+
+    // MARK: - 首页账户卡
+
+    /// 一张卡装下总资产、今日盈亏和 3×3 明细。
+    ///
+    /// v2.12 之前这里是两张卡：上面一张蓝色渐变卡写「总资产 + 持仓浮盈 + 已实现 + 参考现金」，
+    /// 下面一张 9 宫格又有「持仓市值 / 参考现金 / 今日盈亏…」。同一个账户的数被拆到两张卡里：
+    /// 参考现金出现两次、持仓市值又只比总资产少一项现金，等于同一个数看两遍、版面还拉得更长。
+    /// 现在合成一张：上面一行是总资产与今日盈亏（盘中看得最多的一个数），
+    /// 下面九宫格每个数只出现一次，卡面颜色跟着总盈亏走。
+    private var accountSummaryCard: some View {
+        let dayTone = store.hasDayPnL ? PnLColor.of(store.dayPnL) : Color.secondary
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("总资产").scaledFont(11).foregroundStyle(.secondary)
+                    Text((store.totalAsset).cny())
+                        .scaledFont(29, weight: .bold, design: .rounded)
+                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                }
+                Spacer(minLength: 6)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("今日盈亏").scaledFont(11).foregroundStyle(.secondary)
+                    Text(dayPnLText)
+                        .scaledFont(18, weight: .bold, design: .rounded)
+                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                        .foregroundStyle(dayTone)
+                    Text(store.hasDayPnL ? "\(store.dayPnL.directionMark()) \(dayPnLRateText)" : "--")
+                        .scaledFont(11, weight: .semibold)
+                        .monospacedDigit().lineLimit(1)
+                        .foregroundStyle(dayTone)
+                }
+            }
+            Divider().opacity(0.4)
+            MetricGrid(columns: 3, cells: [
+                MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
+                MetricCell(title: "参考现金", value: store.data.cash.cny()),
+                MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
+                MetricCell(title: "持仓浮盈", value: store.totalPnL.cny(), toneValue: store.totalPnL),
+                MetricCell(title: "已实现", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
+                MetricCell(title: "总成本", value: store.totalCost.cny()),
+                MetricCell(title: "ETF / 证券", value: store.marketValue(of: .etf).cny()),
+                MetricCell(title: "场外基金", value: store.marketValue(of: .fund).cny()),
+                MetricCell(title: "仓位", value: store.positionPercent.pct(1))
+            ])
+            Text("持仓市值 + 参考现金 = 总资产；今日盈亏按最近一次拿到的涨跌幅反推昨收估算，没取到行情时显示 --，不臆测补数。")
+                .scaledFont(10).foregroundStyle(.secondary)
+        }
+        .cardSurface(tone: CardTone.pnl(store.totalPnL))
     }
 
     // MARK: - 自选行渲染
@@ -604,7 +646,7 @@ struct DashboardView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .photoPanelBackground(cornerRadius: 16,
+        .cardPanelBackground(cornerRadius: 16,
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
             tone: accent)
         // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
@@ -1272,7 +1314,7 @@ struct HoldingsView: View {
             .buttonStyle(.borderless).font(.subheadline)
         }
         .padding(12)
-        .photoPanelBackground(cornerRadius: 16,
+        .cardPanelBackground(cornerRadius: 16,
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
             tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
         .contentShape(Rectangle())
@@ -4211,7 +4253,7 @@ struct AIAnalysisView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .photoPanelBackground(cornerRadius: 14,
+                            .cardPanelBackground(cornerRadius: 14,
                                 fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
                                 tone: Color(red: 0.61, green: 0.42, blue: 1.0))
                     }
@@ -4317,7 +4359,7 @@ struct AIAnalysisView: View {
                         Text(result).textSelection(.enabled)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .photoPanelBackground(cornerRadius: 14,
+                            .cardPanelBackground(cornerRadius: 14,
                                 fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
                                 tone: Color(red: 0.61, green: 0.42, blue: 1.0))
                         Text("模型输出可能有误。价格/净值可能延迟；请核对行情与基金净值，不要仅依据模型文字交易。")
@@ -4847,12 +4889,7 @@ private struct StrategicGridPlannerView: View {
 
 struct SettingsView: View {
     @EnvironmentObject var store: PortfolioStore
-    @AppStorage("guanpan.native.background.revision") private var backgroundRevision = 0
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
-    @AppStorage("guanpan.native.background.overlayOpacity") private var backgroundOverlayOpacity = 0.48
-    @AppStorage("guanpan.native.background.panelImprint") private var backgroundPanelImprint = true
-    /// 背景毛玻璃强度。和压暗分离：压暗只降亮度，毛玻璃把底图糊化，亮图上的白字才不会糊。
-    @AppStorage("guanpan.native.background.blur") private var backgroundBlur = 0.32
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
@@ -4874,8 +4911,6 @@ struct SettingsView: View {
     @State private var showOperationHistory = false
     @State private var notificationBusy = false
     @State private var notificationEnabled = false
-    @State private var backgroundPhoto: PhotosPickerItem?
-    @State private var backgroundMessage = ""
     var body: some View {
         formContent
             .sheet(isPresented: $showOperationHistory) { OperationHistoryView() }
@@ -4895,7 +4930,6 @@ struct SettingsView: View {
                 store.configureNASSync()
             }
             .onChange(of: nasAutoSync) { _, _ in store.configureNASSync() }
-            .onChange(of: backgroundPhoto) { _, item in loadBackgroundPhoto(item) }
             .confirmationDialog("从 NAS 下载会覆盖本机原生账本。确认已备份本机数据？", isPresented: $confirmNASDownload, titleVisibility: .visible) {
                 Button("下载并覆盖本机", role: .destructive) { Task { await store.downloadFromNAS() } }
                 Button("取消", role: .cancel) { }
@@ -4928,8 +4962,6 @@ struct SettingsView: View {
     private var formContent: some View {
         NavigationStack {
             Form {
-                // 订阅背景选择版本；切换图片后让选中标记和背景状态立即刷新。
-                let _ = backgroundRevision
                 appearanceSection
                 ledgerSection
                 quoteSection
@@ -4952,9 +4984,11 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var appearanceSection: some View {
-        Section("主题与背景") {
-            Text("配色主题")
-                .font(.subheadline.weight(.semibold))
+        // 只留配色主题。
+        // 图片背景 / 渐变背景 / 背景遮罩 / 毛玻璃 / 卡片融合 这一整组已按用户要求移除 ——
+        // 背景图要靠卡片半透明透出来，每个主题的透明度都得单独调才好看；
+        // 而配色主题本身已经能拉开观感差异，不必再维护「图 × 主题」两套变量的组合。
+        Section("配色主题") {
             let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(allThemes, id: \.rawValue) { item in
@@ -4966,91 +5000,9 @@ struct SettingsView: View {
                     }
                 }
             }
-            .padding(.vertical, 4)
-
-            Divider().padding(.vertical, 5)
-            Text("图片背景")
-                .font(.subheadline.weight(.semibold))
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(NativeBackgroundPreset.allCases) { preset in
-                    Button { NativeBackgroundStore.select(preset) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Image(preset.assetName).resizable().scaledToFill()
-                                .frame(height: 82).frame(maxWidth: .infinity).clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            HStack(spacing: 5) {
-                                Text(preset.title).lineLimit(1)
-                                Spacer(minLength: 0)
-                                if NativeBackgroundStore.selectedPreset == preset {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                                }
-                            }.font(.caption)
-                        }
-                        .padding(7)
-                        .background(NativeBackgroundStore.selectedPreset == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Text("渐变背景")
-                .font(.subheadline.weight(.semibold))
-                .padding(.top, 4)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(NativeGradientPreset.allCases) { preset in
-                    Button { NativeBackgroundStore.select(preset) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            LinearGradient(colors: preset.hexColors.map { hex in
-                                Color(red: Double((hex >> 16) & 0xff) / 255,
-                                      green: Double((hex >> 8) & 0xff) / 255,
-                                      blue: Double(hex & 0xff) / 255)
-                            }, startPoint: .topLeading, endPoint: .bottomTrailing)
-                            .frame(height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
-                            HStack {
-                                Text(preset.title).font(.caption)
-                                Spacer()
-                                if NativeBackgroundStore.selectedGradient == preset {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                                }
-                            }
-                        }
-                        .padding(7)
-                        .background(NativeBackgroundStore.selectedGradient == preset ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }.buttonStyle(.plain)
-                }
-            }
-
-            PhotosPicker(selection: $backgroundPhoto, matching: .images) {
-                Label("从照片中选择背景", systemImage: "photo")
-            }
-            if NativeBackgroundStore.hasActiveBackground {
-                Button("清除背景", role: .destructive) { NativeBackgroundStore.remove() }
-                Toggle("卡片融合背景图", isOn: $backgroundPanelImprint)
-                Button {
-                    backgroundPanelImprint = true
-                    backgroundOverlayOpacity = 0.08
-                    backgroundBlur = 0
-                } label: {
-                    Label("一键通透", systemImage: "sparkles.rectangle.stack")
-                }
-                VStack(alignment: .leading) {
-                    HStack { Text("背景遮罩"); Spacer(); Text("\(Int(backgroundOverlayOpacity * 100))%") }.font(.subheadline)
-                    Slider(value: $backgroundOverlayOpacity, in: 0.02...0.82, step: 0.02)
-                }
-                VStack(alignment: .leading) {
-                    HStack { Text("背景毛玻璃"); Spacer(); Text("\(Int(backgroundBlur * 100))%") }.font(.subheadline)
-                    Slider(value: $backgroundBlur, in: 0...0.9, step: 0.02)
-                }
-                Text("遮罩数值越低，背景越清晰；毛玻璃越低，背景越锐利。系统降低透明度开启时会关闭毛玻璃，但不再覆盖此处的遮罩设置。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Text("自定义图片保存在本机；导出的原生 JSON 备份会包含当前背景图。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            } else {
-                Text("先选择上方的图片或渐变背景，再调整背景遮罩和卡片融合效果。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
+            .padding(.vertical, 6)
+            Text("配色主题同时决定页面底色和卡片底色；下方「强调色」可以再单独换一组按钮与选中态的颜色。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
         Section("强调色") {
             Picker("强调色", selection: Binding(
@@ -5367,17 +5319,6 @@ struct SettingsView: View {
         }
     }
 
-    private func loadBackgroundPhoto(_ item: PhotosPickerItem?) {
-        guard let item else { return }
-        Task { @MainActor in
-            do {
-                guard let bytes = try await item.loadTransferable(type: Data.self) else { throw BackgroundImageError.invalidImage }
-                try NativeBackgroundStore.save(bytes)
-                backgroundMessage = "背景图已保存"
-            } catch { backgroundMessage = error.localizedDescription }
-        }
-    }
-
     private func handleExportResult(_ result: Result<URL, Error>) {
         if case .failure(let error) = result { message = error.localizedDescription }
     }
@@ -5390,9 +5331,10 @@ struct SettingsView: View {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             let bytes = try Data(contentsOf: url)
             if let package = try? JSONDecoder().decode(NativeBackupEnvelope.self, from: bytes) {
-                if let image = package.backgroundImageData { try NativeBackgroundStore.save(image) }
+                // 备份格式里仍保留 backgroundImageData 字段（老备份能解出来），
+                // 但 v2.12 起不再恢复背景图：App 已经没有背景图入口，恢复进去也撤不掉。
                 store.replaceData(package.data, intradayBars: package.intradayBars, dailyBars: package.dailyBars)
-                message = "原生备份已恢复（含 \(package.intradayBars.count) 个分时点、\(package.dailyBars.count) 个日线点\(package.backgroundImageData == nil ? "；备份未含背景图，保留当前背景" : "和背景图")）"
+                message = "原生备份已恢复（含 \(package.intradayBars.count) 个分时点、\(package.dailyBars.count) 个日线点）"
             } else {
                 let migrated = try LegacyMigration.decodePackage(bytes)
                 var nasMigrationNotice = ""

@@ -15,6 +15,9 @@ final class PortfolioStore: ObservableObject {
     @Published var fundDCAStatus = "暂无定投补记"
     @Published var isRefreshingFunds = false
     @Published var isRefreshingQuotes = false
+    /// 首页顶部指数条。与账本数据无关，单独缓存，不参与备份 / NAS 同步。
+    @Published private(set) var indexQuotes: [MarketIndexQuote] = MarketIndexStore.load()
+    @Published private(set) var isRefreshingIndices = false
     @Published var nasSyncStatus = "未配置 NAS 同步"
     @Published private(set) var operationAudit: [OperationAuditRecord] = []
     @Published private(set) var isSynchronizingNAS = false
@@ -644,6 +647,63 @@ final class PortfolioStore: ObservableObject {
     func refreshQuotesAndWait() async {
         guard !isRefreshingQuotes else { return }
         _ = await performQuoteRefresh(captureIntraday: true)
+    }
+
+    // MARK: - 首页指数条
+
+    /// 首页右上角那一个刷新按钮：个股和指数一起刷。
+    ///
+    /// 指数不在 `data.quotes` 里，走的是另一条请求，所以单个 `refreshQuotes()`
+    /// 不会带上它；但用户眼里「刷新」就一个动作，这里替他把两件事都做掉。
+    func refreshEverything() {
+        refreshQuotes()
+        refreshIndexQuotes()
+    }
+
+    func refreshIndexQuotes() {
+        guard !isRefreshingIndices else { return }
+        Task { await performIndexRefresh() }
+    }
+
+    /// 指数条刷新。与个股行情分开的原因：
+    /// ①指数不在自选/持仓里，一条没有也不该让整个请求早退（新装用户没有自选时也要看得到大盘）；
+    /// ②指数不需要写进账本、不需要触发提醒、不需要抓分时，共用 `performQuoteRefresh`
+    /// 会把 `data.quotes` / `marketChanges` 弄脏。
+    @discardableResult
+    func performIndexRefresh() async -> Bool {
+        guard !isRefreshingIndices else { return false }
+        isRefreshingIndices = true
+        defer { isRefreshingIndices = false }
+        // 元组数组不能用 `map(\.symbol)`（键路径指不到元组元素），一律走闭包。
+        let symbols = MarketIndexStore.catalog.map { $0.symbol }
+        guard let url = URL(string: "https://qt.gtimg.cn/q=" + symbols.joined(separator: ",")
+                            + "&_t=" + String(Int(Date().timeIntervalSince1970))) else { return false }
+        var request = URLRequest(url: url); request.timeoutInterval = 12
+        let bytes: Data
+        do {
+            let (directBytes, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            bytes = directBytes
+        } catch {
+            // 与个股行情同一条兜底链路：直连失败才走 NAS 行情代理
+            if let proxied = try? await NASSyncService.marketProxyData(
+                path: "quote", queryItems: [URLQueryItem(name: "codes", value: symbols.joined(separator: ","))]) {
+                bytes = proxied
+            } else { return false }
+        }
+        let values = parseTencent(decodeTencent(bytes))
+        let updated = MarketIndexStore.catalog.compactMap { item -> MarketIndexQuote? in
+            guard let quote = values[item.symbol], quote.price > 0 else { return nil }
+            return MarketIndexQuote(symbol: item.symbol,
+                                    name: quote.name.isEmpty ? item.name : quote.name,
+                                    price: quote.price, changePct: quote.changePct,
+                                    updatedAt: quote.timestamp)
+        }
+        // 一个都没解析出来说明这次请求白跑，保留上一次的值比清空更诚实。
+        guard !updated.isEmpty else { return false }
+        indexQuotes = updated
+        MarketIndexStore.save(updated)
+        return true
     }
 
     private func performQuoteRefresh(captureIntraday: Bool) async -> Bool {

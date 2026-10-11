@@ -40,6 +40,57 @@ struct Quote: Codable, Identifiable {
     }
 }
 
+/// 首页顶部指数条的一项。
+///
+/// 指数和自选/持仓不是一回事：它不在账本里、也不参与盈亏计算，
+/// 只是「现在大盘什么水平」的参照，所以单独建模、单独缓存，
+/// 不塞进 `PortfolioData`（塞进去会被写进备份、被 NAS 同步当账本推来推去）。
+struct MarketIndexQuote: Codable, Identifiable, Hashable {
+    var id: String { symbol }
+    /// 腾讯行情代码，本 App 里指数一律带市场前缀：sh / sz / hk / us。
+    var symbol: String
+    var name: String
+    var price: Double
+    /// 涨跌比例按小数存储：0.0005 表示上涨 0.05%；上屏前要乘 100。
+    var changePct: Double
+    var updatedAt: Date?
+}
+
+/// 首页指数条的代码表与本地缓存。
+///
+/// 缓存只为了「冷启动时这一排不是空的」：指数条每次进首页都会重新取，
+/// 拿不到新数据时就继续显示上次的值，用户至少知道上次是什么水平。
+enum MarketIndexStore {
+    /// 顺序即展示顺序：先 A 股宽基，再港股，再美股 —— 手机上一屏先看到自己常看的。
+    static let catalog: [(symbol: String, name: String)] = [
+        ("sh000001", "上证指数"),
+        ("sz399001", "深证成指"),
+        ("sz399006", "创业板指"),
+        ("sh000300", "沪深300"),
+        ("hkHSI", "恒生指数"),
+        ("usIXIC", "纳斯达克"),
+        ("usDJI", "道琼斯"),
+        ("usINX", "标普500")
+    ]
+
+    private static let cacheKey = "guanpan.native.index.quotes"
+
+    static func load() -> [MarketIndexQuote] {
+        guard let data = UserDefaults.standard.data(forKey: cacheKey),
+              let list = try? JSONDecoder().decode([MarketIndexQuote].self, from: data) else { return [] }
+        // 只保留仍在代码表里的项，并按代码表顺序重排 ——
+        // 改过代码表之后，老缓存里多出来的项不该继续占位置。
+        // 注意：元组不支持 `map(\.symbol)` 这种键路径写法，必须用闭包。
+        let order = catalog.map { $0.symbol }
+        return order.compactMap { symbol in list.first { $0.symbol == symbol } }
+    }
+
+    static func save(_ list: [MarketIndexQuote]) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        UserDefaults.standard.set(data, forKey: cacheKey)
+    }
+}
+
 struct QuoteAlert: Codable, Identifiable {
     enum Direction: String, Codable { case above, below }
     var id: UUID = UUID()
