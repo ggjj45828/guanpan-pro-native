@@ -23,7 +23,7 @@ struct FundReconciliationView: View {
         }
     }
     private var difference: Double { fund.quantity - ledgerShares }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {

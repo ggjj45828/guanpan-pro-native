@@ -45,6 +45,13 @@ final class PortfolioStore: ObservableObject {
         processAutomaticDCA()
     }
     var appearance: AppAppearance { get { data.appearance } set { data.appearance = newValue; save(label: "修改外观主题") } }
+    /// 解析掉「跟随系统」之后的实际主题。
+    ///
+    /// **凡是取 `AppTheme.palette(for:)` 来画色的地方都用这个，不要直接用 `appearance`。**
+    /// `.system` 的 palette 写死是深色，而它的 colorScheme 跟随系统；手机在浅色模式时
+    /// 会变成「近黑底 + 黑字」，整页看不见（指数详情弹窗就是这么翻车的）。
+    /// 设置页的主题预览卡是唯一例外 —— 那里要如实画出 `.system` 这一档本身。
+    var resolvedAppearance: AppAppearance { AppAppearance.resolved(data.appearance) }
     var totalMarketValue: Double { data.holdings.reduce(0) { $0 + $1.marketValue } }
     var totalAsset: Double { totalMarketValue + data.cash }
     var totalPnL: Double { data.holdings.reduce(0) { $0 + holdingPnL($1) } }
@@ -1157,24 +1164,39 @@ final class PortfolioStore: ObservableObject {
                     Task { await NativeNotifications.sendSourceHealthOnce(category: "market", body: "交易时段有 \(unhealthyCount) 个标的缺少报价或时间戳超过 3 分钟。请打开“数据可信度”检查报价和网络。") }
                 }
             }
+            // **一次刷新只让界面重绘一次**（v2.13.1）。
+            //
+            // 原来这里是直接在 `data` / `marketChanges` 上逐条赋值的。`data` 是 `@Published`，
+            // 每一条 `data.quotes[i].price = …` 都会发一次改动通知 —— 30 个自选 + 20 只 ETF
+            // 就是 50 多次，而每一次都会把 `ContentView` 的整个 body 重建一遍
+            // （它身上挂着五十来个 `.sheet` 修饰器）。于是刷新时肉眼可见地「闪一下」，
+            // 重建过程中列表还是空的，用户看到的就是「一闪，然后看不到数据」。
+            //
+            // 改成先在局部副本上改完，最后一次性赋回：通知次数从「标的数量」降到固定两次。
+            // 刷新该多慢就多慢（用户明确说过慢一点没关系），但界面不再抖。
+            var changes = marketChanges
             for code in symbols {
-                if let quote = values[tencentSymbol(code)] { marketChanges[code] = quote.changePct }
+                if let quote = values[tencentSymbol(code)] { changes[code] = quote.changePct }
             }
-            for i in data.quotes.indices {
-                if let q = values[tencentSymbol(data.quotes[i].code)] {
-                    if data.quotes[i].name.isEmpty || data.quotes[i].name == data.quotes[i].code { data.quotes[i].name = q.name }
-                    data.quotes[i].price = q.price
-                    data.quotes[i].changePct = q.changePct
-                    data.quotes[i].updatedAt = q.timestamp
+            var updated = data
+            for i in updated.quotes.indices {
+                if let q = values[tencentSymbol(updated.quotes[i].code)] {
+                    if updated.quotes[i].name.isEmpty || updated.quotes[i].name == updated.quotes[i].code { updated.quotes[i].name = q.name }
+                    updated.quotes[i].price = q.price
+                    updated.quotes[i].changePct = q.changePct
+                    updated.quotes[i].updatedAt = q.timestamp
                 }
             }
-            for i in data.holdings.indices where data.holdings[i].kind == .etf {
-                if let q = values[tencentSymbol(data.holdings[i].code)] {
-                    data.holdings[i].current = q.price
-                    data.holdings[i].marketUpdatedAt = q.timestamp
+            for i in updated.holdings.indices where updated.holdings[i].kind == .etf {
+                if let q = values[tencentSymbol(updated.holdings[i].code)] {
+                    updated.holdings[i].current = q.price
+                    updated.holdings[i].marketUpdatedAt = q.timestamp
                 }
             }
-            applyManualQuoteOverrides()
+            // 手动覆盖价也并进这一批：单独调 `applyManualQuoteOverrides()` 会再发一轮通知。
+            applyManualQuoteOverrides(to: &updated, changes: &changes)
+            data = updated
+            marketChanges = changes
             if Self.isRegularTradingSession(Date()) {
                 checkQuoteAlerts(using: values)
                 if captureIntraday && data.intradayCaptureEnabled {
@@ -1223,21 +1245,36 @@ final class PortfolioStore: ObservableObject {
         refreshQuotes()
     }
 
-    private func applyManualQuoteOverrides() {
-        for (code, override) in data.manualQuoteOverrides {
+    /// 把手动覆盖价落到**局部副本**上。
+    ///
+    /// 抽成 `inout` 版本是为了让 `performQuoteRefresh` 能把手动覆盖并进它那一整批改动里 ——
+    /// 否则这里会独立再发一轮 `@Published` 通知，刷新时又多闪一下。
+    /// 逻辑本身与原来一致：无效价格跳过，`previousClose` 缺失时不动涨跌幅，
+    /// 覆盖价没有实时时间戳所以把 `updatedAt` / `marketUpdatedAt` 清成 nil。
+    private func applyManualQuoteOverrides(to target: inout PortfolioData, changes: inout [String: Double]) {
+        for (code, override) in target.manualQuoteOverrides {
             guard override.price.isFinite, override.price > 0 else { continue }
             let change = override.previousClose.flatMap { $0 > 0 ? (override.price - $0) / $0 : nil }
-            for index in data.quotes.indices where data.quotes[index].code == code {
-                data.quotes[index].price = override.price
-                if let change { data.quotes[index].changePct = change }
-                data.quotes[index].updatedAt = nil
+            for index in target.quotes.indices where target.quotes[index].code == code {
+                target.quotes[index].price = override.price
+                if let change { target.quotes[index].changePct = change }
+                target.quotes[index].updatedAt = nil
             }
-            for index in data.holdings.indices where data.holdings[index].code == code && data.holdings[index].kind == .etf {
-                data.holdings[index].current = override.price
-                data.holdings[index].marketUpdatedAt = nil
+            for index in target.holdings.indices where target.holdings[index].code == code && target.holdings[index].kind == .etf {
+                target.holdings[index].current = override.price
+                target.holdings[index].marketUpdatedAt = nil
             }
-            if let change { marketChanges[code] = change }
+            if let change { changes[code] = change }
         }
+    }
+
+    /// 单独调用的入口：用户刚改完手动行情，要立刻在界面上生效。
+    private func applyManualQuoteOverrides() {
+        var updated = data
+        var changes = marketChanges
+        applyManualQuoteOverrides(to: &updated, changes: &changes)
+        data = updated
+        marketChanges = changes
     }
 
     func removeQuoteAlert(_ alert: QuoteAlert) {

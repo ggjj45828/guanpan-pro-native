@@ -51,7 +51,7 @@ struct QuantitativeEngineView: View {
         Self.evaluate(store.dailyBars[item.code] ?? [])
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     /// 偏强（score ≥ 56）/ 偏弱（score ≤ 44）标的数，与 `localMarketReview` 同口径。
     /// 只用于给「技术复盘」卡取色，不影响任何计算结论。
@@ -163,6 +163,7 @@ struct QuantitativeEngineView: View {
                 let holding = store.data.holdings.first(where: { $0.code == item.code && $0.kind == .etf })
                     ?? Holding(code: item.code, name: item.name, quantity: 0, cost: 0, current: item.price, kind: .etf)
                 MarketChartView(holding: holding)
+                    .themedSheetBackground()
             }
         }
     }

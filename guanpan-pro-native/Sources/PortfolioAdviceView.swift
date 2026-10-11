@@ -11,7 +11,7 @@ struct PortfolioAdviceView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 有高优先提示时整卡转琥珀，否则用「状态良好」的蓝绿。
     private var tipsTone: Color { items.contains { $0.highPriority } ? CardTone.warn : CardTone.ok }
 

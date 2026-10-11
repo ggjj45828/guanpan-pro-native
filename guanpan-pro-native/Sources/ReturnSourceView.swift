@@ -35,7 +35,7 @@ struct ReturnSourceView: View {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .current; f.dateFormat = "yyyy-MM-dd"; return f
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     var body: some View {
         let result = calculate()
         let canCalculate = result.start != nil && result.end != nil

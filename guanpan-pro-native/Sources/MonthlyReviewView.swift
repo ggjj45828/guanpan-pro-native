@@ -32,7 +32,7 @@ struct MonthlyReviewView: View {
     private var monthStart: String { "\(month)-01" }
     private var nextMonthStart: String { Self.nextMonthStart(month) }
     private var summary: MonthlyReviewSummary { makeSummary() }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var reportText: String {
         let s = summary
         return "观盘 Pro · \(month) 月度投资复盘\n买入 \(s.buy.cny()) / 卖出到账 \(s.sell.cny()) / 净投入 \(s.netFlow.cny())\n已实现 \(s.realized.cny()) / 现金分红 \(s.cashDividend.cny()) / 记录费用 \(s.fee.cny())\n买入 \(s.buyCount) 笔 / 卖出 \(s.sellCount) 笔 / 操作日 \(s.operationDays.count) 天"

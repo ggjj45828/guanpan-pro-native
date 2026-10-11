@@ -54,7 +54,7 @@ struct DataTrustView: View {
 
     private var latestQuoteTime: Date? { quoteRows.compactMap(\.timestamp).max() }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 交易时段内超过 3 分钟没更新的报价条数（含「时间未知」）。
     private var staleCount: Int { quoteRows.filter { isStale($0.timestamp) }.count }
 

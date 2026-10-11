@@ -198,7 +198,7 @@ struct YearlyReviewView: View {
     private var nextYearStart: String { "\(year + 1)-01-01" }
 
     /// 主题深浅决定卡片色的透明度档位（浅色底上要更淡才不刺眼）。
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     private var aggregate: PeriodLedgerAggregate {
         LedgerPeriodAggregator.aggregate(data: store.data, from: yearStart, to: nextYearStart)

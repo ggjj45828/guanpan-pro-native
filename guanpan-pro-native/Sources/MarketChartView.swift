@@ -765,7 +765,7 @@ struct MarketChartView: View {
                                     Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
                                 }
                             }
-                            .toneCard(CardTone.accent, isLight: AppTheme.palette(for: store.appearance).isLight)
+                            .toneCard(CardTone.accent, isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
                         }
                         Text("只依据本机现有行情、日线/支撑压力参考和所选交易日已有分时点生成分析；缺少的数据不会补造。模型输出可能有误，不构成买卖指令。")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -783,8 +783,10 @@ struct MarketChartView: View {
                             handledSuggestionIDs.insert(suggestion.id)
                             suggestionNote = "已存入「交易计划与复盘」，到复盘日期前都可以修改或取消。"
                         })
+                        .themedSheetBackground()
                     }
                 }
+                .themedSheetBackground()
             }
             .onAppear {
                 if selectedIntradayDay.isEmpty { selectedIntradayDay = intradayDays.first ?? "" }
@@ -886,10 +888,11 @@ struct MarketChartView: View {
             // 之前实体固定 5pt，放大后柱子不变粗、间距却变大，看起来既稀疏又糊。
             GeometryReader { geo in
                 let slot = max(60, geo.size.width) / CGFloat(max(1, zoomedPeriodBars.count))
-                let bodyWidth = min(max(slot * 0.74, 2.2), 30)
+                let bodyWidth = ChartBarWidth.candle(slot: slot)
+                let barWidth = ChartBarWidth.volume(slot: slot)
                 VStack(spacing: 8) {
                     candlePlot(bodyWidth: bodyWidth).frame(height: candleHeight)
-                    volumePlot(bodyWidth: bodyWidth).frame(height: volumeHeight)
+                    volumePlot(width: barWidth).frame(height: volumeHeight)
                 }
             }
             .frame(height: chartBodyHeight)
@@ -1047,10 +1050,10 @@ struct MarketChartView: View {
         }
     }
 
-    private func volumePlot(bodyWidth: CGFloat) -> some View {
+    private func volumePlot(width: CGFloat) -> some View {
         Chart {
             ForEach(zoomedPeriodBars) { bar in
-                BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(bodyWidth))
+                BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(width))
                     .foregroundStyle(bar.close >= bar.open ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
             }
         }
@@ -1220,7 +1223,7 @@ struct MarketChartView: View {
     private func instrumentSuggestionRow(_ suggestion: AISuggestion) -> some View {
         let tone: Color = suggestion.side == .buy ? PnLColor.up : PnLColor.down
         let handled = handledSuggestionIDs.contains(suggestion.id)
-        let light = AppTheme.palette(for: store.appearance).isLight
+        let light = AppTheme.palette(for: store.resolvedAppearance).isLight
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(suggestion.side.label)
@@ -1290,6 +1293,25 @@ private enum ChartPalette {
     static let ma20 = Color(red: 0.80, green: 0.36, blue: 1.0)   // 紫
     static let ma60 = Color(red: 0.16, green: 0.88, blue: 0.76)  // 青绿
     static let ma250 = Color(red: 0.96, green: 0.35, blue: 0.58) // 玫红
+}
+
+/// K 线实体与量柱的宽度口径（竖屏日K、横屏大图共用）。
+///
+/// **量柱为什么必须比 K 线实体窄**：两处原先共用一个 `bodyWidth`，量柱和实体一样宽。
+/// 缩到 120 根以上时每根只有几 pt，相邻两根的边正好贴在一起 ——
+/// 视觉上连成一条实心色带，看不出「一根根柱子」，用户说的「量柱太粗、不清晰」就是这个。
+/// 量柱取实体的 62%，两侧留出间隙，根与根之间才分得开。
+/// 下限同时放小（1.4 而不是 2.2）：细到 6 根一根也仍能看见，但不会糊成一片。
+enum ChartBarWidth {
+    /// K 线实体宽度。
+    static func candle(slot: CGFloat) -> CGFloat {
+        min(max(slot * 0.74, 2.2), 30)
+    }
+
+    /// 量柱宽度。比实体窄一档，保证相邻柱子之间始终有缝。
+    static func volume(slot: CGFloat) -> CGFloat {
+        min(max(slot * 0.46, 1.4), 18)
+    }
 }
 
 /// 横屏 K 线大图。
@@ -1421,7 +1443,7 @@ struct LandscapeChartView: View {
             let bars = visibleBars
             let count = max(bars.count, 1)
             let slot = geo.size.width / CGFloat(count)
-            let bodyWidth = min(max(slot * 0.74, 2.2), 30)
+            let bodyWidth = ChartBarWidth.candle(slot: slot)
             Chart {
                 ForEach(bars) { bar in
                     let rising = bar.close >= bar.open
@@ -1500,10 +1522,10 @@ struct LandscapeChartView: View {
         GeometryReader { geo in
             let count = max(visibleBars.count, 1)
             let slot = geo.size.width / CGFloat(count)
-            let bodyWidth = min(max(slot * 0.74, 2.2), 30)
+            let barWidth = ChartBarWidth.volume(slot: slot)
             Chart {
                 ForEach(visibleBars) { bar in
-                    BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(bodyWidth))
+                    BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(barWidth))
                         .foregroundStyle(bar.close >= bar.open ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
                 }
             }

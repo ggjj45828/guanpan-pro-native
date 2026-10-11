@@ -28,7 +28,7 @@ struct IndexDetailView: View {
     }
 
     private var tone: Color { PnLColor.of(index.changePct) }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var gridColor: Color { Color.primary.opacity(isLight ? 0.10 : 0.16) }
 
     /// 昨收。指数当前价与涨跌幅都在手里，反推即可 —— 和 `dayPnL(of:)` 用的是同一套算法。

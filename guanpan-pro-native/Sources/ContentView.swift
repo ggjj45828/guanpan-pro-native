@@ -89,7 +89,7 @@ struct ContentView: View {
         return store.effectiveColorScheme
     }
 
-    private var currentTheme: AppTheme { AppTheme.palette(for: store.appearance) }
+    private var currentTheme: AppTheme { AppTheme.palette(for: store.resolvedAppearance) }
 
     // MARK: - 双形态根容器（iPhone 用 TabView，iPad 用分栏）
 
@@ -307,7 +307,7 @@ struct DashboardView: View {
                             Text("共 \(mood.count) 只标的等权计算，只反映最近一次成功获取的报价，不代表整个市场。")
                                 .scaledFont(10).foregroundStyle(.secondary)
                         }
-                        .toneCard(tone, isLight: AppTheme.palette(for: store.appearance).isLight)
+                        .toneCard(tone, isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
                     } else {
                         Text("获取行情后显示自选与场内持仓的平均涨跌幅。")
                             .foregroundStyle(.secondary)
@@ -400,8 +400,8 @@ struct DashboardView: View {
                 .accessibilityLabel("刷新行情")
                 .accessibilityHint("同时刷新自选、持仓和顶部指数")
             } }
-            .sheet(isPresented: $showAdd) { WatchEditor() }
-            .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() }
+            .sheet(isPresented: $showAdd) { WatchEditor() .themedSheetBackground() }
+            .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() .themedSheetBackground() }
             .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
             .sheet(item: $indexDetailTarget) { index in IndexDetailView(index: index).themedSheetBackground() }
             .alert("新建分组", isPresented: groupEditorBinding) {
@@ -795,11 +795,11 @@ struct MoreHubView: View {
             .background(.clear)
             .navigationTitle("更多")
             .navigationBarTitleDisplayMode(.large)
-            .sheet(isPresented: $showTools) { ToolsView() }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
-            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() }
-            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() }
+            .sheet(isPresented: $showTools) { ToolsView() .themedSheetBackground() }
+            .sheet(isPresented: $showSettings) { SettingsView() .themedSheetBackground() }
+            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
+            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
+            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
         }
     }
 }
@@ -1114,21 +1114,21 @@ struct HoldingsView: View {
 
     var body: some View {
         listContent
-            .sheet(isPresented: $showAdd) { HoldingEditor(kind: kind) }
-            .sheet(item: $editTarget) { HoldingEditor(kind: kind, initial: $0) }
-            .sheet(item: $tradeTarget) { TradeEditor(holding: $0) }
-            .sheet(item: $fundHistoryTarget) { FundNAVHistoryView(fund: $0) }
-            .sheet(item: $fundReconciliationTarget) { FundReconciliationView(fund: $0) }
-            .sheet(item: $backfillTarget) { FundBackfillView(fund: $0) }
-            .sheet(item: $dcaTarget) { FundDCAPlanEditor(holding: $0) }
-            .sheet(item: $feePolicyTarget) { FundFeePolicyEditor(fund: $0) }
-            .sheet(item: $feeReconciliationTarget) { FundFeeReconciliationEditor(transaction: $0) }
-            .sheet(item: $marketChartTarget) { MarketChartView(holding: $0) }
-            .sheet(item: $alertTarget) { QuoteAlertEditor(initialCode: $0.code) }
-            .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() }
-            .sheet(isPresented: $showFundQuant) { FundQuantView() }
-            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() }
-            .sheet(item: $archivedFundTarget) { ArchivedFundHistoryView(item: $0) }
+            .sheet(isPresented: $showAdd) { HoldingEditor(kind: kind) .themedSheetBackground() }
+            .sheet(item: $editTarget) { HoldingEditor(kind: kind, initial: $0) .themedSheetBackground() }
+            .sheet(item: $tradeTarget) { TradeEditor(holding: $0) .themedSheetBackground() }
+            .sheet(item: $fundHistoryTarget) { FundNAVHistoryView(fund: $0) .themedSheetBackground() }
+            .sheet(item: $fundReconciliationTarget) { FundReconciliationView(fund: $0) .themedSheetBackground() }
+            .sheet(item: $backfillTarget) { FundBackfillView(fund: $0) .themedSheetBackground() }
+            .sheet(item: $dcaTarget) { FundDCAPlanEditor(holding: $0) .themedSheetBackground() }
+            .sheet(item: $feePolicyTarget) { FundFeePolicyEditor(fund: $0) .themedSheetBackground() }
+            .sheet(item: $feeReconciliationTarget) { FundFeeReconciliationEditor(transaction: $0) .themedSheetBackground() }
+            .sheet(item: $marketChartTarget) { MarketChartView(holding: $0) .themedSheetBackground() }
+            .sheet(item: $alertTarget) { QuoteAlertEditor(initialCode: $0.code) .themedSheetBackground() }
+            .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() .themedSheetBackground() }
+            .sheet(isPresented: $showFundQuant) { FundQuantView() .themedSheetBackground() }
+            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
+            .sheet(item: $archivedFundTarget) { ArchivedFundHistoryView(item: $0) .themedSheetBackground() }
             .confirmationDialog(fundToolTarget?.name ?? "基金工具", isPresented: Binding(get: { fundToolTarget != nil }, set: { if !$0 { fundToolTarget = nil } }), titleVisibility: .visible) {
                 Button("净值走势") { if let t = fundToolTarget { fundHistoryTarget = t }; fundToolTarget = nil }
                 Button("赎回费率") { if let t = fundToolTarget { feePolicyTarget = t }; fundToolTarget = nil }
@@ -2009,7 +2009,7 @@ struct FundIncomeCalendarView: View {
     }
     private var days: [FundDailyPerformance] { store.fundDailyPerformance(month: monthKey) }
     private var total: Double { days.reduce(0) { $0 + $1.profit } }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -2081,7 +2081,7 @@ struct FundQuantView: View {
             .reduce(0) { $0 + $1.amount }
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 基金模块的浮盈，用于给「组合概览」卡取色。
     private var fundPnLTotal: Double { totalValue - totalCost }
 
@@ -2712,7 +2712,7 @@ struct AssetsView: View {
                     if selectedSnapshotMonth.isEmpty { selectedSnapshotMonth = store.snapshotMonths.first ?? "" }
                     if selectedLedgerMonth.isEmpty { selectedLedgerMonth = store.ledgerMonths.first ?? "" }
                 }
-                .sheet(isPresented: $showCashFlow) { CashFlowEditor() }
+                .sheet(isPresented: $showCashFlow) { CashFlowEditor() .themedSheetBackground() }
         }
     }
 
@@ -2722,7 +2722,7 @@ struct AssetsView: View {
     private var netDeposit: Double { store.data.cashFlows.reduce(0) { $0 + $1.amount } }
 
     /// 主题深浅决定卡片色的透明度档位。
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 「历史快照」卡的取色依据：所选区间的实测收益（没有快照时为 nil → 中性卡面）。
     private var snapshotMonthPnL: Double? { store.snapshotMonthSummary(selectedSnapshotMonth)?.pnl }
     /// 「ETF / 证券已实现收益」卡的取色依据：所选月份已落袋盈亏合计。
@@ -2875,7 +2875,7 @@ struct ETFIncomeCalendarView: View {
         guard !daily.isEmpty else { return nil }
         return (daily.reduce(1.0) { $0 * (1 + $1.profit / $1.base) } - 1) * 100
     }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -3088,7 +3088,7 @@ struct ToolsView: View {
     @State private var targetEdit: Holding?
 
     /// 主题深浅决定卡片色的透明度档位。
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 统一冲击情景下全部持仓的假设损失（正数）。
     /// 提到视图层是为了让 Section 的 `.toneCard(...)` 能取到它——
     /// Section 的修饰器在闭包之外，读不到闭包里 `let loss = …` 的局部变量。
@@ -3397,30 +3397,31 @@ struct ToolsView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
             .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
-            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() }
-            .sheet(isPresented: $showPortrait) { AccountPortraitView() }
-            .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() }
-            .sheet(isPresented: $showTradePlans) { TradePlansView() }
-            .sheet(isPresented: $showOverlap) { ETFOverlapView() }
-            .sheet(isPresented: $showAddCash) { AddCashSimulationView() }
-            .sheet(isPresented: $showFundReplay) { FundDCAReplayView() }
-            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() }
-            .sheet(isPresented: $showTradeCSVImport) { TradeCSVImportView() }
-            .sheet(isPresented: $showETFIncomeCalendar) { ETFIncomeCalendarView() }
-            .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() }
-            .sheet(isPresented: $showPortfolioAnalysis) { PortfolioAnalysisView() }
-            .sheet(isPresented: $showTradePreview) { TradePreviewView() }
-            .sheet(isPresented: $showReturnSource) { ReturnSourceView() }
-            .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() }
-            .sheet(isPresented: $showDataTrust) { DataTrustView() }
-            .sheet(isPresented: $showReconciliation) { ReconciliationView() }
-            .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() }
-            .sheet(isPresented: $showMonthlyReview) { MonthlyReviewView() }
-            .sheet(isPresented: $showYearlyReview) { YearlyReviewView() }
-            .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() }
+            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
+            .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
+            .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() .themedSheetBackground() }
+            .sheet(isPresented: $showTradePlans) { TradePlansView() .themedSheetBackground() }
+            .sheet(isPresented: $showOverlap) { ETFOverlapView() .themedSheetBackground() }
+            .sheet(isPresented: $showAddCash) { AddCashSimulationView() .themedSheetBackground() }
+            .sheet(isPresented: $showFundReplay) { FundDCAReplayView() .themedSheetBackground() }
+            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
+            .sheet(isPresented: $showTradeCSVImport) { TradeCSVImportView() .themedSheetBackground() }
+            .sheet(isPresented: $showETFIncomeCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
+            .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
+            .sheet(isPresented: $showPortfolioAnalysis) { PortfolioAnalysisView() .themedSheetBackground() }
+            .sheet(isPresented: $showTradePreview) { TradePreviewView() .themedSheetBackground() }
+            .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
+            .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
+            .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
+            .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
+            .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }
+            .sheet(isPresented: $showMonthlyReview) { MonthlyReviewView() .themedSheetBackground() }
+            .sheet(isPresented: $showYearlyReview) { YearlyReviewView() .themedSheetBackground() }
+            .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() .themedSheetBackground() }
             .sheet(item: $targetEdit) { holding in
                 AllocationTargetEditor(holding: holding,
                     targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
+                    .themedSheetBackground()
             }
         }
         }
@@ -3525,7 +3526,7 @@ struct PortfolioScenarioView: View {
         return "其他 ETF / 证券"
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -3644,7 +3645,7 @@ struct DividendCalendarView: View {
         }
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -3699,7 +3700,7 @@ struct LedgerHealthView: View {
     private var findings: [LedgerHealthFinding] { store.ledgerHealthReport() }
     private var errors: Int { findings.filter { $0.severity.rawValue == LedgerHealthFinding.Severity.error.rawValue }.count }
     private var warnings: Int { findings.filter { $0.severity.rawValue == LedgerHealthFinding.Severity.warning.rawValue }.count }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -3810,7 +3811,7 @@ struct ETFOverlapView: View {
         return etfWeight + fundWeight
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -3922,7 +3923,7 @@ struct FundDCAReplayView: View {
             value: value, lumpValue: lumpValue, latestNAV: end.nav)
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -3990,7 +3991,7 @@ struct AddCashSimulationView: View {
     @State private var spent = 0.0
     @State private var message = ""
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -4135,11 +4136,12 @@ struct TradePlansView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) { Button("新建", systemImage: "plus") { showNew = true } }
             }
-            .sheet(isPresented: $showNew) { TradePlanEditor { store.data.tradePlans.append($0); store.save(label: "修改账本或设置") } }
+            .sheet(isPresented: $showNew) { TradePlanEditor { store.data.tradePlans.append($0); store.save(label: "修改账本或设置") } .themedSheetBackground() }
             .sheet(item: $reviewTarget) { plan in
                 TradePlanReviewEditor(plan: plan) { changed in
                     if let index = store.data.tradePlans.firstIndex(where: { $0.id == changed.id }) { store.data.tradePlans[index] = changed; store.save(label: "修改账本或设置") }
                 }
+                .themedSheetBackground()
             }
         }
     }
@@ -4338,7 +4340,7 @@ struct AIAnalysisView: View {
     @State private var handledSuggestionIDs: Set<UUID> = []
     @State private var suggestionNote = ""
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     /// 从模型回答末尾解析出的可执行建议。解析失败就是空数组，界面自然不出现这一段。
     private var suggestions: [AISuggestion] { AISuggestionParser.parse(result) }
@@ -4502,7 +4504,7 @@ struct AIAnalysisView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .themedSheetBackground()
-            .sheet(isPresented: $showPortrait) { AccountPortraitView() }
+            .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
             .sheet(item: $planPrefill) { suggestion in
                 // 显式写 onSave: —— TradePlanEditor 的参数顺序是 (onSave, prefill)，
                 // 尾随闭包语法会绑到最后一个参数（prefill）上，类型对不上。
@@ -4512,6 +4514,7 @@ struct AIAnalysisView: View {
                     handledSuggestionIDs.insert(suggestion.id)
                     suggestionNote = "已存入「交易计划与复盘」，到复盘日期前都可以修改或取消。"
                 })
+                .themedSheetBackground()
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear {
@@ -4718,7 +4721,7 @@ struct DayGridView: View {
         }).values).sorted { $0.code < $1.code }
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var currentInstrument: GridInstrument? { instruments.first { $0.code == code } }
 
     var body: some View {
@@ -5158,8 +5161,8 @@ struct SettingsView: View {
     @State private var notificationEnabled = false
     var body: some View {
         formContent
-            .sheet(isPresented: $showOperationHistory) { OperationHistoryView() }
-            .sheet(isPresented: $showManualPriceEditor) { ManualQuoteOverrideEditor() }
+            .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
+            .sheet(isPresented: $showManualPriceEditor) { ManualQuoteOverrideEditor() .themedSheetBackground() }
             .onAppear {
                 BackgroundQuoteRefresh.configure(store: store)
                 if marketHolidayText.isEmpty {

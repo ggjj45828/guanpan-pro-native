@@ -35,7 +35,7 @@ struct TradePreviewView: View {
     private var postCash: Double { store.data.cash + cashDelta }
     private var postTotal: Double { max(0, store.totalAsset + (postValue - (selected?.marketValue ?? 0)) + cashDelta) }
     private var weight: Double { postTotal > 0 ? postValue / postTotal : 0 }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var validation: String? {
         guard let holding = selected else { return "请先添加至少一项持仓。" }
         guard quantity.isFinite, quantity > 0, price.isFinite, price > 0, feeInput.isFinite, feeInput >= 0 else { return "请输入有效数量、价格和非负费用。" }

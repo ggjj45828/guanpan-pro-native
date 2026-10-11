@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 每个外观主题一套独立底色，让「换主题」在视觉上立刻可分辨。
 ///
@@ -73,12 +74,20 @@ extension EnvironmentValues {
 /// 弹出界面（sheet / fullScreenCover）的主题底色。
 ///
 /// **为什么弹窗必须自己画底**：`GuanpanProApp.init()` 为了让页面主题色透出来，
-/// 把 `UITableView` / `UINavigationBar` 等的全局外观底色统一清成了 clear；
-/// 再看那几处 `.presentationBackground(.clear)` —— 两边一叠加，
-/// 弹窗自己就一点都不画了，**底下那一页的列表会直接穿过弹窗显示出来**
-/// （设置页就是这样：能看到「月供与规划」「投资偏好…」这些上一页的文字叠在自己行之间，
-/// 看起来像两张页面糊在一起、内容显示不全）。
-/// 所以凡是显式设成 clear 的弹窗，都要用这个把主题底色补回来。
+/// 把 `UITableView` / `UINavigationBar` 等全局外观的底色统一清成了 clear；
+/// 而每个弹窗里的 `List` / `Form` 又都写了 `.scrollContentBackground(.hidden)`
+/// 加 `.background(.clear)`。两边一叠加，弹窗内容本身**一点颜色都不画**，
+/// 全靠系统给的那层 sheet 背板撑着。而系统背板并不可靠 —— 新版 iOS 的 sheet
+/// 默认是半透明材质，于是底下那一页直接透上来：
+/// 用户看到的是「弹窗闪一下就变透明、上一页的文字叠在自己的行之间、整页糊在一起」。
+///
+/// 所以这里**不依赖系统背板**，由内容自己画一层不透明的主题渐变：
+/// ① 无论系统背板是透明、玻璃还是纯色，都盖得住；
+/// ② 与挂在视图树哪一层无关，不会踩「挂在 Form 内层就留下系统白底」这种位置陷阱。
+///
+/// **不要改回 `presentationBackground`**：它只能挂在弹窗内容的**根视图**上，
+/// 挂进 `NavigationStack` 里面（挂到 `List` / `Form` 上）会被系统忽略，
+/// 留下默认的不透明白底 —— 深色主题下就是一条刺眼的白边。
 struct ThemedSheetBackground: View {
     @Environment(\.appAppearance) private var appearance
 
@@ -89,9 +98,32 @@ struct ThemedSheetBackground: View {
 }
 
 extension View {
-    /// 给 sheet / fullScreenCover 补上主题底色（替代 `.presentationBackground(.clear)`）。
+    /// 给 sheet / fullScreenCover 的**内容**铺一层不透明的主题底色。
+    ///
+    /// 挂在弹窗内容的根视图上即可，层级不限；同一个弹窗重复挂也不会画错（同色叠加）。
+    /// 漏挂的直接后果就是「弹窗透明、下层页面透上来」，所以**新增弹窗时必须带上它**。
     func themedSheetBackground() -> some View {
-        presentationBackground { ThemedSheetBackground() }
+        background { ThemedSheetBackground() }
+    }
+}
+
+// MARK: - 「跟随系统」的解析
+
+extension AppAppearance {
+    /// 把「跟随系统」解析成一套**具体**主题。
+    ///
+    /// 为什么必须要这一步：`.system` 的配色在 `palette(for:)` 里是写死的一套深色
+    /// （近黑底 `#0E1016`），而它的 `colorScheme` 又返回 nil（跟随系统）。
+    /// 手机在**浅色**模式下这两者就打架了 —— 底是近黑的，文字却按浅色模式取成黑的，
+    /// 结果黑底黑字，整页读不出来（用户报的「指数详情弹窗一片黑，看不到」就是这个）。
+    ///
+    /// 所以凡是「要取一个具体主题来画色」的地方（页面底、卡片深浅、弹窗底），
+    /// 都先过这一层解析，不要直接拿 `store.appearance` 去取 palette。
+    ///
+    /// 注意：设置页的主题预览卡**不能**用它 —— 那里要如实画出 `.system` 这一档本身。
+    static func resolved(_ appearance: AppAppearance) -> AppAppearance {
+        guard appearance == .system else { return appearance }
+        return UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
     }
 }
 

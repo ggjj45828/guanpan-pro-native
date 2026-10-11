@@ -36,7 +36,7 @@ struct HistoricalReplayView: View {
 
     private var day: String { format(selectedDate) }
     private var replay: Replay { reconstruct() }
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 回放日的已实现结果（场内 + 基金 + 现金分红），用于给流水卡取色。
     private var replayedRealized: Double { replay.realizedETF + replay.realizedFund + replay.cashDividends }
     private var valuedTotal: Double? {

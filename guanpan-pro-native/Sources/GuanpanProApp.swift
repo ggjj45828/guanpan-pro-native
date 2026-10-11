@@ -34,7 +34,7 @@ struct GuanpanProApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
-                .environment(\.appAppearance, store.appearance)
+                .environment(\.appAppearance, store.resolvedAppearance)
                 .preferredColorScheme(store.effectiveColorScheme)
                 .tint(store.effectiveAccentColor)
                 .appFontScale(CGFloat(fontScale))

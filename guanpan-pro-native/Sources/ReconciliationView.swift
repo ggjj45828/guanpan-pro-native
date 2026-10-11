@@ -86,7 +86,7 @@ struct ReconciliationView: View {
         }
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 填了券商金额才判色：一致=蓝绿，有差额=琥珀，没填=中性。
     private var cashTone: Color? {
         guard let broker = Double(brokerCash), broker.isFinite else { return nil }
@@ -115,7 +115,7 @@ struct ReconciliationView: View {
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .sheet(item: $costTarget) { CostOverrideEditor(holding: $0) }
+            .sheet(item: $costTarget) { CostOverrideEditor(holding: $0) .themedSheetBackground() }
         }
     }
 

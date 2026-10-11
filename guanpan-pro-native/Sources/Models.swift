@@ -101,7 +101,6 @@ enum MarketIndexStore {
         Entry(secid: "1.000300", tencent: "sh000300", name: "沪深300"),
         Entry(secid: "1.000688", tencent: "sh000688", name: "科创50"),
         Entry(secid: "100.HSI", tencent: "hkHSI", name: "恒生指数", sina: "b_HSI"),
-        Entry(secid: "100.HSCEI", tencent: "hkHSCEI", name: "国企指数", sina: "b_HSCEI"),
         Entry(secid: "124.HSTECH", tencent: "hkHSTECH", name: "恒生科技"),
         Entry(secid: "100.NDX", tencent: "usIXIC", name: "纳斯达克"),
         Entry(secid: "100.SPX", tencent: "usINX", name: "标普500", sina: "b_SPX"),

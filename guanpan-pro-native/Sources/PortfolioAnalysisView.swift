@@ -30,7 +30,7 @@ struct PortfolioAnalysisView: View {
         }.sorted { $0.value > $1.value }
     }
 
-    private var isLight: Bool { AppTheme.palette(for: store.appearance).isLight }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var total: Double { exposures.reduce(0) { $0 + $1.value } + max(0, store.data.cash) }
     private var foreignValue: Double { exposures.filter { $0.currency == "USD" || $0.currency == "HKD" }.reduce(0) { $0 + $1.value } }
     private var fundValue: Double {
