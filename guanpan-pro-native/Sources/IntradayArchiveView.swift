@@ -283,8 +283,8 @@ struct IntradayArchiveView: View {
                 priceChart
 
                 HStack(spacing: 14) {
-                    Label("价格", systemName: "minus").foregroundStyle(store.effectiveAccentColor)
-                    Label("均价", systemName: "minus").foregroundStyle(.orange)
+                    Label("价格", systemImage: "minus").foregroundStyle(store.effectiveAccentColor)
+                    Label("均价", systemImage: "minus").foregroundStyle(.orange)
                     Text("点图看分钟值 · B买入 / S卖出")
                         .foregroundStyle(.secondary)
                 }

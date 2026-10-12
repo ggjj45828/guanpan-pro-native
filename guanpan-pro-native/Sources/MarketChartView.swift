@@ -1187,11 +1187,12 @@ struct MarketChartView: View {
                 high = max(high, point.value)
             }
         }
-        // 前复权价格可能与账本成交价略有差异，把可见 B/S 价格纳入范围，避免标记被裁掉。
+        // 前复权价格可能与账本成交价略有差异，把可见 B/S 标记纳入范围，避免标记被裁掉。
+        // 标记本身在最低价下方 / 最高价上方，所以这里用标记价而不是成交价。
         if selectedChartPeriod == .day {
-            for entry in visibleTradeEntries where entry.price > 0 {
-                low = min(low, entry.price)
-                high = max(high, entry.price)
+            for marker in tradeMarkers {
+                low = min(low, marker.price)
+                high = max(high, marker.price)
             }
         }
         guard high > low else {
@@ -1217,6 +1218,31 @@ struct MarketChartView: View {
         guard selectedChartPeriod == .day else { return [] }
         let dates = Set(zoomedPeriodBars.map(\.date))
         return store.data.ledger.filter { $0.code == holding.code && dates.contains(shanghaiDay($0.date)) }
+    }
+
+    /// 日 K 上的成交标记。**B 画在当日最低价下方、S 画在当日最高价上方** ——
+    /// 这是主流站点（东方财富 / 同花顺）的做法，标记完全不压在蜡烛实体和影线上。
+    /// 原来直接画在成交价处，字块正好盖住 K 线本身，看不见那根是涨是跌。
+    private struct TradeMarker: Identifiable {
+        let id: UUID
+        let day: String
+        let price: Double
+        let side: LedgerEntry.Side
+    }
+
+    private var tradeMarkers: [TradeMarker] {
+        guard selectedChartPeriod == .day else { return [] }
+        let barsByDay = Dictionary(zoomedPeriodBars.map { ($0.date, $0) }, uniquingKeysWith: { first, _ in first })
+        return visibleTradeEntries.compactMap { entry in
+            let day = shanghaiDay(entry.date)
+            guard let bar = barsByDay[day] else { return nil }
+            // 一字线（开=高=低）时振幅为 0，给一个按价位缩放的最小间距
+            let amplitude = max(bar.high - bar.low, max(bar.high, 0.0001) * 0.004)
+            let offset = amplitude * 0.38
+            // 买入标在下方、卖出标在上方，且都留在 K 线之外
+            let mark = entry.side == .buy ? bar.low - offset : bar.high + offset
+            return TradeMarker(id: entry.id, day: day, price: mark, side: entry.side)
+        }
     }
 
     private func transactions(on day: String) -> [LedgerEntry] {
@@ -1404,17 +1430,20 @@ struct MarketChartView: View {
                     .foregroundStyle(candleColor)
             }
             if selectedChartPeriod == .day {
-                ForEach(visibleTradeEntries) { entry in
-                    PointMark(x: .value("成交日", shanghaiDay(entry.date)), y: .value("成交价", entry.price))
-                        .foregroundStyle(entry.side == .buy ? Color.red : Color.green)
-                        .symbolSize(24)
-                        .annotation(position: entry.side == .buy ? .bottom : .top, spacing: 2) {
-                            Text(entry.side == .buy ? "B" : "S")
+                ForEach(tradeMarkers) { marker in
+                    let color = marker.side == .buy ? ChartPalette.buyMark : ChartPalette.sellMark
+                    PointMark(x: .value("成交日", marker.day), y: .value("成交价", marker.price))
+                        .foregroundStyle(color)
+                        .symbolSize(18)
+                        .annotation(position: marker.side == .buy ? .bottom : .top, spacing: 3) {
+                            Text(marker.side == .buy ? "B" : "S")
                                 .font(.system(size: 9, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white)
-                                .padding(3)
-                                .background(entry.side == .buy ? Color.red : Color.green,
-                                            in: RoundedRectangle(cornerRadius: 3))
+                                .padding(.horizontal, 3.5).padding(.vertical, 2)
+                                // 白描边：不管压在深色还是浅色背景、红绿蜡烛附近都能看清
+                                .background(color, in: RoundedRectangle(cornerRadius: 3))
+                                .overlay(RoundedRectangle(cornerRadius: 3)
+                                    .strokeBorder(Color.white.opacity(0.9), lineWidth: 0.7))
                         }
                 }
             }
@@ -1903,6 +1932,11 @@ private enum ChartPalette {
     static let ma20 = Color(red: 0.80, green: 0.36, blue: 1.0)   // 紫
     static let ma60 = Color(red: 0.16, green: 0.88, blue: 0.76)  // 青绿
     static let ma250 = Color(red: 0.96, green: 0.35, blue: 0.58) // 玫红
+
+    /// 买卖标记配色：刻意避开 K 线的红涨绿跌。
+    /// 之前 B 用红、S 用绿，和蜡烛图完全撞色，标记压在实体上根本分不清哪个是成交点。
+    static let buyMark = Color(red: 0.98, green: 0.72, blue: 0.18)   // 琥珀金
+    static let sellMark = Color(red: 0.40, green: 0.48, blue: 0.95)  // 蓝紫
 }
 
 /// K 线实体与量柱的宽度口径（竖屏日K、横屏大图共用）。
