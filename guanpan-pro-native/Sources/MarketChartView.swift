@@ -179,8 +179,19 @@ struct MarketChartView: View {
     @State private var handledSuggestionIDs: Set<UUID> = []
     @State private var suggestionNote = ""
     @State private var isLoading = false
+    @State private var isManuallyUpdatingDaily = false
+    @State private var isFetchingMinute = false
+    @State private var isManuallyRefreshingMinute = false
     @State private var showLandscapeChart = false
     @State private var showRecentDailyBars = false
+    @State private var showTechnicalNotes = false
+    @State private var showDecisionFactors = false
+    @State private var showHistoricalIndicators = false
+    @State private var showRuleDetails = false
+    @State private var showBacktestDetails = false
+    @State private var showSupportResistanceDetails = false
+    @State private var showIntradayHistory = false
+    @State private var showIntradayJudgment = false
     @State private var message = ""
     @State private var backtestCapital = "100000"
     @State private var backtestFeePercent = "0.03"
@@ -281,6 +292,15 @@ struct MarketChartView: View {
 
     /// 昨收基准：优先手填昨收，其次由现价和涨跌幅反推。
     private var intradayPrevClose: Double? {
+        // 历史分时必须取该交易日前一根日线收盘，不能拿今天的实时昨收套到旧日期。
+        if !selectedIntradayDay.isEmpty,
+           let priorClose = (store.dailyBars[holding.code] ?? [])
+                .filter({ $0.date < selectedIntradayDay })
+                .max(by: { $0.date < $1.date })?.close,
+           priorClose.isFinite, priorClose > 0 {
+            return priorClose
+        }
+        guard selectedIntradayDay.isEmpty || selectedIntradayDay == shanghaiDay(.now) else { return nil }
         let manual = store.data.manualQuoteOverrides[holding.code]
         if let previous = manual?.previousClose, previous > 0 { return previous }
         let quote = store.data.quotes.first { $0.code == holding.code }
@@ -339,6 +359,14 @@ struct MarketChartView: View {
             dea = index == 0 ? dif : dea + 0.2 * (dif - dea)
             return MinuteMACDPoint(time: point.start, dif: dif, dea: dea, histogram: 2 * (dif - dea))
         }
+    }
+    private var hasIntradayVolume: Bool {
+        minuteBuckets.contains { ($0.volume ?? 0) > 0 }
+    }
+    private func volumeColor(at index: Int) -> Color {
+        let buckets = minuteBuckets
+        let previous = index > 0 ? buckets[index - 1].close : (intradayPrevClose ?? buckets[index].close)
+        return buckets[index].close >= previous ? Color.red.opacity(0.82) : Color.green.opacity(0.82)
     }
     private func intradayVolumeMA(_ period: Int) -> [IntradayVolumeMAPoint] {
         let source = minuteBuckets.compactMap { point -> (Date, Double)? in
@@ -660,7 +688,13 @@ struct MarketChartView: View {
                             ContentUnavailableView("暂无当日分时", systemImage: "chart.xyaxis.line", description: Text(minuteStatus))
                         }
                         HStack {
-                            Button { Task { await manuallyRefreshMinute() } } label: { Label("刷新分时", systemImage: "arrow.clockwise") }
+                            Button { Task { await manuallyRefreshMinute() } } label: {
+                                HStack(spacing: 6) {
+                                    RefreshToolbarIcon(isRefreshing: isManuallyRefreshingMinute)
+                                    Text("刷新分时")
+                                }
+                            }
+                            .disabled(isManuallyRefreshingMinute)
                             Spacer()
                             Button { showIntradayCompanion = true } label: { Label("盘中 AI 陪伴", systemImage: "sparkles.rectangle.stack") }
                         }
@@ -709,8 +743,11 @@ struct MarketChartView: View {
                     }
                     if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary) }
                     Button { Task { await manuallyRefreshDaily() } } label: {
-                        Label(isLoading ? "正在更新…" : "更新历史日线", systemImage: "arrow.clockwise")
-                    }.disabled(isLoading)
+                        HStack(spacing: 6) {
+                            RefreshToolbarIcon(isRefreshing: isManuallyUpdatingDaily)
+                            Text(isManuallyUpdatingDaily ? "正在更新…" : "更新历史日线")
+                        }
+                    }.disabled(isManuallyUpdatingDaily)
                     Text("数据：腾讯前复权日线。MA5/20/60、RSI14、MACD、区间分位与最大回撤由本机计算，仅作历史描述，不是价格预测或估值。")
                         .font(.footnote).foregroundStyle(.secondary)
                     Button {
@@ -724,7 +761,8 @@ struct MarketChartView: View {
                     if !AIAnalysisService.hasSavedAPIKey { Text("先在 AI 页面保存接口和 API 密钥；单标的分析会把该标的行情、持仓、历史日线、历史支撑压力参考及所选交易日已有分时点发送给模型。")
                         .font(.footnote).foregroundStyle(.secondary) }
                 } header: { Text("\(holding.name) · \(holding.code)") }
-                Section("历史分时") {
+                Section {
+                  DisclosureGroup(isExpanded: $showIntradayHistory) {
                     if intradayDays.isEmpty {
                         ContentUnavailableView("暂无本机分时记录", systemImage: "chart.xyaxis.line", description: Text("行情刷新采集到的数据或导入的分时 CSV 会保存在本机；没有记录的日期不会补造走势。"))
                     } else {
@@ -732,20 +770,7 @@ struct MarketChartView: View {
                             ForEach(intradayDays, id: \.self) { day in Text(day).tag(day) }
                         }
                         if selectedIntradayBars.count > 1 {
-                            Chart {
-                                ForEach(selectedIntradayBars) { point in
-                                    LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
-                                        .foregroundStyle(intradayLineColor)
-                                        .interpolationMethod(.linear)
-                                }
-                            }
-                            .frame(height: 190)
-                            .chartYScale(domain: intradayPriceYDomain)
-                            .chartXAxis {
-                                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                                    AxisValueLabel(format: .dateTime.hour().minute())
-                                }
-                            }
+                            intradayPanel
                             if let first = selectedIntradayBars.first, let last = selectedIntradayBars.last {
                                 Text("\(selectedIntradayBars.count) 点 · \(first.timestamp.formatted(date: .omitted, time: .shortened)) 至 \(last.timestamp.formatted(date: .omitted, time: .shortened)) · 仅本机采集/导入数据")
                                     .font(.footnote).foregroundStyle(.secondary)
@@ -755,8 +780,12 @@ struct MarketChartView: View {
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
+                  } label: {
+                      HStack { Text("历史分时"); Spacer(); Text(showIntradayHistory ? "收起" : "展开").font(.caption).foregroundStyle(.secondary) }
+                  }
                 }
-                Section("盘中研判") {
+                Section {
+                  DisclosureGroup(isExpanded: $showIntradayJudgment) {
                     if let judgment = intradayJudgment {
                         Label(judgment.label, systemImage: judgment.label.contains("偏强") ? "arrow.up.right" : judgment.label.contains("偏弱") ? "arrow.down.right" : "arrow.right")
                             .font(.headline)
@@ -768,13 +797,28 @@ struct MarketChartView: View {
                     }
                     Text("盘中结论只描述所选交易日的价格位置与采样均价，不代替日线趋势，也不把简单平均价冒充交易所 VWAP。")
                         .font(.footnote).foregroundStyle(.secondary)
+                  } label: {
+                      HStack {
+                          Text("盘中研判")
+                          Spacer()
+                          Text(intradayJudgment?.label ?? "样本不足")
+                              .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                          Image(systemName: showIntradayJudgment ? "chevron.up" : "chevron.down")
+                              .font(.caption2).foregroundStyle(.tertiary)
+                      }
+                  }
                 }
                 if let latest {
                     Section("技术指标 · 统一评分") {
                         if let signal = technicalSignal {
                             LabeledContent("技术观察分", value: "\(signal.score) · \(signal.label)")
                             SignalTagRow(tags: signal.tags)
-                            ForEach(signal.notes, id: \.self) { Text("• \($0)").font(.footnote) }
+                            DisclosureGroup(isExpanded: $showTechnicalNotes) {
+                                ForEach(signal.notes, id: \.self) { Text("• \($0)").font(.footnote) }
+                            } label: {
+                                Text(showTechnicalNotes ? "收起评分依据" : "查看评分依据（\(signal.notes.count) 项）")
+                                    .font(.caption.weight(.medium))
+                            }
                         } else {
                             Text("至少需要 20 个交易日，才能计算技术信号。")
                         }
@@ -784,14 +828,20 @@ struct MarketChartView: View {
                     Section("值不值得买 · 条件复核") {
                         if let assessment = decisionAssessment {
                             LabeledContent("复核分", value: "\(assessment.score) · \(assessment.label)")
-                            ForEach(assessment.factors, id: \.self) { Text("• \($0)").font(.subheadline) }
+                            DisclosureGroup(isExpanded: $showDecisionFactors) {
+                                ForEach(assessment.factors, id: \.self) { Text("• \($0)").font(.subheadline) }
+                            } label: {
+                                Text(showDecisionFactors ? "收起条件" : "展开判断条件（\(assessment.factors.count) 项）")
+                                    .font(.caption.weight(.medium))
+                            }
                         } else {
                             Text("日线数据不足，暂时无法复核。")
                         }
                         Text("高分不等于立即买入：它把统一技术分与近 60 日位置、超买超卖和历史撑压合并；没有可靠 ETF 估值数据时，不虚构“估值分”。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Section("历史指标") {
+                    Section {
+                      DisclosureGroup(isExpanded: $showHistoricalIndicators) {
                         LabeledContent("最新收盘（\(latest.date)）", value: (latest.close).num(3))
                         if let signal = technicalSignal {
                             if let value = signal.ma5 { LabeledContent("MA5 / MA10", value: "\(value.num(3)) / \(signal.ma10?.num(3) ?? "--")") }
@@ -809,9 +859,18 @@ struct MarketChartView: View {
                         }
                         if let percentile { LabeledContent("区间收盘分位", value: "\((percentile).num(1))%") }
                         if let drawdown { LabeledContent("区间最大回撤", value: "\((drawdown * 100).num(1))%") }
-                    }
+                      } label: {
+                          HStack {
+                              Text("查看详细指标")
+                              Spacer()
+                              Text(showHistoricalIndicators ? "收起" : "展开")
+                                  .font(.caption).foregroundStyle(.secondary)
+                          }
+                      }
+                    } header: { Text("历史指标") }
                 }
-                Section("日线规则提示") {
+                Section {
+                  DisclosureGroup(isExpanded: $showRuleDetails) {
                     if ruleAlerts.isEmpty {
                         Label("所选区间内未触发内置规则", systemImage: "checkmark.circle").foregroundStyle(.secondary)
                     } else {
@@ -821,8 +880,12 @@ struct MarketChartView: View {
                     }
                     Text("规则检查 MA20 穿越、单日 ±5%、区间回撤 10%、量能 2 倍且单日波动 3%。仅检查当前加载的日线，不是实时监控，也不会自动发通知或预测涨跌。")
                         .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("MA5 / MA20 历史策略回测") {
+                  } label: {
+                      HStack { Text("日线规则提示"); Spacer(); Text(showRuleDetails ? "收起" : "展开").font(.caption).foregroundStyle(.secondary) }
+                  }
+                } header: { Text("日线规则提示") }
+                Section {
+                  DisclosureGroup(isExpanded: $showBacktestDetails) {
                     TextField("初始资金（元）", text: $backtestCapital).keyboardType(.decimalPad)
                     TextField("单边费率（%）", text: $backtestFeePercent).keyboardType(.decimalPad)
                     Button("回测当前所选区间") { runBacktest() }
@@ -838,7 +901,10 @@ struct MarketChartView: View {
                     if !backtestMessage.isEmpty { Text(backtestMessage).font(.footnote).foregroundStyle(.orange) }
                     Text("收盘信号在下一交易日开盘成交，按 100 份整手及单边费率估算；不含滑点、停牌、涨跌停、真实税费与交易限制。腾讯前复权数据可能调整；历史结果不代表未来收益，也不构成买卖建议。")
                         .font(.footnote).foregroundStyle(.secondary)
-                }
+                  } label: {
+                      HStack { Text("MA5 / MA20 历史策略回测"); Spacer(); Text(showBacktestDetails ? "收起" : "展开").font(.caption).foregroundStyle(.secondary) }
+                  }
+                } header: { Text("历史策略回测") }
                 Section("最近日线") {
                     Button {
                         Haptics.tap()
@@ -877,7 +943,8 @@ struct MarketChartView: View {
                         }
                     }
                 }
-                Section("支撑压力与中期区间") {
+                Section {
+                  DisclosureGroup(isExpanded: $showSupportResistanceDetails) {
                     if let levels = priceLevels {
                         LabeledContent("枢轴参考日", value: levels.sourceDay)
                         LabeledContent("中枢 P", value: (levels.pivot).num(3))
@@ -892,7 +959,10 @@ struct MarketChartView: View {
                     }
                     Text("枢轴位用最近一个已完成交易日的高低收计算；中期通道和布林带只用本机已保存的完整日线。行情源没有盘口深度字段，因此不显示挂单强弱。以上均为历史价格参考，不是买卖建议。")
                         .font(.footnote).foregroundStyle(.secondary)
-                }
+                  } label: {
+                      HStack { Text("支撑压力与中期区间"); Spacer(); Text(showSupportResistanceDetails ? "收起" : "展开").font(.caption).foregroundStyle(.secondary) }
+                  }
+                } header: { Text("支撑压力与中期区间") }
             }
             .navigationTitle("日K与指标")
             .navigationBarTitleDisplayMode(.inline)
@@ -998,14 +1068,28 @@ struct MarketChartView: View {
     }
 
     @MainActor private func manuallyRefreshMinute() async {
+        guard !isManuallyRefreshingMinute else { return }
+        isManuallyRefreshingMinute = true
+        defer { isManuallyRefreshingMinute = false }
         refreshFeedback.begin("正在刷新分时数据…")
+        let deadline = Date().addingTimeInterval(20)
+        while isFetchingMinute && Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
         await fetchTencentMinute()
         let ok = !minuteStatus.contains("失败") && !minuteStatus.contains("未返回") && !minuteStatus.contains("暂无")
         refreshFeedback.finish(minuteStatus, succeeded: ok)
     }
 
     @MainActor private func manuallyRefreshDaily() async {
+        guard !isManuallyUpdatingDaily else { return }
+        isManuallyUpdatingDaily = true
+        defer { isManuallyUpdatingDaily = false }
         refreshFeedback.begin("正在更新历史日线…")
+        let deadline = Date().addingTimeInterval(20)
+        while isLoading && Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+        guard !isLoading else {
+            refreshFeedback.finish("日线请求仍未结束，请稍后重试", succeeded: false)
+            return
+        }
         await load(force: true)
         let ok = !message.contains("失败")
         refreshFeedback.finish(message.isEmpty ? (ok ? "历史日线已更新" : "历史日线更新失败") : message,
@@ -1390,35 +1474,104 @@ struct MarketChartView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 7) {
                 Chart {
-                    ForEach(selectedIntradayBars) { p in LineMark(x: .value("时间", p.timestamp), y: .value("价格", p.price)).foregroundStyle(intradayLineColor) }
-                    if showIntradayAverage { ForEach(intradayAvgPoints) { p in LineMark(x: .value("时间", p.timestamp), y: .value("均价", p.price)).foregroundStyle(.orange) } }
-                    if showIntradayIOPV { ForEach(selectedDayIOPVPoints) { p in LineMark(x: .value("时间", p.timestamp), y: .value("IOPV", p.value)).foregroundStyle(.purple) } }
-                    if showIntradayIOPV, selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { RuleMark(y: .value("IOPV", v)).foregroundStyle(.purple).lineStyle(StrokeStyle(dash: [5,3])) }
-                    if showIntradayPreviousClose, let v = intradayPrevClose { RuleMark(y: .value("昨收", v)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [4,3])) }
+                    ForEach(selectedIntradayBars) { p in
+                        LineMark(x: .value("时间", p.timestamp), y: .value("价格", p.price))
+                            .foregroundStyle(intradayLineColor)
+                            .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                    }
+                    if showIntradayAverage { ForEach(intradayAvgPoints) { p in
+                        LineMark(x: .value("时间", p.timestamp), y: .value("均价", p.price))
+                            .foregroundStyle(Color.orange)
+                            .lineStyle(StrokeStyle(lineWidth: 0.85, lineCap: .round, lineJoin: .round))
+                    } }
+                    if showIntradayIOPV { ForEach(selectedDayIOPVPoints) { p in
+                        LineMark(x: .value("时间", p.timestamp), y: .value("IOPV", p.value))
+                            .foregroundStyle(Color.purple)
+                            .lineStyle(StrokeStyle(lineWidth: 0.85, lineCap: .round, lineJoin: .round, dash: [3, 2]))
+                    } }
+                    if showIntradayIOPV, selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV {
+                        RuleMark(y: .value("IOPV", v)).foregroundStyle(.purple).lineStyle(StrokeStyle(lineWidth: 0.8, dash: [4,3]))
+                    }
+                    if showIntradayPreviousClose, let v = intradayPrevClose {
+                        RuleMark(y: .value("昨收", v)).foregroundStyle(Color.secondary.opacity(0.65)).lineStyle(StrokeStyle(lineWidth: 0.7, dash: [3,3]))
+                    }
                 }
                 .frame(height: 280).chartXScale(domain: intradayXDomain).chartYScale(domain: intradayPriceYDomain)
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisValueLabel(format: .dateTime.hour().minute()).font(.system(size: 9)) } }
-                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.15)); AxisValueLabel().font(.system(size: 8)) } }
+                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                 if intradaySubchart == .macd {
                     Chart(minuteMACD) { p in
-                        BarMark(x: .value("时间", p.time), y: .value("柱", p.histogram)).foregroundStyle(p.histogram >= 0 ? Color.red : Color.green)
-                        LineMark(x: .value("时间", p.time), y: .value("DIF", p.dif)).foregroundStyle(Color.primary)
+                        BarMark(x: .value("时间", p.time), y: .value("柱", p.histogram))
+                            .foregroundStyle(p.histogram >= 0 ? Color.red.opacity(0.82) : Color.green.opacity(0.82))
+                            .cornerRadius(1)
+                        LineMark(x: .value("时间", p.time), y: .value("DIF", p.dif)).foregroundStyle(Color.blue)
+                            .lineStyle(StrokeStyle(lineWidth: 0.9))
                         LineMark(x: .value("时间", p.time), y: .value("DEA", p.dea)).foregroundStyle(Color.orange)
-                        RuleMark(y: .value("零轴", 0)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [3,3]))
+                            .lineStyle(StrokeStyle(lineWidth: 0.9))
+                        RuleMark(y: .value("零轴", 0)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3,3]))
                     }.frame(height: 125).chartXScale(domain: intradayXDomain).chartYScale(domain: minuteMACDYDomain).chartXAxis(.hidden)
-                } else {
-                    Chart(selectedIntradayBars.filter { $0.volume != nil }) { p in BarMark(x: .value("时间", p.timestamp), y: .value("量", p.volume ?? 0)).foregroundStyle(p.price >= (intradayPrevClose ?? p.price) ? Color.red : Color.green) }
+                } else if hasIntradayVolume {
+                    Chart {
+                        ForEach(minuteBuckets.indices, id: \.self) { index in
+                            let point = minuteBuckets[index]
+                            if let volume = point.volume, volume > 0 {
+                                BarMark(x: .value("时间", point.start), y: .value("量", volume))
+                                    .foregroundStyle(volumeColor(at: index))
+                                    .cornerRadius(1)
+                            }
+                        }
+                        ForEach(intradayVolumeMAs.sorted(), id: \.self) { period in
+                            ForEach(intradayVolumeMA(period)) { point in
+                                LineMark(x: .value("时间", point.time), y: .value("量均线", point.value))
+                                    .foregroundStyle(intradayVolumeMAColor(period))
+                                    .lineStyle(StrokeStyle(lineWidth: 0.85, lineCap: .round, lineJoin: .round))
+                            }
+                        }
+                    }
                         .frame(height: 125).chartXScale(domain: intradayXDomain).chartXAxis(.hidden)
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("暂无可用分时量")
+                            .scaledFont(11, weight: .semibold)
+                        Text("行情源尚未返回成交量；完整分钟线到达后会自动补上。")
+                            .scaledFont(9).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 125)
                 }
             }
             VStack(spacing: 7) {
                 Text("主图").font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    Capsule().fill(intradayLineColor).frame(width: 10, height: 2)
+                    Text("价格").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
                 rail("均价", showIntradayAverage, .orange) { showIntradayAverage.toggle(); IntradayVisibility.write(average: showIntradayAverage) }
                 rail("IOPV", showIntradayIOPV, .purple) { showIntradayIOPV.toggle(); IntradayVisibility.write(iopv: showIntradayIOPV) }
                 rail("昨收", showIntradayPreviousClose, .gray) { showIntradayPreviousClose.toggle(); IntradayVisibility.write(previousClose: showIntradayPreviousClose) }
                 Divider(); Text("副图").font(.caption2).foregroundStyle(.secondary)
-                rail("MACD", intradaySubchart == .macd, store.effectiveAccentColor) { intradaySubchart = .macd }
-                rail("分时量", intradaySubchart == .volume, store.effectiveAccentColor) { intradaySubchart = .volume }
+                rail("MACD", intradaySubchart == .macd, .blue) { intradaySubchart = .macd }
+                rail("分时量", intradaySubchart == .volume, .orange) { intradaySubchart = .volume }
+                if intradaySubchart == .volume {
+                    Text("量均线").font(.system(size: 8)).foregroundStyle(.secondary)
+                    intradayVolumeMAButton(20)
+                    intradayVolumeMAButton(60)
+                    intradayVolumeMAButton(250)
+                    HStack(spacing: 3) {
+                        Circle().fill(Color.red).frame(width: 5, height: 5)
+                        Circle().fill(Color.green).frame(width: 5, height: 5)
+                    }
+                    Text("涨 / 跌").font(.system(size: 8)).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 2) {
+                        Capsule().fill(.blue).frame(width: 7, height: 2)
+                        Capsule().fill(.orange).frame(width: 7, height: 2)
+                    }
+                    Text("DIF / DEA").font(.system(size: 8)).foregroundStyle(.secondary)
+                }
                 Spacer()
             }.frame(width: 76)
         }.padding(8).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
@@ -1475,6 +1628,9 @@ struct MarketChartView: View {
     }
 
     @MainActor private func fetchTencentMinute() async {
+        guard !isFetchingMinute else { return }
+        isFetchingMinute = true
+        defer { isFetchingMinute = false }
         let today = shanghaiDay(.now)
         // 休市 / 非交易时段**不提前返回**：腾讯的分时接口在这两种情况下仍会返回
         // 最近一个交易日的完整分时（实测周末请求 sh000001 能拿到上一交易日 242 个点），
@@ -1490,59 +1646,52 @@ struct MarketChartView: View {
             symbol = holding.code
         }
         do {
-            let data: Data
+            var data: Data?
+            var sourceBars: [IntradayBar] = []
             // 双主机直连（web.ifzq → ifzq，与指数 / 后台补全同一套主机顺序），任一主机成功即用；
             // 全部直连失败再走 NAS 行情代理兜底；仍失败则抛给外层 catch 统一设置失败文案。
             // 修掉旧代码只用裸 ifzq 单主机导致“某些网络下指数能取、ETF 却空白”的问题。
-            var fetched: Data?
             for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
                 let variable = "min_data_\(Int(Date().timeIntervalSince1970 * 1000))"
                 guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=\(variable)&code=\(symbol)") else { continue }
                 var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
                 request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
                 request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-                if let (direct, response) = try? await URLSession.shared.data(for: request),
-                   (response as? HTTPURLResponse)?.statusCode == 200 {
-                    fetched = direct
-                    break
+                guard let (candidate, response) = try? await URLSession.shared.data(for: request),
+                      (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+                let parsed = store.parseTencentMinuteData(candidate, symbol: symbol)
+                guard !parsed.isEmpty else { continue }
+                data = candidate
+                sourceBars = parsed
+                break
+            }
+            if sourceBars.isEmpty,
+               let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
+                let parsed = store.parseTencentMinuteData(proxied, symbol: symbol)
+                if !parsed.isEmpty {
+                    data = proxied
+                    sourceBars = parsed
                 }
             }
-            if let fetched {
-                data = fetched
-            } else if let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
-                data = proxied
-            } else {
-                throw URLError(.notConnectedToInternet)
+            guard let data, !sourceBars.isEmpty else { throw URLError(.cannotLoadFromNetwork) }
+            // 公共解析器按腾讯 symbol 回填 code；这里改回持仓代码，方便本机历史筛选。
+            let parsed = sourceBars.map {
+                IntradayBar(code: holding.code, timestamp: $0.timestamp, price: $0.price,
+                            volume: $0.volume, day: $0.day)
             }
-            guard let raw = String(data: data, encoding: .utf8),
-                  let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
-                  let root = try JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any],
-                  let nodes = root["data"] as? [String: Any], let node = nodes[symbol] as? [String: Any],
-                  let payload = node["data"] as? [String: Any], let rows = payload["data"] as? [String] else {
-                minuteStatus = "数据源未返回可识别分钟线"; return
+            let day = parsed.last?.day ?? today
+            var root: [String: Any]?
+            if let raw = String(data: data, encoding: .utf8),
+               let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
+               let decoded = try? JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any] {
+                root = decoded
             }
-            let rawDay = (payload["date"] as? String) ?? shanghaiDay(.now)
-            let day: String
-            if rawDay.count == 8, rawDay.allSatisfy(\.isNumber) {
-                day = "\(rawDay.prefix(4))-\(rawDay.dropFirst(4).prefix(2))-\(rawDay.suffix(2))"
-            } else { day = rawDay }
-            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
-            var parsed: [IntradayBar] = []
-            var previousVolume = 0.0
-            for row in rows {
-                let fields = row.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-                guard fields.count >= 2, let price = Double(fields[1]), price > 0,
-                      let date = formatter.date(from: "\(day) \(fields[0])") else { continue }
-                let cumulative = fields.count > 2 ? Double(fields[2]) : nil
-                let delta = cumulative.map { max(0, $0 - previousVolume) }
-                if let cumulative { previousVolume = cumulative }
-                parsed.append(IntradayBar(code: holding.code, timestamp: date, price: price, volume: delta, day: day))
-            }
-            guard !parsed.isEmpty else { minuteStatus = "今日尚无分钟数据，或市场休市"; return }
             // 腾讯分时响应另含 ETF 汇总行情 qt；折溢价率字段为百分数。
             // 仅在品种确认为 ETF 且数值有效时计算 IOPV，缺字段不以昨收净值代替。
-            if let qt = root["qt"] as? [String: Any], let values = qt[symbol] as? [Any],
+            let quoteValues = (root?["qt"] as? [String: Any]).flatMap { qt in
+                (qt[symbol] ?? qt.first(where: { $0.key.caseInsensitiveCompare(symbol) == .orderedSame })?.value) as? [Any]
+            }
+            if let values = quoteValues,
                values.count > 63, (values[61] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ETF" {
                 func field(_ index: Int) -> Double? {
                     guard values.indices.contains(index) else { return nil }

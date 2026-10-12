@@ -224,7 +224,8 @@ struct HistoricalReplayView: View {
         if store.data.ledger.contains(where: { $0.kind == nil }) { warnings.append("部分旧版交易流水没有资产类别，回放暂按场内证券处理。") }
         let realizedETF = ledgerToDate.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
         let realizedFund = fundToDate.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
-        let cashDividends = fundToDate.filter { $0.side == .dividend && $0.dividendMode == .cash && !$0.linkedCash }.reduce(0) { $0 + $1.amount }
+        // 是否联动“参考现金”只影响现金余额，不影响这笔分红是否真实发生。
+        let cashDividends = fundToDate.filter { $0.side == .dividend && $0.dividendMode == .cash }.reduce(0) { $0 + $1.amount }
         let fees = ledgerToDate.reduce(0) { $0 + $1.fee } + fundToDate.reduce(0) { $0 + $1.fee }
         let laterBuys = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target && $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
             + laterFundTrades.filter { $0.side == .buy && !$0.isBackfill }.reduce(0) { $0 + $1.amount + (($1.isAutomaticDCA ?? false) ? 0 : $1.fee) }

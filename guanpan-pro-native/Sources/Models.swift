@@ -188,6 +188,42 @@ struct ETFDividendEvent: Codable, Identifiable {
     var amountPerShare: Double
 }
 
+/// 年股息展示的本机试算器。它不替代基金公告：有人工修正或近 12 个月真实事件时
+/// 一律优先使用真实值；完全没有资料时，才按 ETF 名称所属的指数风格给一个保守的
+/// 年化现金分配率，方便先估算当前持仓一年的可能现金流。
+enum ETFDividendProjection {
+    enum Source: Equatable { case manual, recorded, estimated }
+
+    static func estimatedYieldPercent(code: String, name: String) -> Double {
+        let text = (code + name).lowercased()
+        if text.contains("红利") || text.contains("高股息") { return 4.0 }
+        if text.contains("银行") { return 4.0 }
+        if text.contains("纳指") || text.contains("nasdaq") || text.contains("科技") || text.contains("成长") { return 0.5 }
+        if text.contains("沪深") || text.contains("中证") || text.contains("a500") || text.contains("上证50") { return 1.5 }
+        return 1.0
+    }
+
+    static func annualPerShare(for holding: Holding, events: [ETFDividendEvent], now: Date = .now)
+        -> (amount: Double, source: Source)? {
+        if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
+            return (manual, .manual)
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let cutoff = formatter.string(from: calendar.date(byAdding: .day, value: -365, to: now) ?? .distantPast)
+        let recorded = events
+            .filter { $0.code == holding.code && $0.date >= cutoff }
+            .reduce(0) { $0 + $1.amountPerShare }
+        if recorded > 0 { return (recorded, .recorded) }
+        guard holding.current.isFinite, holding.current > 0 else { return nil }
+        return (holding.current * estimatedYieldPercent(code: holding.code, name: holding.name) / 100, .estimated)
+    }
+}
+
 struct AllocationTarget: Codable, Identifiable {
     var id: String { "\(kind.rawValue)-\(code)" }
     var code: String

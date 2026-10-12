@@ -11,6 +11,8 @@ private struct DataTrustQuoteRow: Identifiable {
 struct DataTrustView: View {
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
+    @State private var isManuallyRefreshingQuotes = false
+    @State private var isManuallyRefreshingFunds = false
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
 
@@ -66,10 +68,10 @@ struct DataTrustView: View {
                     LabeledContent("交易时段", value: sessionDescription)
                     LabeledContent("刷新状态", value: store.sourceStatus)
                     LabeledContent("最近行情时间戳", value: latestQuoteTime.map { $0.formatted(date: .abbreviated, time: .standard) } ?? "行情源未提供时间戳")
-                    Button(store.isRefreshingQuotes ? "正在刷新行情…" : "手动刷新行情") {
+                    Button(isManuallyRefreshingQuotes ? "正在刷新行情…" : "手动刷新行情") {
                         Task { await refreshQuotes() }
                     }
-                        .disabled(store.isRefreshingQuotes)
+                        .disabled(isManuallyRefreshingQuotes)
                     if quoteRows.isEmpty {
                         Text("尚无自选或 ETF 行情记录。获取时间未知时不会把保存价格称作实时价。")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -91,10 +93,10 @@ struct DataTrustView: View {
                 .toneCard(staleCount > 0 ? CardTone.warn : CardTone.ok, isLight: isLight)
                 Section("场外基金已公布净值") {
                     if activeFunds.isEmpty { Text("没有当前场外基金持仓。").foregroundStyle(.secondary) }
-                    Button(store.isRefreshingFunds ? "正在更新净值…" : "更新已公布净值") {
+                    Button(isManuallyRefreshingFunds ? "正在更新净值…" : "更新已公布净值") {
                         Task { await refreshFunds() }
                     }
-                        .disabled(store.isRefreshingFunds)
+                        .disabled(isManuallyRefreshingFunds)
                     Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
                     ForEach(activeFunds) { fund in
                         let point = store.data.fundNAVHistory.filter { $0.code == fund.code }.max { $0.date < $1.date }
@@ -132,13 +134,31 @@ struct DataTrustView: View {
     }
 
     @MainActor private func refreshQuotes() async {
+        guard !isManuallyRefreshingQuotes else { return }
+        isManuallyRefreshingQuotes = true
+        defer { isManuallyRefreshingQuotes = false }
         refreshFeedback.begin("正在刷新行情…")
+        let deadline = Date().addingTimeInterval(25)
+        while store.isRefreshingQuotes && Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+        guard !store.isRefreshingQuotes else {
+            refreshFeedback.finish("自动行情请求仍未结束，请稍后重试", succeeded: false)
+            return
+        }
         let ok = await store.refreshQuotesAndWait()
         refreshFeedback.finish(ok ? "行情已更新" : store.sourceStatus, succeeded: ok)
     }
 
     @MainActor private func refreshFunds() async {
+        guard !isManuallyRefreshingFunds else { return }
+        isManuallyRefreshingFunds = true
+        defer { isManuallyRefreshingFunds = false }
         refreshFeedback.begin("正在更新已公布净值…")
+        let deadline = Date().addingTimeInterval(25)
+        while store.isRefreshingFunds && Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+        guard !store.isRefreshingFunds else {
+            refreshFeedback.finish("净值请求仍未结束，请稍后重试", succeeded: false)
+            return
+        }
         let ok = await store.refreshFundNAVsAndWait()
         refreshFeedback.finish(store.fundNAVStatus, succeeded: ok)
     }

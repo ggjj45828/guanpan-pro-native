@@ -118,7 +118,9 @@ enum NASSyncService {
         var lastError: Error = NASSyncError.server("NAS 行情代理未返回有效数据")
         for (path, items, wrapped) in candidates {
             var candidate = components
-            candidate.path = candidate.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path
+            let basePath = candidate.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            candidate.path = "/" + ([basePath, path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))]
+                .filter { !$0.isEmpty }.joined(separator: "/"))
             candidate.queryItems = items
             guard let url = candidate.url else { throw NASSyncError.invalidAddress }
             var request = URLRequest(url: url)
@@ -131,10 +133,15 @@ enum NASSyncService {
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                     throw NASSyncError.server("NAS 行情代理 HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
                 }
-                if wrapped,
-                   let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-                   let encoded = object["dataBase64"] as? String,
-                   let decoded = Data(base64Encoded: encoded) { return decoded }
+                if wrapped {
+                    guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                          let encoded = object["dataBase64"] as? String,
+                          let decoded = Data(base64Encoded: encoded) else {
+                        let detail = (try? JSONSerialization.jsonObject(with: bytes) as? [String: Any])?["err"] as? String
+                        throw NASSyncError.server(detail ?? "NAS 行情代理包装格式无效")
+                    }
+                    return decoded
+                }
                 return bytes
             } catch { lastError = error }
         }

@@ -458,8 +458,8 @@ final class PortfolioStore: ObservableObject {
         let flowDays = data.cashFlows.map { dayString($0.date) }
         let fundDays = data.fundTransactions.map(\.effectiveDate)
         let allDays = (ledgerDays + flowDays + fundDays).filter { !$0.isEmpty }
-        let earliestDay = allDays.min()
-            ?? dayString(Calendar.current.date(byAdding: .year, value: -2, to: .now)!)
+        let fallbackDate = Calendar.current.date(byAdding: .year, value: -2, to: .now) ?? .now
+        let earliestDay = allDays.min() ?? dayString(fallbackDate)
         // 1) ETF / 证券：本地日 K 没覆盖到最早交易日时向前补齐（最多 640 个交易日）。
         let etfCodes = Set(data.holdings.filter { $0.kind == .etf }.map(\.code)
             + data.ledger.filter { ($0.kind ?? .etf) == .etf }.map(\.code))
@@ -582,62 +582,35 @@ final class PortfolioStore: ObservableObject {
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else { throw URLError(.badURL) }
         let symbol = tencentSymbol(code)
-        guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=min_archive_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else {
-            throw URLError(.badURL)
-        }
-
-        let bytes: Data
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 12
-            let (direct, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            bytes = direct
-        } catch {
-            if let proxied = try? await NASSyncService.marketProxyData(
-                path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]
-            ) {
-                bytes = proxied
-            } else {
-                throw error
+        var parsed: [IntradayBar] = []
+        var lastError: Error = URLError(.cannotLoadFromNetwork)
+        for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
+            guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=min_archive_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else { continue }
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 12
+                request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+                let (bytes, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                parsed = parseTencentMinuteData(bytes, symbol: symbol)
+                if !parsed.isEmpty { break }
+                lastError = URLError(.cannotParseResponse)
+            } catch {
+                lastError = error
             }
         }
-
-        guard let raw = String(data: bytes, encoding: .utf8),
-              let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
-              let root = try JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any],
-              let nodes = root["data"] as? [String: Any],
-              let node = nodes[symbol] as? [String: Any],
-              let payload = node["data"] as? [String: Any],
-              let rows = payload["data"] as? [String] else {
-            throw URLError(.cannotParseResponse)
+        if parsed.isEmpty,
+           let proxied = try? await NASSyncService.marketProxyData(
+               path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
+            parsed = parseTencentMinuteData(proxied, symbol: symbol)
         }
-
-        let rawDay = (payload["date"] as? String) ?? Self.shanghaiDay(.now)
-        let day: String
-        if rawDay.count == 8, rawDay.allSatisfy(\.isNumber) {
-            day = "\(rawDay.prefix(4))-\(rawDay.dropFirst(4).prefix(2))-\(rawDay.suffix(2))"
-        } else {
-            day = rawDay
+        guard !parsed.isEmpty else { throw lastError }
+        // 通用解析器会以腾讯代码标识 bar；归档必须恢复用户账本中的纯代码，历史页才能命中。
+        return parsed.map {
+            IntradayBar(code: code, timestamp: $0.timestamp, price: $0.price,
+                        volume: $0.volume, day: $0.day)
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        var previousVolume = 0.0
-        var parsed: [IntradayBar] = []
-        parsed.reserveCapacity(rows.count)
-        for row in rows {
-            let fields = row.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            guard fields.count >= 2, let price = Double(fields[1]), price.isFinite, price > 0,
-                  let timestamp = formatter.date(from: "\(day) \(fields[0])") else { continue }
-            let cumulative = fields.count > 2 ? Double(fields[2]) : nil
-            let volume = cumulative.map { max(0, $0 - previousVolume) }
-            if let cumulative { previousVolume = cumulative }
-            parsed.append(IntradayBar(code: code, timestamp: timestamp, price: price, volume: volume, day: day))
-        }
-        guard !parsed.isEmpty else { throw URLError(.zeroByteResource) }
-        return parsed
     }
 
     /// 补全全部自选和场内持仓的最近交易日分时。自动任务每 30 分钟至多执行一次；
