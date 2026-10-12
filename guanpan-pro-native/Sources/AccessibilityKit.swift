@@ -152,6 +152,7 @@ extension View {
             if let item = model.item {
                 RefreshFeedbackBanner(item: item)
                     .padding(.top, 8)
+                    .allowsHitTesting(false)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(100)
             }

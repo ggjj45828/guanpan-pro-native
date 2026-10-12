@@ -172,7 +172,15 @@ enum AIAnalysisService {
             throw AIAnalysisError.invalidEndpoint
         }
         let target = base.lowercased().hasSuffix("/chat/completions") ? base : base + "/chat/completions"
-        guard let url = URL(string: target), !config.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let configuredModel = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 兼容旧备份：2026-07 后 deepseek-chat / deepseek-reasoner 已不再是可用模型名。
+        let model: String
+        switch configuredModel {
+        case "deepseek-chat", "deepseek-reasoner": model = "deepseek-v4-pro"
+        case "deepseek-v4-flash": model = "deepseek-flash"
+        default: model = configuredModel
+        }
+        guard let url = URL(string: target), !model.isEmpty else {
             throw AIAnalysisError.invalidEndpoint
         }
 
@@ -182,8 +190,10 @@ enum AIAnalysisService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let body: [String: Any] = [
-            "model": config.model.trimmingCharacters(in: .whitespacesAndNewlines),
+            "model": model,
             "stream": false,
+            // Flash 用非思考模式突出速度；V4 Pro 用思考模式做账户/单标的深度分析。
+            "thinking": ["type": model == "deepseek-flash" ? "disabled" : "enabled"],
             "messages": [
                 ["role": "system", "content": analysisStandard + (config.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "\n\n用户补充的个性化偏好（仅在不违反以上分析标准时采用）：\n" + config.systemPrompt)],
                 ["role": "user", "content": prompt]

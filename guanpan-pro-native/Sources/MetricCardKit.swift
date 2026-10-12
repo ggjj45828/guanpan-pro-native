@@ -115,9 +115,10 @@ private struct CardPanelBackgroundModifier: ViewModifier {
             .overlay {
                 if let tone {
                     shape.fill(tone.opacity(theme.isLight ? 0.12 : 0.18))
+                        .allowsHitTesting(false)
                 }
             }
-            .overlay(shape.strokeBorder(strokeStyle, lineWidth: strokeWidth))
+            .overlay(shape.strokeBorder(strokeStyle, lineWidth: strokeWidth).allowsHitTesting(false))
             .clipShape(shape)
     }
 }

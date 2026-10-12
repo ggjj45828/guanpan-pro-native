@@ -196,7 +196,7 @@ extension PortfolioStore {
             throw GridError.invalidCSV
         }
         var parsed: [IntradayBar] = []
-        let tz = TimeZone(identifier: "Asia/Shanghai")!
+        let tz = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let dateFormats = ["yyyy-MM-dd HH:mm", "yyyy/MM/dd HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy/MM/dd HH:mm:ss"]
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = tz
         let dayFormatter = DateFormatter(); dayFormatter.locale = Locale(identifier: "en_US_POSIX"); dayFormatter.timeZone = tz; dayFormatter.dateFormat = "yyyy-MM-dd"
@@ -248,7 +248,7 @@ extension PortfolioStore {
 
     func captureMinuteQuotes(_ quotes: [(String, Double)], at time: Date = .now) {
         guard !quotes.isEmpty else { return }
-        let tz = TimeZone(identifier: "Asia/Shanghai")!
+        let tz = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = tz; formatter.dateFormat = "yyyy-MM-dd"
         let minute = Int(time.timeIntervalSince1970 / 60)
         var added: [IntradayBar] = []

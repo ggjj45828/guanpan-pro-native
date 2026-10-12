@@ -9,6 +9,9 @@ final class PortfolioStore: ObservableObject {
     @Published var dailyBars: [String: [DailyBar]] = [:]
     @Published var sourceStatus = "等待刷新"
     @Published private(set) var marketChanges: [String: Double] = [:]
+    /// 腾讯 ETF 报价中可核实的实时折溢价率（百分数单位）。仅用于当前界面，
+    /// 不写入账本；接口没给或品种不是 ETF 时保持 nil，绝不拿昨收/净值猜。
+    @Published private(set) var marketPremiums: [String: Double] = [:]
     @Published var fundNAVStatus = "尚未更新基金净值"
     @Published var fundHoldingsStatus = "基金重仓尚未更新"
     @Published var isRefreshingFundHoldings = false
@@ -1339,9 +1342,13 @@ final class PortfolioStore: ObservableObject {
     /// 主机按稳定性排序：`web.ifzq.gtimg.cn` 走 CDN、比裸 `ifzq` 更稳，任一成功即返回。
     func fetchTencentMinutes(symbol: String) async -> [IntradayBar] {
         for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
-            guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=m&code=\(symbol)") else { continue }
-            var request = URLRequest(url: url); request.timeoutInterval = 12
-            guard let direct = try? await URLSession.shared.data(for: request) else { continue }
+            let variable = "min_data_\(Int(Date().timeIntervalSince1970 * 1000))"
+            guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=\(variable)&code=\(symbol)&_t=\(Int(Date().timeIntervalSince1970))") else { continue }
+            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+            request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            guard let direct = try? await URLSession.shared.data(for: request),
+                  (direct.1 as? HTTPURLResponse)?.statusCode == 200 else { continue }
             let bars = parseTencentMinuteData(direct.0, symbol: symbol)
             guard !bars.isEmpty else { continue }
             return bars
@@ -1356,11 +1363,17 @@ final class PortfolioStore: ObservableObject {
         guard let raw = String(data: data, encoding: .utf8),
               let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
               let root = try? JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any],
-              let nodes = root["data"] as? [String: Any],
-              let node = nodes[symbol] as? [String: Any],
-              let payload = node["data"] as? [String: Any],
-              let rows = payload["data"] as? [String] else { return [] }
-        let day = Self.normalizedDay((payload["date"] as? String) ?? "")
+              let nodes = root["data"] as? [String: Any] else { return [] }
+        let node = (nodes[symbol] as? [String: Any])
+            ?? (nodes.first { $0.key.caseInsensitiveCompare(symbol) == .orderedSame }?.value as? [String: Any])
+            ?? (nodes.values.first as? [String: Any])
+        guard let node else { return [] }
+        let payload = (node["data"] as? [String: Any]) ?? node
+        let rows = (payload["data"] as? [String]) ?? (payload["items"] as? [String]) ?? []
+        guard !rows.isEmpty else { return [] }
+        let rawDay = (payload["date"] as? String) ?? (node["date"] as? String) ?? ""
+        let day = Self.normalizedDay(rawDay)
+        guard day.count == 10 else { return [] }
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
         var parsed: [IntradayBar] = []
@@ -1470,8 +1483,13 @@ final class PortfolioStore: ObservableObject {
             // 改成先在局部副本上改完，最后一次性赋回：通知次数从「标的数量」降到固定两次。
             // 刷新该多慢就多慢（用户明确说过慢一点没关系），但界面不再抖。
             var changes = marketChanges
+            var premiums = marketPremiums
             for code in symbols {
-                if let quote = values[tencentSymbol(code)] { changes[code] = quote.changePct }
+                if let quote = values[tencentSymbol(code)] {
+                    changes[code] = quote.changePct
+                    if let premium = quote.premiumPct { premiums[code] = premium }
+                    else { premiums.removeValue(forKey: code) }
+                }
             }
             var updated = data
             for i in updated.quotes.indices {
@@ -1492,6 +1510,7 @@ final class PortfolioStore: ObservableObject {
             applyManualQuoteOverrides(to: &updated, changes: &changes)
             data = updated
             marketChanges = changes
+            marketPremiums = premiums
             if Self.isRegularTradingSession(Date()) {
                 checkQuoteAlerts(using: values)
                 if captureIntraday && data.intradayCaptureEnabled {
@@ -1508,6 +1527,7 @@ final class PortfolioStore: ObservableObject {
                     }
                     advanceLegacyShadowSimulations(shadowQuotes)
                 }
+                evaluateIntradayCompanions()
             }
             let route = usedNASProxy ? "NAS 代理" : "iPhone 直连"
             saveAutomaticMarketState()
@@ -1533,8 +1553,10 @@ final class PortfolioStore: ObservableObject {
     }
 
     func setManualQuoteOverride(code: String, price: Double, previousClose: Double?) throws {
-        guard !code.isEmpty, price.isFinite, price > 0,
-              previousClose == nil || (previousClose!.isFinite && previousClose! > 0) else { throw StoreError.invalidManualPrice }
+        let previousCloseIsValid = previousClose.map { $0.isFinite && $0 > 0 } ?? true
+        guard !code.isEmpty, price.isFinite, price > 0, previousCloseIsValid else {
+            throw StoreError.invalidManualPrice
+        }
         data.manualQuoteOverrides[code] = ManualQuoteOverride(price: price, previousClose: previousClose)
         applyManualQuoteOverrides()
         save(label: "修改手动行情")
@@ -1590,7 +1612,7 @@ final class PortfolioStore: ObservableObject {
         save(label: "重新启用价格提醒")
     }
 
-    private func checkQuoteAlerts(using quotes: [String: (name: String, price: Double, changePct: Double, timestamp: Date?)]) {
+    private func checkQuoteAlerts(using quotes: [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?)]) {
         var changed = false
         for index in data.quoteAlerts.indices where data.quoteAlerts[index].enabled {
             let alert = data.quoteAlerts[index]
@@ -1830,6 +1852,8 @@ final class PortfolioStore: ObservableObject {
         data.snapshots[i].total = totalAsset
         data.snapshots[i].cash = data.cash
         data.snapshots[i].recordedAt = .now
+        data.snapshots[i].quality = snapshotQuality(for: today)
+        data.snapshots[i].note = data.snapshots[i].quality == .provisional ? "仍有基金净值未结算" : nil
         return true
     }
 
@@ -1928,8 +1952,8 @@ final class PortfolioStore: ObservableObject {
             ?? String(data: bytes, encoding: .isoLatin1) ?? ""
     }
 
-    private func parseTencent(_ text: String) -> [String: (name: String, price: Double, changePct: Double, timestamp: Date?)] {
-        var result: [String: (String, Double, Double, Date?)] = [:]
+    private func parseTencent(_ text: String) -> [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?)] {
+        var result: [String: (String, Double, Double, Date?, Double?)] = [:]
         let pattern = #"v_([a-zA-Z0-9]+)="([^"]*)""#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return result }
         let ns = text as NSString
@@ -1940,7 +1964,10 @@ final class PortfolioStore: ObservableObject {
             let name = String(fields[1])
             let pct = Double(fields[32]) ?? 0
             let timestamp = fields.count > 30 ? parseTencentTimestamp(String(fields[30])) : nil
-            result[symbol] = (name, price, pct / 100, timestamp)
+            let securityType = fields.count > 61 ? String(fields[61]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased() : ""
+            let rawPremium = fields.count > 63 ? Double(fields[63]) : nil
+            let premium = securityType == "ETF" ? rawPremium.flatMap { $0.isFinite && (-50...50).contains($0) ? $0 : nil } : nil
+            result[symbol] = (name, price, pct / 100, timestamp, premium)
         }
         return result
     }
@@ -2388,7 +2415,9 @@ final class PortfolioStore: ObservableObject {
 
     func recordSnapshot() {
         let date = dayString(.now)
-        let snap = PortfolioSnapshot(date: date, total: totalAsset, cash: data.cash, recordedAt: .now)
+        let quality = snapshotQuality(for: date)
+        let snap = PortfolioSnapshot(date: date, total: totalAsset, cash: data.cash, recordedAt: .now,
+                                     quality: quality, note: quality == .provisional ? "仍有基金净值未结算" : nil)
         if let i = data.snapshots.firstIndex(where: { $0.date == date }) { data.snapshots[i] = snap }
         else { data.snapshots.append(snap) }
         data.snapshots.sort { $0.date < $1.date }; save(label: "记录资产快照")
@@ -2422,12 +2451,11 @@ final class PortfolioStore: ObservableObject {
         Array(Set(data.snapshots.map { String($0.date.prefix(7)) })).sorted(by: >)
     }
 
-    /// Realized ETF/stock returns are exact only for trades recorded in this
-    /// ledger. Older untagged entries are intentionally omitted rather than
-    /// being guessed to belong to the ETF account.
+    /// ETF / 证券已实现收益来自账本流水。旧版流水没有 kind 字段；
+    /// 当时只支持 ETF，因此 nil 按 ETF 兼容。
     func ledgerDailyRealized(month: String) -> [(date: String, profit: Double, trades: Int)] {
         let grouped = Dictionary(grouping: data.ledger.filter {
-            $0.kind == .etf && String(dayString($0.date).prefix(7)) == month
+            ($0.kind ?? .etf) == .etf && String(dayString($0.date).prefix(7)) == month
         }, by: { dayString($0.date) })
         return grouped.keys.sorted(by: >).map { date in
             let entries = grouped[date] ?? []
@@ -2436,7 +2464,8 @@ final class PortfolioStore: ObservableObject {
     }
 
     var ledgerMonths: [String] {
-        Array(Set(data.ledger.filter { $0.kind == .etf }.map { String(dayString($0.date).prefix(7)) })).sorted(by: >)
+        Array(Set(data.ledger.filter { ($0.kind ?? .etf) == .etf }
+            .map { String(dayString($0.date).prefix(7)) })).sorted(by: >)
     }
 
     func adjustCash(amount: Double, memo: String) throws {

@@ -126,6 +126,16 @@ extension PortfolioStore {
     func importTradeLedger(_ drafts: [TradeImportDraft]) throws -> Int {
         let chosen = drafts.filter { $0.selected && $0.isValid }
         guard !chosen.isEmpty else { throw StoreError.invalidTrade }
+        struct ValidatedImport {
+            var draft: TradeImportDraft
+            var date: Date
+            var side: LedgerEntry.Side
+        }
+        let validated = chosen.compactMap { draft -> ValidatedImport? in
+            guard let date = draft.date, let side = draft.side else { return nil }
+            return ValidatedImport(draft: draft, date: date, side: side)
+        }
+        guard validated.count == chosen.count else { throw StoreError.invalidTrade }
         let dayFormatter = DateFormatter(); dayFormatter.locale = Locale(identifier: "en_US_POSIX")
         dayFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); dayFormatter.dateFormat = "yyyy-MM-dd"
         func sameTrade(_ lhs: LedgerEntry, code: String, side: LedgerEntry.Side, quantity: Double, price: Double, date: Date) -> Bool {
@@ -139,17 +149,18 @@ extension PortfolioStore {
         var seen = Set(data.ledger.filter { ($0.kind ?? .etf) == .etf }.map {
             key(code: $0.code, side: $0.side, quantity: $0.quantity, price: $0.price, date: $0.date)
         })
-        let newRows = chosen.filter { draft in
-            let duplicate = data.ledger.contains { sameTrade($0, code: draft.code, side: draft.side!, quantity: draft.quantity, price: draft.price, date: draft.date!) }
-            return !duplicate && seen.insert(key(code: draft.code, side: draft.side!, quantity: draft.quantity, price: draft.price, date: draft.date!)).inserted
+        let newRows = validated.filter { item in
+            let draft = item.draft
+            let duplicate = data.ledger.contains { sameTrade($0, code: draft.code, side: item.side, quantity: draft.quantity, price: draft.price, date: item.date) }
+            return !duplicate && seen.insert(key(code: draft.code, side: item.side, quantity: draft.quantity, price: draft.price, date: item.date)).inserted
         }
         guard !newRows.isEmpty else { return 0 }
         struct Event { var date: Date; var code: String; var side: LedgerEntry.Side; var quantity: Double; var price: Double; var fee: Double; var rowNumber: Int }
         // Replay the selected file as a closed history so the current broker
         // balance is never used as a fictitious starting position.
-        let events = chosen.map {
-            Event(date: $0.date!, code: $0.code, side: $0.side!, quantity: $0.quantity,
-                  price: $0.price, fee: $0.fee, rowNumber: $0.rowNumber)
+        let events = validated.map {
+            Event(date: $0.date, code: $0.draft.code, side: $0.side, quantity: $0.draft.quantity,
+                  price: $0.draft.price, fee: $0.draft.fee, rowNumber: $0.draft.rowNumber)
         }.sorted {
             if $0.date != $1.date { return $0.date < $1.date }
             return $0.rowNumber < $1.rowNumber
@@ -175,10 +186,10 @@ extension PortfolioStore {
             }
         }
         var entries: [LedgerEntry] = []
-        for draft in newRows {
-            guard let date = draft.date, let side = draft.side else { continue }
-            entries.append(LedgerEntry(date: date, code: draft.code, name: draft.name,
-                side: side, quantity: draft.quantity, price: draft.price, fee: draft.fee,
+        for item in newRows {
+            let draft = item.draft
+            entries.append(LedgerEntry(date: item.date, code: draft.code, name: draft.name,
+                side: item.side, quantity: draft.quantity, price: draft.price, fee: draft.fee,
                 realizedPnL: realizedByRow[draft.rowNumber] ?? 0, linkedCash: false, kind: .etf,
                 affectsHoldings: false))
         }

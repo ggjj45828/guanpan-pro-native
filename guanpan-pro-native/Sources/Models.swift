@@ -149,6 +149,11 @@ struct QuoteAlert: Codable, Identifiable {
     var enabled: Bool
     var lastTriggeredAt: Date?
 }
+struct IntradayCompanionIntent: Codable, Identifiable {
+    enum Side: String, Codable { case buy, sell }
+    var id = UUID(); var code: String; var name: String; var side: Side; var quantity: Double
+    var enabled = true; var createdAt = Date.now; var lastDecision = ""; var lastNotifiedAt: Date?
+}
 
 struct Holding: Codable, Identifiable {
     var id: String { "\(kind.rawValue)-\(code)" }
@@ -262,11 +267,14 @@ struct TradePlan: Codable, Identifiable {
 }
 
 struct PortfolioSnapshot: Codable, Identifiable {
+    enum Quality: String, Codable { case provisional, settled, reconstructed }
     var id: String { date }
     var date: String
     var total: Double
     var cash: Double
     var recordedAt: Date? = nil
+    var quality: Quality? = nil
+    var note: String? = nil
 }
 
 struct CashFlow: Codable, Identifiable {
@@ -618,7 +626,15 @@ struct AIAnalysisConfig: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         endpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? "https://api.deepseek.com"
-        model = try container.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
+        let decodedModel = try container.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
+        // DeepSeek 已停用旧的 deepseek-chat / deepseek-reasoner 名称。
+        // 旧备份自动迁到当前官方模型，避免升级后分析按钮直接返回“模型不存在”。
+        switch decodedModel {
+        case "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash":
+            model = decodedModel == "deepseek-v4-flash" ? "deepseek-flash" : "deepseek-v4-pro"
+        default:
+            model = decodedModel
+        }
         timeoutSeconds = min(180, max(5, try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds) ?? 45))
         systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
             ?? "你是一个谨慎但有判断力的投资研究助手。结合用户真实持仓、成本、仓位约束与投资期限，给出有条件、可执行的下一步计划和失效条件；不要逐项复述指标。只依据输入，区分事实和推断，说明数据缺口，不编造外部消息，不承诺收益，不自动交易。"
@@ -662,6 +678,7 @@ struct OperationAuditRecord: Codable, Identifiable {
 struct PortfolioData: Codable {
     var quotes: [Quote] = []
     var quoteAlerts: [QuoteAlert] = []
+    var intradayCompanionIntents: [IntradayCompanionIntent] = []
     var manualQuoteOverrides: [String: ManualQuoteOverride] = [:]
     var etfDividendEvents: [ETFDividendEvent] = []
     var holdings: [Holding] = []
@@ -708,7 +725,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -717,6 +734,7 @@ struct PortfolioData: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         quotes = try c.decodeIfPresent([Quote].self, forKey: .quotes) ?? []
         quoteAlerts = try c.decodeIfPresent([QuoteAlert].self, forKey: .quoteAlerts) ?? []
+        intradayCompanionIntents = try c.decodeIfPresent([IntradayCompanionIntent].self, forKey: .intradayCompanionIntents) ?? []
         manualQuoteOverrides = try c.decodeIfPresent([String: ManualQuoteOverride].self, forKey: .manualQuoteOverrides) ?? [:]
         etfDividendEvents = try c.decodeIfPresent([ETFDividendEvent].self, forKey: .etfDividendEvents) ?? []
         holdings = try c.decodeIfPresent([Holding].self, forKey: .holdings) ?? []

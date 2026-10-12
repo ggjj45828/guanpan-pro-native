@@ -212,7 +212,7 @@ struct ReconciliationView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(holding.name).foregroundStyle(.primary)
-                            Text("账本基准 \((holding.cost).num(6)) · 当前显示 \((store.displayedCost(for: holding)).num(6)) · \((holding.quantity).num(4)) 份")
+                            Text("账本基准 \((holding.cost).num(6)) · 当前显示 \((store.displayedCost(for: holding)).num(6)) · \((holding.quantity).compactNum(4)) 份")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()

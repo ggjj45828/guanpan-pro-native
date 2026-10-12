@@ -147,7 +147,9 @@ private func xAxisLabel(_ date: String, _ bars: [DailyBar]) -> String {
     let sameMonth = bars.isEmpty || Set(bars.map { String($0.date.prefix(7)) }).count <= 1
     if sameMonth { return String(date.suffix(5)).replacingOccurrences(of: "-", with: "/") }
     let month = String(date.dropFirst(5).prefix(2))
-    let spansMultipleYears = bars.count > 1 && String(bars.first!.date.prefix(4)) != String(bars.last!.date.prefix(4))
+    let spansMultipleYears = bars.first.map { first in
+        bars.last.map { String(first.date.prefix(4)) != String($0.date.prefix(4)) } ?? false
+    } ?? false
     guard spansMultipleYears else { return "\(month)月" }
     return "\(String(date.prefix(4)).suffix(2))/\(month)"
 }
@@ -168,6 +170,7 @@ struct MarketChartView: View {
     @State private var showIntradayPreviousClose = IntradayVisibility.showPreviousClose
     @State private var intradayVolumeMAs = IntradayVisibility.volumeMAs
     @State private var showInstrumentAI = false
+    @State private var showIntradayCompanion = false
     @State private var instrumentAIResult = ""
     @State private var instrumentAIMessage = ""
     @State private var instrumentAIBusy = false
@@ -401,6 +404,16 @@ struct MarketChartView: View {
         let peak = minuteMACD.flatMap { [abs($0.dif), abs($0.dea), abs($0.histogram)] }.max() ?? 0
         let bound = (peak.isFinite && peak > 0 ? peak : 1) * 1.12
         return -bound...bound
+    }
+    private var intradayPriceYDomain: ClosedRange<Double> {
+        var values = selectedIntradayBars.map(\.price)
+        if showIntradayAverage { values += intradayAvgPoints.map(\.price) }
+        if showIntradayIOPV { values += selectedDayIOPVPoints.map(\.value); if selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { values.append(v) } }
+        if showIntradayPreviousClose, let v = intradayPrevClose { values.append(v) }
+        values = values.filter { $0 > 0 && $0.isFinite }
+        guard let low = values.min(), let high = values.max() else { return 0...1 }
+        let ref = max(abs(low), abs(high), 0.0001), spread = max(high - low, ref * 0.002), pad = max(spread * 0.09, ref * 0.0006)
+        return (low - pad)...(high + pad)
     }
     private var priceLevels: PriceLevelSummary? {
         let today = shanghaiDay(.now)
@@ -640,105 +653,17 @@ struct MarketChartView: View {
                             Text("换手 \(stats.turnoverPercent.map { $0.pct(2) } ?? "暂无")  ·  振幅 \(stats.amplitudePercent.map { $0.pct(2) } ?? "暂无")  ·  成交额 \(stats.amountYi.map { "\($0.num(2))亿" } ?? "暂无")  ·  规模 \(stats.marketCapYi.map { "\($0.num(2))亿" } ?? "暂无")")
                                 .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(2).minimumScaleFactor(0.75)
                         }
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 7) {
-                                intradayLayerButton("均价", isOn: showIntradayAverage, color: .orange) {
-                                    showIntradayAverage.toggle()
-                                    IntradayVisibility.write(average: showIntradayAverage)
-                                }
-                                intradayLayerButton("IOPV", isOn: showIntradayIOPV, color: .purple) {
-                                    showIntradayIOPV.toggle()
-                                    IntradayVisibility.write(iopv: showIntradayIOPV)
-                                }
-                                intradayLayerButton("昨收", isOn: showIntradayPreviousClose, color: .secondary) {
-                                    showIntradayPreviousClose.toggle()
-                                    IntradayVisibility.write(previousClose: showIntradayPreviousClose)
-                                }
-                            }
-                        }
                         if selectedIntradayBars.count > 1 {
-                            Chart(selectedIntradayBars) { point in
-                                LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
-                                    .foregroundStyle(colorScheme == .dark ? Color.white : Color.black).interpolationMethod(.linear)
-                                    .lineStyle(StrokeStyle(lineWidth: 1.25))
-                                // 均价线：累计成交额 / 累计成交量
-                                if showIntradayAverage {
-                                    ForEach(intradayAvgPoints) { avg in
-                                        LineMark(x: .value("时间", avg.timestamp), y: .value("均价", avg.price))
-                                            .foregroundStyle(Color.orange)
-                                            .lineStyle(StrokeStyle(lineWidth: 1.1))
-                                    }
-                                }
-                                if showIntradayIOPV {
-                                    ForEach(selectedDayIOPVPoints) { point in
-                                        LineMark(x: .value("时间", point.timestamp), y: .value("IOPV", point.value))
-                                            .foregroundStyle(Color.purple)
-                                            .lineStyle(StrokeStyle(lineWidth: 1.1))
-                                    }
-                                }
-                                // 昨收基准虚线，一眼看出现在相对昨天是红是绿
-                                if showIntradayPreviousClose, let prev = intradayPrevClose {
-                                    RuleMark(y: .value("昨收", prev))
-                                        .foregroundStyle(Color.secondary.opacity(0.55))
-                                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                                }
-                            }
-                            .frame(height: 320)
-                            .chartXScale(domain: intradayXDomain)
-                            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
-                            Picker("分时副图", selection: $intradaySubchart) {
-                                ForEach(IntradaySubchart.allCases) { item in Text(item.rawValue).tag(item) }
-                            }.pickerStyle(.segmented)
-                            if intradaySubchart == .macd {
-                                Chart(minuteMACD) { point in
-                                    BarMark(x: .value("时间", point.time), y: .value("MACD柱", point.histogram))
-                                        .foregroundStyle(point.histogram >= 0 ? Color.red : Color.green)
-                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif))
-                                        .foregroundStyle(Color.cyan).lineStyle(StrokeStyle(lineWidth: 1))
-                                    LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea))
-                                        .foregroundStyle(Color.orange).lineStyle(StrokeStyle(lineWidth: 1))
-                                    // 零轴：金叉死叉都发生在零轴附近，标出来才看得清交叉点
-                                    RuleMark(y: .value("零轴", 0))
-                                        .foregroundStyle(Color.secondary.opacity(0.5))
-                                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                                }
-                                .frame(height: 150)
-                                .chartXScale(domain: intradayXDomain)
-                                .chartYScale(domain: minuteMACDYDomain)
-                                .chartXAxis(.hidden)
-                            } else if selectedIntradayBars.contains(where: { $0.volume != nil }) {
-                                HStack(spacing: 7) {
-                                    Text("量均线").font(.caption).foregroundStyle(.secondary)
-                                    ForEach([20, 60, 250], id: \.self) { period in
-                                        intradayVolumeMAButton(period)
-                                    }
-                                }
-                                Chart {
-                                    // 直接画本机采集的逐分钟成交量（与价格线同源），
-                                    // 不再依赖聚合后的 minuteBuckets —— 之前副图只认聚合桶，
-                                    // 某些来源成交量丢失后整张分时量就不显示。
-                                    ForEach(selectedIntradayBars.filter { $0.volume != nil }) { point in
-                                        BarMark(x: .value("时间", point.timestamp), y: .value("成交量", point.volume ?? 0))
-                                            .foregroundStyle(Color.cyan.opacity(0.68))
-                                    }
-                                    ForEach(intradayVolumeMAs.sorted(), id: \.self) { period in
-                                        ForEach(intradayVolumeMA(period)) { point in
-                                            LineMark(x: .value("时间", point.time), y: .value("量均线", point.value),
-                                                     series: .value("周期", "MA\(period)"))
-                                                .foregroundStyle(intradayVolumeMAColor(period))
-                                                .lineStyle(StrokeStyle(lineWidth: 1.15))
-                                        }
-                                    }
-                                }
-                                .frame(height: 120)
-                                .chartXScale(domain: intradayXDomain)
-                                .chartXAxis(.hidden)
-                            }
+                            intradayPanel
                             Text("腾讯当日分时 · 前台约 15 秒刷新 · \(minuteStatus)").font(.caption).foregroundStyle(.secondary)
                         } else {
                             ContentUnavailableView("暂无当日分时", systemImage: "chart.xyaxis.line", description: Text(minuteStatus))
                         }
-                        Button { Task { await manuallyRefreshMinute() } } label: { Label("刷新分时", systemImage: "arrow.clockwise") }
+                        HStack {
+                            Button { Task { await manuallyRefreshMinute() } } label: { Label("刷新分时", systemImage: "arrow.clockwise") }
+                            Spacer()
+                            Button { showIntradayCompanion = true } label: { Label("盘中 AI 陪伴", systemImage: "sparkles.rectangle.stack") }
+                        }
                     } else if selectedChartPeriod == .minute30 || selectedChartPeriod == .minute60 {
                         if minuteBuckets.count > 1 {
                             Chart(minuteBuckets) { point in
@@ -815,6 +740,7 @@ struct MarketChartView: View {
                                 }
                             }
                             .frame(height: 190)
+                            .chartYScale(domain: intradayPriceYDomain)
                             .chartXAxis {
                                 AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                                     AxisValueLabel(format: .dateTime.hour().minute())
@@ -986,6 +912,7 @@ struct MarketChartView: View {
             .fullScreenCover(isPresented: $showLandscapeChart) {
                 LandscapeChartView(holding: holding)
             }
+            .sheet(isPresented: $showIntradayCompanion) { IntradayCompanionView(holding: holding).themedSheetBackground() }
             .sheet(isPresented: $showInstrumentAI) {
                 NavigationStack {
                     List {
@@ -1458,6 +1385,46 @@ struct MarketChartView: View {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var intradayPanel: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(spacing: 7) {
+                Chart {
+                    ForEach(selectedIntradayBars) { p in LineMark(x: .value("时间", p.timestamp), y: .value("价格", p.price)).foregroundStyle(intradayLineColor) }
+                    if showIntradayAverage { ForEach(intradayAvgPoints) { p in LineMark(x: .value("时间", p.timestamp), y: .value("均价", p.price)).foregroundStyle(.orange) } }
+                    if showIntradayIOPV { ForEach(selectedDayIOPVPoints) { p in LineMark(x: .value("时间", p.timestamp), y: .value("IOPV", p.value)).foregroundStyle(.purple) } }
+                    if showIntradayIOPV, selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { RuleMark(y: .value("IOPV", v)).foregroundStyle(.purple).lineStyle(StrokeStyle(dash: [5,3])) }
+                    if showIntradayPreviousClose, let v = intradayPrevClose { RuleMark(y: .value("昨收", v)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [4,3])) }
+                }
+                .frame(height: 280).chartXScale(domain: intradayXDomain).chartYScale(domain: intradayPriceYDomain)
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisValueLabel(format: .dateTime.hour().minute()).font(.system(size: 9)) } }
+                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.15)); AxisValueLabel().font(.system(size: 8)) } }
+                if intradaySubchart == .macd {
+                    Chart(minuteMACD) { p in
+                        BarMark(x: .value("时间", p.time), y: .value("柱", p.histogram)).foregroundStyle(p.histogram >= 0 ? Color.red : Color.green)
+                        LineMark(x: .value("时间", p.time), y: .value("DIF", p.dif)).foregroundStyle(Color.primary)
+                        LineMark(x: .value("时间", p.time), y: .value("DEA", p.dea)).foregroundStyle(Color.orange)
+                        RuleMark(y: .value("零轴", 0)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [3,3]))
+                    }.frame(height: 125).chartXScale(domain: intradayXDomain).chartYScale(domain: minuteMACDYDomain).chartXAxis(.hidden)
+                } else {
+                    Chart(selectedIntradayBars.filter { $0.volume != nil }) { p in BarMark(x: .value("时间", p.timestamp), y: .value("量", p.volume ?? 0)).foregroundStyle(p.price >= (intradayPrevClose ?? p.price) ? Color.red : Color.green) }
+                        .frame(height: 125).chartXScale(domain: intradayXDomain).chartXAxis(.hidden)
+                }
+            }
+            VStack(spacing: 7) {
+                Text("主图").font(.caption2).foregroundStyle(.secondary)
+                rail("均价", showIntradayAverage, .orange) { showIntradayAverage.toggle(); IntradayVisibility.write(average: showIntradayAverage) }
+                rail("IOPV", showIntradayIOPV, .purple) { showIntradayIOPV.toggle(); IntradayVisibility.write(iopv: showIntradayIOPV) }
+                rail("昨收", showIntradayPreviousClose, .gray) { showIntradayPreviousClose.toggle(); IntradayVisibility.write(previousClose: showIntradayPreviousClose) }
+                Divider(); Text("副图").font(.caption2).foregroundStyle(.secondary)
+                rail("MACD", intradaySubchart == .macd, store.effectiveAccentColor) { intradaySubchart = .macd }
+                rail("分时量", intradaySubchart == .volume, store.effectiveAccentColor) { intradaySubchart = .volume }
+                Spacer()
+            }.frame(width: 76)
+        }.padding(8).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+    private func rail(_ title: String, _ on: Bool, _ color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Text(title).font(.system(size: 11, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 7).foregroundStyle(on ? Color.white : Color.secondary).background(on ? color : Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 7)) }.buttonStyle(.plain)
     }
     private func intradayLayerButton(_ title: String, isOn: Bool, color: Color,
                                      action: @escaping () -> Void) -> some View {

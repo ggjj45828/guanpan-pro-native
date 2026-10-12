@@ -122,6 +122,13 @@ struct IntradayArchiveView: View {
         guard let selectedTime else { return nil }
         return bars.min { abs($0.timestamp.timeIntervalSince(selectedTime)) < abs($1.timestamp.timeIntervalSince(selectedTime)) }
     }
+    private var priceDomain: ClosedRange<Double> {
+        let v = (bars.map(\.price) + average.map(\.value)).filter { $0 > 0 }
+        guard let lo = v.min(), let hi = v.max() else { return 0...1 }
+        let ref = max(abs(lo), abs(hi), 0.0001), spread = max(hi - lo, ref * 0.002), p = max(spread * 0.09, ref * 0.0006)
+        return (lo-p)...(hi+p)
+    }
+    private var macdDomain: ClosedRange<Double> { let p = max(macd.flatMap { [abs($0.dif),abs($0.dea),abs($0.histogram)] }.max() ?? 0, 0.000001) * 1.12; return -p...p }
 
     var body: some View {
         NavigationStack {
@@ -243,6 +250,7 @@ struct IntradayArchiveView: View {
                                 }
                             }
                             .frame(height: 260)
+                            .chartYScale(domain: priceDomain)
                             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
                             .chartXSelection(value: $selectedTime)
 
@@ -270,10 +278,11 @@ struct IntradayArchiveView: View {
                                 Chart(macd) { point in
                                     BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram))
                                         .foregroundStyle(point.histogram >= 0 ? Color.red : Color.green)
-                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif)).foregroundStyle(Color.cyan)
+                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif)).foregroundStyle(Color.primary)
                                     LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea)).foregroundStyle(Color.orange)
                                 }
                                 .frame(height: 110)
+                                .chartYScale(domain: macdDomain)
                                 .chartXAxis(.hidden)
                             }
 

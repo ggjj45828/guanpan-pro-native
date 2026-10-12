@@ -29,7 +29,7 @@ struct FundReconciliationView: View {
         NavigationStack {
             List {
                 Section("份额对比") {
-                    LabeledContent("当前持仓", value: (fund.quantity).num(4))
+                    LabeledContent("当前持仓", value: (fund.quantity).compactNum(4))
                     LabeledContent("已确认流水净份额", value: (ledgerShares).num(4))
                     LabeledContent("持仓减流水", value: (difference).num(4))
                     LabeledContent("待确认记录", value: "\(transactions.filter { $0.status == .pending }.count) 笔")
