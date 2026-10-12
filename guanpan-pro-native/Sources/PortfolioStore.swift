@@ -463,7 +463,7 @@ final class PortfolioStore: ObservableObject {
         // 1) ETF / 证券：本地日 K 没覆盖到最早交易日时向前补齐（最多 640 个交易日）。
         let etfCodes = Set(data.holdings.filter { $0.kind == .etf }.map(\.code)
             + data.ledger.filter { ($0.kind ?? .etf) == .etf }.map(\.code))
-        for code in etfCodes where code.count == 6, code.allSatisfy(\.isNumber) {
+        for code in etfCodes where code.count == 6 && code.allSatisfy(\.isNumber) {
             let cached = dailyBars[code] ?? []
             let reaches = cached.first.map { $0.date <= earliestDay } ?? false
             let maxed = cached.count >= 640

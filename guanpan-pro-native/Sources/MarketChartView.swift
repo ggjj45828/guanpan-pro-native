@@ -1512,7 +1512,7 @@ struct MarketChartView: View {
             } else if let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
                 data = proxied
             } else {
-                throw URLError(.cannotConnect)
+                throw URLError(.notConnectedToInternet)
             }
             guard let raw = String(data: data, encoding: .utf8),
                   let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
