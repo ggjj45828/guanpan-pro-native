@@ -2546,9 +2546,17 @@ final class PortfolioStore: ObservableObject {
     }
 
     func recordFundBackfill(code: String, date: Date, quantity: Double) throws {
+        // 只有存在真实成交流水（已确认的卖出 / 红利再投）能解释当前份额时，才允许补录历史起点。
+        // 若某只基金只是手工录入、没有任何买卖流水， inferredBackfillShares 会等于当前份额，
+        // 进而凭空生成一条“早已持有”的买入记录，得到看似精确但不可靠的旧快照——此种情况明确跳过。
+        let hasExplainingRecords = data.fundTransactions.contains {
+            $0.code == code && $0.status == .confirmed
+                && ($0.side == .sell || ($0.side == .dividend && $0.dividendMode == .reinvest))
+        }
         guard quantity.isFinite, quantity > 0,
               let holding = data.holdings.first(where: { $0.code == code && $0.kind == .fund }),
               !data.fundTransactions.contains(where: { $0.code == code && $0.side == .buy }),
+              hasExplainingRecords,
               abs(quantity - inferredBackfillShares(for: holding)) <= 0.01 else {
             throw StoreError.invalidFundBackfill
         }

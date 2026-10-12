@@ -55,7 +55,7 @@ struct IndexDetailView: View {
                     if isLoading {
                         ProgressView()
                             .frame(maxWidth: .infinity, minHeight: 230)
-                    } else if !hasHistorySource {
+                    } else if minutes.isEmpty && bars.isEmpty {
                         unavailableSection
                     } else if tab == .intraday {
                         intradaySection
@@ -74,6 +74,12 @@ struct IndexDetailView: View {
             .navigationTitle(index.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { isLoading = true; Task { await load() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(isLoading)
+                }
                 ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
             }
         }
@@ -191,12 +197,24 @@ struct IndexDetailView: View {
     }
 
     private var intradayAxis: some View {
-        HStack {
-            Text("09:30")
+        // 横轴标签按真实分时数据的首/中/尾时间生成，不再给港股、美股硬套 A 股 09:30–15:00。
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        fmt.dateFormat = "HH:mm"
+        let times = minutes.map(\.timestamp)
+        let start = times.first.map { fmt.string(from: $0) } ?? "--:--"
+        let end = times.last.map { fmt.string(from: $0) } ?? "--:--"
+        let mid: String = {
+            guard let f = times.first, let l = times.last else { return "--:--" }
+            return fmt.string(from: f.addingTimeInterval(l.timeIntervalSince(f) / 2))
+        }()
+        return HStack {
+            Text(start)
             Spacer()
-            Text("11:30 / 13:00")
+            Text(mid)
             Spacer()
-            Text("15:00")
+            Text(end)
         }
         .scaledFont(9).foregroundStyle(.secondary)
         .padding(.leading, 60)
@@ -421,13 +439,9 @@ struct IndexDetailView: View {
 
     @MainActor private func load() async {
         guard isLoading else { return }
-        // 没有历史行情源就别发那两个注定失败的请求 —— 等 12 秒超时再显示
-        //「数据源未返回」比直接说清「这个指数本来就没有」体验差得多。
-        guard hasHistorySource else {
-            isLoading = false
-            status = "该指数只提供实时快照；腾讯与东方财富都没有覆盖它的分时与日 K，新浪也不开放历史接口。上方价格与涨跌幅仍可用。"
-            return
-        }
+        // 不再用「有没有腾讯代码」提前拦请求：日经 / 东证 / 韩国没有腾讯代码，
+        // 但只要发请求，store 内部会依次尝试 腾讯 → 东方财富 → NAS 代理，
+        // 东财 / NAS 兜底因此能真正被执行，而不是在请求前被跳过。
         async let minuteResult = store.fetchIndexMinutes(quote: index)
         async let barResult = store.fetchIndexDailyBars(quote: index, count: 320)
         let (minuteBars, dailyBars) = await (minuteResult, barResult)

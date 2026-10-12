@@ -1489,20 +1489,30 @@ struct MarketChartView: View {
         } else {
             symbol = holding.code
         }
-        guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=min_data_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else { return }
         do {
             let data: Data
-            do {
-                // 行情走 iPhone 直连优先（与主行情通道一致），不依赖 NAS 穿透
-                var request = URLRequest(url: url); request.timeoutInterval = 12
-                let (direct, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                data = direct
-            } catch {
-                // 直连失败时才走 NAS 行情代理兜底
-                if let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
-                    data = proxied
-                } else { throw error }
+            // 双主机直连（web.ifzq → ifzq，与指数 / 后台补全同一套主机顺序），任一主机成功即用；
+            // 全部直连失败再走 NAS 行情代理兜底；仍失败则抛给外层 catch 统一设置失败文案。
+            // 修掉旧代码只用裸 ifzq 单主机导致“某些网络下指数能取、ETF 却空白”的问题。
+            var fetched: Data?
+            for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
+                let variable = "min_data_\(Int(Date().timeIntervalSince1970 * 1000))"
+                guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=\(variable)&code=\(symbol)") else { continue }
+                var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+                request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+                if let (direct, response) = try? await URLSession.shared.data(for: request),
+                   (response as? HTTPURLResponse)?.statusCode == 200 {
+                    fetched = direct
+                    break
+                }
+            }
+            if let fetched {
+                data = fetched
+            } else if let proxied = try? await NASSyncService.marketProxyData(path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
+                data = proxied
+            } else {
+                throw URLError(.cannotConnect)
             }
             guard let raw = String(data: data, encoding: .utf8),
                   let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
