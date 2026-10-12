@@ -103,6 +103,13 @@ struct IntradayArchiveView: View {
         return start...end
     }
 
+    private var timeDomain: ClosedRange<Date> {
+        if let domain = chartTimeDomain { return domain }
+        let lo = bars.first?.timestamp ?? Date()
+        let hi = bars.last?.timestamp ?? lo
+        return lo...hi
+    }
+
     private var average: [AveragePoint] {
         var simpleSum = 0.0
         var weightedSum = 0.0
@@ -154,186 +161,9 @@ struct IntradayArchiveView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("采集与归档") {
-                    HStack(spacing: 12) {
-                        Image(systemName: store.isArchivingIntraday ? "arrow.triangle.2.circlepath" : "externaldrive.badge.checkmark")
-                            .foregroundStyle(store.effectiveAccentColor)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(store.intradayArchiveStatus).font(.headline)
-                            Text("打开 App 或刷新行情时自动补全；旧交易日永久保留。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Button {
-                        Task { await manuallyArchive() }
-                    } label: {
-                        Label(store.isArchivingIntraday ? "正在补全…" : "立即补全全部标的", systemImage: "arrow.down.to.line.compact")
-                    }
-                    .disabled(store.isArchivingIntraday)
-                    Text("iPhone 将 App 完全关闭后，系统不会保证持续采集。这里会在下次打开或刷新时从行情源补回最近交易日整日分钟线，因此不用整天挂着页面。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .toneCard(store.effectiveAccentColor, isLight: isLight)
-
-                Section("覆盖状态") {
-                    if instruments.isEmpty {
-                        Text("先添加自选或场内持仓。")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        let coverageMap = coverageByCode
-                        ForEach(instruments) { instrument in
-                            let coverage = coverageMap[instrument.code] ?? Coverage(latestDay: nil, latestCount: 0)
-                            let latestDay = coverage.latestDay
-                            let count = coverage.latestCount
-                            Button {
-                                selectedCode = instrument.code
-                                selectedDay = latestDay ?? ""
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(instrument.name).font(.subheadline.weight(.semibold))
-                                        Text("\(instrument.code) · \(latestDay ?? "暂无日期")")
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 3) {
-                                        Text(count == 0 ? "未采集" : "\(count) 点")
-                                            .foregroundStyle(coverageColor(code: instrument.code, day: latestDay, count: count))
-                                        Text(coverageText(code: instrument.code, day: latestDay, count: count))
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Text("A 股完整交易日通常约 242 个分钟点；状态只反映本机实际保存数量，不会把缺口补造成行情。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
-
-                Section("历史复盘 / 学习") {
-                    if instruments.isEmpty {
-                        ContentUnavailableView("暂无可复盘标的", systemImage: "chart.xyaxis.line")
-                    } else {
-                        Picker("标的", selection: $selectedCode) {
-                            ForEach(instruments) { Text("\($0.name) · \($0.code)").tag($0.code) }
-                        }
-                        .onChange(of: selectedCode) { _, _ in selectLatestDay() }
-
-                        if days.isEmpty {
-                            ContentUnavailableView("暂无历史分时", systemImage: "clock.arrow.circlepath", description: Text("点“立即补全全部标的”后再查看。"))
-                        } else {
-                            Picker("交易日", selection: $selectedDay) {
-                                ForEach(days, id: \.self) { Text($0).tag($0) }
-                            }
-                            .onChange(of: selectedDay) { _, _ in selectedTime = nil }
-
-                            if let first = bars.first, let last = bars.last {
-                                HStack {
-                                    metric("开", first.price)
-                                    metric("高", bars.map(\.price).max() ?? first.price)
-                                    metric("低", bars.map(\.price).min() ?? first.price)
-                                    metric("收", last.price)
-                                }
-                                .padding(.vertical, 4)
-                            }
-
-                            Chart {
-                                ForEach(bars) { point in
-                                    AreaMark(x: .value("时间", point.timestamp), yStart: .value("基线", priceDomain.lowerBound), yEnd: .value("价格", point.price), series: .value("主图序列", "价格"))
-                                        .foregroundStyle(priceLineColor.opacity(0.08))
-                                        .interpolationMethod(.linear)
-                                    LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price), series: .value("主图序列", "价格"))
-                                        .foregroundStyle(priceLineColor)
-                                        .lineStyle(StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
-                                        .interpolationMethod(.linear)
-                                }
-                                ForEach(average) { point in
-                                    LineMark(x: .value("时间", point.time), y: .value("均价", point.value), series: .value("主图序列", "均价"))
-                                        .foregroundStyle(Color.orange)
-                                        .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
-                                }
-                                ForEach(tradePoints) { trade in
-                                    PointMark(x: .value("交易时间", trade.time), y: .value("成交价", trade.price))
-                                        .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
-                                        .symbolSize(60)
-                                        .annotation(position: trade.side == .buy ? .top : .bottom) {
-                                            Text(trade.side == .buy ? "B" : "S")
-                                                .font(.caption2.bold())
-                                                .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
-                                        }
-                                }
-                                if let selectedBar {
-                                    RuleMark(x: .value("选中", selectedBar.timestamp))
-                                        .foregroundStyle(Color.secondary)
-                                        .annotation(position: .top, alignment: .leading) {
-                                            Text("\(selectedBar.timestamp.formatted(date: .omitted, time: .shortened))  \(selectedBar.price.num(4))")
-                                                .font(.caption.monospacedDigit())
-                                                .padding(6)
-                                                .background(isLight ? Color.white : Color.black, in: RoundedRectangle(cornerRadius: 7))
-                                        }
-                                }
-                            }
-                            .frame(height: 260)
-                            .chartYScale(domain: priceDomain)
-                            .chartXScale(domain: chartTimeDomain ?? (first.timestamp...last.timestamp))
-                            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
-                            .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
-                            .chartXSelection(value: $selectedTime)
-
-                            HStack(spacing: 14) {
-                                Label("价格", systemImage: "minus").foregroundStyle(store.effectiveAccentColor)
-                                Label("均价", systemImage: "minus").foregroundStyle(.orange)
-                                Text("点图看分钟值 · B买入 / S卖出")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .font(.caption)
-
-                            Picker("副图", selection: $subchart) {
-                                ForEach(Subchart.allCases) { Text($0.rawValue).tag($0) }
-                            }
-                            .pickerStyle(.segmented)
-
-                            if subchart == .volume {
-                                Chart {
-                                    ForEach(bars.indices, id: \.self) { index in
-                                        let point = bars[index]
-                                        if let volume = point.volume, volume > 0 {
-                                            BarMark(x: .value("时间", point.timestamp), y: .value("成交量", volume))
-                                                .foregroundStyle(volumeColor(at: index).opacity(0.78))
-                                                .cornerRadius(1)
-                                        }
-                                    }
-                                }
-                                .frame(height: 110)
-                                .chartXScale(domain: chartTimeDomain ?? (first.timestamp...last.timestamp))
-                                .chartXAxis(.hidden)
-                            } else {
-                                Chart(macd) { point in
-                                    BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram))
-                                        .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.76) : Color.green.opacity(0.76))
-                                        .cornerRadius(1)
-                                    RuleMark(y: .value("零轴", 0))
-                                        .foregroundStyle(Color.secondary.opacity(0.45))
-                                        .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
-                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
-                                        .foregroundStyle(Color.blue)
-                                        .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
-                                    LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
-                                        .foregroundStyle(Color.orange)
-                                        .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
-                                }
-                                .frame(height: 110)
-                                .chartYScale(domain: macdDomain)
-                                .chartXScale(domain: chartTimeDomain ?? (first.timestamp...last.timestamp))
-                                .chartXAxis(.hidden)
-                            }
-
-                            replaySummary
-                        }
-                    }
-                }
-                .plainCard(isLight: isLight)
+                archiveSection
+                coverageSection
+                replaySection
             }
             .scrollContentBackground(.hidden)
             .appListLayout()
@@ -352,6 +182,210 @@ struct IntradayArchiveView: View {
                 store.save(label: nil)
             }
         }
+    }
+
+    @ViewBuilder private var archiveSection: some View {
+        Section("采集与归档") {
+            HStack(spacing: 12) {
+                Image(systemName: store.isArchivingIntraday ? "arrow.triangle.2.circlepath" : "externaldrive.badge.checkmark")
+                    .foregroundStyle(store.effectiveAccentColor)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(store.intradayArchiveStatus).font(.headline)
+                    Text("打开 App 或刷新行情时自动补全；旧交易日永久保留。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Button {
+                Task { await manuallyArchive() }
+            } label: {
+                Label(store.isArchivingIntraday ? "正在补全…" : "立即补全全部标的", systemImage: "arrow.down.to.line.compact")
+            }
+            .disabled(store.isArchivingIntraday)
+            Text("iPhone 将 App 完全关闭后，系统不会保证持续采集。这里会在下次打开或刷新时从行情源补回最近交易日整日分钟线，因此不用整天挂着页面。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .toneCard(store.effectiveAccentColor, isLight: isLight)
+    }
+
+    @ViewBuilder private var coverageSection: some View {
+        Section("覆盖状态") {
+            if instruments.isEmpty {
+                Text("先添加自选或场内持仓。")
+                    .foregroundStyle(.secondary)
+            } else {
+                let coverageMap = coverageByCode
+                ForEach(instruments) { instrument in
+                    let coverage = coverageMap[instrument.code] ?? Coverage(latestDay: nil, latestCount: 0)
+                    let latestDay = coverage.latestDay
+                    let count = coverage.latestCount
+                    Button {
+                        selectedCode = instrument.code
+                        selectedDay = latestDay ?? ""
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(instrument.name).font(.subheadline.weight(.semibold))
+                                Text("\(instrument.code) · \(latestDay ?? "暂无日期")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(count == 0 ? "未采集" : "\(count) 点")
+                                    .foregroundStyle(coverageColor(code: instrument.code, day: latestDay, count: count))
+                                Text(coverageText(code: instrument.code, day: latestDay, count: count))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            Text("A 股完整交易日通常约 242 个分钟点；状态只反映本机实际保存数量，不会把缺口补造成行情。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .plainCard(isLight: isLight)
+    }
+
+    @ViewBuilder private var replaySection: some View {
+        Section("历史复盘 / 学习") {
+            if instruments.isEmpty {
+                ContentUnavailableView("暂无可复盘标的", systemImage: "chart.xyaxis.line")
+            } else {
+                Picker("标的", selection: $selectedCode) {
+                    ForEach(instruments) { Text("\($0.name) · \($0.code)").tag($0.code) }
+                }
+                .onChange(of: selectedCode) { _, _ in selectLatestDay() }
+
+                if days.isEmpty {
+                    ContentUnavailableView("暂无历史分时", systemImage: "clock.arrow.circlepath", description: Text("点“立即补全全部标的”后再查看。"))
+                } else {
+                    Picker("交易日", selection: $selectedDay) {
+                        ForEach(days, id: \.self) { Text($0).tag($0) }
+                    }
+                    .onChange(of: selectedDay) { _, _ in selectedTime = nil }
+
+                    if let first = bars.first, let last = bars.last {
+                        HStack {
+                            metric("开", first.price)
+                            metric("高", bars.map(\.price).max() ?? first.price)
+                            metric("低", bars.map(\.price).min() ?? first.price)
+                            metric("收", last.price)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    priceChart
+
+                    HStack(spacing: 14) {
+                        Label("价格", systemName: "minus").foregroundStyle(store.effectiveAccentColor)
+                        Label("均价", systemName: "minus").foregroundStyle(.orange)
+                        Text("点图看分钟值 · B买入 / S卖出")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+
+                    Picker("副图", selection: $subchart) {
+                        ForEach(Subchart.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if subchart == .volume {
+                        volumeChart
+                    } else {
+                        macdChart
+                    }
+
+                    replaySummary
+                }
+            }
+        }
+        .plainCard(isLight: isLight)
+    }
+
+    private var selectedBarLabel: String {
+        guard let bar = selectedBar else { return "" }
+        return "\(bar.timestamp.formatted(date: .omitted, time: .shortened))  \(bar.price.num(4))"
+    }
+
+    @ViewBuilder private var priceChart: some View {
+        Chart {
+            ForEach(bars) { point in
+                AreaMark(x: .value("时间", point.timestamp), yStart: .value("基线", priceDomain.lowerBound), yEnd: .value("价格", point.price), series: .value("主图序列", "价格"))
+                    .foregroundStyle(priceLineColor.opacity(0.08))
+                    .interpolationMethod(.linear)
+                LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price), series: .value("主图序列", "价格"))
+                    .foregroundStyle(priceLineColor)
+                    .lineStyle(StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.linear)
+            }
+            ForEach(average) { point in
+                LineMark(x: .value("时间", point.time), y: .value("均价", point.value), series: .value("主图序列", "均价"))
+                    .foregroundStyle(Color.orange)
+                    .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
+            }
+            ForEach(tradePoints) { trade in
+                PointMark(x: .value("交易时间", trade.time), y: .value("成交价", trade.price))
+                    .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
+                    .symbolSize(60)
+                    .annotation(position: trade.side == .buy ? .top : .bottom) {
+                        Text(trade.side == .buy ? "B" : "S")
+                            .font(.caption2.bold())
+                            .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
+                    }
+            }
+            if let selectedBar {
+                RuleMark(x: .value("选中", selectedBar.timestamp))
+                    .foregroundStyle(Color.secondary)
+                    .annotation(position: .top, alignment: .leading) {
+                        Text(selectedBarLabel)
+                            .font(.caption.monospacedDigit())
+                            .padding(6)
+                            .background(isLight ? Color.white : Color.black, in: RoundedRectangle(cornerRadius: 7))
+                    }
+            }
+        }
+        .frame(height: 260)
+        .chartYScale(domain: priceDomain)
+        .chartXScale(domain: timeDomain)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
+        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
+        .chartXSelection(value: $selectedTime)
+    }
+
+    @ViewBuilder private var volumeChart: some View {
+        Chart {
+            ForEach(bars.indices, id: \.self) { index in
+                let point = bars[index]
+                if let volume = point.volume, volume > 0 {
+                    BarMark(x: .value("时间", point.timestamp), y: .value("成交量", volume))
+                        .foregroundStyle(volumeColor(at: index).opacity(0.78))
+                        .cornerRadius(1)
+                }
+            }
+        }
+        .frame(height: 110)
+        .chartXScale(domain: timeDomain)
+        .chartXAxis(.hidden)
+    }
+
+    @ViewBuilder private var macdChart: some View {
+        Chart(macd) { point in
+            BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram))
+                .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.76) : Color.green.opacity(0.76))
+                .cornerRadius(1)
+            RuleMark(y: .value("零轴", 0))
+                .foregroundStyle(Color.secondary.opacity(0.45))
+                .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
+            LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
+                .foregroundStyle(Color.blue)
+                .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
+            LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
+                .foregroundStyle(Color.orange)
+                .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
+        }
+        .frame(height: 110)
+        .chartYScale(domain: macdDomain)
+        .chartXScale(domain: timeDomain)
+        .chartXAxis(.hidden)
     }
 
     @MainActor private func manuallyArchive() async {
