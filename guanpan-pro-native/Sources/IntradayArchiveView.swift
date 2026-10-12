@@ -304,8 +304,10 @@ struct IntradayArchiveView: View {
 
     @MainActor private func manuallyArchive() async {
         refreshFeedback.begin("正在补全全部标的分时…")
-        let ok = await store.archiveTrackedIntraday(force: true)
-        refreshFeedback.finish(store.intradayArchiveStatus, succeeded: ok)
+        let result = await store.archiveTrackedIntraday(force: true)
+        // failure == 0 即视为完成：success / failure 同时为 0 表示没有可采集的标的
+        // （或已有补全任务在跑），此时状态文案自己会说清楚原因，不算失败。
+        refreshFeedback.finish(store.intradayArchiveStatus, succeeded: result.failure == 0)
     }
 
     @ViewBuilder private func metric(_ title: String, _ value: Double) -> some View {

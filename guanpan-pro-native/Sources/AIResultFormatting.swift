@@ -135,7 +135,9 @@ private struct AIResultBlock: Identifiable {
 }
 
 enum AIResultParser {
-    static func parse(_ raw: String) -> [AIResultGroup] {
+    /// 返回类型 `AIResultGroup` 是 fileprivate，方法必须同等级或更低，
+    /// 否则报 "method must be declared fileprivate because its result uses a private type"。
+    fileprivate static func parse(_ raw: String) -> [AIResultGroup] {
         let lines = raw
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")

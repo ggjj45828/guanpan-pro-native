@@ -580,7 +580,7 @@ struct DashboardView: View {
                 MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
                            toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
             ])
-            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 场外基金（\(fundNAVDateNote)），两处数据日期不同，合计数即两者相加；没取到数显示 --，不臆测补数。")
+            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 场外基金（\(fundNAVDateNote)）；场内实时变化，场外要等晚间净值公布后才计入合计。两处数据日期不同，没取到数显示 --，不臆测补数。")
                 .scaledFont(10).foregroundStyle(.secondary)
         }
         .cardSurface(tone: CardTone.pnl(store.totalPnL))
@@ -591,6 +591,13 @@ struct DashboardView: View {
     /// 场内还在跳、场外是空的，很容易被读成「今天场内赚了这么多」。
     /// 所以标签按数据时点分档写死：今日盈亏 / 今日收盘盈亏 / 休市 · MM-dd 盈亏。
     private var dayPnLLabel: String {
+        // 只有场外基金、且今日净值还没到公布时间：没有任何可显示的数字，
+        // 与其显示一个会被误读成「今天场外盈亏」的旧净值日数字，不如说清楚在等什么。
+        if !store.hasIntradayPnL,
+           store.data.holdings.contains(where: { $0.kind == .fund }),
+           !store.hasFundDayPnL {
+            return "今日盈亏（场外净值未更新）"
+        }
         guard store.hasDayPnLGross else { return "当日盈亏" }
         if store.hasIntradayPnL, let day = store.intradayQuoteDate.map({ shortDay($0) }) {
             if !store.isIntradayQuoteToday { return "休市 · \(day) 盈亏" }
@@ -612,8 +619,10 @@ struct DashboardView: View {
     }
 
     /// 场外基金最新公布净值日。"2026-10-08" → "净值 10-08"。
+    /// 开市日白天今日净值还没公布时，场外盈亏不参与合计，这里要写明在等晚间更新。
     private var fundNAVDateNote: String {
-        guard store.hasFundDayPnL, let date = store.latestFundNAVDate else { return "无净值" }
+        guard let date = store.latestFundNAVDate else { return "无净值" }
+        guard store.hasFundDayPnL else { return "净值 \(shortDay(date)) · 今日未更新" }
         return "净值 \(shortDay(date))"
     }
 
@@ -1101,6 +1110,9 @@ struct HoldingsView: View {
     @State private var searchText = ""
     /// 驱动“最新净值已更新”彩虹强调在下一交易日 09:30 准时恢复普通卡片。
     @State private var fundFreshnessClock = Date.now
+    /// 「最近基金流水」默认收起：10 笔流水加上待核对的估算费能占掉大半屏，
+    /// 把持仓卡和基金工具挤到下面。展开状态记在 AppStorage 里，下次打开保持用户选择。
+    @AppStorage("guanpan.native.fundRecentTrades.expanded") private var fundRecentTradesExpanded = false
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
     private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
 
@@ -1282,8 +1294,12 @@ struct HoldingsView: View {
             let dayValue = kind == .fund ? store.fundDayPnL : store.intradayPnL
             let hasDayValue = kind == .fund ? store.hasFundDayPnL : store.hasIntradayPnL
             let dayTitle = kind == .fund ? "净值日盈亏" : "今日盈亏"
+            // 开市日白天今日净值还没公布：场外盈亏不算，也不并进总资产的当日盈亏，
+            // 等晚间净值更新后再出现。这里把状态写清楚，避免拿上一个净值日的数字充当今天。
             let dayDateNote = kind == .fund
-                ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
+                ? (store.hasFundDayPnL
+                    ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
+                    : (store.latestFundNAVDate.map { "净值 \(shortDay($0)) · 今日未更新" } ?? "无净值"))
                 : "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
             // 网页版的资产汇总卡是彩色区块（.sum）；这里按浮盈亏红绿上色，不再是一片灰白
             let cardTone: Color? = pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil
@@ -1548,46 +1564,61 @@ struct HoldingsView: View {
         }
     }
 
+    /// 最近基金流水的实际展示集合：最近 10 笔 + 所有「估算费待核对」的赎回
+    /// （后者不受 10 笔上限约束，否则待核对的条目会被挤出首屏）。
+    private var fundRecentTradeEntries: [FundTransaction] {
+        let codes = Set(holdings.map(\.code))
+        let allEntries = store.data.fundTransactions.filter { codes.contains($0.code) }
+            .sorted { $0.requestDate > $1.requestDate }
+        let recentEntries = Array(allEntries.prefix(10))
+        let recentIDs = Set(recentEntries.map(\.id))
+        let pendingFeeChecks = allEntries.filter { $0.side == .sell && $0.feeWasEstimated == true && !recentIDs.contains($0.id) }
+        return pendingFeeChecks + recentEntries
+    }
+
     @ViewBuilder private var fundTradesSection: some View {
-        Section("最近基金流水") {
-            let codes = Set(holdings.map(\.code))
-            let allEntries = store.data.fundTransactions.filter { codes.contains($0.code) }
-                .sorted { $0.requestDate > $1.requestDate }
-            let recentEntries = Array(allEntries.prefix(10))
-            let recentIDs = Set(recentEntries.map(\.id))
-            let pendingFeeChecks = allEntries.filter { $0.side == .sell && $0.feeWasEstimated == true && !recentIDs.contains($0.id) }
-            let entries = pendingFeeChecks + recentEntries
-            if entries.isEmpty { Text("暂无基金流水").foregroundStyle(.secondary) }
-            ForEach(Array(entries)) { trade in
+        let entries = fundRecentTradeEntries
+        Section {
+            DisclosureGroup(isExpanded: $fundRecentTradesExpanded) {
+                if entries.isEmpty { Text("暂无基金流水").foregroundStyle(.secondary) }
+                ForEach(entries) { trade in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(fundTransactionLabel(trade))
+                            Text("\(trade.effectiveDate) · \((trade.quantity).num(4)) 份\(trade.status == .pending ? " · 待确认" : "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if trade.side == .sell && trade.feeWasEstimated == true {
+                            Button("核对费用") { feeReconciliationTarget = trade }
+                                .font(.caption)
+                        }
+                        Text((trade.amount).cny())
+                    }.contextMenu {
+                        if trade.side == .sell && trade.feeWasEstimated == true {
+                            Button("核对实际赎回费", systemImage: "checkmark.seal") { feeReconciliationTarget = trade }
+                        }
+                        if store.isLatestLedgerFundTransaction(trade) {
+                            Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
+                                do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
+                                catch { undoTradeMessage = error.localizedDescription }
+                            }
+                        }
+                    }.swipeActions(edge: .trailing) {
+                        if store.isLatestLedgerFundTransaction(trade) {
+                            Button("撤销", role: .destructive) {
+                                do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
+                                catch { undoTradeMessage = error.localizedDescription }
+                            }
+                        }
+                    }
+                }
+            } label: {
                 HStack {
-                    VStack(alignment: .leading) {
-                        Text(fundTransactionLabel(trade))
-                        Text("\(trade.effectiveDate) · \((trade.quantity).num(4)) 份\(trade.status == .pending ? " · 待确认" : "")")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    Label("最近基金流水", systemImage: "list.bullet.rectangle")
                     Spacer()
-                    if trade.side == .sell && trade.feeWasEstimated == true {
-                        Button("核对费用") { feeReconciliationTarget = trade }
-                            .font(.caption)
-                    }
-                    Text((trade.amount).cny())
-                }.contextMenu {
-                    if trade.side == .sell && trade.feeWasEstimated == true {
-                        Button("核对实际赎回费", systemImage: "checkmark.seal") { feeReconciliationTarget = trade }
-                    }
-                    if store.isLatestLedgerFundTransaction(trade) {
-                        Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
-                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                            catch { undoTradeMessage = error.localizedDescription }
-                        }
-                    }
-                }.swipeActions(edge: .trailing) {
-                    if store.isLatestLedgerFundTransaction(trade) {
-                        Button("撤销", role: .destructive) {
-                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                            catch { undoTradeMessage = error.localizedDescription }
-                        }
-                    }
+                    Text(entries.isEmpty ? "暂无" : "\(entries.count) 笔")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

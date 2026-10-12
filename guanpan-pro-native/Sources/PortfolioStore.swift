@@ -173,13 +173,34 @@ final class PortfolioStore: ObservableObject {
         return intradayPnL / base * 100
     }
 
+    /// 这只场外基金的「当日盈亏」现在能不能算。
+    ///
+    /// 场外基金净值一天只公布一次，通常要到当晚才出。开市日的白天（以及晚上更新之前），
+    /// 库里最新的已公布净值还是上一个净值日的 —— 拿它两点相减算出来的「当日盈亏」
+    /// 其实是上一个净值日的，显示出来只会被读成「今天场外赚了/亏了这么多」。
+    /// 所以：**开市日且今日净值尚未公布时不算**，等晚上净值更新后再计入；
+    /// 休市日照旧显示最近一个净值日的盈亏（界面会标出净值日）。
+    private func isFundNAVPending(_ holding: Holding) -> Bool {
+        guard holding.kind == .fund else { return false }
+        // 休市日没有「今天的净值」这回事，照旧展示最近一个净值日
+        guard !isMarketClosedToday else { return false }
+        let today = MarketCalendar.isoDay(.now)
+        guard let latest = data.fundNAVHistory.filter { $0.code == holding.code }.map(\.date).max() else {
+            return false
+        }
+        return latest < today
+    }
+
     /// 单只场外基金「最近一个净值日」的盈亏 = 份额 ×（最新净值 − 上一净值）。
     ///
     /// 场外基金一天只公布一次净值（通常 T+1 晚），没有盘中行情，
     /// 所以它和场内 ETF 永远不可能共用同一个「今天」。这里按净值日单独算，
     /// 界面必须把净值日写出来，否则又会被读成「今天的场外盈亏」。
+    /// **开市日且今日净值未公布时返回 0**（见 `isFundNAVPending`），
+    /// 此时它也不进 `dayPnLGross`，总资产的当日盈亏只累场内。
     func fundDayPnL(of holding: Holding) -> Double {
         guard holding.kind == .fund, holding.quantity > 0 else { return 0 }
+        if isFundNAVPending(holding) { return 0 }
         let points = data.fundNAVHistory.filter { $0.code == holding.code }.sorted { $0.date < $1.date }
         guard points.count >= 2 else { return 0 }
         let latest = points[points.count - 1], previous = points[points.count - 2]
@@ -192,10 +213,13 @@ final class PortfolioStore: ObservableObject {
         data.holdings.filter { $0.kind == .fund }.reduce(0) { $0 + fundDayPnL(of: $1) }
     }
 
-    /// 场外基金当日盈亏是否可算：至少有一只基金存了两个净值点。
+    /// 场外基金当日盈亏是否可算：至少有一只基金存了两个净值点，
+    /// 且不是「开市日但今日净值还没公布」的状态。
     var hasFundDayPnL: Bool {
         data.holdings.contains { holding in
-            holding.kind == .fund && data.fundNAVHistory.filter { $0.code == holding.code }.count >= 2
+            holding.kind == .fund
+                && !isFundNAVPending(holding)
+                && data.fundNAVHistory.filter { $0.code == holding.code }.count >= 2
         }
     }
 
@@ -1572,8 +1596,11 @@ final class PortfolioStore: ObservableObject {
 
     func refreshFundNAVs() {
         guard !isRefreshingFunds else { return }
+        // 定投计划的代码也要抓净值：计划刚建好时往往还没有持仓和流水，
+        // 不抓就永远没有已公布净值，processAutomaticDCA 也就一期都补不进去。
         let codes = Array(Set(data.holdings.filter { $0.kind == .fund }.map(\.code)
-            + data.fundTransactions.map(\.code))).sorted()
+            + data.fundTransactions.map(\.code)
+            + data.fundDCAPlans.filter(\.enabled).map(\.code))).sorted()
         guard !codes.isEmpty else { fundNAVStatus = "没有场外基金持仓或历史流水"; return }
         isRefreshingFunds = true
         fundNAVStatus = "正在逐只获取已公布净值…"
@@ -1941,6 +1968,10 @@ final class PortfolioStore: ObservableObject {
             frequency: frequency, weekday: weekday, monthDay: monthDay,
             startDate: dayString(.now), enabled: true, processedDates: []))
         save(label: "新增定投计划")
+        // 定投计划一旦设定就按规则直接入账：本地已有该基金已公布净值时立刻补记，
+        // 没有就顺手抓一次净值再补记。全程静默，不弹提示、不发通知。
+        processAutomaticDCA()
+        refreshFundNAVs()
     }
 
     func removeDCAPlan(_ plan: FundDCAPlan) {
