@@ -2313,11 +2313,23 @@ struct FundDCAPlanEditor: View {
     @State private var weekday = 2
     @State private var monthDay = 1
     @State private var error = ""
+    /// 该基金当前已有的计划（优先生效中）：存在时本页变为「修改」而不是「新增」。
+    /// 之前同一基金再存一次会抛通用错误「请检查份额、价格、费用和标的」，
+    /// 用户会误以为是 10 元 / 0 费率填错了，实际只是重复计划被拒。
+    @State private var existingPlan: FundDCAPlan?
+    @State private var didPrefill = false
+
+    private var isEditing: Bool { existingPlan != nil }
 
     var body: some View {
         NavigationStack {
             Form {
                 LabeledContent("基金", value: "\(holding.name) · \(holding.code)")
+                if let plan = existingPlan {
+                    LabeledContent("当前计划", value: "每期 \(plan.amount.cny()) · 已记 \(plan.processedDates.count) 期 · 开始于 \(plan.startDate)\(plan.enabled ? "" : "（已暂停）")")
+                    Text("保存将直接修改这个计划：已记期次保留、不重算，只影响后续扣款日。没有最小金额限制，10 元、0 费率都合法。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 TextField("每期计划金额（元）", text: $amount).keyboardType(.decimalPad)
                 TextField("申购费率（%）", text: $feeRatePercent).keyboardType(.decimalPad)
                 Picker("频率", selection: $frequency) {
@@ -2341,19 +2353,39 @@ struct FundDCAPlanEditor: View {
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
-            .navigationTitle("设置自动定投")
+            .navigationTitle(isEditing ? "修改自动定投" : "设置自动定投")
             .keyboardDoneToolbar()
+            .onAppear {
+                guard !didPrefill else { return }
+                didPrefill = true
+                // 打开页面时若该基金已有计划，直接装入它的参数进入修改模式，
+                // 不再走「新增 → 撞重复计划 → 报通用错误」的死路。
+                if let plan = store.data.fundDCAPlans.first(where: { $0.code == holding.code && $0.enabled })
+                    ?? store.data.fundDCAPlans.first(where: { $0.code == holding.code }) {
+                    existingPlan = plan
+                    amount = plan.amount == plan.amount.rounded() ? String(format: "%.0f", plan.amount) : String(plan.amount)
+                    feeRatePercent = String(format: "%g", (plan.feeRate ?? 0.0015) * 100)
+                    frequency = plan.frequency
+                    weekday = plan.weekday
+                    monthDay = plan.monthDay
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("启用") {
+                    Button(isEditing ? "保存修改" : "启用") {
                         guard let value = Double(amount), value.isFinite, value > 0,
                               let rate = Double(feeRatePercent), rate.isFinite, (0...5).contains(rate) else {
                             error = "请输入有效金额和 0～5% 的申购费率"; return
                         }
                         do {
-                            try store.addDCAPlan(code: holding.code, name: holding.name, amount: value, feeRatePercent: rate,
-                                frequency: frequency, weekday: weekday, monthDay: monthDay)
+                            if let plan = existingPlan {
+                                try store.updateDCAPlan(id: plan.id, amount: value, feeRatePercent: rate,
+                                    frequency: frequency, weekday: weekday, monthDay: monthDay)
+                            } else {
+                                try store.addDCAPlan(code: holding.code, name: holding.name, amount: value, feeRatePercent: rate,
+                                    frequency: frequency, weekday: weekday, monthDay: monthDay)
+                            }
                             dismiss()
                         } catch { self.error = error.localizedDescription }
                     }
@@ -2551,6 +2583,7 @@ struct FundIncomeCalendarView: View {
 struct FundQuantView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    @State private var dcaEditorTarget: Holding?
 
     private var funds: [Holding] {
         store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
@@ -2574,6 +2607,12 @@ struct FundQuantView: View {
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
+    /// 定投计划对应的基金持仓；持仓被删时用计划的代码/名称兜底造一个轻量实例，
+    /// 保证「修改计划」入口对任何已存计划都可用。
+    private func holdingForPlan(_ plan: FundDCAPlan) -> Holding {
+        store.data.holdings.first(where: { $0.code == plan.code && $0.kind == .fund })
+            ?? Holding(code: plan.code, name: plan.name, quantity: 0, cost: 0, current: 0, kind: .fund)
+    }
     /// 基金模块的浮盈，用于给「组合概览」卡取色。
     private var fundPnLTotal: Double { totalValue - totalCost }
 
@@ -2654,6 +2693,8 @@ struct FundQuantView: View {
                             Text("每期 \(plan.amount.cny()) · 已记 \(plan.processedDates.count) 期 · 开始于 \(plan.startDate)")
                                 .font(.caption).foregroundStyle(.secondary)
                             HStack {
+                                Button("修改计划") { dcaEditorTarget = holdingForPlan(plan) }
+                                    .buttonStyle(.bordered)
                                 Button(plan.enabled ? "暂停计划" : "恢复计划") {
                                     store.setDCAPlan(plan, enabled: !plan.enabled)
                                 }.buttonStyle(.bordered)
@@ -2674,6 +2715,9 @@ struct FundQuantView: View {
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
+            .sheet(item: $dcaEditorTarget) { target in
+                FundDCAPlanEditor(holding: target).themedSheetBackground()
+            }
             .navigationTitle("基金量化体检")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }

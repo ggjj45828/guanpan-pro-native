@@ -2071,9 +2071,12 @@ final class PortfolioStore: ObservableObject {
                     frequency: FundDCAPlan.Frequency, weekday: Int, monthDay: Int) throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), amount.isFinite, amount > 0,
               feeRatePercent.isFinite, (0...5).contains(feeRatePercent),
-              (1...7).contains(weekday), (1...28).contains(monthDay),
-              !data.fundDCAPlans.contains(where: { $0.code == code && $0.enabled }) else {
+              (1...7).contains(weekday), (1...28).contains(monthDay) else {
             throw StoreError.invalidTrade
+        }
+        // 同一基金同时只允许一个生效计划。单独报这条，别让通用文案把用户误导去怀疑金额/费率。
+        if let existing = data.fundDCAPlans.first(where: { $0.code == code && $0.enabled }) {
+            throw StoreError.duplicateDCAPlan(existing.amount.cny(), existing.startDate)
         }
         data.fundDCAPlans.append(FundDCAPlan(code: code, name: name, amount: amount, feeRate: feeRatePercent / 100,
             frequency: frequency, weekday: weekday, monthDay: monthDay,
@@ -2081,7 +2084,33 @@ final class PortfolioStore: ObservableObject {
         save(label: "新增定投计划")
         // 定投计划一旦设定就按规则直接入账：本地已有该基金已公布净值时立刻补记，
         // 没有就顺手抓一次净值再补记。全程静默，不弹提示、不发通知。
-        processAutomaticDCA()
+        let booked = processAutomaticDCA()
+        if booked == 0 {
+            // 第一期要等该基金下一个已公布净值日；没有净值时不猜价、不提前入账。
+            fundDCAStatus = "计划已保存。第一期要等该基金下一个已公布净值日才入账（不猜价）；本机暂无净值数据时会自动抓取后补记。"
+        }
+        refreshFundNAVs()
+    }
+
+    /// 原地修改已有定投计划：startDate 与 processedDates 原样保留，
+    /// 改参数只影响后续期次，已记批次不重算、不删除，enabled 状态不变。
+    func updateDCAPlan(id: UUID, amount: Double, feeRatePercent: Double,
+                       frequency: FundDCAPlan.Frequency, weekday: Int, monthDay: Int) throws {
+        guard amount.isFinite, amount > 0, feeRatePercent.isFinite, (0...5).contains(feeRatePercent),
+              (1...7).contains(weekday), (1...28).contains(monthDay),
+              let index = data.fundDCAPlans.firstIndex(where: { $0.id == id }) else {
+            throw StoreError.invalidTrade
+        }
+        data.fundDCAPlans[index].amount = amount
+        data.fundDCAPlans[index].feeRate = feeRatePercent / 100
+        data.fundDCAPlans[index].frequency = frequency
+        data.fundDCAPlans[index].weekday = weekday
+        data.fundDCAPlans[index].monthDay = monthDay
+        save(label: "修改定投计划")
+        let booked = processAutomaticDCA()
+        if booked == 0 {
+            fundDCAStatus = "计划已保存。第一期要等该基金下一个已公布净值日才入账（不猜价）；本机暂无净值数据时会自动抓取后补记。"
+        }
         refreshFundNAVs()
     }
 
@@ -2677,7 +2706,7 @@ final class PortfolioStore: ObservableObject {
 }
 
 enum StoreError: LocalizedError {
-    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger
+    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, duplicateDCAPlan(String, String)
     var errorDescription: String? {
         switch self {
         case .invalidTrade: return "请检查份额、价格、费用和标的。"
@@ -2695,6 +2724,8 @@ enum StoreError: LocalizedError {
         case .invalidFundFeeCorrection: return "这笔赎回不存在、已经核对，或实际费用超出赎回总额。"
         case .invalidAllocationTarget: return "目标仓位需在 0% 到 100% 之间。"
         case .invalidImportedLedger: return "无法安全计算成交流水：请导入包含完整买入起点的历史记录，并检查卖出数量是否超过此前买入。"
+        case .duplicateDCAPlan(let amount, let startDate):
+            return "该基金已有一个生效中的定投计划（每期 \(amount)，开始于 \(startDate)）。同一基金同时只能有一个生效计划；重新打开本页会直接改成修改它，也可先在「定投执行记录」里暂停或删除旧计划。"
         }
     }
 }
