@@ -1341,8 +1341,9 @@ final class PortfolioStore: ObservableObject {
         for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
             guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=m&code=\(symbol)") else { continue }
             var request = URLRequest(url: url); request.timeoutInterval = 12
-            guard let direct = try? await URLSession.shared.data(for: request),
-                  let bars = parseTencentMinuteData(direct.0, symbol: symbol), !bars.isEmpty else { continue }
+            guard let direct = try? await URLSession.shared.data(for: request) else { continue }
+            let bars = parseTencentMinuteData(direct.0, symbol: symbol)
+            guard !bars.isEmpty else { continue }
             return bars
         }
         return []
