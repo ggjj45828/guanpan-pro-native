@@ -38,6 +38,19 @@ extension BinaryFloatingPoint {
         return nf.string(from: NSNumber(value: Double(self))) ?? String(format: "%.*f", digits, Double(self))
     }
 
+    /// 紧凑数字：最多保留 `digits` 位小数，去掉尾随零，带千分位分组。
+    /// 与 `num` 的区别：`num` 固定小数位（"1,234.5000"），`compactNum` 去尾零（"1,234.5" / "1,234"）。
+    func compactNum(_ digits: Int) -> String {
+        let v = Double(self)
+        guard v.isFinite else { return "—" }
+        let nf = NumberFormatter()
+        nf.numberStyle = .decimal
+        nf.locale = Locale(identifier: "zh_CN")
+        nf.minimumFractionDigits = 0
+        nf.maximumFractionDigits = digits
+        return nf.string(from: NSNumber(value: v)) ?? String(format: "%.*f", digits, v)
+    }
+
     /// 把「百分数」格式化成字符串：-1.05 → "-1.05%"。
     ///
     /// 千万不要用 NumberFormatter 的 .percent 样式：那个样式约定输入是 0.0105 这类小数，

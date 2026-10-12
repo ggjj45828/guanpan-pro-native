@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 /// 用户先表达“想买/卖多少份”，本机规则随行情刷新持续复核；
 /// 大模型只负责按需解释，不自动下单，也不把盘中情景写成确定预测。
@@ -128,5 +129,13 @@ struct IntradayCompanionView: View {
         do {
             aiResult = try await AIAnalysisService.chat(config: store.data.aiAnalysisConfig, prompt: prompt)
         } catch { aiResult = "分析失败：\(error.localizedDescription)" }
+    }
+
+    private func shanghaiDay(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 }
