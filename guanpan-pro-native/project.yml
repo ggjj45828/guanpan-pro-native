@@ -23,8 +23,8 @@ targets:
         CFBundleDisplayName: 观盘 Pro
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
-        CFBundleShortVersionString: "1.3.1"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "2.13.11"
+        CFBundleVersion: "15"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。
@@ -50,7 +50,7 @@ targets:
         # 留着等于向用户和审核声明一个用不到的权限。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-          NSAllowsArbitraryLoads: true
+          NSAllowsArbitraryLoads: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native

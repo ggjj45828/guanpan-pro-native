@@ -46,9 +46,22 @@ enum NASSyncService {
             var intradayBars: [IntradayBar]
             var dailyBars: [DailyBar]
         }
+        // 现价、涨跌幅和时间戳是高频缓存。若把它们计入冲突指纹，前台每次行情刷新
+        // 都会被判断为“账本已修改”，导致 NAS 版本每分钟滚动并制造假冲突。
+        // 自选成员、名称、分组、持仓份额/成本等真实账本字段仍参与指纹。
+        var stableData = document.data
+        for index in stableData.quotes.indices {
+            stableData.quotes[index].price = 0
+            stableData.quotes[index].changePct = 0
+            stableData.quotes[index].updatedAt = nil
+        }
+        for index in stableData.holdings.indices where stableData.holdings[index].kind == .etf {
+            stableData.holdings[index].current = 0
+            stableData.holdings[index].marketUpdatedAt = nil
+        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        let content = Content(data: document.data, intradayBars: document.intradayBars, dailyBars: document.dailyBars)
+        let content = Content(data: stableData, intradayBars: document.intradayBars, dailyBars: document.dailyBars)
         let digest = SHA256.hash(data: try encoder.encode(content))
         return digest.map { String(format: "%02x", $0) }.joined()
     }

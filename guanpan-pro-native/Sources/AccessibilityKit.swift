@@ -85,6 +85,98 @@ extension View {
     }
 }
 
+// MARK: - 统一刷新反馈
+
+/// 所有“用户主动刷新”共用的轻提示。自动刷新不调用它，避免前台常驻时反复打扰。
+@MainActor
+final class RefreshFeedbackModel: ObservableObject {
+    struct Item: Equatable {
+        var message: String
+        var isLoading: Bool
+        var succeeded: Bool
+    }
+
+    @Published private(set) var item: Item?
+    private var hideTask: Task<Void, Never>?
+
+    func begin(_ message: String) {
+        hideTask?.cancel()
+        item = Item(message: message, isLoading: true, succeeded: true)
+    }
+
+    func finish(_ message: String, succeeded: Bool = true) {
+        hideTask?.cancel()
+        item = Item(message: message, isLoading: false, succeeded: succeeded)
+        if succeeded { Haptics.success() } else { Haptics.warning() }
+        let expected = item
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.6))
+            guard !Task.isCancelled, self?.item == expected else { return }
+            self?.item = nil
+        }
+    }
+}
+
+private struct RefreshFeedbackBanner: View {
+    let item: RefreshFeedbackModel.Item
+
+    var body: some View {
+        HStack(spacing: 9) {
+            if item.isLoading {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: item.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(item.succeeded ? Color.green : Color.orange)
+            }
+            Text(item.message)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(Color.primary.opacity(0.10), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .padding(.horizontal, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.message)
+    }
+}
+
+extension View {
+    /// 贴在当前页面内容顶部，不使用透明玻璃材质。
+    func refreshFeedbackOverlay(_ model: RefreshFeedbackModel) -> some View {
+        overlay(alignment: .top) {
+            if let item = model.item {
+                RefreshFeedbackBanner(item: item)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(100)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: model.item)
+    }
+}
+
+/// 导航栏刷新按钮统一为 24×24 的视觉盒；ProgressView 和箭头不会再一大一小。
+struct RefreshToolbarIcon: View {
+    let isRefreshing: Bool
+
+    var body: some View {
+        Group {
+            if isRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 15, weight: .semibold))
+            }
+        }
+        .frame(width: 24, height: 24)
+    }
+}
+
 // MARK: - 减弱动态效果
 
 /// 系统「减弱动态效果 / 降低透明度 / 不区分颜色」开关的读取助手。

@@ -20,6 +20,13 @@ private struct MinuteBucket: Identifiable {
     var id: Date { start }
 }
 
+private struct IntradayVolumeMAPoint: Identifiable {
+    let time: Date
+    let value: Double
+    let period: Int
+    var id: String { "\(period)-\(time.timeIntervalSince1970)" }
+}
+
 private struct IntradayIOPVPoint: Identifiable {
     let timestamp: Date
     let value: Double
@@ -36,6 +43,34 @@ private struct IntradayETFQuoteSummary {
 private enum IntradaySubchart: String, CaseIterable, Identifiable {
     case macd = "分时 MACD", volume = "分时量"
     var id: String { rawValue }
+}
+
+/// 分时叠加层的显示偏好。只影响图表外观，不属于账本数据。
+private enum IntradayVisibility {
+    private static let averageKey = "guanpan.intraday.show.average"
+    private static let iopvKey = "guanpan.intraday.show.iopv"
+    private static let previousCloseKey = "guanpan.intraday.show.previous-close"
+    private static let volumeMAKey = "guanpan.intraday.volume-ma"
+
+    static func readBool(_ key: String, default value: Bool = true) -> Bool {
+        let defaults = UserDefaults.standard
+        return defaults.object(forKey: key) == nil ? value : defaults.bool(forKey: key)
+    }
+    static var showAverage: Bool { readBool(averageKey) }
+    static var showIOPV: Bool { readBool(iopvKey) }
+    static var showPreviousClose: Bool { readBool(previousCloseKey) }
+    static var volumeMAs: Set<Int> {
+        let raw = UserDefaults.standard.string(forKey: volumeMAKey) ?? "20,60"
+        return Set(raw.split(separator: ",").compactMap { Int($0) })
+    }
+    static func write(average: Bool? = nil, iopv: Bool? = nil, previousClose: Bool? = nil,
+                      volumeMAs: Set<Int>? = nil) {
+        let defaults = UserDefaults.standard
+        if let average { defaults.set(average, forKey: averageKey) }
+        if let iopv { defaults.set(iopv, forKey: iopvKey) }
+        if let previousClose { defaults.set(previousClose, forKey: previousCloseKey) }
+        if let volumeMAs { defaults.set(volumeMAs.sorted().map(String.init).joined(separator: ","), forKey: volumeMAKey) }
+    }
 }
 
 private struct MinuteMACDPoint: Identifiable {
@@ -119,6 +154,7 @@ private func xAxisLabel(_ date: String, _ bars: [DailyBar]) -> String {
 
 struct MarketChartView: View {
     @EnvironmentObject private var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     let holding: Holding
@@ -127,6 +163,10 @@ struct MarketChartView: View {
     /// 每条均线可单独开关：点图例 chip 切换，状态持久化到 UserDefaults
     @State private var maVisible: Set<Int> = MAVisibility.read()
     @State private var intradaySubchart: IntradaySubchart = .macd
+    @State private var showIntradayAverage = IntradayVisibility.showAverage
+    @State private var showIntradayIOPV = IntradayVisibility.showIOPV
+    @State private var showIntradayPreviousClose = IntradayVisibility.showPreviousClose
+    @State private var intradayVolumeMAs = IntradayVisibility.volumeMAs
     @State private var showInstrumentAI = false
     @State private var instrumentAIResult = ""
     @State private var instrumentAIMessage = ""
@@ -137,6 +177,7 @@ struct MarketChartView: View {
     @State private var suggestionNote = ""
     @State private var isLoading = false
     @State private var showLandscapeChart = false
+    @State private var showRecentDailyBars = false
     @State private var message = ""
     @State private var backtestCapital = "100000"
     @State private var backtestFeePercent = "0.03"
@@ -152,12 +193,13 @@ struct MarketChartView: View {
     @State private var chartZoom = 1.0
     @GestureState private var pinchScale = 1.0
     @State private var chartPanOffset = 0
+    @State private var chartDragAppliedX: CGFloat = 0
+    @State private var selectedDailyDate: String?
 
     private var allBars: [DailyBar] { store.dailyBars[holding.code] ?? [] }
-    private var range: Int { store.data.dailyChartRangeDays }
-    private var bars: [DailyBar] { Array(allBars.suffix(range)) }
-    /// 当前周期、只取用户选的显示区间（横坐标就画这么多根）。
-    private var periodBars: [DailyBar] { aggregated(bars) }
+    private var bars: [DailyBar] { allBars }
+    /// 日 K 始终基于完整历史；屏幕上显示多少根只由捏合缩放与拖动决定。
+    private var periodBars: [DailyBar] { aggregated(allBars) }
     /// 当前周期、但用**本机全部**日线聚合。
     ///
     /// 均线一律用这一份来算。显示区间可以只有 60 根，但 MA60 / MA250 需要更早的收盘价
@@ -295,6 +337,25 @@ struct MarketChartView: View {
             return MinuteMACDPoint(time: point.start, dif: dif, dea: dea, histogram: 2 * (dif - dea))
         }
     }
+    private func intradayVolumeMA(_ period: Int) -> [IntradayVolumeMAPoint] {
+        let source = minuteBuckets.compactMap { point -> (Date, Double)? in
+            guard let volume = point.volume else { return nil }
+            return (point.start, volume)
+        }
+        guard period > 0, source.count >= period else { return [] }
+        var rolling = 0.0
+        var result: [IntradayVolumeMAPoint] = []
+        result.reserveCapacity(source.count - period + 1)
+        for index in source.indices {
+            rolling += source[index].1
+            if index >= period { rolling -= source[index - period].1 }
+            if index >= period - 1 {
+                result.append(IntradayVolumeMAPoint(time: source[index].0,
+                    value: rolling / Double(period), period: period))
+            }
+        }
+        return result
+    }
     private var intradayLineColor: Color {
         switch store.data.intradayLineColorMode {
         case .automatic: return .accentColor
@@ -401,45 +462,67 @@ struct MarketChartView: View {
         let line = lines[lines.count - 1]
         return (line, signal, 2 * (line - signal))
     }
-    private var technicalSignal: (score: Int, label: String, notes: [String])? {
-        guard bars.count >= 20, let latest else { return nil }
-        let closes = bars.map(\.close)
-        func ma(_ count: Int, endingAt index: Int) -> Double? {
-            guard index + 1 >= count else { return nil }
-            return closes[(index + 1 - count)...index].reduce(0, +) / Double(count)
-        }
-        guard let ma5 = ma(5, endingAt: bars.count - 1), let ma10 = ma(10, endingAt: bars.count - 1),
-              let ma20 = ma(20, endingAt: bars.count - 1) else { return nil }
-        let ma60 = ma(60, endingAt: bars.count - 1)
-        var rawScore = 0
-        var notes: [String] = []
-        if let ma60, ma5 > ma10 && ma10 > ma20 && ma20 > ma60 {
-            rawScore += 3; notes.append("MA5/10/20/60 多头排列")
-        } else if let ma60, ma5 < ma10 && ma10 < ma20 && ma20 < ma60 {
-            rawScore -= 3; notes.append("MA5/10/20/60 空头排列")
-        } else { notes.append("短中期均线未形成一致排列") }
-        if latest.close >= ma20 { rawScore += 2; notes.append("收盘在 MA20 上方") }
-        else { rawScore -= 2; notes.append("收盘在 MA20 下方") }
-        if let macd {
-            if macd.histogram > 0 && macd.line > 0 { rawScore += 2; notes.append("MACD 位于零轴上方且柱值为正") }
-            else if macd.histogram < 0 && macd.line < 0 { rawScore -= 2; notes.append("MACD 位于零轴下方且柱值为负") }
-        }
-        if let rsi14 {
-            if rsi14 < 30 { rawScore += 1; notes.append("RSI14 低于 30") }
-            else if rsi14 > 70 { rawScore -= 1; notes.append("RSI14 高于 70") }
-        }
-        if bars.count >= 21 {
-            let prior = bars[bars.count - 2]
-            let change = prior.close > 0 ? latest.close / prior.close - 1 : 0
-            let avgVolume = bars.suffix(21).dropLast().map(\.volume).reduce(0, +) / 20
-            if avgVolume > 0 && latest.volume >= avgVolume * 1.8 {
-                rawScore += change >= 0 ? 2 : -2
-                notes.append("当日成交量达到前 20 日均量 1.8 倍")
+    /// 自选标签、详情页和量化引擎统一使用同一套 0...100 技术观察分。
+    /// 旧详情页曾另算一套 -100...100 分数，导致同一标的在两个页面结论相反。
+    private var technicalSignal: MarketSignal? { MarketSignalCalculator.evaluate(bars) }
+
+    /// “值不值得买”不是第二套趋势分，而是在统一技术分上加入位置与撑压后的条件复核。
+    /// 不使用并不存在的 ETF 实时估值字段，避免把猜测包装成“估值分”。
+    private var decisionAssessment: (score: Int, label: String, factors: [String])? {
+        guard let signal = technicalSignal, let latest else { return nil }
+        var score = signal.score
+        var factors = ["技术结构 \(signal.score) 分（与自选、量化引擎同口径）"]
+
+        let recent = Array(bars.suffix(60))
+        if let low = recent.map(\.low).min(), let high = recent.map(\.high).max(), high > low {
+            let position = (latest.close - low) / (high - low) * 100
+            if position <= 20 {
+                score += 8; factors.append("近 60 日位置 \(position.num(0))%，处于低位，但仍要等止跌确认")
+            } else if position >= 80 {
+                score -= 10; factors.append("近 60 日位置 \(position.num(0))%，接近上沿，不宜按强势分追高")
+            } else {
+                factors.append("近 60 日位置 \(position.num(0))%，处于区间中部")
             }
         }
-        let score = max(-100, min(100, Int((Double(rawScore) * 4.5).rounded())))
-        let label = score >= 40 ? "强势偏多" : score >= 15 ? "偏多" : score <= -40 ? "弱势偏空" : score <= -15 ? "偏空" : "中性震荡"
-        return (score, label, notes)
+        if signal.isOverbought {
+            score -= 8; factors.append("RSI/KDJ 显示超买，短线性价比下降")
+        } else if signal.isOversold {
+            score += 4; factors.append("RSI/KDJ 显示超卖，只增加观察价值，不等同于见底")
+        }
+        if let sr = SupportResistanceCalculator.evaluate(bars) {
+            if let room = sr.resistanceRoomPercent, room >= 0, room < 2.5 {
+                score -= 7; factors.append("距最近历史压力约 \(room.num(1))%，上方空间较窄")
+            }
+            if let room = sr.supportRoomPercent, room <= 0, abs(room) < 2.5 {
+                score += 3; factors.append("距最近历史支撑约 \(abs(room).num(1))%，可等支撑有效性确认")
+            }
+        }
+        score = min(100, max(0, score))
+        let label = score >= 68 ? "可关注" : score >= 55 ? "等确认" : score >= 40 ? "谨慎" : "暂避"
+        return (score, label, factors)
+    }
+
+    private var intradayJudgment: (label: String, factors: [String])? {
+        let points = selectedIntradayBars.map(\.price).filter { $0 > 0 }
+        guard points.count >= 2, let first = points.first, let last = points.last,
+              let low = points.min(), let high = points.max() else { return nil }
+        let average = points.reduce(0, +) / Double(points.count)
+        let position = high > low ? (last - low) / (high - low) * 100 : 50
+        let fromOpen = first > 0 ? (last / first - 1) * 100 : 0
+        var strength = 0
+        strength += last >= average ? 1 : -1
+        if let previous = intradayPrevClose { strength += last >= previous ? 1 : -1 }
+        strength += position >= 65 ? 1 : position <= 35 ? -1 : 0
+        let label = strength >= 2 ? "盘中偏强" : strength <= -2 ? "盘中偏弱" : "盘中震荡"
+        var factors = [
+            "最新价 \(last.num(3))，相对当日首个采样点 \(fromOpen.pct(2))",
+            last >= average ? "价格在采样均价 \(average.num(3)) 上方" : "价格在采样均价 \(average.num(3)) 下方",
+            "处于当日采样区间约 \(position.num(0))% 位置"
+        ]
+        if let previous = intradayPrevClose {
+            factors.append(last >= previous ? "当前高于昨收 \(previous.num(3))" : "当前低于昨收 \(previous.num(3))")
+        }
+        return (label, factors)
     }
     private var ruleAlerts: [String] {
         guard let latest, bars.count >= 2 else { return [] }
@@ -504,9 +587,6 @@ struct MarketChartView: View {
                     Picker("图表周期", selection: $selectedChartPeriod) {
                         ForEach(NativeChartPeriod.allCases) { period in Text(period.rawValue).tag(period) }
                     }.pickerStyle(.menu)
-                    Picker("区间", selection: Binding(get: { store.data.dailyChartRangeDays }, set: { store.data.dailyChartRangeDays = $0; store.save(label: "修改图表区间") })) {
-                        Text("60日").tag(60); Text("120日").tag(120); Text("250日").tag(250); Text("640日").tag(640)
-                    }.pickerStyle(.segmented)
                     if selectedChartPeriod == .intraday {
                         HStack(spacing: 12) {
                             Text("均价 \(intradayAvgPoints.last?.price.num(3) ?? "暂无")").foregroundStyle(.orange)
@@ -524,24 +604,44 @@ struct MarketChartView: View {
                             Text("换手 \(stats.turnoverPercent.map { $0.pct(2) } ?? "暂无")  ·  振幅 \(stats.amplitudePercent.map { $0.pct(2) } ?? "暂无")  ·  成交额 \(stats.amountYi.map { "\($0.num(2))亿" } ?? "暂无")  ·  规模 \(stats.marketCapYi.map { "\($0.num(2))亿" } ?? "暂无")")
                                 .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(2).minimumScaleFactor(0.75)
                         }
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 7) {
+                                intradayLayerButton("均价", isOn: showIntradayAverage, color: .orange) {
+                                    showIntradayAverage.toggle()
+                                    IntradayVisibility.write(average: showIntradayAverage)
+                                }
+                                intradayLayerButton("IOPV", isOn: showIntradayIOPV, color: .purple) {
+                                    showIntradayIOPV.toggle()
+                                    IntradayVisibility.write(iopv: showIntradayIOPV)
+                                }
+                                intradayLayerButton("昨收", isOn: showIntradayPreviousClose, color: .secondary) {
+                                    showIntradayPreviousClose.toggle()
+                                    IntradayVisibility.write(previousClose: showIntradayPreviousClose)
+                                }
+                            }
+                        }
                         if selectedIntradayBars.count > 1 {
                             Chart(selectedIntradayBars) { point in
                                 LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
                                     .foregroundStyle(colorScheme == .dark ? Color.white : Color.black).interpolationMethod(.linear)
                                     .lineStyle(StrokeStyle(lineWidth: 1.25))
                                 // 均价线：累计成交额 / 累计成交量
-                                ForEach(intradayAvgPoints) { avg in
-                                    LineMark(x: .value("时间", avg.timestamp), y: .value("均价", avg.price))
-                                        .foregroundStyle(Color.orange)
-                                        .lineStyle(StrokeStyle(lineWidth: 1.1))
+                                if showIntradayAverage {
+                                    ForEach(intradayAvgPoints) { avg in
+                                        LineMark(x: .value("时间", avg.timestamp), y: .value("均价", avg.price))
+                                            .foregroundStyle(Color.orange)
+                                            .lineStyle(StrokeStyle(lineWidth: 1.1))
+                                    }
                                 }
-                                ForEach(selectedDayIOPVPoints) { point in
-                                    LineMark(x: .value("时间", point.timestamp), y: .value("IOPV", point.value))
-                                        .foregroundStyle(Color.purple)
-                                        .lineStyle(StrokeStyle(lineWidth: 1.1))
+                                if showIntradayIOPV {
+                                    ForEach(selectedDayIOPVPoints) { point in
+                                        LineMark(x: .value("时间", point.timestamp), y: .value("IOPV", point.value))
+                                            .foregroundStyle(Color.purple)
+                                            .lineStyle(StrokeStyle(lineWidth: 1.1))
+                                    }
                                 }
                                 // 昨收基准虚线，一眼看出现在相对昨天是红是绿
-                                if let prev = intradayPrevClose {
+                                if showIntradayPreviousClose, let prev = intradayPrevClose {
                                     RuleMark(y: .value("昨收", prev))
                                         .foregroundStyle(Color.secondary.opacity(0.55))
                                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -560,16 +660,32 @@ struct MarketChartView: View {
                                     LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea)).foregroundStyle(Color.orange)
                                 }.frame(height: 120).chartXAxis(.hidden)
                             } else if minuteBuckets.contains(where: { $0.volume != nil }) {
-                                Chart(minuteBuckets.filter { $0.volume != nil }) { point in
-                                    BarMark(x: .value("时间", point.start), y: .value("成交量", point.volume ?? 0))
-                                        .foregroundStyle(Color.cyan)
+                                HStack(spacing: 7) {
+                                    Text("量均线").font(.caption).foregroundStyle(.secondary)
+                                    ForEach([20, 60, 250], id: \.self) { period in
+                                        intradayVolumeMAButton(period)
+                                    }
+                                }
+                                Chart {
+                                    ForEach(minuteBuckets.filter { $0.volume != nil }) { point in
+                                        BarMark(x: .value("时间", point.start), y: .value("成交量", point.volume ?? 0))
+                                            .foregroundStyle(Color.cyan.opacity(0.68))
+                                    }
+                                    ForEach(intradayVolumeMAs.sorted(), id: \.self) { period in
+                                        ForEach(intradayVolumeMA(period)) { point in
+                                            LineMark(x: .value("时间", point.time), y: .value("量均线", point.value),
+                                                     series: .value("周期", "MA\(period)"))
+                                                .foregroundStyle(intradayVolumeMAColor(period))
+                                                .lineStyle(StrokeStyle(lineWidth: 1.15))
+                                        }
+                                    }
                                 }.frame(height: 120).chartXAxis(.hidden)
                             }
                             Text("腾讯当日分时 · 前台约 15 秒刷新 · \(minuteStatus)").font(.caption).foregroundStyle(.secondary)
                         } else {
                             ContentUnavailableView("暂无当日分时", systemImage: "chart.xyaxis.line", description: Text(minuteStatus))
                         }
-                        Button { Task { await fetchTencentMinute() } } label: { Label("刷新分时", systemImage: "arrow.clockwise") }
+                        Button { Task { await manuallyRefreshMinute() } } label: { Label("刷新分时", systemImage: "arrow.clockwise") }
                     } else if selectedChartPeriod == .minute30 || selectedChartPeriod == .minute60 {
                         if minuteBuckets.count > 1 {
                             Chart(minuteBuckets) { point in
@@ -614,12 +730,17 @@ struct MarketChartView: View {
                         ContentUnavailableView("暂无\(selectedChartPeriod.rawValue)", systemImage: "chart.xyaxis.line", description: Text("联网获取历史行情，或在备份中导入已有日线缓存。"))
                     }
                     if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary) }
-                    Button { Task { await load(force: true) } } label: {
+                    Button { Task { await manuallyRefreshDaily() } } label: {
                         Label(isLoading ? "正在更新…" : "更新历史日线", systemImage: "arrow.clockwise")
                     }.disabled(isLoading)
                     Text("数据：腾讯前复权日线。MA5/20/60、RSI14、MACD、区间分位与最大回撤由本机计算，仅作历史描述，不是价格预测或估值。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button { showInstrumentAI = true } label: {
+                    Button {
+                        if let saved = store.data.savedInstrumentAIAnalyses[holding.code] {
+                            instrumentAIResult = saved.text
+                        }
+                        showInstrumentAI = true
+                    } label: {
                         Label("AI 分析此标的", systemImage: "sparkles")
                     }.disabled(!AIAnalysisService.hasSavedAPIKey)
                     if !AIAnalysisService.hasSavedAPIKey { Text("先在 AI 页面保存接口和 API 密钥；单标的分析会把该标的行情、持仓、历史日线、历史支撑压力参考及所选交易日已有分时点发送给模型。")
@@ -656,22 +777,53 @@ struct MarketChartView: View {
                         }
                     }
                 }
+                Section("盘中研判") {
+                    if let judgment = intradayJudgment {
+                        Label(judgment.label, systemImage: judgment.label.contains("偏强") ? "arrow.up.right" : judgment.label.contains("偏弱") ? "arrow.down.right" : "arrow.right")
+                            .font(.headline)
+                            .foregroundStyle(judgment.label.contains("偏强") ? PnLColor.up : judgment.label.contains("偏弱") ? PnLColor.down : Color.secondary)
+                        ForEach(judgment.factors, id: \.self) { Text("• \($0)").font(.subheadline) }
+                    } else {
+                        Text("当前分时样本不足；刷新分时或选择已有记录的交易日后再研判。")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("盘中结论只描述所选交易日的价格位置与采样均价，不代替日线趋势，也不把简单平均价冒充交易所 VWAP。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 if let latest {
-                    Section("技术信号（本机指标子集）") {
+                    Section("技术指标 · 统一评分") {
                         if let signal = technicalSignal {
-                            LabeledContent("综合分", value: "\(signal.score) · \(signal.label)")
+                            LabeledContent("技术观察分", value: "\(signal.score) · \(signal.label)")
+                            SignalTagRow(tags: signal.tags)
                             ForEach(signal.notes, id: \.self) { Text("• \($0)").font(.footnote) }
                         } else {
                             Text("至少需要 20 个交易日，才能计算技术信号。")
                         }
-                        Text("这是 MA、MACD、RSI 和成交量条件的规则统计，不复刻网页完整算法，也不构成买卖建议。")
+                        Text("这项分数与自选标签、量化引擎完全同口径，只衡量日线结构，不是上涨概率。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Section("值不值得买 · 条件复核") {
+                        if let assessment = decisionAssessment {
+                            LabeledContent("复核分", value: "\(assessment.score) · \(assessment.label)")
+                            ForEach(assessment.factors, id: \.self) { Text("• \($0)").font(.subheadline) }
+                        } else {
+                            Text("日线数据不足，暂时无法复核。")
+                        }
+                        Text("高分不等于立即买入：它把统一技术分与近 60 日位置、超买超卖和历史撑压合并；没有可靠 ETF 估值数据时，不虚构“估值分”。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Section("历史指标") {
                         LabeledContent("最新收盘（\(latest.date)）", value: (latest.close).num(3))
-                        if let ma20 = average(20).last?.value { LabeledContent("MA20", value: (ma20).num(3)) }
-                        if let ma60 = average(60).last?.value { LabeledContent("MA60", value: (ma60).num(3)) }
-                        if let rsi14 { LabeledContent("RSI14", value: "\((rsi14).num(1))") }
+                        if let signal = technicalSignal {
+                            if let value = signal.ma5 { LabeledContent("MA5 / MA10", value: "\(value.num(3)) / \(signal.ma10?.num(3) ?? "--")") }
+                            if let value = signal.ma20 { LabeledContent("MA20 / MA60", value: "\(value.num(3)) / \(signal.ma60?.num(3) ?? "--")") }
+                            if signal.ma120 != nil || signal.ma250 != nil {
+                                LabeledContent("MA120 / MA250", value: "\(signal.ma120?.num(3) ?? "--") / \(signal.ma250?.num(3) ?? "--")")
+                            }
+                            if let value = signal.rsi { LabeledContent("RSI14", value: value.num(1)) }
+                            if let value = signal.kdjJ { LabeledContent("KDJ · J", value: value.num(1)) }
+                            if let value = signal.volumeRatio { LabeledContent("量比（20日）", value: value.num(2)) }
+                        }
                         if let macd {
                             LabeledContent("MACD", value: "\((macd.line).num(4))")
                             LabeledContent("信号线 / 柱", value: "\((macd.signal).num(4)) / \((macd.histogram).num(4))")
@@ -709,8 +861,41 @@ struct MarketChartView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("最近日线") {
-                    ForEach(bars.suffix(20).reversed()) { bar in
-                        HStack { Text(bar.date); Spacer(); Text("收 \((bar.close).num(3))"); Text("高低 \((bar.high).num(3)) / \((bar.low).num(3))").foregroundStyle(.secondary) }.font(.caption)
+                    Button {
+                        Haptics.tap()
+                        withAnimation(.easeInOut(duration: 0.2)) { showRecentDailyBars.toggle() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(showRecentDailyBars ? "收起最近 20 根" : "展开最近 20 根")
+                                    .font(.subheadline.weight(.semibold))
+                                if let latest = bars.last {
+                                    Text("最新 \(latest.date) · 收盘 \((latest.close).num(3))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .rotationEffect(.degrees(showRecentDailyBars ? 180 : 0))
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showRecentDailyBars ? "收起最近日线" : "展开最近日线")
+
+                    if showRecentDailyBars {
+                        ForEach(bars.suffix(20).reversed()) { bar in
+                            HStack {
+                                Text(bar.date)
+                                Spacer()
+                                Text("收 \((bar.close).num(3))")
+                                Text("高低 \((bar.high).num(3)) / \((bar.low).num(3))").foregroundStyle(.secondary)
+                            }
+                            .font(.caption)
+                            .transition(.opacity)
+                        }
                     }
                 }
                 Section("支撑压力与中期区间") {
@@ -735,6 +920,7 @@ struct MarketChartView: View {
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .background(.clear)
+            .refreshFeedbackOverlay(refreshFeedback)
             .themedSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
@@ -754,7 +940,15 @@ struct MarketChartView: View {
                         if !instrumentAIMessage.isEmpty { Text(instrumentAIMessage).foregroundStyle(.secondary) }
                         if !instrumentAIResult.isEmpty {
                             // 展示剥掉机器可读段的人话版本；解析仍读完整原文。
-                            Text(AISuggestionParser.displayText(instrumentAIResult)).textSelection(.enabled)
+                            Section("分析结果") {
+                                if let saved = store.data.savedInstrumentAIAnalyses[holding.code] {
+                                    Label("上次成功分析：\(saved.updatedAt.formatted(date: .abbreviated, time: .shortened))",
+                                          systemImage: "clock.arrow.circlepath")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                AIFormattedResultView(text: AISuggestionParser.displayText(instrumentAIResult),
+                                                      accent: store.effectiveAccentColor)
+                            }
                         }
                         if !instrumentAISuggestions.isEmpty {
                             Section("可执行建议（\(instrumentAISuggestions.count) 条）") {
@@ -771,11 +965,23 @@ struct MarketChartView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .navigationTitle("\(holding.name) · AI 分析")
+                    .navigationBarTitleDisplayMode(.inline)
                     .scrollContentBackground(.hidden)
+                    .appListLayout()
                     .background(.clear)
                     .themedSheetBackground()
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { showInstrumentAI = false } } }
-                    .task { await analyzeInstrument() }
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            if !instrumentAIResult.isEmpty {
+                                Button(instrumentAIBusy ? "分析中…" : "重新分析") { Task { await analyzeInstrument() } }
+                                    .disabled(instrumentAIBusy)
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) { Button("关闭") { showInstrumentAI = false } }
+                    }
+                    .task {
+                        if instrumentAIResult.isEmpty { await analyzeInstrument() }
+                    }
                     .sheet(item: $planPrefill) { suggestion in
                         TradePlanEditor(prefill: suggestion, onSave: { plan in
                             store.data.tradePlans.append(plan)
@@ -791,6 +997,9 @@ struct MarketChartView: View {
             .onAppear {
                 if selectedIntradayDay.isEmpty { selectedIntradayDay = intradayDays.first ?? "" }
                 intradaySubchart = store.data.intradaySubchartMode == "volume" ? .volume : .macd
+                if !selectedIntradayBars.isEmpty {
+                    minuteStatus = "显示本机已保存的 \(selectedIntradayDay) 分时 · 正在检查更新"
+                }
             }
             .onChange(of: intradaySubchart) { _, value in
                 store.data.intradaySubchartMode = value == .volume ? "volume" : "macd"
@@ -808,8 +1017,30 @@ struct MarketChartView: View {
         }
     }
 
+    @MainActor private func manuallyRefreshMinute() async {
+        refreshFeedback.begin("正在刷新分时数据…")
+        await fetchTencentMinute()
+        let ok = !minuteStatus.contains("失败") && !minuteStatus.contains("未返回") && !minuteStatus.contains("暂无")
+        refreshFeedback.finish(minuteStatus, succeeded: ok)
+    }
+
+    @MainActor private func manuallyRefreshDaily() async {
+        refreshFeedback.begin("正在更新历史日线…")
+        await load(force: true)
+        let ok = !message.contains("失败")
+        refreshFeedback.finish(message.isEmpty ? (ok ? "历史日线已更新" : "历史日线更新失败") : message,
+                               succeeded: ok)
+    }
+
     private var zoomedBarCount: Int {
-        min(periodBars.count, max(6, Int(Double(periodBars.count) / (chartZoom * pinchScale))))
+        let comfortableDefault = min(120, max(1, periodAllBars.count))
+        return min(periodAllBars.count, max(6, Int(Double(comfortableDefault) / (chartZoom * pinchScale))))
+    }
+
+    private var maxChartPanOffset: Int { max(0, periodAllBars.count - zoomedBarCount) }
+    private var minimumChartZoom: Double {
+        guard !periodAllBars.isEmpty else { return 1 }
+        return min(1, Double(min(120, periodAllBars.count)) / Double(periodAllBars.count))
     }
 
     // MARK: - 日K 图（主图 + 成交量副图）
@@ -857,6 +1088,13 @@ struct MarketChartView: View {
                 high = max(high, point.value)
             }
         }
+        // 前复权价格可能与账本成交价略有差异，把可见 B/S 价格纳入范围，避免标记被裁掉。
+        if selectedChartPeriod == .day {
+            for entry in visibleTradeEntries where entry.price > 0 {
+                low = min(low, entry.price)
+                high = max(high, entry.price)
+            }
+        }
         guard high > low else {
             let base = max(high, 0.0001)
             return (base * 0.999)...(base * 1.001)
@@ -871,18 +1109,70 @@ struct MarketChartView: View {
         return "高 \((high).num(3))  低 \((low).num(3))"
     }
 
+    private var selectedDailyBar: DailyBar? {
+        guard let selectedDailyDate else { return nil }
+        return zoomedPeriodBars.first { $0.date == selectedDailyDate }
+    }
+
+    private var visibleTradeEntries: [LedgerEntry] {
+        guard selectedChartPeriod == .day else { return [] }
+        let dates = Set(zoomedPeriodBars.map(\.date))
+        return store.data.ledger.filter { $0.code == holding.code && dates.contains(shanghaiDay($0.date)) }
+    }
+
+    private func transactions(on day: String) -> [LedgerEntry] {
+        store.data.ledger.filter { $0.code == holding.code && shanghaiDay($0.date) == day }
+    }
+
+    private func selectedDailyBarCard(_ bar: DailyBar) -> some View {
+        let full = periodAllBars
+        let index = full.firstIndex { $0.date == bar.date }
+        let previous = index.flatMap { $0 > 0 ? full[$0 - 1].close : nil }
+        let change = previous.flatMap { $0 > 0 ? (bar.close / $0 - 1) * 100 : nil }
+        let trades = transactions(on: bar.date)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(bar.date).font(.caption.weight(.semibold)).monospacedDigit()
+                Spacer()
+                if let change {
+                    Text(change.pct(2)).font(.caption.weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(change >= 0 ? Color.red : Color.green)
+                }
+            }
+            HStack(spacing: 10) {
+                Text("开 \(bar.open.num(3))")
+                Text("高 \(bar.high.num(3))")
+                Text("低 \(bar.low.num(3))")
+                Text("收 \(bar.close.num(3))")
+                Spacer(minLength: 0)
+            }
+            .font(.caption.monospacedDigit())
+            HStack(spacing: 8) {
+                Text("量 \(bar.volume.num(0))").font(.caption2).foregroundStyle(.secondary)
+                ForEach(trades) { entry in
+                    Text("\(entry.side == .buy ? "B 买" : "S 卖") \(entry.quantity.num(0)) @ \(entry.price.num(3))")
+                        .font(.caption2.weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(entry.side == .buy ? Color.red : Color.green)
+                }
+            }
+        }
+        .padding(9)
+        .background(store.effectiveAccentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
 
     @ViewBuilder private var dailyChartSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-            Text("捏合缩放 · 左右拖动看历史")
+            Text("轻点看当日 · 双指自由缩放 · 左右拖动")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             // 可见窗口的最高/最低：捏合、拖动时实时跟着变，不再是整个区间的固定值
             Text(windowHighLowText(zoomedPeriodBars))
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Button("重置") { chartZoom = 1; chartPanOffset = 0 }.font(.caption)
+            Button("重置") { chartZoom = 1; chartPanOffset = 0; selectedDailyDate = nil }.font(.caption)
         }
+            if let selected = selectedDailyBar { selectedDailyBarCard(selected) }
             maLegendRow
             // GeometryReader 拿到实际绘图宽度，据此算出随缩放变化的实体宽度。
             // 之前实体固定 5pt，放大后柱子不变粗、间距却变大，看起来既稀疏又糊。
@@ -901,14 +1191,22 @@ struct MarketChartView: View {
                 .updating($pinchScale) { value, state, _ in state = value.magnification }
                 .onEnded { value in
                     // 上限 8 → 40：原来最多只能把 250 根压到 31 根，单根 K 线仍然很挤。
-                    chartZoom = min(40, max(1, chartZoom * value.magnification))
+                    chartZoom = min(40, max(minimumChartZoom, chartZoom * value.magnification))
+                    chartPanOffset = min(chartPanOffset, maxChartPanOffset)
                 })
-            .simultaneousGesture(DragGesture(minimumDistance: 12).onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                let step = max(1, Int(abs(value.translation.width) / 22))
-                let maxOffset = max(0, periodBars.count - zoomedBarCount)
-                chartPanOffset = min(maxOffset, max(0, chartPanOffset + (value.translation.width < 0 ? step : -step)))
-            })
+            .simultaneousGesture(DragGesture(minimumDistance: 12)
+                .onChanged { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    let chartWidth = max(240, UIScreen.main.bounds.width - 64)
+                    let pointsPerBar = max(5, chartWidth / CGFloat(max(1, zoomedBarCount)))
+                    let unapplied = value.translation.width - chartDragAppliedX
+                    let step = Int(unapplied / pointsPerBar)
+                    guard step != 0 else { return }
+                    // 内容跟手：向右拖查看更早的 K 线，向左拖回最近行情。
+                    chartPanOffset = min(maxChartPanOffset, max(0, chartPanOffset + step))
+                    chartDragAppliedX += CGFloat(step) * pointsPerBar
+                }
+                .onEnded { _ in chartDragAppliedX = 0 })
             supportResistanceRow
         }
     }
@@ -1006,6 +1304,29 @@ struct MarketChartView: View {
                               width: .fixed(bodyWidth))
                     .foregroundStyle(candleColor)
             }
+            if selectedChartPeriod == .day {
+                ForEach(visibleTradeEntries) { entry in
+                    PointMark(x: .value("成交日", shanghaiDay(entry.date)), y: .value("成交价", entry.price))
+                        .foregroundStyle(entry.side == .buy ? Color.red : Color.green)
+                        .symbolSize(24)
+                        .annotation(position: entry.side == .buy ? .bottom : .top, spacing: 2) {
+                            Text(entry.side == .buy ? "B" : "S")
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(3)
+                                .background(entry.side == .buy ? Color.red : Color.green,
+                                            in: RoundedRectangle(cornerRadius: 3))
+                        }
+                }
+            }
+            if let selected = selectedDailyBar {
+                RuleMark(x: .value("选中日期", selected.date))
+                    .foregroundStyle(store.effectiveAccentColor.opacity(0.75))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                PointMark(x: .value("选中日期", selected.date), y: .value("收盘", selected.close))
+                    .foregroundStyle(store.effectiveAccentColor)
+                    .symbolSize(30)
+            }
             ForEach(ma5) { point in
                 LineMark(x: .value("日期", point.date), y: .value("MA5", point.value), series: .value("均线", "MA5"))
                     .foregroundStyle(ma5Color).lineStyle(StrokeStyle(lineWidth: 1.2))
@@ -1048,6 +1369,21 @@ struct MarketChartView: View {
                 AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
             }
         }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle().fill(.clear).contentShape(Rectangle())
+                    .simultaneousGesture(SpatialTapGesture().onEnded { value in
+                        guard let plotFrame = proxy.plotFrame else { return }
+                        let frame = geometry[plotFrame]
+                        let x = value.location.x - frame.origin.x
+                        guard x >= 0, x <= frame.width, !visible.isEmpty else { return }
+                        let fraction = min(0.999_999, max(0, x / max(1, frame.width)))
+                        let index = min(visible.count - 1, Int(fraction * CGFloat(visible.count)))
+                        selectedDailyDate = visible[index].date
+                        Haptics.selection()
+                    })
+            }
+        }
     }
 
     private func volumePlot(width: CGFloat) -> some View {
@@ -1070,10 +1406,52 @@ struct MarketChartView: View {
             Text(value).font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
+    private func intradayLayerButton(_ title: String, isOn: Bool, color: Color,
+                                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Circle().fill(isOn ? color : Color.secondary.opacity(0.45)).frame(width: 6, height: 6)
+                Text(title).scaledFont(11, weight: .semibold)
+            }
+            .foregroundStyle(isOn ? color : Color.secondary)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background((isOn ? color : Color.secondary).opacity(isOn ? 0.13 : 0.07), in: Capsule())
+            .overlay { Capsule().strokeBorder((isOn ? color : Color.secondary).opacity(0.22), lineWidth: 0.8) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title)叠加层，当前\(isOn ? "显示" : "隐藏")")
+    }
+    private func intradayVolumeMAButton(_ period: Int) -> some View {
+        let available = minuteBuckets.compactMap(\.volume).count >= period
+        let isOn = intradayVolumeMAs.contains(period)
+        let color = intradayVolumeMAColor(period)
+        return Button {
+            if isOn { intradayVolumeMAs.remove(period) } else { intradayVolumeMAs.insert(period) }
+            IntradayVisibility.write(volumeMAs: intradayVolumeMAs)
+        } label: {
+            Text("MA\(period)").scaledFont(10, weight: .semibold)
+                .foregroundStyle(isOn ? color : Color.secondary)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background((isOn ? color : Color.secondary).opacity(isOn ? 0.13 : 0.07), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!available)
+        .opacity(available ? 1 : 0.38)
+    }
+    private func intradayVolumeMAColor(_ period: Int) -> Color {
+        switch period {
+        case 20: return ChartPalette.ma20
+        case 60: return ChartPalette.ma60
+        default: return ChartPalette.ma250
+        }
+    }
     private var zoomedPeriodBars: [DailyBar] {
-        let end = max(zoomedBarCount, periodBars.count - chartPanOffset)
+        let source = periodAllBars
+        guard !source.isEmpty else { return [] }
+        let safeOffset = min(chartPanOffset, max(0, source.count - zoomedBarCount))
+        let end = max(zoomedBarCount, source.count - safeOffset)
         let start = max(0, end - zoomedBarCount)
-        return Array(periodBars[start..<end])
+        return Array(source[start..<end])
     }
 
     @MainActor private func fetchTencentMinute() async {
@@ -1166,7 +1544,11 @@ struct MarketChartView: View {
             store.mergeIntradayBars(parsed)
             selectedIntradayDay = day
             minuteStatus = day == today ? "更新于 \(Date.now.formatted(date: .omitted, time: .shortened))" : "休市 · 最近交易日 \(day)"
-        } catch { minuteStatus = "分时获取失败：\(error.localizedDescription)" }
+        } catch {
+            minuteStatus = selectedIntradayBars.isEmpty
+                ? "分时获取失败：\(error.localizedDescription)"
+                : "更新失败，继续显示本机已保存的 \(selectedIntradayDay) 分时"
+        }
     }
 
     @MainActor private func load(force: Bool) async {
@@ -1199,18 +1581,23 @@ struct MarketChartView: View {
         guard !instrumentAIBusy else { return }
         instrumentAIBusy = true
         instrumentAIMessage = ""
-        // 新一轮分析：上一轮建议的处理标记与提示都作废。
-        handledSuggestionIDs.removeAll()
-        suggestionNote = ""
         defer { instrumentAIBusy = false }
         let quote = store.data.quotes.first(where: { $0.code == holding.code })
         let actualHolding = store.data.holdings.first(where: { $0.code == holding.code && $0.kind == .etf }) ?? holding
         do {
-            instrumentAIResult = try await AIAnalysisService.analyzeInstrument(
+            let result = try await AIAnalysisService.analyzeInstrument(
                 config: store.data.aiAnalysisConfig, holding: actualHolding, quote: quote, bars: allBars,
                 intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText,
                 profile: store.data.investmentProfile, totalAsset: store.totalAsset)
-        } catch { instrumentAIMessage = error.localizedDescription }
+            instrumentAIResult = result
+            store.data.savedInstrumentAIAnalyses[holding.code] = SavedAIAnalysis(text: result)
+            store.saveAIAnalysisCache()
+            // 只有新结果成功返回后，上一轮建议的处理状态才作废。
+            handledSuggestionIDs.removeAll()
+            suggestionNote = ""
+        } catch {
+            instrumentAIMessage = "分析失败：\(error.localizedDescription)\(instrumentAIResult.isEmpty ? "" : "；已保留上次成功结果。")"
+        }
     }
 
     // MARK: - AI 可执行建议 → 计划 / 提醒

@@ -11,7 +11,7 @@ import SwiftUI
 //   · 系统层：读取 @Environment(\.dynamicTypeSize) 换算成倍率（并做上限封顶，
 //     避免无障碍超大档位把紧凑网格撑破）；
 //   · App 层：新增「字号」设置（0.9 / 1.0 / 1.1 / 1.25），与系统倍率相乘。
-// 两者相乘后仍对最小字号做 7pt 兜底，保证极端组合下不会缩成看不见。
+// 两者相乘后仍对最小字号做 9pt 兜底，紧凑但不缩成难以辨认的小字。
 
 private struct AppFontScaleKey: EnvironmentKey {
     static let defaultValue: CGFloat = 1
@@ -44,7 +44,7 @@ private struct ScaledFontModifier: ViewModifier {
     func body(content: Content) -> some View {
         // 上下限：太小读不清，太大（无障碍档位）会把紧凑数字网格撑到互相遮挡。
         let systemFactor = min(max(bodyMetric / 17, 0.85), 1.6)
-        return content.font(.system(size: max(size * systemFactor * appFontScale, 7),
+        return content.font(.system(size: max(size * systemFactor * appFontScale, 9),
                                     weight: weight, design: design))
     }
 }

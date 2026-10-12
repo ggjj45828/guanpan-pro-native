@@ -102,8 +102,10 @@ enum MarketIndexStore {
         Entry(secid: "1.000688", tencent: "sh000688", name: "科创50"),
         Entry(secid: "100.HSI", tencent: "hkHSI", name: "恒生指数", sina: "b_HSI"),
         Entry(secid: "124.HSTECH", tencent: "hkHSTECH", name: "恒生科技"),
-        Entry(secid: "100.NDX", tencent: "usIXIC", name: "纳斯达克"),
         Entry(secid: "100.SPX", tencent: "usINX", name: "标普500", sina: "b_SPX"),
+        // NDX 是纳斯达克 100；IXIC 是纳斯达克综合指数，二者不能混用。
+        // 放在标普旁边，首页无需继续横滑一大段才能找到。
+        Entry(secid: "100.NDX", tencent: "usNDX", name: "纳斯达克100"),
         Entry(secid: "100.DJIA", tencent: "usDJI", name: "道琼斯"),
         Entry(secid: "100.N225", tencent: nil, name: "日经225", sina: "int_nikkei"),
         Entry(secid: "100.TOPIX", tencent: nil, name: "东证TOPIX", sina: "b_TOPIX"),
@@ -124,7 +126,11 @@ enum MarketIndexStore {
         // 改过代码表之后，老缓存里多出来的项不该继续占位置。
         // （`Entry` 是 struct，可以走键路径；这里用闭包写法与工程其他处保持一致。）
         let order = catalog.map { $0.secid }
-        return order.compactMap { secid in list.first { $0.symbol == secid } }
+        return order.compactMap { secid in
+            guard var quote = list.first(where: { $0.symbol == secid }) else { return nil }
+            quote.name = name(for: secid) ?? quote.name
+            return quote
+        }
     }
 
     static func save(_ list: [MarketIndexQuote]) {
@@ -619,6 +625,12 @@ struct AIAnalysisConfig: Codable {
     }
 }
 
+/// 最近一次成功的大模型结果。失败的重试不会覆盖它；下一次成功后才替换。
+struct SavedAIAnalysis: Codable {
+    var text: String
+    var updatedAt: Date = .now
+}
+
 struct LedgerEntry: Codable, Identifiable {
     var id: UUID = UUID()
     var date: Date = .now
@@ -667,6 +679,9 @@ struct PortfolioData: Codable {
     var legacyDCAEvents: [LegacyDCAEventArchive] = []
     var legacySettingsArchives: [LegacySettingsArchive] = []
     var aiAnalysisConfig = AIAnalysisConfig()
+    var savedAccountAIAnalysis: SavedAIAnalysis?
+    var savedPortraitAIAnalysis: SavedAIAnalysis?
+    var savedInstrumentAIAnalyses: [String: SavedAIAnalysis] = [:]
     var ledger: [LedgerEntry] = []
     var cash: Double = 0
     var cashLinkedByDefault = false
@@ -674,8 +689,7 @@ struct PortfolioData: Codable {
     var quoteRefreshSeconds = 60
     var dailyPnLMode: DailyPnLMode = .pnl
     var intradaySubchartMode = "macd"
-    // 120 而不是 250：250 根 K 线挤进一屏宽度时每根实体不到 1pt（亚像素），
-    // 抗锯齿后是一团灰；120 根约 3pt/根，柱子有实心感。老数据由 store 的迁移改成 120。
+    // 仅保留用于读取旧备份；新版界面不再提供固定日数，K 线由手势自由缩放。
     var dailyChartRangeDays = 120
     var intradayLineColorMode: IntradayLineColorMode = .automatic
     var intradayCaptureEnabled = true
@@ -694,7 +708,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -720,6 +734,9 @@ struct PortfolioData: Codable {
         legacyDCAEvents = try c.decodeIfPresent([LegacyDCAEventArchive].self, forKey: .legacyDCAEvents) ?? []
         legacySettingsArchives = try c.decodeIfPresent([LegacySettingsArchive].self, forKey: .legacySettingsArchives) ?? []
         aiAnalysisConfig = try c.decodeIfPresent(AIAnalysisConfig.self, forKey: .aiAnalysisConfig) ?? AIAnalysisConfig()
+        savedAccountAIAnalysis = try c.decodeIfPresent(SavedAIAnalysis.self, forKey: .savedAccountAIAnalysis)
+        savedPortraitAIAnalysis = try c.decodeIfPresent(SavedAIAnalysis.self, forKey: .savedPortraitAIAnalysis)
+        savedInstrumentAIAnalyses = try c.decodeIfPresent([String: SavedAIAnalysis].self, forKey: .savedInstrumentAIAnalyses) ?? [:]
         ledger = try c.decodeIfPresent([LedgerEntry].self, forKey: .ledger) ?? []
         cash = try c.decodeIfPresent(Double.self, forKey: .cash) ?? 0
         cashLinkedByDefault = try c.decodeIfPresent(Bool.self, forKey: .cashLinkedByDefault) ?? false

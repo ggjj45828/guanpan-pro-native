@@ -4,9 +4,9 @@ import SwiftUI
 ///
 /// 目的：网页版持仓页一张卡里塞了十来个数字（总资产、总盈亏、仓位、今日盈亏…），
 /// App 原来只有零散几行 `LabeledContent`，信息密度差很多。
-/// 这里统一成「大数字 + 3 列小格」，标签 10px、数值 13px，字体缩小但信息量翻倍。
+/// 这里统一成「大数字 + 3 列小格」，标签 11pt、数值 14pt，兼顾密度和可读性。
 
-/// 单个指标格：标题 10px 次要色，数值 13px 半粗等宽数字，可选涨跌染色。
+/// 单个指标格：标题 11pt 次要色，数值 14pt 半粗等宽数字，可选涨跌染色。
 struct MetricCell: View {
     var title: String
     var value: String
@@ -16,12 +16,12 @@ struct MetricCell: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .scaledFont(10)
+                .scaledFont(11)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(value)
-                .scaledFont(13, weight: .semibold, design: .rounded)
+                .scaledFont(14, weight: .semibold, design: .rounded)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -70,15 +70,14 @@ struct MetricGrid: View {
     }
 }
 
-/// 半透明磨砂卡片底，配合自定义背景图也能读清。带 tone 时给卡片上色。
+/// 不透明卡片底。带 tone 时只叠加轻量色调，不使用毛玻璃或透出下层内容。
 private struct CardSurfaceModifier: ViewModifier {
-    @Environment(\.colorScheme) private var scheme
     var tone: Color? = nil
     func body(content: Content) -> some View {
         content
-            .padding(12)
-            .cardPanelBackground(cornerRadius: 14,
-                fallback: scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.62),
+            .padding(AppLayout.cardPadding)
+            .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
+                fallback: .clear,
                 tone: tone)
     }
 }
@@ -90,7 +89,7 @@ private struct CardSurfaceModifier: ViewModifier {
 /// 也不再有「照片面板」分支 —— 直接给固定的中性卡面：浅色主题偏白、深色主题偏亮，
 /// 保证卡片在纯配色背景上仍能立起来。
 private struct CardPanelBackgroundModifier: ViewModifier {
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.appAppearance) private var appearance
     let cornerRadius: CGFloat
     let fallback: Color
     /// 非 nil 时给卡片上色（网页版 .sum / .ai / .gauge 那类彩色区块）。
@@ -101,24 +100,23 @@ private struct CardPanelBackgroundModifier: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         // 用 AnyShapeStyle 统一两条分支的类型：Swift 的 opaque return type 要求
         // 函数体所有 return 的底层类型一致，直接返回 LinearGradient / Color 会编译失败。
-        let fillStyle: AnyShapeStyle
+        let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
         let strokeStyle: AnyShapeStyle
         let strokeWidth: CGFloat
         if let tone {
-            // 有色调时优先用色调渐变（对齐网页版 .sum / .ai / .gauge 彩色区块）
-            fillStyle = AnyShapeStyle(LinearGradient(
-                colors: [tone.opacity(scheme == .dark ? 0.30 : 0.17),
-                         tone.opacity(scheme == .dark ? 0.10 : 0.05)],
-                startPoint: .topLeading, endPoint: .bottomTrailing))
-            strokeStyle = AnyShapeStyle(tone.opacity(scheme == .dark ? 0.38 : 0.30))
+            strokeStyle = AnyShapeStyle(tone.opacity(theme.isLight ? 0.36 : 0.52))
             strokeWidth = 1
         } else {
-            fillStyle = AnyShapeStyle(fallback)
             strokeStyle = AnyShapeStyle(Color.primary.opacity(0.10))
             strokeWidth = 0.5
         }
         return content
-            .background(shape.fill(fillStyle))
+            .background(shape.fill(theme.surface))
+            .overlay {
+                if let tone {
+                    shape.fill(tone.opacity(theme.isLight ? 0.12 : 0.18))
+                }
+            }
             .overlay(shape.strokeBorder(strokeStyle, lineWidth: strokeWidth))
             .clipShape(shape)
     }

@@ -235,8 +235,8 @@ extension PortfolioStore {
         let minuteKeys = Set(parsed.map { "\($0.code)-\(Int($0.timestamp.timeIntervalSince1970 / 60))" })
         intradayBars.removeAll { minuteKeys.contains("\($0.code)-\(Int($0.timestamp.timeIntervalSince1970 / 60))") }
         let minuteUnique = Dictionary(parsed.map { ("\($0.code)-\(Int($0.timestamp.timeIntervalSince1970 / 60))", $0) }, uniquingKeysWith: { _, latest in latest })
-        intradayBars.append(contentsOf: minuteUnique.values)
-        saveIntradayBars()
+        rebuildIntradayMinuteIndex()
+        mergeIntradayBars(Array(minuteUnique.values))
         return minuteUnique.count
     }
 
@@ -251,17 +251,14 @@ extension PortfolioStore {
         let tz = TimeZone(identifier: "Asia/Shanghai")!
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = tz; formatter.dateFormat = "yyyy-MM-dd"
         let minute = Int(time.timeIntervalSince1970 / 60)
-        var changed = false
         var added: [IntradayBar] = []
         for (code, price) in quotes where !code.isEmpty && price.isFinite && price > 0 {
-            guard !intradayBars.contains(where: { $0.code == code && Int($0.timestamp.timeIntervalSince1970 / 60) == minute }) else { continue }
-            let bar = IntradayBar(code: code, timestamp: time, price: price, volume: nil, day: formatter.string(from: time))
-            intradayBars.append(bar)
+            guard !containsIntradayMinute(code: code, at: time) else { continue }
+            let minuteTime = Date(timeIntervalSince1970: TimeInterval(minute * 60))
+            let bar = IntradayBar(code: code, timestamp: minuteTime, price: price, volume: nil, day: formatter.string(from: time))
             added.append(bar)
-            changed = true
         }
-        guard changed else { return }
-        appendIntradayBars(added)
+        mergeIntradayBars(added)
     }
 
     func replayGrid(plan: DayGridPlan, day: String) -> GridReplayResult? {

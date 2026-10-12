@@ -224,11 +224,13 @@ struct AccountPortraitView: View {
     @State private var savedMessage = ""
 
     private var keySaved: Bool { AIAnalysisService.hasSavedAPIKey }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
             Form {
                 if let p = portrait, p.hasData {
+                    portraitHeader(p)
                     tagsSection(p)
                     metricsSection(p)
                     conclusionsSection(p)
@@ -236,22 +238,32 @@ struct AccountPortraitView: View {
                     aiSection(p)
                 } else {
                     Section {
-                        Text("账本里还没有交易记录，暂时无法推断画像。先在持仓页记录几笔买入/卖出，或开启一笔定投，画像会自动生成。")
+                        ContentUnavailableView("暂无画像", systemImage: "person.crop.circle.badge.questionmark",
+                            description: Text("先记录持仓、现金或交易流水，画像会自动生成。"))
                     }
+                    .plainCard(isLight: isLight)
                 }
-                if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) } }
+                if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) }.plainCard(isLight: isLight) }
                 Section {
                     Text("画像只描述你已经发生的行为，不预测市场，也不构成投资建议。所有计算在本机完成；只有你主动点「大模型深度推断」时，上述统计才会发送到你配置的接口。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
             }
-            .navigationTitle("AI 智能画像")
+            .navigationTitle("账户画像")
+            .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear)
             .themedSheetBackground()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
-            .onAppear { recompute() }
+            .onAppear {
+                recompute()
+                if aiResult.isEmpty, let saved = store.data.savedPortraitAIAnalysis {
+                    aiResult = saved.text
+                }
+            }
         }
     }
 
@@ -259,35 +271,75 @@ struct AccountPortraitView: View {
         portrait = PortraitEngine.compute(data: store.data, totalAsset: store.totalAsset)
     }
 
-    private func tagsSection(_ p: AccountPortrait) -> some View {
-        Section("画像标签") {
-            FlowTags(tags: p.tags)
+    private func portraitHeader(_ p: AccountPortrait) -> some View {
+        Section {
+            HStack(spacing: 14) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(store.effectiveAccentColor)
+                    .frame(width: 48, height: 48)
+                    .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("你的账户画像").font(.headline)
+                    Text(p.sampleSize > 0 ? "依据 \(p.sampleSize) 条交易与定投样本" : "当前按持仓和现金结构生成")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 6)
         }
+        .toneCard(store.effectiveAccentColor, isLight: isLight)
+    }
+
+    private func tagsSection(_ p: AccountPortrait) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("画像标签", systemImage: "tag").font(.headline)
+                FlowTags(tags: p.tags)
+            }
+        }
+        .plainCard(isLight: isLight)
     }
 
     private func metricsSection(_ p: AccountPortrait) -> some View {
-        Section("行为指标") {
-            ForEach(p.metrics) { m in
-                HStack {
-                    Text(m.title).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(m.value).monospacedDigit()
-                        .foregroundStyle(m.tone == true ? PnLColor.up : m.tone == false ? PnLColor.down : Color.primary)
-                }.font(.subheadline)
+        Section {
+            VStack(alignment: .leading, spacing: 0) {
+                Label("行为指标", systemImage: "chart.bar.xaxis").font(.headline).padding(.bottom, 8)
+                ForEach(Array(p.metrics.enumerated()), id: \.offset) { index, m in
+                    if index > 0 { Divider() }
+                    HStack {
+                        Text(m.title).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(m.value).monospacedDigit()
+                            .foregroundStyle(m.tone == true ? PnLColor.up : m.tone == false ? PnLColor.down : Color.primary)
+                    }
+                    .font(.subheadline).padding(.vertical, 8)
+                }
             }
         }
+        .plainCard(isLight: isLight)
     }
 
     private func conclusionsSection(_ p: AccountPortrait) -> some View {
-        Section("系统观察") {
-            ForEach(Array(p.conclusions.enumerated()), id: \.offset) { _, line in
-                Text(line).font(.subheadline)
+        Section {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("系统观察", systemImage: "eye").font(.headline)
+                ForEach(Array(p.conclusions.enumerated()), id: \.offset) { index, line in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(index + 1)").font(.caption.bold()).foregroundStyle(store.effectiveAccentColor)
+                            .frame(width: 22, height: 22)
+                            .background(store.effectiveAccentColor.opacity(0.13), in: Circle())
+                        Text(line).font(.subheadline)
+                    }
+                }
             }
         }
+        .toneCard(store.effectiveAccentColor, isLight: isLight)
     }
 
     private func suggestionSection(_ p: AccountPortrait) -> some View {
-        Section("推断出的投资偏好") {
+        Section {
+            Label("偏好建议", systemImage: "slider.horizontal.3").font(.headline)
             LabeledContent("交易风格", value: styleName(p.suggestedStyle))
             LabeledContent("风险偏好", value: riskName(p.suggestedRisk))
             LabeledContent("单标的仓位上限", value: "\(Int(p.suggestedMaxPosition))%")
@@ -307,10 +359,12 @@ struct AccountPortraitView: View {
             }
             if !savedMessage.isEmpty { Text(savedMessage).font(.footnote).foregroundStyle(.secondary) }
         }
+        .plainCard(isLight: isLight)
     }
 
     @ViewBuilder private func aiSection(_ p: AccountPortrait) -> some View {
-        Section("大模型深度推断（可选）") {
+        Section {
+            Label("大模型复核（可选）", systemImage: "sparkles").font(.headline)
             if keySaved {
                 Button {
                     Task { await runAI(p) }
@@ -325,23 +379,34 @@ struct AccountPortraitView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if !aiResult.isEmpty {
-                Text(aiResult).textSelection(.enabled)
+                if let saved = store.data.savedPortraitAIAnalysis {
+                    Label("上次成功分析：\(saved.updatedAt.formatted(date: .abbreviated, time: .shortened))",
+                          systemImage: "clock.arrow.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                AIFormattedResultView(text: aiResult, accent: store.effectiveAccentColor)
             }
             if !aiResult.isEmpty {
                 Text("模型输出可能有误。画像描述的是历史行为，不代表未来收益。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
+        .toneCard(store.effectiveAccentColor, isLight: isLight)
     }
 
     @MainActor private func runAI(_ p: AccountPortrait) async {
-        aiBusy = true; message = ""; aiResult = ""
+        aiBusy = true; message = ""
         defer { aiBusy = false }
         do {
-            aiResult = try await AIAnalysisService.chat(
+            let result = try await AIAnalysisService.chat(
                 config: store.data.aiAnalysisConfig,
                 prompt: PortraitEngine.portraitPrompt(p, data: store.data, totalAsset: store.totalAsset))
-        } catch { message = error.localizedDescription }
+            aiResult = result
+            store.data.savedPortraitAIAnalysis = SavedAIAnalysis(text: result)
+            store.saveAIAnalysisCache()
+        } catch {
+            message = "分析失败：\(error.localizedDescription)\(aiResult.isEmpty ? "" : "；已保留上次成功结果。")"
+        }
     }
 
     private func styleName(_ raw: String) -> String {

@@ -1,7 +1,6 @@
 import SwiftUI
 import Charts
 import UniformTypeIdentifiers
-import PhotosUI
 import UIKit
 
 extension View {
@@ -71,9 +70,16 @@ struct ContentView: View {
         .preferredColorScheme(effectiveColorScheme)
         .tint(store.effectiveAccentColor)
         .appFontScale(CGFloat(fontScale))
-        .onAppear { store.configureNASSync() }
+        .environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
+        .onAppear {
+            store.configureNASSync()
+            Task { await store.archiveTrackedIntraday() }
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.configureNASSync() }
+            if phase == .active {
+                store.configureNASSync()
+                Task { await store.archiveTrackedIntraday() }
+            }
             else { store.pauseNASSyncPolling() }
         }
         .onReceive(themeTimer) { _ in
@@ -111,7 +117,8 @@ struct ContentView: View {
         }
         .scrollContentBackground(.hidden)
         .background(.clear)
-        .toolbarBackground(.regularMaterial, for: .tabBar)
+        .toolbarBackground(currentTheme.surface, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
     }
 
     /// iPad 上底部五个 Tab 会挤在中间、列表也只剩窄窄一条，观感很差；
@@ -203,6 +210,7 @@ enum WatchSortMode: String, CaseIterable, Identifiable {
 
 struct DashboardView: View {
     @EnvironmentObject var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @AppStorage("guanpan.native.watch.sort") private var sortMode: WatchSortMode = .manual
     @AppStorage("guanpan.native.watch.grouping") private var groupEnabled = false
     @Environment(\.colorScheme) private var colorScheme
@@ -354,14 +362,15 @@ struct DashboardView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear).navigationTitle("总览")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .refreshable {
                 // 下拉刷新与右上角那个按钮做同一件事：个股 + 指数。
-                await store.refreshQuotesAndWait()
-                await store.performIndexRefresh()
+                await manuallyRefreshDashboard()
             }
+            .refreshFeedbackOverlay(refreshFeedback)
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("添加自选", systemImage: "plus") { showAdd = true }
@@ -393,10 +402,11 @@ struct DashboardView: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Haptics.push()
-                    store.refreshEverything()
+                    Task { await manuallyRefreshDashboard() }
                 } label: {
-                    Image(systemName: "arrow.clockwise").imageScale(.small)
+                    RefreshToolbarIcon(isRefreshing: store.isRefreshingQuotes || store.isRefreshingIndices)
                 }
+                .disabled(store.isRefreshingQuotes || store.isRefreshingIndices)
                 .accessibilityLabel("刷新行情")
                 .accessibilityHint("同时刷新自选、持仓和顶部指数")
             } }
@@ -429,6 +439,18 @@ struct DashboardView: View {
                 }
             }
         }
+    }
+
+    @MainActor private func manuallyRefreshDashboard() async {
+        refreshFeedback.begin("正在刷新行情和指数…")
+        let quotesOK = await store.refreshQuotesAndWait()
+        let indicesOK = await store.performIndexRefresh()
+        let succeeded = quotesOK && indicesOK
+        let message: String
+        if succeeded { message = "行情和指数已更新" }
+        else if quotesOK || indicesOK { message = "部分数据已更新，请稍后再试" }
+        else { message = "刷新失败，请检查网络后重试" }
+        refreshFeedback.finish(message, succeeded: succeeded)
     }
 
     // MARK: - 首页顶部指数条
@@ -651,20 +673,19 @@ struct DashboardView: View {
                 // 技术信号标签：与网页版口径一致（MACD多空 / 超买超卖 / 放量 / MA20 位置）
                 // 需要该标的日线缓存；无缓存则静默不显示，不臆测。
                 if let signal {
-                    HStack(spacing: 5) {
-                        Text("\(signal.score) \(signal.label)")
-                            .scaledFont(10, weight: .semibold)
-                            .padding(.horizontal, 6).padding(.vertical, 2.5)
-                            .foregroundStyle(signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-                                             : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary)
-                            .background((signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-                                         : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary).opacity(0.14), in: Capsule())
-                        Text(signal.trendText)
-                            .scaledFont(10, weight: .medium)
-                            .padding(.horizontal, 6).padding(.vertical, 2.5)
-                            .foregroundStyle(.secondary)
-                            .background(Color.secondary.opacity(0.12), in: Capsule())
-                        SignalTagRow(tags: Array(signal.tags.prefix(3)))
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 3) {
+                            compactScoreTag(signal)
+                            compactTrendTag(signal.trendText)
+                            SignalTagRow(tags: Array(signal.tags.prefix(3)))
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 3) {
+                                compactScoreTag(signal)
+                                compactTrendTag(signal.trendText)
+                            }
+                            SignalTagRow(tags: Array(signal.tags.prefix(3)))
+                        }
                     }
                 } else if store.dailyBars[q.code] == nil {
                     Text("点开一次可载入日线，显示技术信号")
@@ -690,14 +711,32 @@ struct DashboardView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(AppLayout.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardPanelBackground(cornerRadius: 16,
+        .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
-            tone: accent)
+            tone: nil)
         // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
         .combineAccessibility()
         .accessibilityLabel(watchSpokenLabel(q))
+    }
+
+    private func compactScoreTag(_ signal: MarketSignal) -> some View {
+        let tone = signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+            : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary
+        return Text("\(signal.score) \(signal.label)")
+            .scaledFont(9, weight: .semibold).lineLimit(1)
+            .padding(.horizontal, 4).padding(.vertical, 2)
+            .foregroundStyle(tone)
+            .background(tone.opacity(0.14), in: Capsule())
+    }
+
+    private func compactTrendTag(_ text: String) -> some View {
+        Text(text)
+            .scaledFont(9, weight: .medium).lineLimit(1)
+            .padding(.horizontal, 4).padding(.vertical, 2)
+            .foregroundStyle(.secondary)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
     }
 
     /// 自选卡片的读屏文案。价格可能缺失，缺了就说「无报价」而不是念 0。
@@ -732,8 +771,10 @@ struct DashboardView: View {
 
 struct MoreHubView: View {
     @EnvironmentObject private var store: PortfolioStore
-    @State private var showTools = false
-    @State private var showSettings = false
+    @State private var showAnalysisTools = false
+    @State private var showPlanningTools = false
+    @State private var showAppSettings = false
+    @State private var showDataSync = false
     // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
     // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
     @State private var showAIAnalysis = false
@@ -746,7 +787,7 @@ struct MoreHubView: View {
                 Section {
                     VStack(spacing: 10) {
                         MoreHubCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
-                                    icon: "sparkles", tint: Color(red: 0.55, green: 0.36, blue: 1.0)) {
+                                    icon: "sparkles", tint: store.effectiveAccentColor) {
                             showAIAnalysis = true
                         }
                         HStack(spacing: 10) {
@@ -768,15 +809,27 @@ struct MoreHubView: View {
                 }
 
                 Section {
-                    Button { showTools = true } label: {
-                        MoreHubRow(title: "分析与规划", subtitle: "回测、现金计划、风险分析与数据核对", icon: "slider.horizontal.3", tint: .blue)
+                    VStack(spacing: 10) {
+                        HStack(spacing: 10) {
+                            MoreHubTile(title: "分析工具", subtitle: "风险、信号\n账户体检", icon: "chart.bar.xaxis", tint: .blue) {
+                                showAnalysisTools = true
+                            }
+                            MoreHubTile(title: "计划与复盘", subtitle: "网格、收益\n历史回看", icon: "calendar.badge.clock", tint: .orange) {
+                                showPlanningTools = true
+                            }
+                        }
+                        HStack(spacing: 10) {
+                            MoreHubTile(title: "应用设置", subtitle: "配色、行情\n成本口径", icon: "gearshape.fill", tint: .gray) {
+                                showAppSettings = true
+                            }
+                            MoreHubTile(title: "数据与同步", subtitle: "备份、NAS\n通知权限", icon: "externaldrive.fill", tint: .purple) {
+                                showDataSync = true
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
-                    Button { showSettings = true } label: {
-                        MoreHubRow(title: "设置与同步", subtitle: "外观、提醒、备份和 NAS", icon: "gearshape.fill", tint: .gray)
-                    }
-                    .buttonStyle(.plain)
-                } header: { Text("工具") }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                } header: { Text("工具与设置") }
 
                 Section("账户状态") {
                     LabeledContent("自选", value: "\(store.data.quotes.count) 只")
@@ -792,11 +845,14 @@ struct MoreHubView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear)
             .navigationTitle("更多")
-            .navigationBarTitleDisplayMode(.large)
-            .sheet(isPresented: $showTools) { ToolsView() .themedSheetBackground() }
-            .sheet(isPresented: $showSettings) { SettingsView() .themedSheetBackground() }
+            .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showAnalysisTools) { ToolsView(initialAnchor: "tools-risk", title: "分析工具") .themedSheetBackground() }
+            .sheet(isPresented: $showPlanningTools) { ToolsView(initialAnchor: "tools-returns", title: "计划与复盘") .themedSheetBackground() }
+            .sheet(isPresented: $showAppSettings) { SettingsView(mode: .app) .themedSheetBackground() }
+            .sheet(isPresented: $showDataSync) { SettingsView(mode: .sync) .themedSheetBackground() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
             .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
@@ -875,31 +931,6 @@ private struct MoreHubTile: View {
             )
         }
         .buttonStyle(.plain)
-    }
-}
-
-private struct MoreHubRow: View {
-    let title: String
-    let subtitle: String
-    let icon: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 13) {
-            Image(systemName: icon)
-                .scaledFont(18, weight: .semibold)
-                .foregroundStyle(.white)
-                .frame(width: 42, height: 42)
-                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.headline).foregroundStyle(.primary)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
     }
 }
 
@@ -1043,6 +1074,7 @@ struct WatchEditor: View {
 
 struct HoldingsView: View {
     @EnvironmentObject var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     let kind: Holding.Kind
     @State private var showAdd = false
     @State private var editTarget: Holding?
@@ -1067,6 +1099,8 @@ struct HoldingsView: View {
     /// 长按菜单删除的确认目标
     @State private var removeTarget: Holding?
     @State private var searchText = ""
+    /// 驱动“最新净值已更新”彩虹强调在下一交易日 09:30 准时恢复普通卡片。
+    @State private var fundFreshnessClock = Date.now
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
     private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
 
@@ -1174,36 +1208,61 @@ struct HoldingsView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
             .refreshable {
                 // 基金页下拉刷净值，ETF/证券页下拉刷行情，各自对应页面上真正会变的东西
-                if kind == .fund { await store.refreshFundNAVsAndWait() }
-                else { await store.refreshQuotesAndWait() }
+                await manuallyRefreshHoldings()
             }
+            .refreshFeedbackOverlay(refreshFeedback)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if kind == .fund {
-                        Button { Haptics.push(); store.refreshFundNAVs() } label: { Image(systemName: "arrow.clockwise") }
+                        Button {
+                            Haptics.push()
+                            Task { await manuallyRefreshHoldings() }
+                        } label: {
+                            RefreshToolbarIcon(isRefreshing: store.isRefreshingFunds)
+                        }
                             .disabled(store.isRefreshingFunds)
-                            .accessibilityLabel("刷新基金净值")
+                            .accessibilityLabel(store.isRefreshingFunds ? "正在更新基金净值" : "更新基金净值")
                     }
                     Button { showAdd = true } label: { Image(systemName: "plus") }
                         .accessibilityLabel(kind == .fund ? "添加基金持仓" : "添加 ETF / 证券持仓")
                 }
             }
+            .task {
+                while !Task.isCancelled {
+                    fundFreshnessClock = .now
+                    try? await Task.sleep(for: .seconds(60))
+                }
+            }
+        }
+    }
+
+    @MainActor private func manuallyRefreshHoldings() async {
+        if kind == .fund {
+            refreshFeedback.begin("正在更新已公布净值…")
+            let ok = await store.refreshFundNAVsAndWait()
+            refreshFeedback.finish(store.fundNAVStatus, succeeded: ok)
+        } else {
+            refreshFeedback.begin("正在刷新持仓行情…")
+            let ok = await store.refreshQuotesAndWait()
+            refreshFeedback.finish(ok ? "持仓行情已更新" : store.sourceStatus, succeeded: ok)
         }
     }
 
     /// 本模块（ETF/证券 或 场外基金）自己的汇总：市值 / 浮盈 / 收益率。
     /// 与账户页的「总资产」互不混算——两个模块各看各的，避免把合计当成单模块数字。
-    /// 持仓行内的小统计：标签 9px、数值 11px，一行塞三个不挤。
+    /// 持仓行内的小统计：紧凑但不小于 10pt，一行放三个且保持可读。
     private func holdingStat(_ title: String, _ value: String, _ tone: Double?) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(title).scaledFont(9).foregroundStyle(.secondary)
+            Text(title).scaledFont(10).foregroundStyle(.secondary)
             Text(value)
-                .scaledFont(11, weight: .semibold, design: .rounded)
+                .scaledFont(12, weight: .semibold, design: .rounded)
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                 .foregroundStyle(tone.map { $0 >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
                                                     : Color(red: 0.07, green: 0.77, blue: 0.55) } ?? Color.primary)
@@ -1322,6 +1381,7 @@ struct HoldingsView: View {
         let costBasis = h.quantity * store.displayedCost(for: h)
         let holdingPnL = store.holdingPnL(h)
         let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
+        let highlightFreshNAV = shouldHighlightFreshFundNAV(h, now: fundFreshnessClock)
         VStack(alignment: .leading, spacing: 7) {
             HStack { Text(h.name).font(.headline).lineLimit(1); Spacer(); Text((h.marketValue).cny()).font(.headline) }
             HStack(spacing: 9) {
@@ -1371,6 +1431,21 @@ struct HoldingsView: View {
         .cardPanelBackground(cornerRadius: 16,
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
             tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
+        .overlay {
+            if highlightFreshNAV {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(fundFreshNAVGradient, lineWidth: 2.2)
+            }
+        }
+        .overlay(alignment: .leading) {
+            if highlightFreshNAV {
+                Capsule()
+                    .fill(fundFreshNAVGradient)
+                    .frame(width: 4)
+                    .padding(.vertical, 12)
+                    .padding(.leading, 2)
+            }
+        }
         .contentShape(Rectangle())
         // 左滑动作对齐养基宝的「后面有很多」：删除仍是全滑直达，
         // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
@@ -1410,14 +1485,46 @@ struct HoldingsView: View {
         } message: { Text("持仓会被移除，相关交易流水保留。删除后可用设置里的撤销操作找回最近一次。") }
     }
 
+    /// 从该净值日开始保持彩虹强调，直到它之后的首个交易日 09:30。
+    /// 因而周五晚更新会跨周末保留，周一开市再自动恢复；不是简单到午夜就消失。
+    private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
+        guard holding.kind == .fund,
+              let latestDay = store.data.fundNAVHistory
+                .filter({ $0.code == holding.code })
+                .map(\.date).max() else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let navDay = formatter.date(from: latestDay) else { return false }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = formatter.timeZone
+        var candidate = calendar.date(byAdding: .day, value: 1, to: navDay) ?? navDay
+        for _ in 0..<14 where MarketCalendar.isClosure(candidate, custom: store.data.customMarketHolidays) {
+            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+        }
+        guard let nextOpen = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: candidate) else { return false }
+        return now >= navDay && now < nextOpen
+    }
+
+    private var fundFreshNAVGradient: LinearGradient {
+        LinearGradient(colors: [
+            Color(red: 0.98, green: 0.30, blue: 0.42),
+            Color(red: 1.00, green: 0.63, blue: 0.18),
+            Color(red: 0.20, green: 0.76, blue: 0.48),
+            Color(red: 0.20, green: 0.62, blue: 0.98),
+            Color(red: 0.62, green: 0.40, blue: 0.96)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
     @ViewBuilder private var fundToolsSection: some View {
         Section("定投与分析") {
             Button("基金量化体检") { showFundQuant = true }
-            Button("更新已公布净值") { store.refreshFundNAVs() }.disabled(store.isRefreshingFunds)
             Button("基金日收益日历") { showFundCalendar = true }
             Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
             Text(store.fundDCAStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("先显示持仓，再显示定投和净值工具。基金页面只展示已公布净值。")
+            Text("净值可用页面右上角的刷新按钮更新，也可直接下拉刷新；本页只展示已公布净值。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if !store.data.legacyDCAEvents.isEmpty {
@@ -2225,7 +2332,7 @@ struct FundNAVHistoryView: View {
                             LabeledContent("按当前份额折算", value: (navChange * fund.quantity).cny())
                         }
                     } else {
-                        ContentUnavailableView("暂无净值历史", systemImage: "chart.xyaxis.line", description: Text("回到基金页点击“更新已公布净值”。"))
+                        ContentUnavailableView("暂无净值历史", systemImage: "chart.xyaxis.line", description: Text("回到基金页点右上角刷新。"))
                     }
                 }
                 if points.count > 1 {
@@ -2317,7 +2424,7 @@ struct HoldingEditor: View {
                 Section("标的信息") {
                     TextField("代码", text: $code).keyboardType(.numberPad)
                     TextField("名称", text: $name)
-                    if kind == .etf && !lookupMessage.isEmpty {
+                    if !lookupMessage.isEmpty {
                         Text(lookupMessage).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -2340,36 +2447,62 @@ struct HoldingEditor: View {
                 }
                 Text(kind == .etf
                     ? "这里只维护本机持仓，不连接券商或执行交易。输入六位代码后会尝试识别名称和现价；行情接口不可用时可手动填写。"
-                    : "这里只维护本机基金持仓，不连接销售平台或执行申赎。净值以最近已公布数据为准，可在基金页刷新。")
+                    : "这里只维护本机基金持仓，不连接销售平台或执行申赎。输入六位代码后会尝试识别名称和最近已公布净值；接口不可用时可手动填写。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
             .onChange(of: code) { oldValue, newValue in
-                if oldValue != newValue, let initial, initial.code != newValue {
-                    name = ""
-                    current = ""
+                let filtered = String(newValue.filter(\.isNumber).prefix(6))
+                if filtered != newValue { code = filtered; return }
+                if oldValue != newValue {
+                    // 新增时若上一组六位代码已经自动回填，再改代码必须清掉旧名称/价格；
+                    // 否则第二只基金可能被误存成第一只的名称。
+                    let changedAwayFromResolvedCode = oldValue.filter(\.isNumber).count == 6
+                    let changedAwayFromInitial = initial.map { $0.code != newValue } ?? false
+                    if changedAwayFromResolvedCode || changedAwayFromInitial {
+                        name = ""
+                        current = ""
+                    }
+                    lookupMessage = ""
                 }
-                if oldValue != newValue { lookupMessage = "" }
             }
             .task(id: code) {
                 let requested = code.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard kind == .etf, requested.count == 6, requested.allSatisfy(\.isNumber),
+                guard requested.count == 6, requested.allSatisfy(\.isNumber),
                       initial?.code != requested else { return }
                 lookupMessage = "正在识别代码…"
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled else { return }
                 do {
-                    guard let quote = try await store.lookupETFQuote(code: requested), !Task.isCancelled,
-                          code.trimmingCharacters(in: .whitespacesAndNewlines) == requested else {
-                        if !Task.isCancelled { lookupMessage = "未识别到该代码，可手动填写名称和现价。" }
-                        return
+                    if kind == .fund {
+                        guard let info = try await store.lookupFundInfo(code: requested), !Task.isCancelled,
+                              code.trimmingCharacters(in: .whitespacesAndNewlines) == requested else {
+                            if !Task.isCancelled { lookupMessage = "未识别到该基金代码，可手动填写名称和净值。" }
+                            return
+                        }
+                        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { name = info.name }
+                        if let nav = info.nav,
+                           current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || current == "0" {
+                            current = String(nav)
+                        }
+                        lookupMessage = info.nav.map { "已识别：\(info.name) · 最新净值 \($0)" } ?? "已识别：\(info.name)"
+                    } else {
+                        guard let quote = try await store.lookupETFQuote(code: requested), !Task.isCancelled,
+                              code.trimmingCharacters(in: .whitespacesAndNewlines) == requested else {
+                            if !Task.isCancelled { lookupMessage = "未识别到该代码，可手动填写名称和现价。" }
+                            return
+                        }
+                        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { name = quote.name }
+                        if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || current == "0" { current = String(quote.price) }
+                        lookupMessage = "已识别：\(quote.name) · 现价 \(quote.price)"
                     }
-                    if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { name = quote.name }
-                    if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || current == "0" { current = String(quote.price) }
-                    lookupMessage = "已识别：\(quote.name) · 现价\(quote.price)"
                 } catch {
-                    if !Task.isCancelled { lookupMessage = "行情接口暂不可用，可手动填写名称和现价。" }
+                    if !Task.isCancelled {
+                        lookupMessage = kind == .fund
+                            ? "基金信息接口暂不可用，可手动填写名称和净值。"
+                            : "行情接口暂不可用，可手动填写名称和现价。"
+                    }
                 }
             }
             .navigationTitle(initial == nil ? "添加持仓" : "编辑持仓")
@@ -2550,6 +2683,7 @@ private struct FundFeeReconciliationEditor: View {
 
 struct AssetsView: View {
     @EnvironmentObject var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @State private var showCashFlow = false
     @State private var selectedSnapshotMonth = ""
     @State private var selectedLedgerMonth = ""
@@ -2706,14 +2840,23 @@ struct AssetsView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear).navigationTitle("资产")
-                .refreshable { await store.refreshQuotesAndWait() }
+            .navigationBarTitleDisplayMode(.inline)
+                .refreshable { await manuallyRefreshAssets() }
+                .refreshFeedbackOverlay(refreshFeedback)
                 .onAppear {
                     if selectedSnapshotMonth.isEmpty { selectedSnapshotMonth = store.snapshotMonths.first ?? "" }
                     if selectedLedgerMonth.isEmpty { selectedLedgerMonth = store.ledgerMonths.first ?? "" }
                 }
                 .sheet(isPresented: $showCashFlow) { CashFlowEditor() .themedSheetBackground() }
         }
+    }
+
+    @MainActor private func manuallyRefreshAssets() async {
+        refreshFeedback.begin("正在刷新资产行情…")
+        let ok = await store.refreshQuotesAndWait()
+        refreshFeedback.finish(ok ? "资产行情已更新" : store.sourceStatus, succeeded: ok)
     }
 
     // MARK: - 资产构成
@@ -3058,7 +3201,11 @@ private struct ToolShortcut: Identifiable {
 }
 
 struct ToolsView: View {
+    let initialAnchor: String?
+    let title: String
     @EnvironmentObject var store: PortfolioStore
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("guanpan.native.tools.showAll") private var showAllTools = false
     @State private var shockPercent = 20
     @State private var showShockDetails = false
     @State private var showRebalanceDetails = false
@@ -3079,6 +3226,7 @@ struct ToolsView: View {
     @State private var showTradePreview = false
     @State private var showReturnSource = false
     @State private var showHistoricalReplay = false
+    @State private var showIntradayArchive = false
     @State private var showDataTrust = false
     @State private var showReconciliation = false
     @State private var showTradeLedger = false
@@ -3086,6 +3234,11 @@ struct ToolsView: View {
     @State private var showYearlyReview = false
     @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
+
+    init(initialAnchor: String? = nil, title: String = "工具") {
+        self.initialAnchor = initialAnchor
+        self.title = title
+    }
 
     /// 主题深浅决定卡片色的透明度档位。
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
@@ -3132,6 +3285,32 @@ struct ToolsView: View {
     ]
     var body: some View {
         NavigationStack { ScrollViewReader { proxy in List {
+            Section("常用工具") {
+                Button { showLedgerHealth = true } label: {
+                    Label("账本体检", systemImage: "checkmark.shield")
+                }
+                Button { showReconciliation = true } label: {
+                    Label("现金与盈亏对账", systemImage: "equal.circle")
+                }
+                Button { showAIAnalysis = true } label: {
+                    Label("账户洞察与建议", systemImage: "sparkles")
+                }
+                Button { showTradeLedger = true } label: {
+                    Label("全部交易流水（\(store.data.ledger.count) 笔）", systemImage: "list.bullet.rectangle")
+                }
+                Button { showIntradayArchive = true } label: {
+                    Label("分时采集与历史复盘", systemImage: "chart.xyaxis.line")
+                }
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { showAllTools.toggle() }
+                } label: {
+                    Label(showAllTools ? "收起全部工具" : "展开全部工具",
+                          systemImage: showAllTools ? "chevron.up" : "chevron.down")
+                }
+            }
+            .toneCard(store.effectiveAccentColor, isLight: isLight)
+
+            if showAllTools {
             Section("快速定位") {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -3141,6 +3320,7 @@ struct ToolsView: View {
                             }
                             .font(.subheadline.weight(.medium))
                             .padding(.horizontal, 13).padding(.vertical, 8)
+                            .frame(minHeight: AppLayout.minimumTapHeight)
                             .background(Color.accentColor.opacity(0.12), in: Capsule())
                         }
                     }.padding(.vertical, 3)
@@ -3318,9 +3498,10 @@ struct ToolsView: View {
             }
             .plainCard(isLight: isLight)
             .id("tools-grid")
-            Section("AI 账户分析") {
-                Button("配置接口并分析") { showAIAnalysis = true }
-                Text("本机可先给出全账户规则建议；只有点击大模型深度分析时，才会发送投资偏好、持仓、自选行情、场内/场外基金流水、定投、基金成分、现金流和快照。不会自动交易。")
+            Section("账户洞察") {
+                Button("账户分析与操作建议") { showAIAnalysis = true }
+                Button("查看账户画像") { showPortrait = true }
+                Text("本机先计算规则建议和操作画像；只有主动点击大模型深度分析时才会发送画像数据。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(CardTone.accent, isLight: isLight)
@@ -3342,13 +3523,6 @@ struct ToolsView: View {
             }
             .plainCard(isLight: isLight)
             .id("tools-data")
-            Section("AI 账户智能画像") {
-                Button("看系统怎么评价我的操作习惯") { showPortrait = true }
-                Text("对齐网页版「私人顾问 · 画像」：从交易流水推断风格、胜率、费用拖累、集中度与定投纪律，规则引擎本机先算，配了密钥可让大模型深度推断。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .toneCard(CardTone.accent, isLight: isLight)
-            .id("tools-ai-portrait")
             Section("券商成交历史导入") {
                 Button("导入成交 CSV / 表格") { showTradeCSVImport = true }
                 Text("先解析并预览，再由你确认入账。只增加 ETF/证券历史流水并计算可核实的已实现盈亏，不修改当前持仓或现金；需提供从首次买入开始的完整记录，避免把历史成交重复加到当前余额。")
@@ -3389,12 +3563,24 @@ struct ToolsView: View {
             .id("tools-funds")
             Text("AI 分析只读取本机已记录的数据；缺少有效日线或资讯时，不会提供相应技术判断或新闻结论。")
                 .font(.footnote).foregroundStyle(.secondary)
+            }
         }
         .scrollContentBackground(.hidden)
+        .appListLayout()
         .listRowBackground(Color.clear)
         .buttonStyle(.plain)
-        .background(.clear).navigationTitle("工具")
+        .onAppear {
+            guard let initialAnchor else { return }
+            showAllTools = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(120))
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(initialAnchor, anchor: .top) }
+            }
+        }
+        .background(.clear).navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
             .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
@@ -3412,6 +3598,7 @@ struct ToolsView: View {
             .sheet(isPresented: $showTradePreview) { TradePreviewView() .themedSheetBackground() }
             .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
             .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
+            .sheet(isPresented: $showIntradayArchive) { IntradayArchiveView() .themedSheetBackground() }
             .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
             .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
             .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }
@@ -3696,8 +3883,12 @@ struct DividendCalendarView: View {
 struct LedgerHealthView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    @State private var findings: [LedgerHealthFinding] = []
+    @State private var isRunning = true
+    @State private var runError = ""
+    @State private var progressStage = "正在准备账本快照"
+    @State private var healthCheckStartedAt = Date()
 
-    private var findings: [LedgerHealthFinding] { store.ledgerHealthReport() }
     private var errors: Int { findings.filter { $0.severity.rawValue == LedgerHealthFinding.Severity.error.rawValue }.count }
     private var warnings: Int { findings.filter { $0.severity.rawValue == LedgerHealthFinding.Severity.warning.rawValue }.count }
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
@@ -3705,16 +3896,40 @@ struct LedgerHealthView: View {
     var body: some View {
         NavigationStack {
             List {
+                if isRunning {
+                    Section {
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Text("正在体检账本").font(.headline)
+                                Spacer()
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    Text("已用时 \(max(0, Int(context.date.timeIntervalSince(healthCheckStartedAt)))) 秒")
+                                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                            }
+                            ProgressView()
+                            Text("\(progressStage)。可以看到进度，界面没有卡住；数据较多时会稍久一些。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 8)
+                    }
+                    .plainCard(isLight: isLight)
+                }
                 Section("检查结果") {
-                    LabeledContent("错误", value: "\(errors)")
+                    LabeledContent("错误", value: isRunning ? "检查中" : "\(errors)")
                         .foregroundStyle(errors > 0 ? PnLColor.up : Color.primary)
-                    LabeledContent("提醒", value: "\(warnings)")
+                    LabeledContent("提醒", value: isRunning ? "检查中" : "\(warnings)")
                         .foregroundStyle(warnings > 0 ? CardTone.warn : Color.primary)
+                    if !runError.isEmpty { Text(runError).font(.footnote).foregroundStyle(.red) }
                     Text("检查只读取本机数据。发现异常时，请先导出备份，再根据原始交易记录人工核对。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .toneCard(errors > 0 ? PnLColor.up : (warnings > 0 ? CardTone.warn : CardTone.ok), isLight: isLight)
                 Section("详细项目") {
+                    if !isRunning && findings.isEmpty && runError.isEmpty {
+                        Text("没有可显示的检查项目。")
+                            .foregroundStyle(.secondary)
+                    }
                     ForEach(findings) { finding in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
@@ -3733,10 +3948,37 @@ struct LedgerHealthView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear)
             .navigationTitle("账本体检")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .task { await runHealthCheck() }
         }
+    }
+
+    private func runHealthCheck() async {
+        isRunning = true
+        runError = ""
+        healthCheckStartedAt = .now
+        progressStage = "正在准备账本快照"
+        // 先让弹窗和进度提示完成首帧，再开始制作只读快照。
+        await Task.yield()
+        do {
+            let snapshot = try JSONEncoder().encode(store.data)
+            let totalAsset = store.totalAsset
+            progressStage = "正在核对持仓、流水和现金"
+            await Task.yield()
+            let result = try await Task.detached(priority: .userInitiated) {
+                let data = try JSONDecoder().decode(PortfolioData.self, from: snapshot)
+                return LedgerHealthAnalyzer.report(data: data, totalAsset: totalAsset)
+            }.value
+            progressStage = "正在整理检查结果"
+            findings = result
+        } catch {
+            runError = "账本体检失败：\(error.localizedDescription)"
+        }
+        isRunning = false
     }
 
     private func icon(for severity: LedgerHealthFinding.Severity) -> String {
@@ -3767,6 +4009,7 @@ private struct ConstituentExposure: Identifiable {
 struct ETFOverlapView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     private var etfs: [Holding] { store.data.holdings.filter { $0.kind == .etf } }
     private var covered: [(Holding, [ETFConstituent])] {
         etfs.compactMap { holding in
@@ -3828,7 +4071,7 @@ struct ETFOverlapView: View {
                 if !store.data.holdings.filter({ $0.kind == .fund }).isEmpty {
                     Section("场外基金重仓") {
                         Button(store.isRefreshingFundHoldings ? "正在获取…" : "更新基金定期报告重仓") {
-                            store.refreshFundConstituents()
+                            Task { await manuallyRefreshFundHoldings() }
                         }.disabled(store.isRefreshingFundHoldings)
                         Text(store.fundHoldingsStatus).font(.footnote).foregroundStyle(.secondary)
                         ForEach(store.data.fundConstituentSnapshots) { snapshot in
@@ -3860,9 +4103,16 @@ struct ETFOverlapView: View {
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
+            .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("ETF 持仓穿透")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
+    }
+
+    @MainActor private func manuallyRefreshFundHoldings() async {
+        refreshFeedback.begin("正在更新基金定期报告重仓…")
+        let ok = await store.refreshFundConstituentsAndWait()
+        refreshFeedback.finish(store.fundHoldingsStatus, succeeded: ok)
     }
 }
 
@@ -4339,6 +4589,8 @@ struct AIAnalysisView: View {
     /// 已经处理过的建议 id，防止同一行被反复转成多条提醒。
     @State private var handledSuggestionIDs: Set<UUID> = []
     @State private var suggestionNote = ""
+    @State private var showProfileSettings = false
+    @State private var showModelSettings = false
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
@@ -4348,22 +4600,16 @@ struct AIAnalysisView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("先看账户画像") {
-                    Button { showPortrait = true } label: {
-                        Label("打开 AI 智能画像", systemImage: "person.text.rectangle")
+                Section {
+                    VStack(spacing: 0) {
+                        insightButton(title: "账户画像", subtitle: "从持仓与流水归纳操作习惯", icon: "person.crop.circle.badge.checkmark") {
+                            showPortrait = true
+                        }
+                        Divider().padding(.leading, 52)
+                        insightButton(title: "本机账户建议", subtitle: "不需要 API 密钥，不上传数据", icon: "sparkles") {
+                            advisorResult = LocalAdvisorEngine.review(data: store.data, totalAsset: store.totalAsset)
+                        }
                     }
-                    Text("画像先依据本机持仓和流水分析；只有你主动点击大模型深度推断时才会发送画像数据。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .toneCard(CardTone.accent, isLight: isLight)
-                Section("私人顾问 · 全账户建议") {
-                    Button {
-                        advisorResult = LocalAdvisorEngine.review(data: store.data, totalAsset: store.totalAsset)
-                    } label: {
-                        Label("给我建议", systemImage: "sparkles")
-                    }
-                    Text("本机先检查全部持仓、现金、已设置的单仓上限、可用基金成分和真实流水，并按交易画像给出优先动作；无需 API Key。")
-                        .font(.footnote).foregroundStyle(.secondary)
                     if !advisorResult.isEmpty {
                         Text(advisorResult)
                             .font(.subheadline)
@@ -4371,63 +4617,75 @@ struct AIAnalysisView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .cardPanelBackground(cornerRadius: 14,
+                            .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
                                 fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
-                                tone: Color(red: 0.61, green: 0.42, blue: 1.0))
+                                tone: store.effectiveAccentColor)
                     }
                 }
-                Section("投资偏好（会随分析请求发送）") {
-                    Picker("交易风格", selection: $investmentProfile.style) {
-                        Text("超短线").tag("day"); Text("波段").tag("swing"); Text("中线").tag("mid"); Text("长线定投").tag("long")
-                    }
-                    Picker("风险偏好", selection: $investmentProfile.risk) {
-                        Text("保守").tag("con"); Text("平衡").tag("bal"); Text("激进").tag("agg")
-                    }
-                    Stepper(value: $investmentProfile.maxPositionPercent, in: 1...100, step: 1) {
-                        LabeledContent("单标的仓位上限", value: "\(Int(investmentProfile.maxPositionPercent))%")
-                    }
-                    TextField("典型持有周期", text: $investmentProfile.horizon)
-                    Toggle("关注 ETF 溢价", isOn: $investmentProfile.premiumSensitive)
-                    TextField("偏好方向", text: $investmentProfile.preference, axis: .vertical).lineLimit(1...3)
-                    TextField("忌讳 / 不做", text: $investmentProfile.avoid, axis: .vertical).lineLimit(1...3)
-                    TextField("自己的交易方式", text: $investmentProfile.method, axis: .vertical).lineLimit(2...5)
-                    TextField("投资目标", text: $investmentProfile.goal, axis: .vertical).lineLimit(1...3)
-                    Button("保存投资偏好") {
-                        investmentProfile.maxPositionPercent = min(100, max(1, investmentProfile.maxPositionPercent))
-                        store.data.investmentProfile = investmentProfile
-                        store.save(label: "修改账本或设置")
-                        message = "投资偏好已保存"
-                    }
-                }
-                Section("接口设置") {
-                    HStack {
-                        TextField("兼容接口基础地址", text: $endpoint)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                        PasteButton(payloadType: String.self) { values in
-                            if let value = values.first { endpoint = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .toneCard(store.effectiveAccentColor, isLight: isLight)
+                Section {
+                    DisclosureGroup(isExpanded: $showProfileSettings) {
+                        Picker("交易风格", selection: $investmentProfile.style) {
+                            Text("超短线").tag("day"); Text("波段").tag("swing"); Text("中线").tag("mid"); Text("长线定投").tag("long")
                         }
-                        .labelStyle(.iconOnly)
-                        .accessibilityLabel("从剪贴板粘贴接口地址")
+                        Picker("风险偏好", selection: $investmentProfile.risk) {
+                            Text("保守").tag("con"); Text("平衡").tag("bal"); Text("激进").tag("agg")
+                        }
+                        Stepper(value: $investmentProfile.maxPositionPercent, in: 1...100, step: 1) {
+                            LabeledContent("单标的仓位上限", value: "\(Int(investmentProfile.maxPositionPercent))%")
+                        }
+                        TextField("典型持有周期", text: $investmentProfile.horizon)
+                        Toggle("关注 ETF 溢价", isOn: $investmentProfile.premiumSensitive)
+                        TextField("偏好方向", text: $investmentProfile.preference, axis: .vertical).lineLimit(1...3)
+                        TextField("忌讳 / 不做", text: $investmentProfile.avoid, axis: .vertical).lineLimit(1...3)
+                        TextField("自己的交易方式", text: $investmentProfile.method, axis: .vertical).lineLimit(2...5)
+                        TextField("投资目标", text: $investmentProfile.goal, axis: .vertical).lineLimit(1...3)
+                        Button("保存投资偏好") {
+                            investmentProfile.maxPositionPercent = min(100, max(1, investmentProfile.maxPositionPercent))
+                            store.data.investmentProfile = investmentProfile
+                            store.save(label: "修改账本或设置")
+                            message = "投资偏好已保存"
+                        }
+                    } label: {
+                        settingsSummary(title: "投资偏好", value: "\(profileStyleName(investmentProfile.style)) · \(profileRiskName(investmentProfile.risk))", icon: "slider.horizontal.3")
                     }
-                    TextField("模型名称", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Stepper(value: $timeoutSeconds, in: 5...180, step: 5) {
-                        LabeledContent("请求超时", value: "\(timeoutSeconds) 秒")
-                    }
-                    TextField("分析要求", text: $systemPrompt, axis: .vertical).lineLimit(3...7)
-                    Button("保存接口设置") {
-                        var config = store.data.aiAnalysisConfig
-                        config.endpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-                        config.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                        config.timeoutSeconds = min(180, max(5, timeoutSeconds))
-                        config.systemPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                        store.data.aiAnalysisConfig = config
-                        store.save(label: "修改账本或设置")
-                        message = "接口设置已保存"
-                    }
-                    Text("DeepSeek 默认地址为 https://api.deepseek.com，模型 deepseek-flash；也可以填写其他兼容 Chat Completions 的 HTTPS 接口。")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                Section("API 密钥") {
+                .plainCard(isLight: isLight)
+                Section {
+                    DisclosureGroup(isExpanded: $showModelSettings) {
+                        HStack {
+                            TextField("兼容接口基础地址", text: $endpoint)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                            PasteButton(payloadType: String.self) { values in
+                                if let value = values.first { endpoint = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            }
+                            .labelStyle(.iconOnly)
+                            .accessibilityLabel("从剪贴板粘贴接口地址")
+                        }
+                        TextField("模型名称", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Stepper(value: $timeoutSeconds, in: 5...180, step: 5) {
+                            LabeledContent("请求超时", value: "\(timeoutSeconds) 秒")
+                        }
+                        TextField("分析要求", text: $systemPrompt, axis: .vertical).lineLimit(3...7)
+                        Button("保存接口设置") {
+                            var config = store.data.aiAnalysisConfig
+                            config.endpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+                            config.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                            config.timeoutSeconds = min(180, max(5, timeoutSeconds))
+                            config.systemPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                            store.data.aiAnalysisConfig = config
+                            store.save(label: "修改账本或设置")
+                            message = "接口设置已保存"
+                        }
+                        Text("支持 DeepSeek 或其他兼容 Chat Completions 的 HTTPS 接口。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } label: {
+                        settingsSummary(title: "模型设置", value: model.isEmpty ? "未配置" : model, icon: "cpu")
+                    }
+                }
+                .plainCard(isLight: isLight)
+                Section {
+                    Label("API 密钥", systemImage: "key").font(.headline)
                     HStack {
                         SecureField("粘贴 API 密钥", text: $token)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -4461,6 +4719,7 @@ struct AIAnalysisView: View {
                     Text(keySaved ? "密钥已保存在本机钥匙串，不会写入 JSON 备份。" : "请使用你在模型服务商处创建的 API 密钥。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                .plainCard(isLight: isLight)
                 Section {
                     Button { Task { await runAnalysis() } } label: {
                         HStack {
@@ -4471,16 +4730,21 @@ struct AIAnalysisView: View {
                     Text("点击后会把投资偏好、全部持仓、自选报价、场内与场外基金流水、定投计划、基金成分报告、参考现金、最近快照和现金流记录发送至上述接口。此外还会在本机额外算出三段补充材料一并发送：交易行为画像（按你的历史流水统计的胜率、盈亏比、平均持有天数、加仓与卖出时点习惯）、大盘指数与组合集中度、已缓存标的的均线位置。这些都在手机本地计算，不额外发起请求。请不要在提示中加入账户密码或其他敏感信息。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                .toneCard(store.effectiveAccentColor, isLight: isLight)
+                if !message.isEmpty {
+                    Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                        .plainCard(isLight: isLight)
+                }
                 if !result.isEmpty {
                     Section("分析结果") {
+                        if let saved = store.data.savedAccountAIAnalysis {
+                            Label("保存于 \(saved.updatedAt.formatted(date: .abbreviated, time: .shortened)) · 下次成功分析后替换",
+                                  systemImage: "clock.arrow.circlepath")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         // 展示用剥掉机器可读段的人话版本；解析仍然读完整的 result。
-                        Text(AISuggestionParser.displayText(result)).textSelection(.enabled)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .cardPanelBackground(cornerRadius: 14,
-                                fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
-                                tone: Color(red: 0.61, green: 0.42, blue: 1.0))
+                        AIFormattedResultView(text: AISuggestionParser.displayText(result),
+                                              accent: store.effectiveAccentColor)
                         Text("模型输出可能有误。价格/净值可能延迟；请核对行情与基金净值，不要仅依据模型文字交易。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -4495,13 +4759,15 @@ struct AIAnalysisView: View {
                                 Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
                             }
                         }
-                        .toneCard(CardTone.accent, isLight: isLight)
+                        .toneCard(store.effectiveAccentColor, isLight: isLight)
                     }
                 }
             }
             .navigationTitle("AI 账户分析")
+            .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .background(.clear)
             .themedSheetBackground()
             .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
@@ -4524,8 +4790,49 @@ struct AIAnalysisView: View {
                 systemPrompt = store.data.aiAnalysisConfig.systemPrompt
                 investmentProfile = store.data.investmentProfile
                 keySaved = AIAnalysisService.hasSavedAPIKey
+                if result.isEmpty, let saved = store.data.savedAccountAIAnalysis {
+                    result = saved.text
+                }
             }
         }
+    }
+
+    private func insightButton(title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(store.effectiveAccentColor)
+                    .frame(width: 36, height: 36)
+                    .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.headline).foregroundStyle(.primary)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func settingsSummary(title: String, value: String, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).foregroundStyle(store.effectiveAccentColor).frame(width: 24)
+            Text(title).font(.headline)
+            Spacer()
+            Text(value).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private func profileStyleName(_ raw: String) -> String {
+        ["day": "超短线", "swing": "波段", "mid": "中线", "long": "长线定投"][raw] ?? "未设置"
+    }
+
+    private func profileRiskName(_ raw: String) -> String {
+        ["con": "保守", "bal": "平衡", "agg": "激进"][raw] ?? "未设置"
     }
 
     @MainActor
@@ -4539,20 +4846,22 @@ struct AIAnalysisView: View {
         store.save(label: "修改账本或设置")
         busy = true
         message = ""
-        // 新一轮分析：上一轮建议的处理标记与提示都作废，否则新答案里的条目会
-        // 顶着旧标记显示成「已处理」。
-        handledSuggestionIDs.removeAll()
-        suggestionNote = ""
         defer { busy = false }
         // 补充材料在本机算好再塞进 prompt：交易行为画像（按历史流水统计的习惯）、
         // 大盘指数、组合结构风险、已缓存标的的技术面。全部零网络请求，
         // 拿不到的段落直接不出现，不让模型拿到编出来的数。
         let extras = AIContextBuilder.portfolioSections(store: store)
         do {
-            result = try await AIAnalysisService.analyze(config: config, portfolio: store.data,
-                                                         extraSections: extras)
+            let newResult = try await AIAnalysisService.analyze(config: config, portfolio: store.data,
+                                                                extraSections: extras)
+            result = newResult
+            store.data.savedAccountAIAnalysis = SavedAIAnalysis(text: newResult)
+            store.saveAIAnalysisCache()
+            // 只有新答案成功后，旧建议的处理状态才作废。
+            handledSuggestionIDs.removeAll()
+            suggestionNote = ""
         } catch {
-            message = error.localizedDescription
+            message = result.isEmpty ? error.localizedDescription : "\(error.localizedDescription)；上次分析结果仍已保留。"
         }
     }
 
@@ -5009,8 +5318,8 @@ private struct StrategicGridPlannerView: View {
                 if let result {
                     Section("规划摘要") {
                         LabeledContent("参考现价", value: result.current.num(4))
-                        LabeledContent("60 日价格区间", value: "\(result.lower.num(3)) – \(result.upper.num(3))（\(result.count) 格）")
-                        LabeledContent("目标格距 / 区间格距", value: "\(result.gridPercent.num(2))% / \(((result.upper - result.lower) / Double(result.count) / result.current * 100).num(2))%")
+                        LabeledContent("计划价格区间", value: "\(result.lower.num(3)) – \(result.upper.num(3))（\(result.count) 档）")
+                        LabeledContent("目标格距", value: "\(result.gridPercent.num(2))%")
                         LabeledContent("近 14 日 ATR 波动", value: "\(result.atrPercent.num(2))%")
                         LabeledContent("每个买档预算", value: result.budgetPerBuy.cny(0))
                         LabeledContent("买档 / 卖档", value: "\(result.buyCount) / \(result.sellCount)")
@@ -5107,38 +5416,78 @@ private struct StrategicGridPlannerView: View {
         let atrPercent = atr / current * 100
         let gap = (Double(gapPercent) ?? min(6, max(1.5, atrPercent * 1.2)))
         guard gap.isFinite, gap >= 0.1, gap <= 100 else { message = "每格幅度需在 0.1% 到 100% 之间。"; return }
-        let upper = min(high60 > current ? high60 : current * 1.15, current * (1 + gap * 4 / 100))
-        let lower = max(low60 < current ? low60 : current * 0.85, current * (1 - gap * 4 / 100))
-        let finalUpper = upper > current ? upper : current * (1 + gap * 2 / 100)
-        let finalLower = lower < current ? lower : current * (1 - gap * 2 / 100)
-        let rawCount = ((finalUpper - finalLower) / (current * gap / 100)).rounded()
-        guard rawCount.isFinite else { message = "参数范围过大，无法生成网格。"; return }
-        let count = rawCount >= 12 ? 12 : (rawCount <= 3 ? 3 : Int(rawCount))
-        let step = (finalUpper - finalLower) / Double(count)
-        let levels = (0...count).map { i in
-            let price = finalLower + step * Double(i)
-            return StrategicGridLevel(index: i, price: price, distancePercent: (price / current - 1) * 100)
+        let oneLot = current * 100
+        let affordableLots = Int(floor(cash / oneLot))
+        guard affordableLots >= 1 else {
+            message = "资金不足：当前价格买入 100 份约需 \(oneLot.cny())。"; result = nil; return
         }
-        let buys = levels.filter { $0.price < current }.count
-        let sells = levels.filter { $0.price > current }.count
-        let perBuy = buys > 0 ? cash / Double(buys) : 0
-        let rawLots = perBuy > 0 ? perBuy / (current * 100) : 0
-        let sellLot = rawLots.isFinite ? Int(min(1_000_000, max(0, rawLots))) * 100 : 0
+
+        // 档数同时受资金、历史区间和最多 8 档约束。旧算法先把上下范围锁死在
+        // 约 ±4 个格距，所以无论输入多少钱都几乎恒定为 4 个买档。
+        // 现在资金越充足，可承担的买档越多；每档至少保证能买 100 份。
+        let gapFraction = gap / 100
+        let capitalBuyLimit = min(8, max(1, Int(log2(Double(affordableLots) + 1))))
+        let historicalBuySpan = max(current - low60, current * gapFraction)
+        let historicalSellSpan = max(high60 - current, current * gapFraction)
+        let historyBuyLimit = min(8, max(1, Int(floor(historicalBuySpan / (current * gapFraction)))))
+        let historySellLimit = min(8, max(1, Int(floor(historicalSellSpan / (current * gapFraction)))))
+        let buys = min(capitalBuyLimit, historyBuyLimit)
         let sharesInput = Double(ownedShares) ?? 0
         let shares = sharesInput.isFinite && sharesInput > 0 ? min(sharesInput, 1_000_000_000) : 0
+        let availableSellLots = Int(floor(shares / 100))
+        let sells = availableSellLots > 0 ? min(historySellLimit, availableSellLots) : historySellLimit
+        let perBuy = cash / Double(buys)
+        guard perBuy + 0.0001 >= oneLot else {
+            message = "资金不足以覆盖 \(buys) 个买档的整手交易，请增加资金或提高格距。"; result = nil; return
+        }
+
+        var levels: [StrategicGridLevel] = []
+        for level in 1...buys {
+            let price = current * pow(1 - gapFraction, Double(level))
+            levels.append(StrategicGridLevel(index: -level, price: price,
+                distancePercent: (price / current - 1) * 100))
+        }
+        for level in 1...sells {
+            let price = current * pow(1 + gapFraction, Double(level))
+            levels.append(StrategicGridLevel(index: level, price: price,
+                distancePercent: (price / current - 1) * 100))
+        }
+        levels.sort { $0.price < $1.price }
+        let finalLower = levels.first?.price ?? current
+        let finalUpper = levels.last?.price ?? current
+        let count = levels.count
+        let buyLot = Int(floor(perBuy / oneLot)) * 100
+        let sellLot = sells > 0 && availableSellLots > 0
+            ? min(buyLot, max(1, availableSellLots / sells) * 100)
+            : 0
         let ma = bars.count >= 250 ? bars.suffix(250).map(\.close).reduce(0, +) / 250 : nil
         result = StrategicGridResult(current: current, atrPercent: atrPercent, gridPercent: gap,
             lower: finalLower, upper: finalUpper, count: count, buyCount: buys, sellCount: sells,
             budgetPerBuy: perBuy, sellLot: sellLot, requiredShares: sellLot * sells,
             ownedShares: shares, ma250: ma, levels: levels)
-        message = shares < Double(sellLot * sells) ? "规划已生成；当前持仓低于全部卖档预留份数。" : "规划已生成。"
+        if shares <= 0 {
+            message = "已按资金生成 \(buys) 个买档；未填写现有持仓，卖档暂不分配份额。"
+        } else if shares < Double(sellLot * sells) {
+            message = "规划已生成；当前持仓低于全部卖档预留份数。"
+        } else {
+            message = "已按资金与历史区间生成 \(buys) 个买档、\(sells) 个卖档。"
+        }
     }
 }
 
+enum SettingsViewMode {
+    case all, app, sync
+}
+
 struct SettingsView: View {
+    let mode: SettingsViewMode
     @EnvironmentObject var store: PortfolioStore
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
+    @AppStorage("guanpan.native.themePicker.expanded") private var themePickerExpanded = false
+    @AppStorage("guanpan.native.legacyArchive.expanded") private var legacyArchiveExpanded = false
+    @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     @State private var showExporter = false
@@ -5159,6 +5508,11 @@ struct SettingsView: View {
     @State private var showOperationHistory = false
     @State private var notificationBusy = false
     @State private var notificationEnabled = false
+
+    init(mode: SettingsViewMode = .all) {
+        self.mode = mode
+    }
+
     var body: some View {
         formContent
             .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
@@ -5198,7 +5552,7 @@ struct SettingsView: View {
                 }
                 Button("取消", role: .cancel) { selectedNASVersion = nil }
             }
-            .fileExporter(isPresented: $showExporter, document: PortfolioBackup(data: store.data, intradayBars: store.intradayBars, dailyBars: store.dailyBars.values.flatMap { $0 }, backgroundImageData: NativeBackgroundStore.backupData), contentType: .json, defaultFilename: "观盘Pro原生备份") { result in
+            .fileExporter(isPresented: $showExporter, document: PortfolioBackup(data: store.data, intradayBars: store.intradayBars, dailyBars: store.dailyBars.values.flatMap { $0 }), contentType: .json, defaultFilename: "观盘Pro原生备份") { result in
                 handleExportResult(result)
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
@@ -5210,19 +5564,36 @@ struct SettingsView: View {
     private var formContent: some View {
         NavigationStack {
             Form {
-                appearanceSection
-                ledgerSection
-                quoteSection
-                accountingSection
-                dataSection
-                nasSection
-                notificationSection
+                if mode != .sync {
+                    appearanceSection
+                    ledgerSection
+                    quoteSection
+                    accountingSection
+                }
+                if mode == .all {
+                    Section {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { showMoreSettings.toggle() }
+                        } label: {
+                            Label(showMoreSettings ? "收起备份、同步与通知" : "更多设置：备份、同步与通知",
+                                  systemImage: showMoreSettings ? "chevron.up" : "chevron.down")
+                        }
+                    }
+                }
+                if mode == .sync || (mode == .all && showMoreSettings) {
+                    dataSection
+                    nasSection
+                    notificationSection
+                }
                 if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
             }
-            .navigationTitle("设置")
+            .navigationTitle(mode == .sync ? "数据与同步" : mode == .app ? "应用设置" : "设置")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .appListLayout()
             .listRowBackground(Color.clear)
             .buttonStyle(.plain)
             .background(.clear)
@@ -5237,21 +5608,30 @@ struct SettingsView: View {
         // 背景图要靠卡片半透明透出来，每个主题的透明度都得单独调才好看；
         // 而配色主题本身已经能拉开观感差异，不必再维护「图 × 主题」两套变量的组合。
         Section("配色主题") {
-            let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(allThemes, id: \.rawValue) { item in
-                    ThemePreviewCard(appearance: item,
-                                     accent: AccentPreset(rawValue: store.data.accentColorName)?.color ?? item.accentColor,
-                                     selected: store.appearance == item) {
-                        Haptics.selection()
-                        store.appearance = item
+            DisclosureGroup(isExpanded: $themePickerExpanded) {
+                let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(allThemes, id: \.rawValue) { item in
+                        ThemePreviewCard(appearance: item,
+                                         accent: AccentPreset(rawValue: store.data.accentColorName)?.color ?? item.accentColor,
+                                         selected: store.appearance == item) {
+                            Haptics.selection()
+                            store.appearance = item
+                        }
                     }
                 }
+                .padding(.vertical, 6)
+                Text("主题同时决定页面和卡片底色；强调色可在下方单独调整。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } label: {
+                HStack {
+                    Label("当前主题", systemImage: "paintpalette")
+                    Spacer()
+                    Text(store.appearance.title).foregroundStyle(.secondary)
+                }
             }
-            .padding(.vertical, 6)
-            Text("配色主题同时决定页面底色和卡片底色；下方「强调色」可以再单独换一组按钮与选中态的颜色。")
-                .font(.footnote).foregroundStyle(.secondary)
         }
+        if themePickerExpanded {
         Section("强调色") {
             Picker("强调色", selection: Binding(
                 get: { store.data.accentColorName },
@@ -5287,6 +5667,7 @@ struct SettingsView: View {
                 Spacer(minLength: 0)
             }
         }
+        }
     }
 
     private var allThemes: [AppAppearance] {
@@ -5313,7 +5694,7 @@ struct SettingsView: View {
                         .padding(6)
                 }
                 HStack(spacing: 3) {
-                    Text(appearanceTitle).scaledFont(11, weight: .medium).lineLimit(1)
+                    Text(appearance.title).scaledFont(11, weight: .medium).lineLimit(1)
                     Spacer(minLength: 0)
                     if selected {
                         Image(systemName: "checkmark.circle.fill")
@@ -5336,24 +5717,6 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private var appearanceTitle: String {
-        switch appearance {
-        case .system: return "跟随系统"
-        case .dark: return "深空灰"
-        case .oled: return "纯黑OLED"
-        case .blue: return "午夜蓝"
-        case .green: return "松墨绿"
-        case .purple: return "暗夜紫"
-        case .sakura: return "樱花粉"
-        case .cyber: return "赛博朋克"
-        case .amber: return "琥珀金"
-        case .coffee: return "拿铁棕"
-        case .graphite: return "石墨灰"
-        case .light: return "明亮白"
-        case .paper: return "纸白"
-        case .mint: return "薄荷"
-        }
-    }
 }
 
     @ViewBuilder private var ledgerSection: some View {
@@ -5391,7 +5754,9 @@ struct SettingsView: View {
             }
             Text("最短 5 秒，与网页版一致。行情走 iPhone 直连，刷新频率由本机控制，不经过 NAS。")
                 .font(.footnote).foregroundStyle(.secondary).disabled(store.data.quoteRefreshSeconds == 0)
-            Toggle("行情刷新时记录分时点", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
+            Toggle("自动保存每日分时", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
+            Text("前台刷新时记录实时点，并每 30 分钟至多补全一次自选和场内持仓的最近交易日整日分时；旧日期持续保留，可在“工具－分时采集与历史复盘”查看。")
+                .font(.footnote).foregroundStyle(.secondary)
             Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
             Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -5400,9 +5765,6 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
         Section("图表显示") {
-            Picker("日线范围", selection: Binding(get: { store.data.dailyChartRangeDays }, set: { store.data.dailyChartRangeDays = $0; store.save(label: "修改账本或设置") })) {
-                Text("60 日").tag(60); Text("120 日").tag(120); Text("250 日").tag(250); Text("640 日").tag(640)
-            }
             Picker("分时价格线", selection: Binding(get: { store.data.intradayLineColorMode }, set: { store.data.intradayLineColorMode = $0; store.save(label: "修改账本或设置") })) {
                 Text("自动强调色").tag(IntradayLineColorMode.automatic)
                 Text("白色").tag(IntradayLineColorMode.white)
@@ -5443,7 +5805,7 @@ struct SettingsView: View {
         Section("数据备份") {
             Button("导出 JSON 备份") { showExporter = true }
             Button("导入 JSON 备份") { showImporter = true }
-            Text("导入会整体替换原生版本地账本。可选择原生 JSON 备份或观盘 Pro 网页版完整 JSON 备份；新原生备份会保存自定义背景图，旧备份或网页备份不含背景图时保留当前背景。")
+            Text("导入会整体替换原生版本地账本。可选择原生 JSON 备份或观盘 Pro 网页版完整 JSON 备份；图片背景已下线，备份只保存账本、设置和行情历史。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         Section("操作撤销") {
@@ -5538,23 +5900,44 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if !store.data.legacySettingsArchives.isEmpty {
-            Section("旧版设置与计划备查") {
-                ForEach(store.data.legacySettingsArchives) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.title).font(.subheadline)
-                        if item.id == "ai" {
-                            LegacyAIArchiveView(rawJSON: item.rawJSON)
-                        } else if item.id == "gridExperience" {
-                            LegacyGridExperienceView(rawJSON: item.rawJSON)
-                        } else {
-                            Text(item.rawJSON).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                .lineLimit(5).textSelection(.enabled)
+            Section("旧版资料") {
+                DisclosureGroup(isExpanded: $legacyArchiveExpanded) {
+                    ForEach(store.data.legacySettingsArchives) { item in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title).font(.subheadline)
+                            Text(legacyArchiveDescription(item.id))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
+                        .padding(.vertical, 2)
+                    }
+                    Text("这些资料来自旧版备份，只为避免迁移时丢失信息；当前 iOS 不会把其中的代码或参数当作设置执行。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } label: {
+                    HStack {
+                        Label("迁移存档", systemImage: "archivebox")
+                        Spacer()
+                        Text("\(store.data.legacySettingsArchives.count) 项 · 不生效")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text("旧版 AI 缓存和网格经验可展开回看，但不会伪装成当前分析或参与原生网格参数建议。旧版个人偏好、未来交易计划和原始休市设置保留作参考；有效自定义休市日期已迁入并在日历中生效。旧计划不会在原生版自动执行，网页 AI 凭证不会迁入。")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func legacyArchiveDescription(_ id: String) -> String {
+        switch id {
+        case "cfg": return "旧版界面和刷新偏好；当前 iOS 使用本页设置，不读取它。"
+        case "profile": return "旧版记录的个人风格文字；仅保留，不参与当前建议。"
+        case "ai": return "旧版 AI 分析结果缓存；可能已经过期，不参与当前分析。"
+        case "tradePlans": return "旧版计划的原始存档；不会自动执行。"
+        case "gridExperience": return "旧版网格模拟经验；不参与当前网格参数计算。"
+        case "hol": return "旧版休市日期原始存档；有效日期已另行迁入当前日历。"
+        case "gridmeta": return "旧版分时采集状态；当前版本不沿用运行状态。"
+        case "marketTargets": return "旧版仓位和均线参数原始存档；当前设置以 iOS 页面为准。"
+        case "dividendReference": return "旧版分红估算参考，不代表真实到账。"
+        case "exchangeRates": return "旧版汇率参考值；当前版本不会把它当实时汇率。"
+        case "manualPrices": return "旧版手填价格原始存档；已识别的数据会迁入当前手动行情。"
+        default: return "旧版迁移时保留的只读资料；当前版本不执行。"
         }
     }
 
@@ -5606,7 +5989,7 @@ struct SettingsView: View {
                 }
                 store.replaceData(migrated.data, intradayBars: migrated.intradayBars)
                 store.configureNASSync()
-                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 个只读档案、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
+                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 项旧版只读资料、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
             }
         } catch { message = "导入失败：\(error.localizedDescription)" }
     }

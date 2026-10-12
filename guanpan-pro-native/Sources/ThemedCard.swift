@@ -5,7 +5,7 @@ import SwiftUI
 // 网页版的「市场情绪」是绿→灰→红的渐变条 + 指针，汇总卡和 AI 卡各有自己的彩色底
 // （.gauge / .sum / .ai）。SwiftUI 的 List 行默认是系统灰白底，所以 App 看起来
 // 「全是白卡片，没有颜色」——这不是苹果的限制，只是没给行背景上色。
-// 这里统一提供彩色卡片背景与情绪量尺，颜色跟随主题深浅自动调整透明度。
+// 这里统一提供不透明彩色卡片与情绪量尺；色调只覆盖在实色卡面上。
 
 /// 页面级配色：把「某段数值该用什么颜色」收敛到一处，
 /// 免得每个页面各写一遍红涨绿跌的阈值（阈值不一致时同一页会出现两种红）。
@@ -29,30 +29,40 @@ enum CardTone {
     static func warnIf(_ flag: Bool) -> Color? { flag ? warn : nil }
 }
 
-/// 彩色卡片底：低透明度渐变 + 同色描边，让卡片从背景里托起来。
+/// 全 App 共用的版式尺寸。把卡片、间距和触控高度集中管理，避免不同页面越改越散。
+enum AppLayout {
+    static let cardRadius: CGFloat = 16
+    static let cardPadding: CGFloat = 14
+    static let rowVerticalInset: CGFloat = 6
+    static let pageHorizontalInset: CGFloat = 16
+    /// Apple 平台常用的最低触控高度；文字可以紧凑，但按钮不能难点。
+    static let minimumTapHeight: CGFloat = 44
+}
+
+/// 彩色卡片底：实色卡面 + 轻量色调 + 同色描边，不使用玻璃材质。
 struct ToneCardBackground: View {
     let tone: Color?
     let isLight: Bool
+    @Environment(\.appAppearance) private var appearance
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
+        let shape = RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
         Group {
             if let tone {
                 shape
-                    .fill(LinearGradient(
-                        colors: [tone.opacity(isLight ? 0.18 : 0.26),
-                                 tone.opacity(isLight ? 0.06 : 0.10)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.26 : 0.34), lineWidth: 1))
+                    .fill(theme.surface)
+                    .overlay(shape.fill(tone.opacity(isLight ? 0.08 : 0.12)))
+                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.22 : 0.30), lineWidth: 0.8))
             } else {
                 // 中性卡面：仍然给一张「看得见的卡」，
                 // 否则浅色主题下 Section 会直接融进白底，又变成用户说的「全是白的」。
                 shape
-                    .fill((isLight ? Color.white : Color.black).opacity(isLight ? 0.52 : 0.30))
-                    .overlay(shape.strokeBorder(Color.primary.opacity(isLight ? 0.07 : 0.10), lineWidth: 0.5))
+                    .fill(theme.surface)
+                    .overlay(shape.strokeBorder(Color.primary.opacity(isLight ? 0.08 : 0.12), lineWidth: 0.6))
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, AppLayout.rowVerticalInset / 2)
         .padding(.horizontal, 2)
     }
 }
@@ -61,12 +71,23 @@ extension View {
     /// 给列表行套一张卡片。用 listRowBackground 注入，不参与行内容布局，
     /// 因此不会像背景图那样把页面撑乱。`tone` 为 nil 时只画中性卡面。
     func toneCard(_ tone: Color?, isLight: Bool) -> some View {
-        listRowBackground(ToneCardBackground(tone: tone, isLight: isLight))
+        listRowInsets(EdgeInsets(top: AppLayout.rowVerticalInset,
+                                 leading: AppLayout.pageHorizontalInset,
+                                 bottom: AppLayout.rowVerticalInset,
+                                 trailing: AppLayout.pageHorizontalInset))
+            .listRowSeparator(.hidden)
+            .listRowBackground(ToneCardBackground(tone: tone, isLight: isLight))
     }
 
     /// 给整段 Section 铺中性卡面（不染色），用于页面里那些纯叙述性的分区。
     func plainCard(isLight: Bool) -> some View {
-        listRowBackground(ToneCardBackground(tone: nil, isLight: isLight))
+        toneCard(nil, isLight: isLight)
+    }
+
+    /// 主列表统一使用紧凑分区，但保留 44pt 点击区，减少误触和“看得见点不中”。
+    func appListLayout() -> some View {
+        environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
+            .listSectionSpacing(.compact)
     }
 }
 

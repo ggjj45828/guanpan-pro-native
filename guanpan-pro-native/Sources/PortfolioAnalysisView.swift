@@ -4,6 +4,7 @@ import SwiftUI
 /// Unknown instruments and off-exchange funds stay explicitly unclassified.
 struct PortfolioAnalysisView: View {
     @EnvironmentObject private var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
     @State private var equityShock = -10.0
     @State private var hkShock = -12.0
@@ -102,7 +103,7 @@ struct PortfolioAnalysisView: View {
                         Text(fxFooter(snapshot))
                             .font(.footnote).foregroundStyle(.secondary)
                         Button {
-                            Task { await refreshFX(force: true) }
+                            Task { await manuallyRefreshFX() }
                         } label: {
                             if fxLoading { Text("正在刷新…") } else { Text("刷新实时汇率") }
                         }
@@ -115,7 +116,7 @@ struct PortfolioAnalysisView: View {
                     } else {
                         Text(fxMessage ?? "实时汇率暂不可用。可点下方按钮重试，或在压力情景中手动设定人民币升值幅度。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Button("重新获取实时汇率") { Task { await refreshFX(force: true) } }
+                        Button("重新获取实时汇率") { Task { await manuallyRefreshFX() } }
                     }
                 }
                 .plainCard(isLight: isLight)
@@ -136,9 +137,10 @@ struct PortfolioAnalysisView: View {
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
+            .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("资产穿透与压力测试")
             .keyboardDoneToolbar()
-            .task { await refreshFX(force: false) }
+            .task { _ = await refreshFX(force: false) }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
     }
@@ -146,11 +148,12 @@ struct PortfolioAnalysisView: View {
     // MARK: - 实时汇率
 
     /// 抓取实时汇率。非强制刷新时优先复用 24 小时内的缓存，避免每次进入页面都打接口。
-    @MainActor private func refreshFX(force: Bool) async {
-        guard !fxLoading else { return }
+    @discardableResult
+    @MainActor private func refreshFX(force: Bool) async -> Bool {
+        guard !fxLoading else { return false }
         if !force, let cached = ExchangeRateService.cached(), !ExchangeRateService.isStale(cached) {
             fxSnapshot = cached
-            return
+            return true
         }
         // 刷新期间先展示旧值，避免数字闪空。
         if fxSnapshot == nil, let cached = ExchangeRateService.cached() { fxSnapshot = cached }
@@ -159,9 +162,18 @@ struct PortfolioAnalysisView: View {
         if let snapshot = await ExchangeRateService.fetch() {
             fxSnapshot = snapshot
             fxMessage = nil
+            return true
         } else if fxSnapshot == nil {
             fxMessage = "实时汇率未获取到（网络或接口异常）。可在下方压力情景中手动填写人民币升值幅度。"
         }
+        return false
+    }
+
+    @MainActor private func manuallyRefreshFX() async {
+        refreshFeedback.begin("正在刷新实时汇率…")
+        let ok = await refreshFX(force: true)
+        refreshFeedback.finish(ok ? "实时汇率已更新" : (fxMessage ?? "实时汇率更新失败，继续显示上次数据"),
+                               succeeded: ok)
     }
 
     private func fxChangeText(_ rate: ExchangeRate) -> String {

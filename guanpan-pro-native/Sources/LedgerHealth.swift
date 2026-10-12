@@ -1,7 +1,7 @@
 import Foundation
 
-struct LedgerHealthFinding: Identifiable {
-    enum Severity: Int { case normal = 0, warning = 1, error = 2 }
+struct LedgerHealthFinding: Identifiable, Sendable {
+    enum Severity: Int, Sendable { case normal = 0, warning = 1, error = 2 }
     var id = UUID()
     var severity: Severity
     var category: String
@@ -9,10 +9,9 @@ struct LedgerHealthFinding: Identifiable {
     var detail: String
 }
 
-@MainActor
-extension PortfolioStore {
-    /// Read-only integrity checks. Findings are advisory and never rewrite the ledger.
-    func ledgerHealthReport() -> [LedgerHealthFinding] {
+enum LedgerHealthAnalyzer {
+    /// 纯计算体检器，可在后台线程执行；只读取传入快照，不改账本。
+    static func report(data: PortfolioData, totalAsset: Double) -> [LedgerHealthFinding] {
         var findings: [LedgerHealthFinding] = []
         func add(_ severity: LedgerHealthFinding.Severity, _ category: String, _ title: String, _ detail: String = "") {
             findings.append(LedgerHealthFinding(severity: severity, category: category, title: title, detail: detail))
@@ -20,6 +19,20 @@ extension PortfolioStore {
         func duplicates(_ values: [String]) -> [String] {
             let counts = Dictionary(grouping: values.filter { !$0.isEmpty }, by: { $0 }).mapValues(\.count)
             return counts.filter { $0.value > 1 }.keys.sorted()
+        }
+        // DateFormatter 初始化很重。旧代码每检查一个净值点都新建两次，几千个历史点时
+        // 会明显停顿。一次体检只复用这一份，后台线程内使用也不会发生并发访问。
+        let dayFormatter = DateFormatter()
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        func dayDate(_ value: String) -> Date? {
+            dayFormatter.date(from: String(value.prefix(10)))
+        }
+        func isDayString(_ value: String) -> Bool {
+            guard value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil,
+                  let parsed = dayDate(value) else { return false }
+            return dayFormatter.string(from: parsed) == value
         }
 
         let invalidHoldings = data.holdings.filter {
@@ -119,17 +132,12 @@ extension PortfolioStore {
         return findings.sorted { $0.severity.rawValue > $1.severity.rawValue }
     }
 
-    private func dayDate(_ value: String) -> Date? {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: String(value.prefix(10)))
-    }
+}
 
-    private func isDayString(_ value: String) -> Bool {
-        guard value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil,
-              let parsed = dayDate(value) else { return false }
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: parsed) == value
+@MainActor
+extension PortfolioStore {
+    /// 保留同步入口供小数据调用；界面使用后台快照版本，避免阻塞动画。
+    func ledgerHealthReport() -> [LedgerHealthFinding] {
+        LedgerHealthAnalyzer.report(data: data, totalAsset: totalAsset)
     }
 }

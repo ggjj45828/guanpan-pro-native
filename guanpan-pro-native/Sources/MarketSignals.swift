@@ -21,6 +21,8 @@ struct MarketSignal {
     var ma10: Double?
     var ma20: Double?
     var ma60: Double?
+    var ma120: Double?
+    var ma250: Double?
     var volumeRatio: Double?      // 当日量 / 20 日均量
     var isOversold = false        // RSI/KDJ 超卖
     var isOverbought = false      // RSI/KDJ 超买
@@ -81,6 +83,8 @@ enum MarketSignalCalculator {
 
         guard let ma5 = average(5), let ma10 = average(10), let ma20 = average(20) else { return nil }
         let ma60 = average(60)
+        let ma120 = average(120)
+        let ma250 = average(250)
 
         var raw = 0
         var notes: [String] = []
@@ -94,6 +98,16 @@ enum MarketSignalCalculator {
         if let ma60 {
             if ma20 > ma60 { raw += 1; notes.append("MA20 在 MA60 上方") }
             else { raw -= 1; notes.append("MA20 在 MA60 下方") }
+        }
+
+        // 长周期结构：样本够时才计分，缺少 MA250 不以短周期数据替代。
+        if let ma250 {
+            if latest.close >= ma250 { raw += 1; notes.append("收盘在年线 MA250 上方") }
+            else { raw -= 1; notes.append("收盘在年线 MA250 下方") }
+            if let ma120 {
+                if ma120 >= ma250 { raw += 1; notes.append("MA120 位于 MA250 上方") }
+                else { raw -= 1; notes.append("MA120 位于 MA250 下方") }
+            }
         }
 
         // 收盘位置
@@ -183,6 +197,7 @@ enum MarketSignalCalculator {
         signal.kdjJ = kdjJ
         signal.close = latest.close
         signal.ma5 = ma5; signal.ma10 = ma10; signal.ma20 = ma20; signal.ma60 = ma60
+        signal.ma120 = ma120; signal.ma250 = ma250
         signal.volumeRatio = volumeRatio
 
         let rsiOversold = (rsiValue ?? 50) < 30
@@ -254,11 +269,12 @@ struct SignalTagRow: View {
     let tags: [SignalTag]
     var body: some View {
         if !tags.isEmpty {
-            HStack(spacing: 5) {
+            HStack(spacing: 3) {
                 ForEach(tags) { tag in
                     Text(tag.text)
-                        .scaledFont(10, weight: .semibold)
-                        .padding(.horizontal, 6).padding(.vertical, 2.5)
+                        .scaledFont(9, weight: .semibold)
+                        .lineLimit(1)
+                        .padding(.horizontal, 4).padding(.vertical, 2)
                         .foregroundStyle(tag.color)
                         .background(tag.color.opacity(0.14), in: Capsule())
                 }

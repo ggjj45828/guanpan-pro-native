@@ -3,9 +3,8 @@ import UIKit
 /// 屏幕方向锁定器 —— 只服务于「K 线横屏大图」。
 ///
 /// 为什么不直接用 SwiftUI：SwiftUI 没有公开的「临时切到横屏」API，
-/// 只能走 UIKit 两步：改 `UIDevice.orientation` 触发一次旋转，
-/// 再由 AppDelegate 的 `supportedInterfaceOrientationsFor` 决定允许哪些方向。
-/// 两者缺一：只改 orientation 会被系统支持的旋转方向挡回去；只改 mask 不会主动转。
+/// iOS 16+ 应通过 `UIWindowScene.requestGeometryUpdate` 请求方向，避免继续使用
+/// `UIDevice.setValue(_:forKey:)` 这一套非公开 KVC 写法。
 @MainActor
 final class OrientationLock {
     static let shared = OrientationLock()
@@ -17,14 +16,21 @@ final class OrientationLock {
 
     func lockLandscape() {
         mask = .landscape
-        // 先设一次具体方向，再让系统去尝试旋转，否则停留在竖屏不动。
-        UIDevice.current.setValue(UIInterfaceOrientation.landscapeRight.rawValue, forKey: "orientation")
-        UIViewController.attemptRotationToDeviceOrientation()
+        request(.landscape)
     }
 
     func unlock() {
         mask = .allButUpsideDown
-        UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
-        UIViewController.attemptRotationToDeviceOrientation()
+        request(.portrait)
+    }
+
+    private func request(_ orientations: UIInterfaceOrientationMask) {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }) else { return }
+        scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { _ in
+            // 设备方向被系统或多任务布局限制时保持当前方向，不强制写私有属性。
+        }
     }
 }

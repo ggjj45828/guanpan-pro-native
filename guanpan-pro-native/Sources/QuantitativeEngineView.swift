@@ -19,6 +19,7 @@ private struct QuantEngineSignal {
 
 struct QuantitativeEngineView: View {
     @EnvironmentObject private var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
     @State private var isScanning = false
     @State private var progress = 0.0
@@ -112,7 +113,7 @@ struct QuantitativeEngineView: View {
             List {
                 Section {
                     Button {
-                        Task { await scan() }
+                        Task { await manuallyScan() }
                     } label: {
                         Label(isScanning ? "正在更新日线并扫描…" : "刷新行情并扫描全部自选/持仓",
                               systemImage: isScanning ? "hourglass" : "arrow.clockwise")
@@ -156,6 +157,7 @@ struct QuantitativeEngineView: View {
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
+            .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("量化引擎")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -166,6 +168,13 @@ struct QuantitativeEngineView: View {
                     .themedSheetBackground()
             }
         }
+    }
+
+    @MainActor private func manuallyScan() async {
+        refreshFeedback.begin("正在更新日线并扫描…")
+        await scan()
+        let ok = scanMessage.contains("获取失败 0 个")
+        refreshFeedback.finish(scanMessage.isEmpty ? "扫描未完成" : scanMessage, succeeded: ok)
     }
 
     @ViewBuilder private func instrumentRow(_ item: QuantEngineInstrument) -> some View {

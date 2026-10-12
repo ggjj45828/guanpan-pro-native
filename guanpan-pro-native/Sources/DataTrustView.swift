@@ -10,6 +10,7 @@ private struct DataTrustQuoteRow: Identifiable {
 /// Shows provenance and age of locally available data without inferring freshness from price values.
 struct DataTrustView: View {
     @EnvironmentObject private var store: PortfolioStore
+    @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
 
@@ -65,7 +66,9 @@ struct DataTrustView: View {
                     LabeledContent("交易时段", value: sessionDescription)
                     LabeledContent("刷新状态", value: store.sourceStatus)
                     LabeledContent("最近行情时间戳", value: latestQuoteTime.map { $0.formatted(date: .abbreviated, time: .standard) } ?? "行情源未提供时间戳")
-                    Button(store.isRefreshingQuotes ? "正在刷新行情…" : "手动刷新行情") { store.refreshQuotes() }
+                    Button(store.isRefreshingQuotes ? "正在刷新行情…" : "手动刷新行情") {
+                        Task { await refreshQuotes() }
+                    }
                         .disabled(store.isRefreshingQuotes)
                     if quoteRows.isEmpty {
                         Text("尚无自选或 ETF 行情记录。获取时间未知时不会把保存价格称作实时价。")
@@ -88,7 +91,9 @@ struct DataTrustView: View {
                 .toneCard(staleCount > 0 ? CardTone.warn : CardTone.ok, isLight: isLight)
                 Section("场外基金已公布净值") {
                     if activeFunds.isEmpty { Text("没有当前场外基金持仓。").foregroundStyle(.secondary) }
-                    Button(store.isRefreshingFunds ? "正在更新净值…" : "更新已公布净值") { store.refreshFundNAVs() }
+                    Button(store.isRefreshingFunds ? "正在更新净值…" : "更新已公布净值") {
+                        Task { await refreshFunds() }
+                    }
                         .disabled(store.isRefreshingFunds)
                     Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
                     ForEach(activeFunds) { fund in
@@ -121,8 +126,21 @@ struct DataTrustView: View {
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
+            .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("数据可信度")
         }
+    }
+
+    @MainActor private func refreshQuotes() async {
+        refreshFeedback.begin("正在刷新行情…")
+        let ok = await store.refreshQuotesAndWait()
+        refreshFeedback.finish(ok ? "行情已更新" : store.sourceStatus, succeeded: ok)
+    }
+
+    @MainActor private func refreshFunds() async {
+        refreshFeedback.begin("正在更新已公布净值…")
+        let ok = await store.refreshFundNAVsAndWait()
+        refreshFeedback.finish(store.fundNAVStatus, succeeded: ok)
     }
 
     private func ageLabel(_ timestamp: Date?) -> String {

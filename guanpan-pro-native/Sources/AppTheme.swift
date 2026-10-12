@@ -19,33 +19,33 @@ struct AppTheme {
         }
         switch appearance {
         case .system:
-            return AppTheme(top: c(14, 16, 22), bottom: c(8, 9, 13), surface: .black.opacity(0.22), isLight: false)
+            return AppTheme(top: c(14, 16, 22), bottom: c(8, 9, 13), surface: c(28, 31, 39), isLight: false)
         case .dark:      // 深空灰
-            return AppTheme(top: c(28, 30, 36), bottom: c(14, 15, 19), surface: .black.opacity(0.26), isLight: false)
+            return AppTheme(top: c(28, 30, 36), bottom: c(14, 15, 19), surface: c(39, 42, 50), isLight: false)
         case .oled:      // 纯黑 OLED
-            return AppTheme(top: .black, bottom: .black, surface: .black.opacity(0.42), isLight: false)
+            return AppTheme(top: .black, bottom: .black, surface: c(24, 24, 26), isLight: false)
         case .blue:      // 午夜蓝
-            return AppTheme(top: c(10, 24, 52), bottom: c(4, 10, 26), surface: .black.opacity(0.24), isLight: false)
+            return AppTheme(top: c(10, 24, 52), bottom: c(4, 10, 26), surface: c(22, 39, 70), isLight: false)
         case .green:     // 松墨绿
-            return AppTheme(top: c(9, 34, 28), bottom: c(4, 16, 14), surface: .black.opacity(0.24), isLight: false)
+            return AppTheme(top: c(9, 34, 28), bottom: c(4, 16, 14), surface: c(22, 51, 43), isLight: false)
         case .purple:    // 暗夜紫
-            return AppTheme(top: c(28, 16, 52), bottom: c(12, 7, 26), surface: .black.opacity(0.24), isLight: false)
+            return AppTheme(top: c(28, 16, 52), bottom: c(12, 7, 26), surface: c(44, 30, 70), isLight: false)
         case .sakura:    // 樱花粉
-            return AppTheme(top: c(48, 20, 34), bottom: c(22, 9, 18), surface: .black.opacity(0.22), isLight: false)
+            return AppTheme(top: c(48, 20, 34), bottom: c(22, 9, 18), surface: c(66, 34, 49), isLight: false)
         case .cyber:     // 赛博朋克
-            return AppTheme(top: c(6, 26, 48), bottom: c(30, 6, 40), surface: .black.opacity(0.20), isLight: false)
+            return AppTheme(top: c(6, 26, 48), bottom: c(30, 6, 40), surface: c(26, 43, 66), isLight: false)
         case .amber:     // 琥珀金
-            return AppTheme(top: c(48, 32, 8), bottom: c(22, 14, 4), surface: .black.opacity(0.22), isLight: false)
+            return AppTheme(top: c(48, 32, 8), bottom: c(22, 14, 4), surface: c(67, 49, 22), isLight: false)
         case .coffee:    // 拿铁棕
-            return AppTheme(top: c(44, 28, 18), bottom: c(20, 12, 8), surface: .black.opacity(0.24), isLight: false)
+            return AppTheme(top: c(44, 28, 18), bottom: c(20, 12, 8), surface: c(62, 43, 31), isLight: false)
         case .graphite:  // 石墨灰
-            return AppTheme(top: c(38, 40, 44), bottom: c(20, 21, 24), surface: .black.opacity(0.28), isLight: false)
+            return AppTheme(top: c(38, 40, 44), bottom: c(20, 21, 24), surface: c(52, 54, 59), isLight: false)
         case .light:     // 明亮白
-            return AppTheme(top: c(238, 242, 250), bottom: c(222, 228, 240), surface: .white.opacity(0.34), isLight: true)
+            return AppTheme(top: c(238, 242, 250), bottom: c(222, 228, 240), surface: c(250, 252, 255), isLight: true)
         case .paper:     // 纸白
-            return AppTheme(top: c(250, 246, 236), bottom: c(238, 232, 218), surface: c(255, 252, 244).opacity(0.42), isLight: true)
+            return AppTheme(top: c(250, 246, 236), bottom: c(238, 232, 218), surface: c(255, 252, 244), isLight: true)
         case .mint:      // 薄荷
-            return AppTheme(top: c(228, 248, 242), bottom: c(206, 238, 228), surface: .white.opacity(0.36), isLight: true)
+            return AppTheme(top: c(228, 248, 242), bottom: c(206, 238, 228), surface: c(245, 255, 251), isLight: true)
         }
     }
 
@@ -130,6 +130,25 @@ extension AppAppearance {
 // MARK: - 主题自带的深浅模式与强调色
 
 extension AppAppearance {
+    var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .dark: return "深空灰"
+        case .oled: return "纯黑 OLED"
+        case .blue: return "午夜蓝"
+        case .green: return "松墨绿"
+        case .purple: return "暗夜紫"
+        case .sakura: return "樱花粉"
+        case .cyber: return "赛博朋克"
+        case .amber: return "琥珀金"
+        case .coffee: return "拿铁棕"
+        case .graphite: return "石墨灰"
+        case .light: return "明亮白"
+        case .paper: return "纸白"
+        case .mint: return "薄荷"
+        }
+    }
+
     var colorScheme: ColorScheme? {
         switch self {
         case .system: return nil

@@ -15,6 +15,8 @@ final class PortfolioStore: ObservableObject {
     @Published var fundDCAStatus = "暂无定投补记"
     @Published var isRefreshingFunds = false
     @Published var isRefreshingQuotes = false
+    @Published private(set) var intradayArchiveStatus = "尚未补全分时档案"
+    @Published private(set) var isArchivingIntraday = false
     /// 首页顶部指数条。与账本数据无关，单独缓存，不参与备份 / NAS 同步。
     @Published private(set) var indexQuotes: [MarketIndexQuote] = MarketIndexStore.load()
     @Published private(set) var isRefreshingIndices = false
@@ -27,9 +29,13 @@ final class PortfolioStore: ObservableObject {
     private let gridBarsFilename = "guanpan-intraday-bars.json"
     private let dailyBarsFilename = "guanpan-daily-bars.json"
     private let automaticNAVCheckDateKey = "guanpan.native.fundNAV.lastAutomaticCheck"
+    private let intradayArchiveLastRunKey = "guanpan.native.intradayArchive.lastRun"
     private var nasSyncTask: Task<Void, Never>?
     private var nasPollingTask: Task<Void, Never>?
     private var lastIntradayNASSyncAt = Date.distantPast
+    /// 分时去重索引。不能每 5 秒为每只标的扫描多年历史；统一按“代码 + 自然分钟”判断。
+    private var intradayMinuteKeys: Set<String> = []
+    private var lastAutomaticMarketSaveAt = Date.distantPast
     private var applyingNASData = false
     private var isUndoingSave = false
 
@@ -314,22 +320,51 @@ final class PortfolioStore: ObservableObject {
     }
     private func loadIntradayBars() {
         guard let url = gridBarsURL(), let raw = try? Data(contentsOf: url) else { return }
+        var loaded: [IntradayBar] = []
         if let rows = try? JSONDecoder().decode([IntradayBar].self, from: raw) {
-            intradayBars = Self.uniqueIntradayBars(rows)
+            loaded = rows
         } else if let text = String(data: raw, encoding: .utf8) {
-            var rows: [IntradayBar] = []
             for line in text.split(whereSeparator: \.isNewline) {
                 let bytes = Data(line.utf8)
-                if let bar = try? JSONDecoder().decode(IntradayBar.self, from: bytes) { rows.append(bar) }
-                else if let bars = try? JSONDecoder().decode([IntradayBar].self, from: bytes) { rows.append(contentsOf: bars) }
+                if let bar = try? JSONDecoder().decode(IntradayBar.self, from: bytes) { loaded.append(bar) }
+                else if let bars = try? JSONDecoder().decode([IntradayBar].self, from: bytes) { loaded.append(contentsOf: bars) }
             }
-            intradayBars = Self.uniqueIntradayBars(rows)
+        }
+        intradayBars = Self.uniqueIntradayBars(loaded)
+        rebuildIntradayMinuteIndex()
+        // 旧版实时点带秒，与整分钟行情会形成重复。首次载入时压成一条/分钟并重写紧凑文件。
+        if loaded.count != intradayBars.count || loaded.contains(where: { Int($0.timestamp.timeIntervalSince1970) % 60 != 0 }) {
+            saveIntradayBars()
         }
     }
     private static func uniqueIntradayBars(_ bars: [IntradayBar]) -> [IntradayBar] {
-        var byID: [String: IntradayBar] = [:]
-        for bar in bars { byID[bar.id] = bar }
-        return byID.values.sorted { $0.timestamp < $1.timestamp }
+        var byMinute: [String: IntradayBar] = [:]
+        for raw in bars {
+            var bar = normalizedIntradayBar(raw)
+            let key = intradayMinuteKey(code: bar.code, at: bar.timestamp)
+            if let prior = byMinute[key], bar.volume == nil { bar.volume = prior.volume }
+            byMinute[key] = bar
+        }
+        return byMinute.values.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private static func normalizedIntradayBar(_ bar: IntradayBar) -> IntradayBar {
+        var normalized = bar
+        let minute = Int(bar.timestamp.timeIntervalSince1970 / 60)
+        normalized.timestamp = Date(timeIntervalSince1970: TimeInterval(minute * 60))
+        return normalized
+    }
+
+    static func intradayMinuteKey(code: String, at time: Date) -> String {
+        "\(code)-\(Int(time.timeIntervalSince1970 / 60))"
+    }
+
+    func containsIntradayMinute(code: String, at time: Date) -> Bool {
+        intradayMinuteKeys.contains(Self.intradayMinuteKey(code: code, at: time))
+    }
+
+    func rebuildIntradayMinuteIndex() {
+        intradayMinuteKeys = Set(intradayBars.map { Self.intradayMinuteKey(code: $0.code, at: $0.timestamp) })
     }
     private func dailyBarsURL() -> URL? {
         guard let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -450,22 +485,147 @@ final class PortfolioStore: ObservableObject {
     }
     func mergeIntradayBars(_ bars: [IntradayBar]) {
         guard !bars.isEmpty else { return }
-        var byID: [String: IntradayBar] = [:]
-        for bar in intradayBars { byID[bar.id] = bar }
+        var byMinute: [String: IntradayBar] = [:]
+        for raw in intradayBars {
+            let bar = Self.normalizedIntradayBar(raw)
+            byMinute[Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)] = bar
+        }
         var changed: [IntradayBar] = []
-        for bar in bars {
-            if let prior = byID[bar.id], prior.price == bar.price && prior.volume == bar.volume && prior.day == bar.day { continue }
-            byID[bar.id] = bar
+        for raw in bars {
+            var bar = Self.normalizedIntradayBar(raw)
+            let key = Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)
+            if let prior = byMinute[key], bar.volume == nil { bar.volume = prior.volume }
+            if let prior = byMinute[key], prior.price == bar.price && prior.volume == bar.volume && prior.day == bar.day { continue }
+            byMinute[key] = bar
             changed.append(bar)
         }
         guard !changed.isEmpty else { return }
-        intradayBars = byID.values.sorted { $0.timestamp < $1.timestamp }
+        intradayBars = byMinute.values.sorted { $0.timestamp < $1.timestamp }
+        rebuildIntradayMinuteIndex()
         appendIntradayBars(changed)
         // Keep live minute history in NAS without uploading on every 15-second quote poll.
         if Date().timeIntervalSince(lastIntradayNASSyncAt) >= 60 {
             lastIntradayNASSyncAt = .now
             if !applyingNASData { scheduleNASSync(delay: 2) }
         }
+    }
+
+    /// 从腾讯分时接口补全某个标的最近交易日的整日分钟线并永久落盘。
+    ///
+    /// 这与交易时段内的逐点采集互为兜底：用户不必整天保持 App 在前台，收盘后或
+    /// 下一次打开 App 时仍可一次拿回最近交易日约 242 个点。旧交易日不会被覆盖或删除。
+    @discardableResult
+    func fetchAndArchiveLatestIntraday(code rawCode: String) async throws -> [IntradayBar] {
+        let parsed = try await fetchLatestIntradayBars(code: rawCode)
+        mergeIntradayBars(parsed)
+        return parsed
+    }
+
+    /// 只下载和解析，不触发落盘。批量归档时先收集全部标的、最后合并一次，
+    /// 避免多年分钟档案被每只标的重复建立整份去重字典。
+    private func fetchLatestIntradayBars(code rawCode: String) async throws -> [IntradayBar] {
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { throw URLError(.badURL) }
+        let symbol = tencentSymbol(code)
+        guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=min_archive_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else {
+            throw URLError(.badURL)
+        }
+
+        let bytes: Data
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 12
+            let (direct, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            bytes = direct
+        } catch {
+            if let proxied = try? await NASSyncService.marketProxyData(
+                path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]
+            ) {
+                bytes = proxied
+            } else {
+                throw error
+            }
+        }
+
+        guard let raw = String(data: bytes, encoding: .utf8),
+              let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
+              let root = try JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any],
+              let nodes = root["data"] as? [String: Any],
+              let node = nodes[symbol] as? [String: Any],
+              let payload = node["data"] as? [String: Any],
+              let rows = payload["data"] as? [String] else {
+            throw URLError(.cannotParseResponse)
+        }
+
+        let rawDay = (payload["date"] as? String) ?? Self.shanghaiDay(.now)
+        let day: String
+        if rawDay.count == 8, rawDay.allSatisfy(\.isNumber) {
+            day = "\(rawDay.prefix(4))-\(rawDay.dropFirst(4).prefix(2))-\(rawDay.suffix(2))"
+        } else {
+            day = rawDay
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var previousVolume = 0.0
+        var parsed: [IntradayBar] = []
+        parsed.reserveCapacity(rows.count)
+        for row in rows {
+            let fields = row.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard fields.count >= 2, let price = Double(fields[1]), price.isFinite, price > 0,
+                  let timestamp = formatter.date(from: "\(day) \(fields[0])") else { continue }
+            let cumulative = fields.count > 2 ? Double(fields[2]) : nil
+            let volume = cumulative.map { max(0, $0 - previousVolume) }
+            if let cumulative { previousVolume = cumulative }
+            parsed.append(IntradayBar(code: code, timestamp: timestamp, price: price, volume: volume, day: day))
+        }
+        guard !parsed.isEmpty else { throw URLError(.zeroByteResource) }
+        return parsed
+    }
+
+    /// 补全全部自选和场内持仓的最近交易日分时。自动任务每 30 分钟至多执行一次；
+    /// 页面上的“立即补全”可传 `force: true` 跳过节流。
+    @discardableResult
+    func archiveTrackedIntraday(force: Bool = false) async -> (success: Int, failure: Int) {
+        guard !isArchivingIntraday else { return (0, 0) }
+        if !force {
+            guard data.intradayCaptureEnabled else { return (0, 0) }
+            let lastRun = UserDefaults.standard.object(forKey: intradayArchiveLastRunKey) as? Date ?? .distantPast
+            guard Date().timeIntervalSince(lastRun) >= 30 * 60 else { return (0, 0) }
+        }
+        let codes = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code))
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .sorted()
+        guard !codes.isEmpty else {
+            intradayArchiveStatus = "没有可采集的自选或场内持仓"
+            return (0, 0)
+        }
+
+        isArchivingIntraday = true
+        intradayArchiveStatus = "正在补全 0/\(codes.count)…"
+        defer { isArchivingIntraday = false }
+        var success = 0
+        var failure = 0
+        var downloaded: [IntradayBar] = []
+        for (index, code) in codes.enumerated() {
+            do {
+                let bars = try await fetchLatestIntradayBars(code: code)
+                downloaded.append(contentsOf: bars)
+                success += 1
+            } catch {
+                failure += 1
+            }
+            intradayArchiveStatus = "正在补全 \(index + 1)/\(codes.count)…"
+        }
+        mergeIntradayBars(downloaded)
+        if success > 0 { UserDefaults.standard.set(Date(), forKey: intradayArchiveLastRunKey) }
+        let time = Date.now.formatted(date: .omitted, time: .shortened)
+        intradayArchiveStatus = failure == 0
+            ? "已归档 \(success) 只 · \(time)"
+            : "已归档 \(success) 只，\(failure) 只暂未取到 · \(time)"
+        return (success, failure)
     }
     func save(label: String? = nil) {
         guard let raw = try? JSONEncoder().encode(data) else { return }
@@ -479,6 +639,27 @@ final class PortfolioStore: ObservableObject {
         }
         defaults.set(raw, forKey: key)
         if !applyingNASData { scheduleNASSync() }
+    }
+
+    /// 保存 AI 最近结果，不占用“撤销上一次账本修改”的位置。
+    /// 结果仍进入原生备份与 NAS，多设备打开时可以继续查看。
+    func saveAIAnalysisCache() {
+        guard let raw = try? JSONEncoder().encode(data) else { return }
+        UserDefaults.standard.set(raw, forKey: key)
+        if !applyingNASData { scheduleNASSync() }
+    }
+
+    /// 行情价格属于高频缓存，不应每 5–60 秒覆盖撤销点、触发整账本 NAS 上传。
+    /// 最多每分钟落盘一次；用户主动保存、进入后台或退出页面时仍会保留最新状态。
+    private func saveAutomaticMarketState(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastAutomaticMarketSaveAt) >= 60 else { return }
+        guard let raw = try? JSONEncoder().encode(data) else { return }
+        UserDefaults.standard.set(raw, forKey: key)
+        lastAutomaticMarketSaveAt = .now
+    }
+
+    func flushAutomaticMarketState() {
+        saveAutomaticMarketState(force: true)
     }
 
     private func loadOperationAudit() {
@@ -561,6 +742,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func pauseNASSyncPolling() {
+        flushAutomaticMarketState()
         nasPollingTask?.cancel()
         nasPollingTask = nil
         nasSyncTask?.cancel()
@@ -582,7 +764,8 @@ final class PortfolioStore: ObservableObject {
             !d.manualQuoteOverrides.isEmpty || !d.etfDividendEvents.isEmpty ||
             !d.allocationTargets.isEmpty || !d.tradePlans.isEmpty || !d.dayGridPlans.isEmpty ||
             !d.legacyGridArchives.isEmpty || !d.legacyShadowArchives.isEmpty || !d.legacyDCAEvents.isEmpty ||
-            !d.legacySettingsArchives.isEmpty || d.cash != 0 || d.cashLinkedByDefault || d.appearance != .system ||
+            !d.legacySettingsArchives.isEmpty || d.savedAccountAIAnalysis != nil || d.savedPortraitAIAnalysis != nil ||
+            !d.savedInstrumentAIAnalyses.isEmpty || d.cash != 0 || d.cashLinkedByDefault || d.appearance != .system ||
             d.quoteRefreshSeconds != 60 || d.dailyPnLMode != .pnl || d.intradaySubchartMode != "macd" || d.dailyChartRangeDays != 250 || d.intradayLineColorMode != .automatic || !d.intradayCaptureEnabled || d.automaticFundNAVRefreshEnabled || d.costAccountingMode != .diluted || d.globalPositionLimitPercent != 0 || !d.positionHintsEnabled || d.rebalanceAlertThreshold != 5 || d.investmentProfile.style != "swing" || d.investmentProfile.risk != "bal" ||
             d.aiAnalysisConfig.endpoint != AIAnalysisConfig().endpoint || d.aiAnalysisConfig.model != AIAnalysisConfig().model || d.aiAnalysisConfig.timeoutSeconds != AIAnalysisConfig().timeoutSeconds || d.aiAnalysisConfig.systemPrompt != AIAnalysisConfig().systemPrompt ||
             d.investmentProfile.maxPositionPercent != 35 || d.investmentProfile.horizon != "1-3个月" ||
@@ -775,6 +958,46 @@ final class PortfolioStore: ObservableObject {
                      changePct: quote.changePct, updatedAt: quote.timestamp)
     }
 
+    /// 添加场外基金时按六位代码识别基金名称，并顺带返回最近已公布净值。
+    /// 与净值刷新保持同一数据源和 NAS 回退链路，避免出现“添加时查不到、保存后刷新却能查到”。
+    func lookupFundInfo(code rawCode: String) async throws -> (name: String, nav: Double?)? {
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.count == 6, code.allSatisfy(\.isNumber) else { return nil }
+        let cachedName = data.holdings.first(where: { $0.kind == .fund && $0.code == code && !$0.name.isEmpty })?.name
+            ?? data.fundTransactions.first(where: { $0.code == code && !$0.name.isEmpty })?.name
+        let cachedNAV = data.fundNAVHistory.filter { $0.code == code }.max(by: { $0.date < $1.date })?.nav
+        guard let url = URL(string: "https://fund.eastmoney.com/pingzhongdata/\(code).js") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("https://fund.eastmoney.com/", forHTTPHeaderField: "Referer")
+        let bytes: Data
+        do {
+            let (directBytes, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            bytes = directBytes
+        } catch {
+            if let proxied = try? await NASSyncService.marketProxyData(
+                path: "fundnav", queryItems: [URLQueryItem(name: "code", value: code)]) {
+                bytes = proxied
+            } else if let cachedName {
+                return (cachedName, cachedNAV)
+            } else { throw error }
+        }
+        guard let text = String(data: bytes, encoding: .utf8),
+              let regex = try? NSRegularExpression(pattern: #"(?:var\s+)?fS_name\s*=\s*\"((?:\\.|[^\"\\])*)\"\s*;"#),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else {
+            return cachedName.map { ($0, cachedNAV) }
+        }
+        let escapedName = String(text[range])
+        let nameData = Data("\"\(escapedName)\"".utf8)
+        let decodedName = (try? JSONDecoder().decode(String.self, from: nameData)) ?? escapedName
+        let name = decodedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let nav = Self.parseFundNAVScript(bytes, code: code)?.last?.nav
+        return (name, nav)
+    }
+
     func refreshQuotes() {
         guard !isRefreshingQuotes else { return }
         Task { _ = await performQuoteRefresh(captureIntraday: true) }
@@ -788,9 +1011,10 @@ final class PortfolioStore: ObservableObject {
     /// 供 `.refreshable` 使用。
     /// 原来的 `refreshQuotes()` 是「发起后立刻返回」，下拉转圈会瞬间消失，看着像没刷新。
     /// 这里 await 到真正拿完（或失败）为止，转圈时长与真实耗时一致。
-    func refreshQuotesAndWait() async {
-        guard !isRefreshingQuotes else { return }
-        _ = await performQuoteRefresh(captureIntraday: true)
+    @discardableResult
+    func refreshQuotesAndWait() async -> Bool {
+        guard !isRefreshingQuotes else { return false }
+        return await performQuoteRefresh(captureIntraday: true)
     }
 
     // MARK: - 首页指数条
@@ -833,7 +1057,12 @@ final class PortfolioStore: ObservableObject {
         var merged: [String: MarketIndexQuote] = [:]
         for quote in eastmoneyQuotes + sinaQuotes + tencentQuotes { merged[quote.symbol] = quote }
 
-        let updated = MarketIndexStore.catalog.compactMap { merged[$0.secid] }
+        let updated = MarketIndexStore.catalog.compactMap { entry -> MarketIndexQuote? in
+            guard var quote = merged[entry.secid] else { return nil }
+            // 数据源只负责价格，首页中文名称和顺序由代码表统一控制。
+            quote.name = entry.name
+            return quote
+        }
         // 一个都没解析出来说明这次请求白跑，保留上一次的值比清空更诚实。
         guard !updated.isEmpty else { return false }
         indexQuotes = updated
@@ -1164,7 +1393,7 @@ final class PortfolioStore: ObservableObject {
                     Task { await NativeNotifications.sendSourceHealthOnce(category: "market", body: "交易时段有 \(unhealthyCount) 个标的缺少报价或时间戳超过 3 分钟。请打开“数据可信度”检查报价和网络。") }
                 }
             }
-            // **一次刷新只让界面重绘一次**（v2.13.1）。
+            // **一次刷新只让界面重绘一次**（v2.13.2）。
             //
             // 原来这里是直接在 `data` / `marketChanges` 上逐条赋值的。`data` 是 `@Published`，
             // 每一条 `data.quotes[i].price = …` 都会发一次改动通知 —— 30 个自选 + 20 只 ETF
@@ -1215,7 +1444,13 @@ final class PortfolioStore: ObservableObject {
                 }
             }
             let route = usedNASProxy ? "NAS 代理" : "iPhone 直连"
-            save(); sourceStatus = "行情已更新（\(route)）· \(Date.now.formatted(date: .omitted, time: .shortened))"
+            saveAutomaticMarketState()
+            sourceStatus = "行情已更新（\(route)）· \(Date.now.formatted(date: .omitted, time: .shortened))"
+            // 不把整批分时下载塞进刷新按钮的等待时间里；后台补全结束后单独更新状态。
+            // 即使用户白天没有一直打开详情页，下次打开或刷新也会补回最近交易日整日数据。
+            if captureIntraday && data.intradayCaptureEnabled {
+                Task { await archiveTrackedIntraday() }
+            }
             return true
         } catch {
             sourceStatus = "行情刷新失败：\(error.localizedDescription)"
@@ -1301,7 +1536,7 @@ final class PortfolioStore: ObservableObject {
             data.quoteAlerts[index].enabled = false // one-shot; avoids repeated notifications on every refresh
             data.quoteAlerts[index].lastTriggeredAt = .now
             changed = true
-            Task { try? await NativeNotifications.send(title: "觀盘 Pro · 价格提醒", body: "\(alert.name)（\(alert.code)）现价 \(quote.price)，已\(alert.direction == .above ? "达到上穿" : "达到下穿")目标 \(alert.target)。") }
+            Task { try? await NativeNotifications.send(title: "观盘 Pro · 价格提醒", body: "\(alert.name)（\(alert.code)）现价 \(quote.price)，已\(alert.direction == .above ? "达到上穿" : "达到下穿")目标 \(alert.target)。") }
         }
         if changed { save() }
     }
@@ -1324,13 +1559,15 @@ final class PortfolioStore: ObservableObject {
 
     /// 供 `.refreshable` 用：净值刷新是「发起后立即返回 + 内部 Task」，
     /// 这里等它真正跑完，下拉转圈才不会一闪而过。轮询 0.2s，最多等 30s。
-    func refreshFundNAVsAndWait() async {
-        guard !isRefreshingFunds else { return }
+    @discardableResult
+    func refreshFundNAVsAndWait() async -> Bool {
+        guard !isRefreshingFunds else { return false }
         refreshFundNAVs()
         let deadline = Date().addingTimeInterval(30)
         while isRefreshingFunds, Date() < deadline {
             try? await Task.sleep(for: .milliseconds(200))
         }
+        return !isRefreshingFunds && !fundNAVStatus.contains("失败") && !fundNAVStatus.contains("不可用")
     }
 
     func refreshFundNAVs() {
@@ -1445,6 +1682,17 @@ final class PortfolioStore: ObservableObject {
                 ? "已更新 \(updated) 只基金重仓（\(source)）"
                 : "更新 \(updated) 只，失败 \(failed.count) 只：\(failed.prefix(3).joined(separator: "、"))（\(source)）"
         }
+    }
+
+    @discardableResult
+    func refreshFundConstituentsAndWait() async -> Bool {
+        guard !isRefreshingFundHoldings else { return false }
+        refreshFundConstituents()
+        let deadline = Date().addingTimeInterval(90)
+        while isRefreshingFundHoldings, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        return !isRefreshingFundHoldings && !fundHoldingsStatus.contains("失败")
     }
 
     private static func parseFundConstituents(_ bytes: Data, code: String) -> (asOf: String, holdings: [FundConstituent])? {
@@ -1592,6 +1840,14 @@ final class PortfolioStore: ObservableObject {
         if c.hasPrefix("0") || c.hasPrefix("1") || c.hasPrefix("2") || c.hasPrefix("3") { return "sz" + c }
         if c.hasPrefix("4") || c.hasPrefix("8") { return "bj" + c }
         return "sh" + c
+    }
+
+    private static func shanghaiDay(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     private func decodeTencent(_ bytes: Data) -> String {
@@ -2260,7 +2516,8 @@ final class PortfolioStore: ObservableObject {
 
     func replaceData(_ imported: PortfolioData, intradayBars: [IntradayBar]? = nil, dailyBars: [DailyBar]? = nil) {
         data = imported
-        if let intradayBars { self.intradayBars = intradayBars }
+        if let intradayBars { self.intradayBars = Self.uniqueIntradayBars(intradayBars) }
+        rebuildIntradayMinuteIndex()
         if let dailyBars { self.dailyBars = Dictionary(grouping: dailyBars, by: \.code).mapValues { $0.sorted { $0.date < $1.date } } }
         saveDailyBars()
         saveIntradayBars(); save(label: "导入并替换账本")
