@@ -1607,8 +1607,11 @@ struct MarketChartView: View {
         }
         .chartXAxis(.hidden)
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
-                AxisValueLabel { value in
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                // 注意：刻度值取自 AxisMarks 的闭包参数，`AxisValueLabel { ... }` 自己没有 value 参数，
+                // 写成 `AxisValueLabel { value in ... }` 会被解析成 StringProtocol 那个重载而报
+                // “type '(_) -> ()' cannot conform to 'StringProtocol'”。
+                AxisValueLabel {
                     if let number = value.as(Double.self) {
                         Text(compactAmount(number)).font(.system(size: 9))
                     }
