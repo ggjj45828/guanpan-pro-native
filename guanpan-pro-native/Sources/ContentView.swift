@@ -278,7 +278,13 @@ struct DashboardView: View {
         case .name:
             list.sort { displayName($0).localizedStandardCompare(displayName($1)) == .orderedAscending }
         case .code: list.sort { $0.code < $1.code }
-        case .signal: list.sort { signalScore($0) > signalScore($1) }
+        case .signal:
+            // 预计算一次分数再排序：比较器里每比较一次就实时算分会把 O(n log n)
+            // 次昂贵计算塞进一次渲染（滚动/刷新时首当其冲）。
+            var scoreByCode: [String: Int] = [:]
+            scoreByCode.reserveCapacity(list.count)
+            for q in list { scoreByCode[q.code] = store.signal(forCode: q.code)?.score ?? -1 }
+            list.sort { (scoreByCode[$0.code] ?? -1) > (scoreByCode[$1.code] ?? -1) }
         }
         return list
     }
@@ -305,7 +311,7 @@ struct DashboardView: View {
 
     /// 没有日线缓存时返回 -1，保证「无信号」排在最后而不是混在有信号的中间。
     private func signalScore(_ q: Quote) -> Int {
-        MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? [])?.score ?? -1
+        store.signal(forCode: q.code)?.score ?? -1
     }
 
     private func watchDividendYield(_ q: Quote) -> Double? {
@@ -330,7 +336,7 @@ struct DashboardView: View {
         let moodPercent = (store.marketMood?.average ?? 0) * 100
         return store.data.quotes.compactMap { quote in
             // 日线没准备好时宁可不打分，也不把一条实时涨跌冒充成完整建议。
-            guard let signal = MarketSignalCalculator.evaluate(store.dailyBars[quote.code] ?? []) else { return nil }
+            guard let signal = store.signal(forCode: quote.code) else { return nil }
             let changeAdjustment = max(-8, min(8, quote.changePct * 100 * 3))
             let moodAdjustment = max(-6, min(6, moodPercent * 4))
             let premiumAdjustment: Double
@@ -819,7 +825,7 @@ struct DashboardView: View {
         let accent = q.changePct >= 0
             ? Color(red: 0.93, green: 0.30, blue: 0.37)
             : Color(red: 0.07, green: 0.77, blue: 0.55)
-        let signal = MarketSignalCalculator.evaluate(store.dailyBars[q.code] ?? [])
+        let signal = store.signal(forCode: q.code)
         let premium = store.marketPremiums[q.code]
         let dividendYield = watchDividendYield(q)
         return HStack(spacing: 10) {
@@ -1381,15 +1387,48 @@ struct HoldingsView: View {
             }
     }
 
-    private func fundDayMetrics(for holding: Holding) -> (amount: Double, percent: Double)? {
-        let points = store.data.fundNAVHistory
-            .filter { $0.code == holding.code }
-            .sorted { $0.date < $1.date }
-        guard points.count >= 2, let latest = points.last else { return nil }
-        let previous = points[points.count - 2]
-        guard previous.nav > 0 else { return nil }
-        return ((latest.nav - previous.nav) * holding.quantity,
-                (latest.nav / previous.nav - 1) * 100)
+    /// 每只基金的最新/上一期净值，**一次遍历**算好。
+    /// 原来每个持仓行都把整个 fundNAVHistory 过滤+排序两遍（当日收益一处、脚注一处），
+    /// 行数×历史长度是持仓页滚动卡顿的来源之一；现在整个页面渲染只扫一遍。
+    private var fundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] {
+        var latest: [String: FundNAVPoint] = [:]
+        var previous: [String: FundNAVPoint] = [:]
+        for point in store.data.fundNAVHistory {
+            if let current = latest[point.code] {
+                if point.date > current.date {
+                    // 新老大替换：旧「最新」降级为「上一期」（与旧的上期再比一次，防乱序数据）
+                    if let old = previous[point.code] {
+                        if current.date > old.date { previous[point.code] = current }
+                    } else {
+                        previous[point.code] = current
+                    }
+                    latest[point.code] = point
+                } else if point.date < current.date {
+                    // 更早的数据：可能是上期
+                    if let old = previous[point.code] {
+                        if point.date > old.date { previous[point.code] = point }
+                    } else {
+                        previous[point.code] = point
+                    }
+                }
+                // 同日重复：保留先出现的一条（与旧实现 max(by:) 的平局行为一致）
+            } else {
+                latest[point.code] = point
+            }
+        }
+        var result: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
+        for (code, point) in latest { result[code] = (point, previous[code]) }
+        return result
+    }
+
+    /// 场外基金当日收益（元 / %）。用页面级预计算的 fundNAVPairs，不再逐行扫全表。
+    private func fundDayMetrics(for holding: Holding,
+                                using pairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)])
+        -> (amount: Double, percent: Double)? {
+        guard let pair = pairs[holding.code], let previous = pair.previous,
+              previous.nav > 0, pair.latest.nav.isFinite, previous.nav.isFinite else { return nil }
+        return ((pair.latest.nav - previous.nav) * holding.quantity,
+                (pair.latest.nav / previous.nav - 1) * 100)
     }
 
     @ViewBuilder private func holdingMetricChip(_ text: String, color: Color) -> some View {
@@ -1674,25 +1713,33 @@ struct HoldingsView: View {
 
     @ViewBuilder private var holdingRowList: some View {
         let rows = searchedHoldings
+        // 净值对与摊薄已实现盈亏都只算一次，供所有行复用（见 fundNAVPairs / dilutedRealizedSums）。
+        let navPairs = fundNAVPairs
+        let dilutedRealized = store.dilutedRealizedSums()
         if isSearching && rows.isEmpty {
             Text("没有匹配「\(searchQuery)」的持仓")
                 .foregroundStyle(.secondary)
         }
         ForEach(rows) { h in
-            holdingRow(h).listRowBackground(Color.clear)
+            holdingRow(h, navPairs: navPairs, dilutedRealized: dilutedRealized).listRowBackground(Color.clear)
         }
     }
 
-    @ViewBuilder private func holdingRow(_ h: Holding) -> some View {
+    @ViewBuilder private func holdingRow(_ h: Holding,
+                                         navPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)],
+                                         dilutedRealized: [String: Double]) -> some View {
         // 列布局对齐养基宝：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），
         // 市值在名称行右侧，占总资产挪到底部信息行 —— 4 列太挤，3 列是它的可读上限。
         // 缺当日行情时显示 --，不把「没数据」画成 0。
-        let fundDay = kind == .fund ? fundDayMetrics(for: h) : nil
+        let fundDay = kind == .fund ? fundDayMetrics(for: h, using: navPairs) : nil
         let dayValue = fundDay?.amount ?? store.dayPnL(of: h)
         let hasDay = kind == .fund ? fundDay != nil : store.marketChanges[h.code] != nil
         let dayPercent: Double? = kind == .fund ? fundDay?.percent : store.marketChanges[h.code].map { $0 * 100 }
-        let costBasis = h.quantity * store.displayedCost(for: h)
-        let holdingPnL = store.holdingPnL(h)
+        // 摊薄口径的已实现盈亏用页面级预计算值（原来每次调用都全量过滤流水）。
+        let realizedSum = (dilutedRealized["\(h.code)|nil"] ?? 0) + (dilutedRealized["\(h.code)|\(h.kind.rawValue)"] ?? 0)
+        let unitCost = store.displayedCost(for: h, dilutedRealizedSum: realizedSum)
+        let costBasis = h.quantity * unitCost
+        let holdingPnL = h.quantity * (h.current - unitCost)
         let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
         let annualProjection = kind == .etf ? annualDividendProjection(for: h) : nil
         let annualDividend = annualProjection?.amount
@@ -1707,7 +1754,7 @@ struct HoldingsView: View {
                 holdingStat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
                 Spacer(minLength: 0)
             }
-            Text("\(h.code) · \((h.quantity).compactNum(4)) 份 · 成本 \((store.displayedCost(for: h)).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: h)).pct(1))")
+            Text("\(h.code) · \((h.quantity).compactNum(4)) 份 · 成本 \((unitCost).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: h)).pct(1))")
                 .font(.caption).foregroundStyle(.secondary)
             if kind == .etf {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 7)], alignment: .leading, spacing: 6) {
@@ -1722,9 +1769,9 @@ struct HoldingsView: View {
                     if hasDay { holdingMetricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
                 }
             }
-            if kind == .fund, let latest = store.data.fundNAVHistory.filter({ $0.code == h.code }).max(by: { $0.date < $1.date }) {
-                let previous = store.data.fundNAVHistory.filter { $0.code == h.code && $0.date < latest.date }.max(by: { $0.date < $1.date })
-                if let previous {
+            if kind == .fund, let pair = navPairs[h.code] {
+                let latest = pair.latest
+                if let previous = pair.previous {
                     let change = (latest.nav - previous.nav) * h.quantity
                     Text("\(latest.date) 近一期净值变化 · 按当前份额折算 \((change).cny())")
                         .font(.caption).foregroundStyle(change >= 0 ? .red : .green)
@@ -5275,6 +5322,9 @@ struct DayGridView: View {
     @State private var recommendationText = ""
     @State private var showImporter = false
     @State private var showStrategicGridPlanner = false
+    /// 网格适合度排名（规则版评估，见 GridSuitability.swift）。
+    @State private var suitability: [GridSuitability] = []
+    @State private var isEvaluatingSuitability = false
 
     private var instruments: [GridInstrument] {
         let quotes = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
@@ -5307,21 +5357,131 @@ struct DayGridView: View {
                                 recommendationText = "已切换到\(item.name)（\(item.code)），中枢价已按该标的最新行情重置。"
                             }
                         }
+                        if let item = currentInstrument {
+                            LabeledContent("最新参考价", value: item.price > 0 ? item.price.num(4) : "暂无有效行情")
+                        }
                     }
-                    if let item = currentInstrument {
-                        LabeledContent("当前标的", value: "\(item.name) · \(item.code)")
-                        LabeledContent("最新参考价", value: item.price > 0 ? item.price.num(4) : "暂无有效行情")
+                    // 参数填入改两列网格：5 个数字字段一屏放得下，不用来回滚动找输入框。
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 10) {
+                        gridNumberField("计划资金（元）", hint: "5000", text: $capital, keyboard: .decimalPad)
+                        gridNumberField("每笔费用（元）", hint: "0.1", text: $fee, keyboard: .decimalPad)
+                        gridNumberField("网格中枢价（元）", hint: "如 2.500", text: $anchor, keyboard: .decimalPad)
+                        gridNumberField("每档间距（%）", hint: "0.6", text: $step, keyboard: .decimalPad)
+                        gridNumberField("上下档数（各侧）", hint: "5", text: $levels, keyboard: .numberPad)
+                        if let item = currentInstrument, item.price > 0 {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("中枢价快捷填入").scaledFont(10, weight: .medium).foregroundStyle(.secondary)
+                                Button("用最新价 \(item.price.num(3))") {
+                                    anchor = String(format: "%.4f", item.price)
+                                }
+                                .scaledFont(11, weight: .medium)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 8)
+                                .background(Color(uiColor: .secondarySystemBackground).opacity(0.6),
+                                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                        }
                     }
-                    labeledGridField("计划资金（元）", hint: "可用于买入网格的总资金", text: $capital, keyboard: .decimalPad)
-                    labeledGridField("网格中枢价", hint: "初始参考价；切换标的会更新", text: $anchor, keyboard: .decimalPad)
-                    labeledGridField("每档间距（%）", hint: "每相邻网格档位的涨跌幅", text: $step, keyboard: .decimalPad)
-                    labeledGridField("上下档数（各侧）", hint: "中枢上方和下方分别几档", text: $levels, keyboard: .numberPad)
-                    labeledGridField("每笔费用（元）", hint: "每次模拟成交扣除的固定费用", text: $fee, keyboard: .decimalPad)
-                    Button("根据历史分时生成规则建议") { suggestParameters() }.disabled(code.isEmpty)
+                    // 快捷档位：一键填入常用间距/档数，不用为了改一个数字把键盘调起来。
+                    HStack(spacing: 6) {
+                        Text("间距").scaledFont(10, weight: .medium).foregroundStyle(.secondary)
+                        ForEach([0.3, 0.5, 0.8, 1.2, 2.0], id: \.self) { value in
+                            gridQuickChip("\(String(format: "%g", value))%", selected: Double(step) == value) {
+                                step = String(format: "%g", value)
+                            }
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        Text("档数").scaledFont(10, weight: .medium).foregroundStyle(.secondary)
+                        ForEach([3, 5, 8], id: \.self) { value in
+                            gridQuickChip("\(value) 档", selected: Int(levels) == value) {
+                                levels = String(value)
+                            }
+                        }
+                    }
+                    // 实时推算：边填边看到每档资金 / 每档可买份数 / 网格覆盖范围，不用先保存再试错。
+                    if let preview = gridPlanPreview {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text("每档资金").scaledFont(11).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(preview.budgetPerLevel.cny()).scaledFont(11, weight: .semibold).monospacedDigit()
+                            }
+                            HStack {
+                                Text("每档可买").scaledFont(11).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(preview.sharesPerLevel >= 100
+                                     ? "\(preview.sharesPerLevel.num(0)) 份（\(Int(preview.sharesPerLevel / 100)) 手）"
+                                     : "不足 1 手")
+                                    .scaledFont(11, weight: .semibold).monospacedDigit()
+                                    .foregroundStyle(preview.sharesPerLevel >= 100 ? Color.primary : Color.orange)
+                            }
+                            HStack {
+                                Text("网格覆盖").scaledFont(11).foregroundStyle(.secondary)
+                                Spacer()
+                                Text("\(preview.lower.num(3)) – \(preview.upper.num(3))").scaledFont(11).monospacedDigit()
+                            }
+                            if preview.sharesPerLevel < 100 {
+                                Text("每档资金不够买 1 手（100 份）：减少档数、加大计划资金，或换个价格更低 / 适合度更高的标的。")
+                                    .scaledFont(10).foregroundStyle(Color.orange).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    Button("根据历史分时生成规则建议") { suggestParameters() }
+                        .disabled(code.isEmpty)
+                        .buttonStyle(.borderedProminent)
                     if !recommendationText.isEmpty { Text(recommendationText).font(.footnote).foregroundStyle(.secondary) }
                     Button("保存/更新本地计划") { savePlan() }.disabled(code.isEmpty)
-                    Text("每档按 100 份整数手模拟。每档资金小于 1 手时会显示资金不足原因；计划仍可保存，调整资金或减少档数即可。计划预设不要求市场已开盘。")
+                    Text("每档按 100 份整数手模拟。计划仍可保存，调整资金或减少档数即可；计划预设不要求市场已开盘。")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                .plainCard(isLight: isLight)
+                Section("哪个标的适合做网格（规则版评估）") {
+                    Text("按公开网格交易方法用本机日线计算：日均成交额（流动性）、年化波动率 15%–30%、日均振幅 0.5%–2%、收盘贴近 MA20 的震荡性、场内品种、避开 60 日单边极端。这是品种筛选参考，不是 AI 预测，也不保证收益。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if isEvaluatingSuitability {
+                        HStack(spacing: 8) { ProgressView(); Text("正在补日线并评估…").font(.footnote) }
+                    } else {
+                        Button("评估/刷新") { refreshSuitability() }
+                        if suitability.contains(where: { $0.isOnExchange && $0.barCount < 60 }) {
+                            Button("为数据不足的标的补日线（最多 8 只）") { Task { await backfillSuitabilityData() } }
+                        }
+                    }
+                    if suitability.isEmpty, !isEvaluatingSuitability {
+                        Text("暂无可评估标的：先在自选或 ETF 持仓中添加场内品种。").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(suitability) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Text("\(item.name) · \(item.code)").font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Spacer()
+                                Text(item.grade.rawValue)
+                                    .scaledFont(10, weight: .bold)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .foregroundStyle(.white)
+                                    .background(suitabilityGradeColor(item.grade), in: Capsule())
+                                Text("\(item.score) 分").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            Text(suitabilityMetricsText(item))
+                                .font(.caption).foregroundStyle(.secondary)
+                            ForEach(item.warnings, id: \.self) { line in
+                                Text("⚠ \(line)").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                            }
+                            ForEach(item.reasons, id: \.self) { line in
+                                Text("· \(line)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                            HStack(spacing: 10) {
+                                Button("用它做网格") { selectSuitability(item) }
+                                    .disabled(item.grade == .avoid)
+                                if item.isOnExchange, item.barCount < 60 {
+                                    Button("补日线") { Task { await backfillSuitabilityData(for: item.code) } }
+                                }
+                            }
+                            .font(.caption)
+                        }
+                        .padding(.vertical, 2)
+                    }
                 }
                 .plainCard(isLight: isLight)
                 Section("分时数据") {
@@ -5444,6 +5604,7 @@ struct DayGridView: View {
             .onAppear {
                 if code.isEmpty, let first = instruments.first { code = first.code; name = first.name; anchor = first.price > 0 ? String(format: "%.4f", first.price) : "" }
                 if selectedDay.isEmpty { selectedDay = store.gridTradingDays.first ?? "" }
+                refreshSuitability()
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { response in
                 do {
@@ -5460,11 +5621,49 @@ struct DayGridView: View {
         }
     }
 
-    private func labeledGridField(_ title: String, hint: String, text: Binding<String>, keyboard: UIKeyboardType) -> some View {
+    /// 两列网格里的数字输入框：标题在上、输入框在下，比整行 LabeledContent 更紧凑，
+    /// 5 个参数一屏放得下。圆角底色让它看起来就是「可点的输入位」。
+    @ViewBuilder private func gridNumberField(_ title: String, hint: String, text: Binding<String>, keyboard: UIKeyboardType) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.subheadline.weight(.medium))
-            TextField(hint, text: text).keyboardType(keyboard)
+            Text(title).scaledFont(10, weight: .medium).foregroundStyle(.secondary)
+            TextField(hint, text: text)
+                .keyboardType(keyboard)
+                .font(.system(.subheadline, design: .rounded))
+                .monospacedDigit()
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(Color(uiColor: .secondarySystemBackground).opacity(0.6),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+    }
+
+    /// 快捷档位 chip：点一下填入常用值；与当前值一致时高亮，一眼看出现在用的是哪档。
+    @ViewBuilder private func gridQuickChip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .scaledFont(10, weight: .semibold)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .background(selected ? Color.accentColor : Color(uiColor: .secondarySystemBackground).opacity(0.8),
+                            in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 参数实时推算：每档资金、每档可买份数（100 份整数手）、网格上下沿。
+    /// 任何输入不合法时返回 nil，界面不显示推算块；下沿不可能为负（跨度 >100% 时钳到 0）。
+    private var gridPlanPreview: (budgetPerLevel: Double, sharesPerLevel: Double, lower: Double, upper: Double)? {
+        guard let capitalValue = Double(capital), let anchorValue = Double(anchor),
+              let stepValue = Double(step), let levelValue = Int(levels),
+              capitalValue.isFinite, capitalValue > 0,
+              anchorValue.isFinite, anchorValue > 0,
+              stepValue.isFinite, stepValue > 0,
+              levelValue >= 1 else { return nil }
+        let lotCost = anchorValue * 100
+        guard lotCost > 0, lotCost.isFinite else { return nil }
+        let budget = capitalValue / Double(levelValue * 2 + 2)
+        let shares = floor(budget / lotCost) * 100
+        let swing = stepValue / 100 * Double(levelValue)
+        return (budget, shares, max(0, anchorValue * (1 - swing)), anchorValue * (1 + swing))
     }
 
     private func savePlan() {
@@ -5490,13 +5689,71 @@ struct DayGridView: View {
         guard let capitalValue = Double(capital), let feeValue = Double(fee) else {
             recommendationText = "先填写有效的计划资金和每笔费用。"; return
         }
-        guard let suggestion = store.gridRecommendation(code: code, capital: capitalValue, feePerOrder: feeValue) else {
-            recommendationText = "本机暂时没有至少 3 个覆盖合格的交易日，或现有资金/费用不足以支持至少一档。先采集或导入完整分时数据。"; return
+        if let suggestion = store.gridRecommendation(code: code, capital: capitalValue, feePerOrder: feeValue) {
+            anchor = String(format: "%.3f", suggestion.anchor)
+            step = String(format: "%.3f", suggestion.stepPercent)
+            levels = String(suggestion.levels)
+            recommendationText = "规则评分 \(suggestion.score)/100 · \(suggestion.summary) 这是基于历史数据的参数参考，不是 AI 预测，也不保证未来收益。"
+            return
         }
-        anchor = String(format: "%.3f", suggestion.anchor)
-        step = String(format: "%.3f", suggestion.stepPercent)
-        levels = String(suggestion.levels)
-        recommendationText = "规则评分 \(suggestion.score)/100 · \(suggestion.summary) 这是基于历史数据的参数参考，不是 AI 预测，也不保证未来收益。"
+        // 生成不了时分开说清卡在哪：分时数据不够，还是计划资金不够（与主账户现金无关）。
+        recommendationText = store.gridRecommendationBlocker(
+            code: code, capital: capitalValue, feePerOrder: feeValue, fallbackAnchor: Double(anchor)
+        ) ?? "本机暂时没有至少 3 个覆盖合格的交易日，或计划资金/费用不足以支持至少一档。先采集或导入完整分时数据。"
+    }
+
+    // MARK: - 网格适合度评估（规则版，见 GridSuitability.swift）
+
+    /// 用本地已缓存日线重新排名。纯本地计算，立即可用。
+    private func refreshSuitability() {
+        suitability = store.gridSuitabilityRanking()
+    }
+
+    /// 为场内且日线不足 60 根的标的补日线后重评（最多 8 只，顺序请求）。
+    private func backfillSuitabilityData() async {
+        guard !isEvaluatingSuitability else { return }
+        isEvaluatingSuitability = true
+        defer { isEvaluatingSuitability = false }
+        _ = await store.ensureGridSuitabilityData(limit: 8)
+        refreshSuitability()
+    }
+
+    /// 只为某一个标的补日线（行内「补日线」按钮）。
+    private func backfillSuitabilityData(for targetCode: String) async {
+        guard !isEvaluatingSuitability else { return }
+        isEvaluatingSuitability = true
+        defer { isEvaluatingSuitability = false }
+        _ = try? await store.fetchDailyBars(code: targetCode, count: 640, force: false)
+        refreshSuitability()
+    }
+
+    /// 把评估选中的标的装进上方参数区（与切换 Picker 同一套动作）。
+    private func selectSuitability(_ item: GridSuitability) {
+        code = item.code
+        name = item.name
+        if let instrument = currentInstrument, instrument.price > 0 {
+            anchor = String(format: "%.4f", instrument.price)
+        }
+        result = nil
+        recommendationText = "已选择\(item.name)（\(item.code)）· 适合度 \(item.score) 分（\(item.grade.rawValue)）。参数仍可手动调整。"
+    }
+
+    private func suitabilityMetricsText(_ item: GridSuitability) -> String {
+        var parts: [String] = []
+        parts.append(item.annualVolatilityPercent.map { "年化波动 \(String(format: "%.1f", $0))%" } ?? "年化波动 --")
+        parts.append(item.avgDailyAmplitudePercent.map { "日均振幅 \(String(format: "%.2f", $0))%" } ?? "日均振幅 --")
+        parts.append(item.avgTurnoverYi.map { "日均成交额 \(String(format: "%.2f", $0)) 亿" } ?? "日均成交额 --")
+        parts.append(item.rangeBoundRatio.map { "震荡性 \(Int(($0 * 100).rounded()))%" } ?? "震荡性 --")
+        parts.append("日线 \(item.barCount) 根")
+        return parts.joined(separator: " · ")
+    }
+
+    private func suitabilityGradeColor(_ grade: GridSuitability.Grade) -> Color {
+        switch grade {
+        case .suitable: return Color(red: 0.07, green: 0.68, blue: 0.48)
+        case .consider: return Color.orange
+        case .avoid: return Color.secondary
+        }
     }
 
     private func runReplay() {

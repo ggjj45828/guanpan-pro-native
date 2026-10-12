@@ -194,6 +194,33 @@ struct ETFDividendEvent: Codable, Identifiable {
 enum ETFDividendProjection {
     enum Source: Equatable { case manual, recorded, estimated }
 
+    /// 共享的上海时区日期格式化器。DateFormatter 建一次约毫秒级，
+    /// 而年股息试算在自选列表里是「每行每次渲染」都会走的路径，必须复用。
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    /// 截止日按自然日缓存：同一天内所有行共用同一个「近 12 个月」窗口，
+    /// 跨天自动重算。比每行每次渲染都新建 Calendar + DateFormatter 便宜几个量级。
+    private static var cachedCutoffDay = ""
+    private static var cachedCutoffValue = ""
+
+    /// 近 12 个月窗口的截止日（yyyy-MM-dd，含当天）。
+    static func yearAgoCutoff(now: Date = .now) -> String {
+        let today = dayFormatter.string(from: now)
+        if today != cachedCutoffDay {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = dayFormatter.timeZone
+            cachedCutoffValue = dayFormatter.string(
+                from: calendar.date(byAdding: .day, value: -365, to: now) ?? .distantPast)
+            cachedCutoffDay = today
+        }
+        return cachedCutoffValue
+    }
+
     static func estimatedYieldPercent(code: String, name: String) -> Double {
         let text = (code + name).lowercased()
         if text.contains("红利") || text.contains("高股息") { return 4.0 }
@@ -208,13 +235,7 @@ enum ETFDividendProjection {
         if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
             return (manual, .manual)
         }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        let cutoff = formatter.string(from: calendar.date(byAdding: .day, value: -365, to: now) ?? .distantPast)
+        let cutoff = yearAgoCutoff(now: now)
         let recorded = events
             .filter { $0.code == holding.code && $0.date >= cutoff }
             .reduce(0) { $0 + $1.amountPerShare }

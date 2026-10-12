@@ -41,6 +41,24 @@ final class PortfolioStore: ObservableObject {
     private var lastAutomaticMarketSaveAt = Date.distantPast
     private var applyingNASData = false
     private var isUndoingSave = false
+    /// 技术信号 memo。`MarketSignalCalculator.evaluate` 是 O(640) 的纯计算，
+    /// 自选列表每一行渲染、按信号排序的比较器、首页「盘中机会」都会调用；
+    /// 不缓存时每次滚动 / 刷新都反复重算，是列表滑动卡顿的主要来源之一。
+    /// 缓存键取「根数 + 末根日期/收盘/成交量」：日线的任何实质变化
+    /// （新交易日、盘中刷新最后一根）都会自然失效，无需手动清理。
+    private var signalCache: [String: (key: String, signal: MarketSignal?)] = [:]
+
+    /// 取某代码的技术信号（带 memo）。视图层一律走这里，不要直接调 evaluate。
+    func signal(forCode code: String) -> MarketSignal? {
+        let bars = dailyBars[code] ?? []
+        let last = bars.last
+        let key = "\(bars.count)|\(last?.date ?? "")|\(last?.close ?? 0)|\(last?.volume ?? 0)"
+        if let hit = signalCache[code], hit.key == key { return hit.signal }
+        let value = MarketSignalCalculator.evaluate(bars)
+        if signalCache.count > 512 { signalCache.removeAll(keepingCapacity: true) }
+        signalCache[code] = (key, value)
+        return value
+    }
 
     init() {
         load()
@@ -267,10 +285,33 @@ final class PortfolioStore: ObservableObject {
         return data.cash / totalAsset * 100
     }
     func displayedCost(for holding: Holding) -> Double {
+        displayedCost(for: holding, dilutedRealizedSum: nil)
+    }
+
+    /// 摊薄口径的已实现盈亏合计，按「代码|类型」一次遍历算好（页面级预计算用）。
+    /// 键为 "代码|nil"（旧版无类型流水）与 "代码|etf/fund"；调用方按持仓类型相加，
+    /// 与 displayedCost 里 `kind == nil || kind == holding.kind` 的过滤规则一致。
+    func dilutedRealizedSums() -> [String: Double] {
+        var sums: [String: Double] = [:]
+        for entry in data.ledger {
+            sums["\(entry.code)|\(entry.kind?.rawValue ?? "nil")", default: 0] += entry.realizedPnL
+        }
+        return sums
+    }
+
+    /// displayedCost 的预计算版本：dilutedRealizedSum 传入页面级算好的已实现盈亏合计，
+    /// 避免每次调用都全量过滤流水（持仓列表每行两次，是滚动卡顿来源之一）。
+    /// sum 为 nil 时退回自行过滤，行为与原实现完全一致。
+    func displayedCost(for holding: Holding, dilutedRealizedSum: Double?) -> Double {
         if let override = holding.costOverride, override.isFinite, override > 0 { return override }
         guard data.costAccountingMode == .diluted, holding.quantity > 0 else { return holding.cost }
-        let realized = data.ledger.filter { $0.code == holding.code && ($0.kind == nil || $0.kind == holding.kind) }
-            .reduce(0) { $0 + $1.realizedPnL }
+        let realized: Double
+        if let dilutedRealizedSum {
+            realized = dilutedRealizedSum
+        } else {
+            realized = data.ledger.filter { $0.code == holding.code && ($0.kind == nil || $0.kind == holding.kind) }
+                .reduce(0) { $0 + $1.realizedPnL }
+        }
         return max(0, holding.cost - realized / holding.quantity)
     }
     func holdingPnL(_ holding: Holding) -> Double {

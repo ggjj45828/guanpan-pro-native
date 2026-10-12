@@ -541,7 +541,8 @@ struct MarketChartView: View {
     }
     /// 自选标签、详情页和量化引擎统一使用同一套 0...100 技术观察分。
     /// 旧详情页曾另算一套 -100...100 分数，导致同一标的在两个页面结论相反。
-    private var technicalSignal: MarketSignal? { MarketSignalCalculator.evaluate(bars) }
+    /// 走 store 的 memo 入口：详情页任何重绘（缩放/拖动/刷新）都不重复跑 O(640) 计算。
+    private var technicalSignal: MarketSignal? { store.signal(forCode: holding.code) }
 
     /// “值不值得买”不是第二套趋势分，而是在统一技术分上加入位置与撑压后的条件复核。
     /// 不使用并不存在的 ETF 实时估值字段，避免把猜测包装成“估值分”。

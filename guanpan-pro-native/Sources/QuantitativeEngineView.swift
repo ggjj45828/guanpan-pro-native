@@ -206,8 +206,8 @@ struct QuantitativeEngineView: View {
             } else {
                 Text("打开详情或点击上方扫描获取日线数据").font(.caption).foregroundStyle(.secondary)
             }
-            // 与自选面板一致的技术标签
-            if let raw = MarketSignalCalculator.evaluate(store.dailyBars[item.code] ?? []) {
+            // 与自选面板一致的技术标签（走 store memo，扫描列表滚动不重复计算）
+            if let raw = store.signal(forCode: item.code) {
                 SignalTagRow(tags: raw.tags)
             }
         }

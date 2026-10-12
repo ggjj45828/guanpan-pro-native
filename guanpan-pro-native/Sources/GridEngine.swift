@@ -142,13 +142,7 @@ extension PortfolioStore {
     func gridRecommendation(code: String, capital: Double, feePerOrder: Double) -> GridRecommendation? {
         guard capital.isFinite, capital > 0, capital <= 1_000_000_000_000,
               feePerOrder.isFinite, feePerOrder >= 0 else { return nil }
-        let grouped = Dictionary(grouping: intradayBars.filter { $0.code == code }, by: \.day)
-        let reliableDays: [[IntradayBar]] = grouped.values.compactMap { dayBars in
-            let sorted = dayBars.sorted { $0.timestamp < $1.timestamp }
-            guard sorted.count >= 168 else { return nil }
-            let largestGap = zip(sorted, sorted.dropFirst()).map { $0.1.timestamp.timeIntervalSince($0.0.timestamp) }.max() ?? .infinity
-            return largestGap <= 10 * 60 ? sorted : nil
-        }.sorted { ($0.last?.timestamp ?? .distantPast) < ($1.last?.timestamp ?? .distantPast) }.suffix(20).map { $0 }
+        let reliableDays = reliableIntradayDays(code: code)
         guard reliableDays.count >= 3, let latestDay = reliableDays.last, let anchor = latestDay.last?.price,
               anchor.isFinite, anchor > 0 else { return nil }
         let ranges = reliableDays.compactMap { day -> Double? in
@@ -174,6 +168,85 @@ extension PortfolioStore {
         return GridRecommendation(anchor: anchor, stepPercent: stepFraction * 100, levels: levels, score: score,
             daysUsed: reliableDays.count, medianDailyRangePercent: medianRange * 100,
             summary: "基于最近 \(reliableDays.count) 个覆盖合格的交易日；日内振幅中位数 \(String(format: "%.2f", medianRange * 100))%。分数只代表数据覆盖、样本量和费用空间，不预测收益。")
+    }
+
+    /// 「覆盖合格」的交易日：当天 ≥168 个分钟点，且任意相邻两点间隔 ≤10 分钟。
+    /// gridRecommendation 与失败原因诊断共用这一判定，避免两处口径漂移。
+    private func reliableIntradayDays(code: String) -> [[IntradayBar]] {
+        let grouped = Dictionary(grouping: intradayBars.filter { $0.code == code }, by: \.day)
+        return grouped.values.compactMap { dayBars in
+            let sorted = dayBars.sorted { $0.timestamp < $1.timestamp }
+            guard sorted.count >= 168 else { return nil }
+            let largestGap = zip(sorted, sorted.dropFirst()).map { $0.1.timestamp.timeIntervalSince($0.0.timestamp) }.max() ?? .infinity
+            return largestGap <= 10 * 60 ? sorted : nil
+        }.sorted { ($0.last?.timestamp ?? .distantPast) < ($1.last?.timestamp ?? .distantPast) }.suffix(20).map { $0 }
+    }
+
+    /// 规则建议生成失败的具体原因。与 gridRecommendation 同一套判定，
+    /// 但把「数据不够」和「计划资金不够」分开说清，并给出可操作的下一步。
+    /// 注意：这里只校验界面传入的计划资金，与主账户现金无关（影子盘本来就是隔离虚拟资金）。
+    func gridRecommendationBlocker(code: String, capital: Double, feePerOrder: Double,
+                                   fallbackAnchor: Double?) -> String? {
+        let reliableDays = reliableIntradayDays(code: code)
+        var blockers: [String] = []
+
+        if reliableDays.count < 3 {
+            let totalDays = Set(intradayBars.filter { $0.code == code }.map(\.day)).count
+            let detail = totalDays > reliableDays.count
+                ? "本机共有 \(totalDays) 个有分时记录的交易日，但只有 \(reliableDays.count) 天覆盖合格"
+                : "本机只有 \(reliableDays.count) 个覆盖合格的交易日"
+            blockers.append("分时数据不足：\(detail)（需要至少 3 天；合格 = 当天 ≥168 个分钟点且无超过 10 分钟的缺口）。"
+                + "在交易时间把 App 保持前台可自动采集，或用「导入分时 CSV」补齐。")
+        }
+
+        // 资金门槛按 4 手估算（锚定占 2 手 + 至少 1 档 2 手），与 gridRecommendation 的
+        // rawMaximumLevels = floor((capital / lotCost - 2) / 2) ≥ 1 一致。
+        let anchor = reliableDays.last?.last?.price ?? fallbackAnchor
+        if let anchor, anchor.isFinite, anchor > 0,
+           capital.isFinite, capital > 0, feePerOrder.isFinite, feePerOrder >= 0 {
+            let lotCost = anchor * 100 + feePerOrder
+            let minimumCapital = lotCost * 4
+            if capital < minimumCapital {
+                blockers.append("计划资金不足：按中枢价约 \(anchor.num(3)) 元估算，支撑 1 档网格至少需要约 \(minimumCapital.cny())"
+                    + "（≈4 手，每手 100 份 + 每笔费用 \(feePerOrder.num(2)) 元）。"
+                    + "把上方「计划资金」提高到该数值以上即可——这里只校验你填的计划资金，与主账户现金无关。")
+            }
+        }
+        return blockers.isEmpty ? nil : blockers.joined(separator: "\n\n")
+    }
+
+    /// 网格适合度排名：合并自选与全部持仓，**只用本地已缓存日线，不发起请求**。
+    /// 场外基金也会出现在列表里（明确标记「不适合」并说明原因），数据不足的排在最后。
+    func gridSuitabilityRanking() -> [GridSuitability] {
+        var seen: Set<String> = []
+        var items: [(code: String, name: String, price: Double, onExchange: Bool)] = []
+        for quote in data.quotes where GridSuitabilityEngine.isTradableCode(quote.code) {
+            guard seen.insert(quote.code).inserted else { continue }
+            items.append((quote.code, quote.name, quote.price, true))
+        }
+        for holding in data.holdings {
+            guard seen.insert(holding.code).inserted else { continue }
+            items.append((holding.code, holding.name, holding.current, holding.kind == .etf))
+        }
+        return items.map { item in
+            GridSuitabilityEngine.evaluate(code: item.code, name: item.name,
+                bars: dailyBars[item.code] ?? [], isOnExchange: item.onExchange, latestPrice: item.price)
+        }.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.code < rhs.code
+        }
+    }
+
+    /// 为适合度评估补齐缺失日线：只补「场内且本地不足 60 根」的标的，每次最多 limit 只。
+    /// 顺序发起请求，避免把行情接口打满；返回实际补到的只数。
+    @discardableResult
+    func ensureGridSuitabilityData(limit: Int = 8) async -> Int {
+        let needy = gridSuitabilityRanking().filter { $0.isOnExchange && $0.barCount < 60 }
+        var fetched = 0
+        for item in needy where fetched < limit {
+            if (try? await fetchDailyBars(code: item.code, count: 640, force: false)) != nil { fetched += 1 }
+        }
+        return fetched
     }
 
     /// Import minute CSV using either separate date/time columns or a full timestamp column.
