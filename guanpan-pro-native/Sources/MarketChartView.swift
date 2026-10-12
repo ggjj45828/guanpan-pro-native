@@ -154,6 +154,15 @@ private func xAxisLabel(_ date: String, _ bars: [DailyBar]) -> String {
     return "\(String(date.prefix(4)).suffix(2))/\(month)"
 }
 
+/// 日 K 下方副图的三种形态。主流站点（东方财富 / 同花顺）都在副图左上角放一排小标签切换，
+/// 这里沿用同一交互：点标签即换图，选中态记住。
+enum DailySubChart: String, CaseIterable, Identifiable {
+    case volume = "成交量"
+    case amount = "成交额"
+    case macd = "MACD"
+    var id: String { rawValue }
+}
+
 struct MarketChartView: View {
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
@@ -164,6 +173,13 @@ struct MarketChartView: View {
     @State private var selectedChartPeriod: NativeChartPeriod = .intraday
     /// 每条均线可单独开关：点图例 chip 切换，状态持久化到 UserDefaults
     @State private var maVisible: Set<Int> = MAVisibility.read()
+    /// 日 K 副图切到哪一项（成交量 / 成交额 / MACD）。存原始值字符串，
+    /// 枚举改名或加项都不会把老用户的选择卡死，读不到就回落成交量。
+    @AppStorage("guanpan.native.dailySubChart") private var dailySubChartRaw: String = DailySubChart.volume.rawValue
+    private var dailySubChart: DailySubChart {
+        get { DailySubChart(rawValue: dailySubChartRaw) ?? .volume }
+        nonmutating set { dailySubChartRaw = newValue.rawValue }
+    }
     @State private var intradaySubchart: IntradaySubchart = .macd
     @State private var showIntradayAverage = IntradayVisibility.showAverage
     @State private var showIntradayIOPV = IntradayVisibility.showIOPV
@@ -1131,15 +1147,21 @@ struct MarketChartView: View {
                                succeeded: ok)
     }
 
+    /// 默认可见根数。原来默认 120 根：手机上每根槽位只有约 3pt，
+    /// 量柱被压到 1.4pt 宽，密到看不出一根根柱子（用户报的「量柱太密，根本看不到」）。
+    /// 收到 90 根后槽位约 4.3pt，量柱 2.6pt + 1.7pt 间隙，既能看清又不糊成一片；
+    /// 想看更长区间继续双指缩小即可（最多 40 倍）。
+    private static let comfortableBarCount = 90
+
     private var zoomedBarCount: Int {
-        let comfortableDefault = min(120, max(1, periodAllBars.count))
+        let comfortableDefault = min(Self.comfortableBarCount, max(1, periodAllBars.count))
         return min(periodAllBars.count, max(6, Int(Double(comfortableDefault) / (chartZoom * pinchScale))))
     }
 
     private var maxChartPanOffset: Int { max(0, periodAllBars.count - zoomedBarCount) }
     private var minimumChartZoom: Double {
         guard !periodAllBars.isEmpty else { return 1 }
-        return min(1, Double(min(120, periodAllBars.count)) / Double(periodAllBars.count))
+        return min(1, Double(min(Self.comfortableBarCount, periodAllBars.count)) / Double(periodAllBars.count))
     }
 
     // MARK: - 日K 图（主图 + 成交量副图）
@@ -1161,7 +1183,8 @@ struct MarketChartView: View {
         min(max(chartBodyHeight * 0.21, 60), 120)
     }
     private var candleHeight: CGFloat {
-        max(180, chartBodyHeight - volumeHeight - 8)
+        // 副图上方多了一排指标标签（20pt），加上 VStack 两处 8pt 间距，主图高度要相应让出 36pt
+        max(180, chartBodyHeight - volumeHeight - 36)
     }
 
 
@@ -1307,7 +1330,8 @@ struct MarketChartView: View {
                 let barWidth = ChartBarWidth.volume(slot: slot)
                 VStack(spacing: 8) {
                     candlePlot(bodyWidth: bodyWidth).frame(height: candleHeight)
-                    volumePlot(width: barWidth).frame(height: volumeHeight)
+                    subChartTabs
+                    subPlot(width: barWidth).frame(height: volumeHeight)
                 }
             }
             .frame(height: chartBodyHeight)
@@ -1528,6 +1552,140 @@ struct MarketChartView: View {
             }
         }
     }
+    // MARK: - 日K 副图：成交量 / 成交额 / MACD
+
+    private struct MACDSeriesPoint: Identifiable {
+        let date: String
+        let dif: Double
+        let dea: Double
+        let histogram: Double
+        var id: String { date }
+    }
+
+    /// MACD(12,26,9)，口径与 `MarketSignals` 的信号计算保持一致：
+    /// DEA 用 0.2 平滑（即 EMA9），柱 = 2 ×（DIF − DEA）。
+    /// **必须先用全量序列预热再截可见窗口** —— 否则窗口第一根的 DIF/DEA 从 0 起步，
+    /// 开头会画出一段并不存在的金叉 / 死叉。
+    private func macdSeries(full: [DailyBar], visible: [DailyBar]) -> [MACDSeriesPoint] {
+        guard !full.isEmpty else { return [] }
+        var ema12 = full[0].close, ema26 = full[0].close, dea = 0.0
+        var all: [MACDSeriesPoint] = []
+        for (index, bar) in full.enumerated() {
+            ema12 = ema12 * 11 / 13 + bar.close * 2 / 13
+            ema26 = ema26 * 25 / 27 + bar.close * 2 / 27
+            let dif = ema12 - ema26
+            dea = index == 0 ? dif : dea + 0.2 * (dif - dea)
+            all.append(MACDSeriesPoint(date: bar.date, dif: dif, dea: dea, histogram: 2 * (dif - dea)))
+        }
+        guard let first = visible.first?.date,
+              let start = all.firstIndex(where: { $0.date == first }) else { return [] }
+        return Array(all[start...].prefix(visible.count))
+    }
+
+    /// 成交额（元）。腾讯日 K 没有成交额这一列，只有东财日 K 才有 ——
+    /// 缺真实值时按「成交量（手）× 100 × 收盘价」估算，并在副图上标注「估算」，
+    /// 不把估算值冒充成真实成交额。
+    private func turnover(of bar: DailyBar) -> Double {
+        let real = bar.amount ?? 0
+        return real > 0 ? real : bar.volume * 100 * bar.close
+    }
+    private var amountIsEstimated: Bool { zoomedPeriodBars.contains { ($0.amount ?? 0) <= 0 } }
+
+    private func compactAmount(_ value: Double) -> String {
+        let magnitude = abs(value)
+        if magnitude >= 100_000_000 { return "\((value / 100_000_000).num(2))亿" }
+        if magnitude >= 10_000 { return "\((value / 10_000).num(1))万" }
+        return value.num(0)
+    }
+
+    private func amountPlot(width: CGFloat) -> some View {
+        Chart {
+            ForEach(zoomedPeriodBars) { bar in
+                BarMark(x: .value("日期", bar.date), y: .value("成交额", turnover(of: bar)), width: .fixed(width))
+                    .foregroundStyle(bar.close >= bar.open ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                AxisValueLabel { value in
+                    if let number = value.as(Double.self) {
+                        Text(compactAmount(number)).font(.system(size: 9))
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func macdPlot(width: CGFloat) -> some View {
+        let series = macdSeries(full: periodAllBars, visible: zoomedPeriodBars)
+        return Chart {
+            ForEach(series) { point in
+                BarMark(x: .value("日期", point.date), y: .value("MACD", point.histogram), width: .fixed(width))
+                    .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.78) : Color.green.opacity(0.78))
+            }
+            ForEach(series) { point in
+                LineMark(x: .value("日期", point.date), y: .value("DIF", point.dif), series: .value("指标线", "DIF"))
+                    .foregroundStyle(ChartPalette.ma5)
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+            }
+            ForEach(series) { point in
+                LineMark(x: .value("日期", point.date), y: .value("DEA", point.dea), series: .value("指标线", "DEA"))
+                    .foregroundStyle(ChartPalette.ma10)
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+            }
+            RuleMark(y: .value("零轴", 0))
+                .foregroundStyle(Color.secondary.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func subPlot(width: CGFloat) -> some View {
+        switch dailySubChart {
+        case .volume: volumePlot(width: width)
+        case .amount: amountPlot(width: width)
+        case .macd: macdPlot(width: width)
+        }
+    }
+
+    /// 副图左上角的一排小标签（成交量 / 成交额 / MACD），点一下换图 ——
+    /// 与主流站点在副图左上角放指标标签的做法一致。
+    private var subChartTabs: some View {
+        HStack(spacing: 6) {
+            ForEach(DailySubChart.allCases) { mode in
+                let selected = dailySubChart == mode
+                Button {
+                    Haptics.selection()
+                    dailySubChart = mode
+                } label: {
+                    Text(mode.rawValue)
+                        .font(.system(size: 10, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? store.effectiveAccentColor : Color.secondary)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 5)
+                            .fill((selected ? store.effectiveAccentColor : Color.secondary)
+                                .opacity(selected ? 0.16 : 0.08)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("副图切换 \(mode.rawValue)")
+            }
+            Spacer(minLength: 0)
+            if dailySubChart == .amount, amountIsEstimated {
+                Text("按收盘价估算").font(.system(size: 9)).foregroundStyle(.tertiary)
+            } else if dailySubChart == .macd {
+                Text("DIF / DEA 12/26/9").font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
+        }
+        .frame(height: 20)
+    }
+
     private func quoteMetric(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
@@ -1953,8 +2111,10 @@ enum ChartBarWidth {
     }
 
     /// 量柱宽度。比实体窄一档，保证相邻柱子之间始终有缝。
+    /// 0.46 → 0.60、下限 1.4 → 2.0：默认 90 根时槽位约 4.3pt，
+    /// 量柱 2.6pt + 1.7pt 间隙 —— 原来 1.4pt 的细柱在手机上密到看不见。
     static func volume(slot: CGFloat) -> CGFloat {
-        min(max(slot * 0.46, 1.4), 18)
+        min(max(slot * 0.60, 2.0), 18)
     }
 }
 

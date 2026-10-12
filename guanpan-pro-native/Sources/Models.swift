@@ -492,6 +492,10 @@ struct DailyBar: Codable, Identifiable {
     var high: Double
     var low: Double
     var volume: Double
+    /// 成交额（元）。只有东财日 K 直接给这一列，腾讯日 K 没有 —— 缺数据时为 nil，
+    /// 界面按「成交量 × 100 × 收盘价」估算并标注「估算」，不把估算值当成真实成交额。
+    /// 用可选类型是为了让老备份 / 老缓存（没有这个键）仍能正常解码。
+    var amount: Double? = nil
 }
 
 struct DayGridPlan: Codable, Identifiable {

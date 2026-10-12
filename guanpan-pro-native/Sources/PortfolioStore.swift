@@ -1513,7 +1513,9 @@ final class PortfolioStore: ObservableObject {
             guard f.count >= 6, let open = Double(f[1]), let close = Double(f[2]),
                   let high = Double(f[3]), let low = Double(f[4]), close > 0 else { return nil }
             return DailyBar(code: secid, date: f[0], open: open, close: close,
-                            high: high, low: low, volume: Double(f[5]) ?? 0)
+                            high: high, low: low, volume: Double(f[5]) ?? 0,
+                            // f[6] 是成交额（元）。腾讯日 K 没有这一列，只有东财有。
+                            amount: f.count > 6 ? Double(f[6]) : nil)
         }
     }
 
