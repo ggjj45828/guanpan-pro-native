@@ -33,6 +33,7 @@ final class PortfolioStore: ObservableObject {
     private let dailyBarsFilename = "guanpan-daily-bars.json"
     private let automaticNAVCheckDateKey = "guanpan.native.fundNAV.lastAutomaticCheck"
     private let intradayArchiveLastRunKey = "guanpan.native.intradayArchive.lastRun"
+    private let legacyIntradayArchiveImportKey = "guanpan.native.intradayArchive.legacyImportDone"
     private var nasSyncTask: Task<Void, Never>?
     private var nasPollingTask: Task<Void, Never>?
     private var lastIntradayNASSyncAt = Date.distantPast
@@ -47,6 +48,11 @@ final class PortfolioStore: ObservableObject {
     /// 缓存键取「根数 + 末根日期/收盘/成交量」：日线的任何实质变化
     /// （新交易日、盘中刷新最后一根）都会自然失效，无需手动清理。
     private var signalCache: [String: (key: String, signal: MarketSignal?)] = [:]
+
+    private func invalidateSignalCache(for code: String? = nil) {
+        if let code { signalCache.removeValue(forKey: code) }
+        else { signalCache.removeAll(keepingCapacity: true) }
+    }
 
     /// 取某代码的技术信号（带 memo）。视图层一律走这里，不要直接调 evaluate。
     func signal(forCode code: String) -> MarketSignal? {
@@ -443,6 +449,7 @@ final class PortfolioStore: ObservableObject {
         guard let url = dailyBarsURL(), let raw = try? Data(contentsOf: url),
               let rows = try? JSONDecoder().decode([DailyBar].self, from: raw) else { return }
         dailyBars = Dictionary(grouping: rows, by: \.code).mapValues { $0.sorted { $0.date < $1.date } }
+        invalidateSignalCache()
     }
     func saveDailyBars() {
         guard let url = dailyBarsURL() else { return }
@@ -477,7 +484,9 @@ final class PortfolioStore: ObservableObject {
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                 let result = parseDailyBars(bytes, code: code, symbol: symbol) ?? []
                 guard !result.isEmpty else { throw URLError(.cannotParseResponse) }
-                dailyBars[code] = result; saveDailyBars(); return result
+                dailyBars[code] = result
+                invalidateSignalCache(for: code)
+                saveDailyBars(); return result
             } catch { lastError = error }
         }
         // 直连全部失败后，最后才尝试 NAS 行情代理兜底
@@ -485,7 +494,9 @@ final class PortfolioStore: ObservableObject {
             URLQueryItem(name: "symbol", value: symbol),
             URLQueryItem(name: "count", value: String(min(max(count, 30), 640)))
         ]), let result = parseDailyBars(proxyBytes, code: code, symbol: symbol), !result.isEmpty {
-            dailyBars[code] = result; saveDailyBars(); return result
+            dailyBars[code] = result
+            invalidateSignalCache(for: code)
+            saveDailyBars(); return result
         }
         if let cached = dailyBars[code], !cached.isEmpty { return cached }
         throw lastError
@@ -606,7 +617,7 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
-    /// 从腾讯分时接口补全某个标的最近交易日的整日分钟线并永久落盘。
+    /// 从行情源补全某个标的最近交易日的整日分钟线并永久落盘。
     ///
     /// 这与交易时段内的逐点采集互为兜底：用户不必整天保持 App 在前台，收盘后或
     /// 下一次打开 App 时仍可一次拿回最近交易日约 242 个点。旧交易日不会被覆盖或删除。
@@ -615,6 +626,42 @@ final class PortfolioStore: ObservableObject {
         let parsed = try await fetchLatestIntradayBars(code: rawCode)
         mergeIntradayBars(parsed)
         return parsed
+    }
+
+    /// 只在首次可用时从旧网页备份回填一次 gridhist，不迁移或覆盖账户数据；
+    /// 后续采集完全走行情源，网页删除或断开也不影响本机历史档案。
+    private func fetchLegacyWebIntradayArchive(code requestedCode: String? = nil) async -> [IntradayBar] {
+        guard !UserDefaults.standard.bool(forKey: legacyIntradayArchiveImportKey) else { return [] }
+        let defaults = UserDefaults.standard
+        let base = defaults.string(forKey: NASSyncService.urlKey) ?? ""
+        guard !base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        do {
+            let legacy = try await NASSyncService.legacyBackup(base: base,
+                token: NASCredentialStore.load() ?? "")
+            guard let bytes = legacy.data,
+                  let migrated = try? LegacyMigration.decodePackage(bytes) else { return [] }
+            UserDefaults.standard.set(true, forKey: legacyIntradayArchiveImportKey)
+            let matching = filterLegacyIntradayArchive(migrated.intradayBars, code: requestedCode)
+            guard !matching.isEmpty else { return [] }
+            mergeIntradayBars(matching)
+            return matching
+        } catch {
+            return []
+        }
+    }
+
+    private func filterLegacyIntradayArchive(_ bars: [IntradayBar], code requestedCode: String?) -> [IntradayBar] {
+        guard let requestedCode else { return bars }
+        let key = intradayCodeKey(requestedCode)
+        return bars.filter { intradayCodeKey($0.code) == key }
+    }
+
+    private func intradayCodeKey(_ raw: String) -> String {
+        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for prefix in ["sh", "sz", "bj"] where code.hasPrefix(prefix) {
+            return String(code.dropFirst(prefix.count))
+        }
+        return code
     }
 
     /// 只下载和解析，不触发落盘。批量归档时先收集全部标的、最后合并一次，
@@ -641,29 +688,88 @@ final class PortfolioStore: ObservableObject {
                 lastError = error
             }
         }
-        if parsed.isEmpty,
-           let proxied = try? await NASSyncService.marketProxyData(
-               path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
-            parsed = parseTencentMinuteData(proxied, symbol: symbol)
+        // 腾讯盘中有时只返回最近一小段分钟点。与其把少量数据当作整日归档，
+        // 再尝试东财 trends2；它能返回当天截至当前时刻的分钟序列。休市时以完整
+        // 交易日作为目标，盘中则按已走过的交易分钟计算最低覆盖目标。
+        let targetCount = expectedIntradayPointCount(now: .now, dataDay: parsed.last?.day)
+        var eastmoney: [IntradayBar] = []
+        if parsed.count < targetCount * 9 / 10,
+           let secid = eastmoneySecid(for: code) {
+            eastmoney = await fetchEastmoneyMinutes(secid: secid)
         }
-        guard !parsed.isEmpty else { throw lastError }
+
+        // 收盘后的官方分钟序列仍可能因单个行情源限流而缺点。此时经已配置的
+        // NAS 行情代理再取一次腾讯分钟数据并做并集；这条路径与 NAS 网页账本无关。
+        let providerBars = parsed + eastmoney
+        let providerDay = providerBars.map(\.day).max()
+        let currentCombinedCount = Set(providerBars.filter { $0.day == providerDay }
+            .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+        var proxied: [IntradayBar] = []
+        if currentCombinedCount < targetCount,
+           let proxyBytes = try? await NASSyncService.marketProxyData(
+               path: "minute", queryItems: [URLQueryItem(name: "code", value: symbol)]) {
+            proxied = parseTencentMinuteData(proxyBytes, symbol: symbol)
+        }
+        guard !parsed.isEmpty || !eastmoney.isEmpty || !proxied.isEmpty else { throw lastError }
         // 通用解析器会以腾讯代码标识 bar；归档必须恢复用户账本中的纯代码，历史页才能命中。
-        return parsed.map {
+        // 两个源按分钟并集；同一分钟优先保留腾讯价格，缺成交量时用东财补齐。
+        // 后续 mergeIntradayBars 会把新行情覆盖到本机同一分钟的旧记录。
+        let all = (parsed + eastmoney + proxied).filter { $0.price.isFinite && $0.price > 0 }
+        guard let latestDay = all.map(\.day).max() else { throw lastError }
+        var byMinute: [Int: IntradayBar] = [:]
+        for bar in all where bar.day == latestDay {
+            let key = Int(bar.timestamp.timeIntervalSince1970 / 60)
+            if var prior = byMinute[key] {
+                if prior.volume == nil { prior.volume = bar.volume }
+                byMinute[key] = prior
+            } else {
+                byMinute[key] = bar
+            }
+        }
+        return byMinute.values.map {
             IntradayBar(code: code, timestamp: $0.timestamp, price: $0.price,
                         volume: $0.volume, day: $0.day)
-        }
+        }.sorted { $0.timestamp < $1.timestamp }
     }
 
-    /// 补全全部自选和场内持仓的最近交易日分时。自动任务每 30 分钟至多执行一次；
-    /// 页面上的“立即补全”可传 `force: true` 跳过节流。
+    private func eastmoneySecid(for rawCode: String) -> String? {
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let digits: String
+        let market: String
+        if code.hasPrefix("sh"), code.dropFirst(2).count == 6 {
+            market = "1"; digits = String(code.dropFirst(2))
+        } else if code.hasPrefix("sz"), code.dropFirst(2).count == 6 {
+            market = "0"; digits = String(code.dropFirst(2))
+        } else if code.hasPrefix("bj"), code.dropFirst(2).count == 6 {
+            market = "0"; digits = String(code.dropFirst(2))
+        } else if code.count == 6 {
+            digits = code
+            market = ["5", "6", "9"].contains(String(code.prefix(1))) ? "1" : "0"
+        } else {
+            return nil
+        }
+        guard digits.utf8.count == 6, digits.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+        return "\(market).\(digits)"
+    }
+
+    private func expectedIntradayPointCount(now: Date, dataDay: String?) -> Int {
+        let today = Self.shanghaiDay(now)
+        guard dataDay == today, Self.isRegularTradingSession(now) else { return 242 }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let parts = calendar.dateComponents([.hour, .minute], from: now)
+        let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        if minute <= 9 * 60 + 30 { return 1 }
+        if minute <= 11 * 60 + 30 { return min(121, minute - (9 * 60 + 30) + 1) }
+        if minute < 13 * 60 { return 121 }
+        return min(242, 121 + minute - 13 * 60 + 1)
+    }
+
+    /// 补全全部自选和场内持仓最近交易日的分时。完整档案每 30 分钟检查一次；
+    /// 若本机档案仍有缺点，则每 5 分钟重试，直到行情源补齐或用户手动停止使用。
     @discardableResult
     func archiveTrackedIntraday(force: Bool = false) async -> (success: Int, failure: Int) {
         guard !isArchivingIntraday else { return (0, 0) }
-        if !force {
-            guard data.intradayCaptureEnabled else { return (0, 0) }
-            let lastRun = UserDefaults.standard.object(forKey: intradayArchiveLastRunKey) as? Date ?? .distantPast
-            guard Date().timeIntervalSince(lastRun) >= 30 * 60 else { return (0, 0) }
-        }
         let codes = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code))
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .sorted()
@@ -671,29 +777,68 @@ final class PortfolioStore: ObservableObject {
             intradayArchiveStatus = "没有可采集的自选或场内持仓"
             return (0, 0)
         }
+        if !force {
+            guard data.intradayCaptureEnabled else { return (0, 0) }
+            let lastRun = UserDefaults.standard.object(forKey: intradayArchiveLastRunKey) as? Date ?? .distantPast
+            let incomplete = codes.contains { code in
+                let local = intradayBars.filter { intradayCodeKey($0.code) == intradayCodeKey(code) }
+                let latestDay = local.map(\.day).max()
+                let count = Set(local.filter { $0.day == latestDay }
+                    .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+                return count < expectedIntradayPointCount(now: .now, dataDay: latestDay)
+            }
+            let retryInterval: TimeInterval = incomplete ? 5 * 60 : 30 * 60
+            guard Date().timeIntervalSince(lastRun) >= retryInterval else { return (0, 0) }
+        }
 
         isArchivingIntraday = true
         intradayArchiveStatus = "正在补全 0/\(codes.count)…"
         defer { isArchivingIntraday = false }
+        intradayArchiveStatus = "正在连接行情源补全最近交易日…"
+        let webArchive = await fetchLegacyWebIntradayArchive()
+        let codeKeys = codes.reduce(into: [String: String]()) { $0[$1] = intradayCodeKey($1) }
+        let webArchiveByCode = Dictionary(grouping: webArchive, by: { intradayCodeKey($0.code) })
         var success = 0
         var failure = 0
         var downloaded: [IntradayBar] = []
-        for (index, code) in codes.enumerated() {
-            do {
-                let bars = try await fetchLatestIntradayBars(code: code)
-                downloaded.append(contentsOf: bars)
-                success += 1
-            } catch {
-                failure += 1
+        await withTaskGroup(of: (String, [IntradayBar]?).self) { group in
+            for code in codes {
+                group.addTask {
+                    let latest = try? await self.fetchLatestIntradayBars(code: code)
+                    if let latest, !latest.isEmpty { return (code, latest) }
+                    let key = codeKeys[code] ?? code
+                    let saved = webArchiveByCode[key] ?? []
+                    return (code, saved.isEmpty ? nil : saved)
+                }
             }
-            intradayArchiveStatus = "正在补全 \(index + 1)/\(codes.count)…"
+            while let (code, bars) = await group.next() {
+                if let bars, !bars.isEmpty {
+                    downloaded.append(contentsOf: bars)
+                    success += 1
+                } else {
+                    failure += 1
+                }
+                intradayArchiveStatus = "正在补全 \(success + failure)/\(codes.count) · \(code)…"
+            }
         }
         mergeIntradayBars(downloaded)
         if success > 0 { UserDefaults.standard.set(Date(), forKey: intradayArchiveLastRunKey) }
         let time = Date.now.formatted(date: .omitted, time: .shortened)
+        let pointCount = downloaded.count
+        let latestDay = downloaded.map(\.day).max()
+        let remaining = codes.filter { code in
+            let local = intradayBars.filter { intradayCodeKey($0.code) == intradayCodeKey(code) }
+            let day = local.map(\.day).max()
+            let count = Set(local.filter { $0.day == day }
+                .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+            return count < expectedIntradayPointCount(now: .now, dataDay: day)
+        }.count
+        let coverage = latestDay.map { "\($0) · 本次行情取回 \(pointCount) 点 · 本机已保存并去重" }
+            ?? "行情源没有返回新分钟点"
+        let retry = remaining > 0 ? " · \(remaining) 只未完整，5 分钟后自动重试" : " · 本机档案完整"
         intradayArchiveStatus = failure == 0
-            ? "已归档 \(success) 只 · \(time)"
-            : "已归档 \(success) 只，\(failure) 只暂未取到 · \(time)"
+            ? "已更新 \(success) 只 · \(coverage)\(retry) · \(time)"
+            : "已更新 \(success)/\(codes.count) 只，\(failure) 只未取到 · \(coverage)\(retry) · \(time)"
         return (success, failure)
     }
     func save(label: String? = nil) {
@@ -1013,6 +1158,7 @@ final class PortfolioStore: ObservableObject {
         for b in incoming { byKey["\(b.code)|\(b.date)"] = b }
         let grouped = Dictionary(grouping: byKey.values, by: \.code)
         dailyBars = grouped.mapValues { $0.sorted { $0.date < $1.date } }
+        invalidateSignalCache()
         saveDailyBars()
     }
 
@@ -1707,11 +1853,14 @@ final class PortfolioStore: ObservableObject {
         let codes = Array(Set(data.holdings.filter { $0.kind == .fund }.map(\.code)
             + data.fundTransactions.map(\.code)
             + data.fundDCAPlans.filter(\.enabled).map(\.code))).sorted()
+        let holdingFundCodes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code))
         guard !codes.isEmpty else { fundNAVStatus = "没有场外基金持仓或历史流水"; return }
         isRefreshingFunds = true
         fundNAVStatus = "正在逐只获取已公布净值…"
         Task {
-            var updated = 0
+            var fetched = 0
+            var changedNAVCodes = Set<String>()
+            var changedHoldingNAVCodes = Set<String>()
             var usedNASProxy = false
             var failures: [String] = []
             for code in codes {
@@ -1736,7 +1885,17 @@ final class PortfolioStore: ObservableObject {
                     guard let points = Self.parseFundNAVScript(bytes, code: code), !points.isEmpty else {
                         throw URLError(.cannotParseResponse)
                     }
-                    let byDate = Dictionary(uniqueKeysWithValues: data.fundNAVHistory.filter { $0.code == code }.map { ($0.date, $0) })
+                    // Legacy/imported archives can contain duplicate (code, date) rows.
+                    // Avoid a runtime trap; fetched values replace stored values below.
+                    let byDate = data.fundNAVHistory
+                        .filter { $0.code == code }
+                        .reduce(into: [String: FundNAVPoint]()) { result, point in
+                            result[point.date] = point
+                        }
+                    let navChanged = points.contains { point in
+                        guard let old = byDate[point.date] else { return true }
+                        return abs(old.nav - point.nav) > 0.00000001
+                    }
                     var merged = byDate
                     for point in points { merged[point.date] = point }
                     data.fundNAVHistory.removeAll { $0.code == code }
@@ -1745,21 +1904,26 @@ final class PortfolioStore: ObservableObject {
                        let index = data.holdings.firstIndex(where: { $0.kind == .fund && $0.code == code }) {
                         data.holdings[index].current = latest.nav
                     }
-                    updated += 1
+                    fetched += 1
+                    if navChanged {
+                        changedNAVCodes.insert(code)
+                        if holdingFundCodes.contains(code) { changedHoldingNAVCodes.insert(code) }
+                    }
                 } catch {
                     failures.append(code)
                 }
             }
             let dcaBooked = processAutomaticDCA()
-            let refreshedSnapshot = updated > 0 ? refreshTodaySnapshotIfPresent() : false
+            let refreshedSnapshot = fetched > 0 ? refreshTodaySnapshotIfPresent() : false
             save()
             isRefreshingFunds = false
             let snapshotNote = refreshedSnapshot ? "；今日已有快照已同步重算" : ""
             let routeNote = usedNASProxy ? " · 含 NAS 代理" : " · iPhone 直连"
             if dcaBooked > 0 { fundDCAStatus = "已按已公布净值补记定投 \(dcaBooked) 期；仅更新本机账本" }
+            let resultNote = "本次净值新增/变化 \(changedNAVCodes.count) 只（持仓 \(changedHoldingNAVCodes.count)/\(holdingFundCodes.count)）；成功读取 \(fetched)/\(codes.count) 个代码"
             fundNAVStatus = failures.isEmpty
-                ? "已更新 \(updated) 只基金的已公布净值（通常 T+1）\(routeNote)\(snapshotNote)"
-                : "更新 \(updated) 只，失败 \(failures.count) 只：\(failures.prefix(3).joined(separator: "、"))\(routeNote)\(snapshotNote)"
+                ? "\(resultNote)（净值通常 T+1）\(routeNote)\(snapshotNote)"
+                : "\(resultNote)；失败 \(failures.count) 只：\(failures.prefix(3).joined(separator: "、"))\(routeNote)\(snapshotNote)"
             if !failures.isEmpty {
                 Task { await NativeNotifications.sendSourceHealthOnce(category: "fundnav", body: "有 \(failures.count) 只基金净值更新失败。请检查数据源状态；已公布净值也可能因 T+1 或海外时差尚未更新。") }
             }
@@ -2699,7 +2863,10 @@ final class PortfolioStore: ObservableObject {
         data = imported
         if let intradayBars { self.intradayBars = Self.uniqueIntradayBars(intradayBars) }
         rebuildIntradayMinuteIndex()
-        if let dailyBars { self.dailyBars = Dictionary(grouping: dailyBars, by: \.code).mapValues { $0.sorted { $0.date < $1.date } } }
+        if let dailyBars {
+            self.dailyBars = Dictionary(grouping: dailyBars, by: \.code).mapValues { $0.sorted { $0.date < $1.date } }
+            invalidateSignalCache()
+        }
         saveDailyBars()
         saveIntradayBars(); save(label: "导入并替换账本")
     }

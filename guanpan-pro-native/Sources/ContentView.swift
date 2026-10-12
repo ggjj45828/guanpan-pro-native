@@ -257,6 +257,8 @@ struct DashboardView: View {
     @State private var showAdd = false
     @State private var showAlertEditor = false
     @State private var chartTarget: Holding?
+    /// 盘中机会默认收起，首页先保留最重要的一条结论，避免推低自选列表。
+    @State private var showIntradayOpportunities = false
     /// 顶部指数条里被点开的那一格（nil = 没打开详情）。
     @State private var indexDetailTarget: MarketIndexQuote?
 
@@ -437,45 +439,54 @@ struct DashboardView: View {
                 }
                 if !intradayOpportunities.isEmpty {
                     Section("盘中机会") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 6) {
-                                Circle().fill(PnLColor.down).frame(width: 7, height: 7)
-                                Text("值不值得买")
-                                    .scaledFont(14, weight: .bold)
-                                Text("随行情刷新")
+                        DisclosureGroup(isExpanded: $showIntradayOpportunities) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("本机规则评分：综合日线技术信号、当日涨跌、组合环境、溢价与当前仓位。它不是大模型结论，也不构成买入指令。")
                                     .scaledFont(10).foregroundStyle(.secondary)
-                                Spacer()
+                                ForEach(intradayOpportunities) { item in
+                                    Button {
+                                        chartTarget = Holding(code: item.quote.code, name: item.quote.name, quantity: 0,
+                                                              cost: 0, current: item.quote.price, kind: .etf,
+                                                              marketUpdatedAt: item.quote.updatedAt)
+                                    } label: {
+                                        HStack(spacing: 9) {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(displayName(item.quote)).scaledFont(12, weight: .semibold).lineLimit(1)
+                                                Text(item.detail).scaledFont(9).foregroundStyle(.secondary).lineLimit(1)
+                                            }
+                                            Spacer(minLength: 8)
+                                            Text("\(item.score)")
+                                                .scaledFont(21, weight: .bold).monospacedDigit().foregroundStyle(item.color)
+                                            Text(item.action)
+                                                .scaledFont(10, weight: .semibold).foregroundStyle(item.color)
+                                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                                .background(item.color.opacity(0.12), in: Capsule())
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    if item.id != intradayOpportunities.last?.id { Divider() }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("值不值得买 · 本机规则评分")
+                                        .scaledFont(13, weight: .bold)
+                                    if let best = intradayOpportunities.first {
+                                        Text("\(displayName(best.quote))  ·  \(best.score) 分  ·  \(best.action)")
+                                            .scaledFont(11, weight: .medium)
+                                            .foregroundStyle(best.color)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer(minLength: 6)
                                 if let date = store.intradayQuoteDate {
                                     Text(date.formatted(date: .omitted, time: .shortened))
                                         .scaledFont(10).foregroundStyle(.secondary)
                                 }
                             }
-                            Text("基于技术面、仓位与溢价，不自动下单。")
-                                .scaledFont(10).foregroundStyle(.secondary)
-                            ForEach(intradayOpportunities) { item in
-                                Button {
-                                    chartTarget = Holding(code: item.quote.code, name: item.quote.name, quantity: 0,
-                                                          cost: 0, current: item.quote.price, kind: .etf,
-                                                          marketUpdatedAt: item.quote.updatedAt)
-                                } label: {
-                                    HStack(spacing: 9) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(displayName(item.quote)).scaledFont(12, weight: .semibold).lineLimit(1)
-                                            Text(item.detail).scaledFont(9).foregroundStyle(.secondary).lineLimit(1)
-                                        }
-                                        Spacer(minLength: 8)
-                                        Text("\(item.score)")
-                                            .scaledFont(21, weight: .bold).monospacedDigit().foregroundStyle(item.color)
-                                        Text(item.action)
-                                            .scaledFont(10, weight: .semibold).foregroundStyle(item.color)
-                                            .padding(.horizontal, 6).padding(.vertical, 3)
-                                            .background(item.color.opacity(0.12), in: Capsule())
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                if item.id != intradayOpportunities.last?.id { Divider() }
-                            }
+                            .contentShape(Rectangle())
                         }
                         .toneCard(store.effectiveAccentColor, isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
                     }
@@ -571,7 +582,7 @@ struct DashboardView: View {
             } }
             .sheet(isPresented: $showAdd) { WatchEditor() .themedSheetBackground() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() .themedSheetBackground() }
-            .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
+            .fullScreenCover(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
             .sheet(item: $indexDetailTarget) { index in IndexDetailView(index: index).themedSheetBackground() }
             .alert("新建分组", isPresented: groupEditorBinding) {
                 TextField("分组名", text: $groupDraft)
@@ -1451,7 +1462,7 @@ struct HoldingsView: View {
             .sheet(item: $dcaTarget) { FundDCAPlanEditor(holding: $0) .themedSheetBackground() }
             .sheet(item: $feePolicyTarget) { FundFeePolicyEditor(fund: $0) .themedSheetBackground() }
             .sheet(item: $feeReconciliationTarget) { FundFeeReconciliationEditor(transaction: $0) .themedSheetBackground() }
-            .sheet(item: $marketChartTarget) { MarketChartView(holding: $0) .themedSheetBackground() }
+            .fullScreenCover(item: $marketChartTarget) { MarketChartView(holding: $0) .themedSheetBackground() }
             .sheet(item: $alertTarget) { QuoteAlertEditor(initialCode: $0.code) .themedSheetBackground() }
             .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() .themedSheetBackground() }
             .sheet(isPresented: $showFundQuant) { FundQuantView() .themedSheetBackground() }
@@ -2732,7 +2743,14 @@ struct FundNAVHistoryView: View {
     @State private var selectedDate: String?
 
     private var points: [FundNAVPoint] {
-        store.data.fundNAVHistory.filter { $0.code == fund.code }.sorted { $0.date < $1.date }
+        // 旧备份可能把同一天净值重复导入。折叠成每日一条，避免 Charts
+        // 收到重复 Identifiable ID 后出现连线/点选错乱。
+        let byDate = store.data.fundNAVHistory
+            .filter { $0.code == fund.code && $0.nav.isFinite && $0.nav > 0 }
+            .reduce(into: [String: FundNAVPoint]()) { result, point in
+                result[point.date] = point
+            }
+        return byDate.values.sorted { $0.date < $1.date }
     }
     private var chartPoints: [FundNAVPoint] {
         guard rangeDays > 0 else { return points }
@@ -2769,15 +2787,60 @@ struct FundNAVHistoryView: View {
                         Picker("时间范围", selection: $rangeDays) {
                             Text("1月").tag(30); Text("3月").tag(90); Text("半年").tag(180); Text("1年").tag(365); Text("全部").tag(0)
                         }.pickerStyle(.segmented)
-                        if let selectedDate, let point = chartPoints.first(where: { $0.date == selectedDate }) {
-                            LabeledContent("选中日期净值", value: "\(selectedDate) · \((point.nav).num(4))")
+                        if let first = chartPoints.first, let latest = chartPoints.last {
+                            let change = latest.nav - first.nav
+                            let changePercent = first.nav > 0 ? change / first.nav * 100 : 0
+                            HStack(alignment: .center, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("区间最新净值").font(.caption).foregroundStyle(.secondary)
+                                    Text(latest.nav.num(4)).font(.title2.weight(.bold)).monospacedDigit()
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 3) {
+                                    Text("\(change.directionMark()) \(change.num(4))")
+                                        .font(.subheadline.weight(.semibold)).monospacedDigit()
+                                        .foregroundStyle(PnLColor.of(change))
+                                    Text("\(changePercent.directionMark()) \(changePercent.pct(2))")
+                                        .font(.caption).monospacedDigit().foregroundStyle(PnLColor.of(change))
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            HStack(spacing: 4) {
+                                Text(first.date)
+                                Spacer(minLength: 4)
+                                Text("\(chartPoints.count) 个净值点")
+                                Spacer(minLength: 4)
+                                Text(latest.date)
+                            }
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
                         }
-                        Chart(chartPoints) { point in
-                            LineMark(x: .value("日期", point.date), y: .value("单位净值", point.nav))
-                                .interpolationMethod(.linear).lineStyle(StrokeStyle(lineWidth: 2))
-                                .foregroundStyle(Color.accentColor)
-                            AreaMark(x: .value("日期", point.date), yStart: .value("区间低点", chartDomain.lowerBound), yEnd: .value("单位净值", point.nav))
-                                .foregroundStyle(Color.accentColor.opacity(0.10))
+                        if let selectedDate, let point = chartPoints.first(where: { $0.date == selectedDate }) {
+                            HStack {
+                                Text("选中")
+                                Spacer()
+                                Text("\(selectedDate) · \(point.nav.num(4))")
+                                    .fontWeight(.semibold).monospacedDigit()
+                            }
+                            .font(.caption)
+                        }
+                        Chart {
+                            ForEach(chartPoints) { point in
+                                AreaMark(x: .value("日期", point.date), yStart: .value("区间低点", chartDomain.lowerBound), yEnd: .value("单位净值", point.nav))
+                                    .foregroundStyle(Color.accentColor.opacity(0.08))
+                                LineMark(x: .value("日期", point.date), y: .value("单位净值", point.nav), series: .value("曲线", "单位净值"))
+                                    .interpolationMethod(.linear)
+                                    .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            if let selectedDate, let point = chartPoints.first(where: { $0.date == selectedDate }) {
+                                RuleMark(x: .value("选中日期", selectedDate))
+                                    .foregroundStyle(Color.secondary.opacity(0.55))
+                                    .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+                                PointMark(x: .value("选中日期", selectedDate), y: .value("选中净值", point.nav))
+                                    .foregroundStyle(Color.accentColor)
+                                    .symbolSize(48)
+                            }
                         }
                         .chartYScale(domain: chartDomain)
                         .chartXAxis {
@@ -2791,8 +2854,20 @@ struct FundNAVHistoryView: View {
                                 }
                             }
                         }
-                        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
-                        .frame(height: 280)
+                        .chartYAxis {
+                            AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                                AxisGridLine().foregroundStyle(Color.primary.opacity(0.06))
+                                AxisValueLabel {
+                                    if let nav = value.as(Double.self) {
+                                        Text(nav.num(4)).font(.system(size: 9, design: .rounded)).monospacedDigit()
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: 230)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 10)
+                        .background(Color.secondary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
                         .chartXSelection(value: $selectedDate)
                         .accessibilityLabel("\(fund.name)历史单位净值曲线")
                     }
@@ -3552,7 +3627,9 @@ struct ETFIncomeCalendarView: View {
         let next = calendar.date(byAdding: .month, value: 1, to: monthDate) ?? monthDate
         return formatted(calendar.date(byAdding: .day, value: -1, to: next) ?? next, format: "yyyy-MM-dd")
     }
-    private var dayByDate: [String: ETFIncomeDay] { Dictionary(uniqueKeysWithValues: days.map { ($0.date, $0) }) }
+    private var dayByDate: [String: ETFIncomeDay] {
+        days.reduce(into: [String: ETFIncomeDay]()) { $0[$1.date] = $1 }
+    }
     private var gridDates: [String?] {
         guard let first = parseDay(startDay), let count = calendar.range(of: .day, in: .month, for: first)?.count else { return [] }
         let weekday = calendar.component(.weekday, from: first)

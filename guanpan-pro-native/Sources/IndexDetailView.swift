@@ -171,7 +171,7 @@ struct IndexDetailView: View {
                         .stroke(gridColor, style: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
 
                         linePath(closes, size: size, lo: lo, hi: hi)
-                            .stroke(tone, style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
+                            .stroke(tone, style: StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
                     }
                 }
                 .frame(height: 168)
@@ -183,8 +183,11 @@ struct IndexDetailView: View {
                     ZStack(alignment: .bottomLeading) {
                         ForEach(Array(volumes.enumerated()), id: \.offset) { item in
                             let height = size.height * CGFloat(item.element / maxVolume)
+                            let rising = item.offset == 0
+                                ? minutes[item.offset].price >= base
+                                : minutes[item.offset].price >= minutes[item.offset - 1].price
                             Rectangle()
-                                .fill(tone.opacity(0.35))
+                                .fill((rising ? Color.red : Color.green).opacity(0.55))
                                 .frame(width: max(0.6, step * 0.72), height: max(0.5, height))
                                 .offset(x: step * CGFloat(item.offset) + step * 0.14,
                                         y: size.height - max(0.5, height))
@@ -445,7 +448,7 @@ struct IndexDetailView: View {
         async let minuteResult = store.fetchIndexMinutes(quote: index)
         async let barResult = store.fetchIndexDailyBars(quote: index, count: 320)
         let (minuteBars, dailyBars) = await (minuteResult, barResult)
-        minutes = minuteBars
+        minutes = minuteBars.sorted { $0.timestamp < $1.timestamp }
         bars = dailyBars
         isLoading = false
 

@@ -57,7 +57,7 @@ struct IntradayCompanionView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
-                Section("AI 情景陪伴") {
+                Section("AI 情景解读（点按分析）") {
                     Button {
                         Task { await explainWithAI() }
                     } label: {
@@ -72,7 +72,7 @@ struct IntradayCompanionView: View {
                     if !aiResult.isEmpty {
                         AIFormattedResultView(text: aiResult, accent: store.effectiveAccentColor)
                     }
-                    Text("模型只能给“回暖 / 继续走弱”的条件化情景和失效信号，不能可靠预言下午方向；App 不会自动下单。")
+                    Text("本机规则会随行情刷新复核；大模型只在你点按时分析，提供“回暖 / 继续走弱”的条件情景和失效信号，不能可靠预言下午方向；App 不会自动下单。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

@@ -466,7 +466,7 @@ struct FundDailyPerformance: Identifiable {
 
 /// Locally captured or imported one-minute observations. These are market data,
 /// never portfolio transactions. `day` uses Asia/Shanghai calendar dates.
-struct IntradayBar: Codable, Identifiable {
+struct IntradayBar: Codable, Identifiable, Sendable {
     var id: String { "\(code)-\(timestamp.timeIntervalSince1970)" }
     var code: String
     var timestamp: Date

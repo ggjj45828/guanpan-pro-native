@@ -220,13 +220,16 @@ extension PortfolioStore {
     func gridSuitabilityRanking() -> [GridSuitability] {
         var seen: Set<String> = []
         var items: [(code: String, name: String, price: Double, onExchange: Bool)] = []
-        for quote in data.quotes where GridSuitabilityEngine.isTradableCode(quote.code) {
-            guard seen.insert(quote.code).inserted else { continue }
-            items.append((quote.code, quote.name, quote.price, true))
-        }
+        // 持仓类型是本机最可靠的品种来源：先放持仓，避免代码刚好同时出现在
+        // 自选报价里时，把场外基金误判成场内可交易品种。
         for holding in data.holdings {
             guard seen.insert(holding.code).inserted else { continue }
             items.append((holding.code, holding.name, holding.current, holding.kind == .etf))
+        }
+        // Quote 只表示行情可查，不一定代表可网格交易；至少要求标准六位 ASCII 数字代码。
+        for quote in data.quotes where GridSuitabilityEngine.isTradableCode(quote.code) {
+            guard seen.insert(quote.code).inserted else { continue }
+            items.append((quote.code, quote.name, quote.price, true))
         }
         return items.map { item in
             GridSuitabilityEngine.evaluate(code: item.code, name: item.name,

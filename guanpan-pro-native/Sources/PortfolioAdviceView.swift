@@ -45,7 +45,11 @@ struct PortfolioAdviceView: View {
         }
 
         let funds = store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
-        let snapshots = Dictionary(uniqueKeysWithValues: store.data.fundConstituentSnapshots.map { ($0.code, $0) })
+        // Imports may contain multiple reports per fund; use the newest report.
+        let snapshots = store.data.fundConstituentSnapshots.reduce(into: [String: FundConstituentSnapshot]()) { result, snapshot in
+            if let existing = result[snapshot.code], existing.asOf > snapshot.asOf { return }
+            result[snapshot.code] = snapshot
+        }
         if funds.count > 1 {
             for leftIndex in 0..<(funds.count - 1) {
                 for rightIndex in (leftIndex + 1)..<funds.count {

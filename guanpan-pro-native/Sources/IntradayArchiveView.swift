@@ -51,6 +51,16 @@ struct IntradayArchiveView: View {
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
+    private var priceLineColor: Color {
+        switch store.data.intradayLineColorMode {
+        case .automatic: return .primary
+        case .white: return .white
+        case .black: return .black
+        case .upDown:
+            guard let first = bars.first, let last = bars.last else { return .primary }
+            return last.price >= first.price ? .red : .green
+        }
+    }
 
     private var instruments: [Instrument] {
         var names: [String: String] = [:]
@@ -80,6 +90,17 @@ struct IntradayArchiveView: View {
         store.intradayBars
             .filter { $0.code == selectedCode && $0.day == selectedDay }
             .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private var chartTimeDomain: ClosedRange<Date>? {
+        guard let first = bars.first else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        guard let start = formatter.date(from: "\(first.day) 09:30"),
+              let end = formatter.date(from: "\(first.day) 15:00") else { return nil }
+        return start...end
     }
 
     private var average: [AveragePoint] {
@@ -219,14 +240,18 @@ struct IntradayArchiveView: View {
 
                             Chart {
                                 ForEach(bars) { point in
-                                    LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
-                                        .foregroundStyle(store.effectiveAccentColor)
+                                    AreaMark(x: .value("时间", point.timestamp), yStart: .value("基线", priceDomain.lowerBound), yEnd: .value("价格", point.price), series: .value("主图序列", "价格"))
+                                        .foregroundStyle(priceLineColor.opacity(0.08))
+                                        .interpolationMethod(.linear)
+                                    LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price), series: .value("主图序列", "价格"))
+                                        .foregroundStyle(priceLineColor)
+                                        .lineStyle(StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
                                         .interpolationMethod(.linear)
                                 }
                                 ForEach(average) { point in
-                                    LineMark(x: .value("时间", point.time), y: .value("均价", point.value))
+                                    LineMark(x: .value("时间", point.time), y: .value("均价", point.value), series: .value("主图序列", "均价"))
                                         .foregroundStyle(Color.orange)
-                                        .lineStyle(StrokeStyle(lineWidth: 1.2))
+                                        .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
                                 }
                                 ForEach(tradePoints) { trade in
                                     PointMark(x: .value("交易时间", trade.time), y: .value("成交价", trade.price))
@@ -251,7 +276,9 @@ struct IntradayArchiveView: View {
                             }
                             .frame(height: 260)
                             .chartYScale(domain: priceDomain)
+                            .chartXScale(domain: chartTimeDomain ?? (first.timestamp...last.timestamp))
                             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
+                            .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
                             .chartXSelection(value: $selectedTime)
 
                             HStack(spacing: 14) {
@@ -268,21 +295,37 @@ struct IntradayArchiveView: View {
                             .pickerStyle(.segmented)
 
                             if subchart == .volume {
-                                Chart(bars.filter { $0.volume != nil }) { point in
-                                    BarMark(x: .value("时间", point.timestamp), y: .value("成交量", point.volume ?? 0))
-                                        .foregroundStyle(point.price >= (bars.first?.price ?? point.price) ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
+                                Chart {
+                                    ForEach(bars.indices, id: \.self) { index in
+                                        let point = bars[index]
+                                        if let volume = point.volume, volume > 0 {
+                                            BarMark(x: .value("时间", point.timestamp), y: .value("成交量", volume))
+                                                .foregroundStyle(volumeColor(at: index).opacity(0.78))
+                                                .cornerRadius(1)
+                                        }
+                                    }
                                 }
                                 .frame(height: 110)
+                                .chartXScale(domain: chartTimeDomain ?? (first.timestamp...last.timestamp))
                                 .chartXAxis(.hidden)
                             } else {
                                 Chart(macd) { point in
                                     BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram))
-                                        .foregroundStyle(point.histogram >= 0 ? Color.red : Color.green)
-                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif)).foregroundStyle(Color.primary)
-                                    LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea)).foregroundStyle(Color.orange)
+                                        .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.76) : Color.green.opacity(0.76))
+                                        .cornerRadius(1)
+                                    RuleMark(y: .value("零轴", 0))
+                                        .foregroundStyle(Color.secondary.opacity(0.45))
+                                        .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
+                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
+                                        .foregroundStyle(Color.blue)
+                                        .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
+                                    LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
+                                        .foregroundStyle(Color.orange)
+                                        .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
                                 }
                                 .frame(height: 110)
                                 .chartYScale(domain: macdDomain)
+                                .chartXScale(domain: chartTimeDomain ?? (first.timestamp...last.timestamp))
                                 .chartXAxis(.hidden)
                             }
 
@@ -347,6 +390,11 @@ struct IntradayArchiveView: View {
     private func selectLatestDay() {
         selectedDay = days.first ?? ""
         selectedTime = nil
+    }
+
+    private func volumeColor(at index: Int) -> Color {
+        guard bars.indices.contains(index), index > 0 else { return .secondary }
+        return bars[index].price >= bars[index - 1].price ? .red : .green
     }
 
     private func expectedPoints(for code: String) -> Int? {

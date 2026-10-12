@@ -53,7 +53,8 @@ enum GridSuitabilityEngine {
     /// 是否可交易的场内代码（6 位数字，且带交易所基金/证券前缀特征）。
     /// 指数代码（sh000001 / usIXIC 等）不可交易，不参与评估。
     static func isTradableCode(_ code: String) -> Bool {
-        code.count == 6 && code.allSatisfy(\.isNumber)
+        // 用 ASCII 字节检查，避免全角数字等 Unicode 数字被误认为行情代码。
+        code.utf8.count == 6 && code.utf8.allSatisfy { (48...57).contains($0) }
     }
 
     /// 是否 ETF 代码（沪市 51/56/58、深市 15/16/18/159 开头等）。

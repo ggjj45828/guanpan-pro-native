@@ -47,17 +47,19 @@ enum PortraitEngine {
     static func compute(data: PortfolioData, totalAsset: Double) -> AccountPortrait {
         var out = AccountPortrait()
         out.hasAccountData = !data.holdings.isEmpty || data.cash > 0 || !data.snapshots.isEmpty
+            || !data.ledger.isEmpty || !data.fundTransactions.isEmpty || !data.fundDCAPlans.isEmpty
 
         // ---- 交易样本：ETF 台账 + 基金流水（分红不算交易；自动定投单独标记）----
         let etfBuys = data.ledger.filter { $0.side == .buy }
         let etfSells = data.ledger.filter { $0.side == .sell }
         let fundBuys = data.fundTransactions.filter { $0.side == .buy }
         let fundSells = data.fundTransactions.filter { $0.side == .sell }
-        let dcaCount = data.fundTransactions.filter { $0.isAutomaticDCA == true }.count
-            + data.fundDCAPlans.filter { $0.enabled }.count
+        // 已执行定投流水属于交易样本；启用中的计划只是计划，不能当作已发生交易。
+        let executedDcaCount = data.fundTransactions.filter { $0.isAutomaticDCA == true && $0.side != .dividend }.count
+        let activeDcaPlanCount = data.fundDCAPlans.filter { $0.enabled }.count
         let manualTrades = etfBuys.count + etfSells.count
             + fundBuies(fundBuys) + fundSells.count
-        out.sampleSize = manualTrades + dcaCount
+        out.sampleSize = manualTrades + executedDcaCount
 
         // ---- 交易跨度（月）----
         var dates: [Date] = data.ledger.map(\.date)
@@ -102,7 +104,8 @@ enum PortraitEngine {
         } else if out.sampleSize > 0 {
             out.tags.append(PortraitTag(text: "低频长线", tone: 1))
         }
-        if dcaCount > 0 { out.tags.append(PortraitTag(text: "定投纪律 \(dcaCount) 笔", tone: 1)) }
+        if executedDcaCount > 0 { out.tags.append(PortraitTag(text: "已执行定投 \(executedDcaCount) 笔", tone: 1)) }
+        if activeDcaPlanCount > 0 { out.tags.append(PortraitTag(text: "定投计划 \(activeDcaPlanCount) 个", tone: 0)) }
         if maxWeight >= 45 {
             out.tags.append(PortraitTag(text: "单仓 \(Int(maxWeight))% · 集中", tone: -1))
         } else if maxWeight > 0 && maxWeight < 20 {
@@ -151,8 +154,11 @@ enum PortraitEngine {
         if let wr = winRate, wr < 40, wins + losses >= 5 {
             lines.append("已实现的卖出里只有 \(Int(wr))% 是盈利的（\(wins) 胜 \(losses) 负）。样本不算大，但值得回看亏损卖出的共同点：是止损太早、追高被套，还是标的本身选错。")
         }
-        if dcaCount > 0 {
-            lines.append("检测到 \(dcaCount) 笔定投记录/计划。定投最大的价值是「纪律」，建议保持固定扣款，不要因为短期涨跌暂停。")
+        if executedDcaCount > 0 {
+            lines.append("账本里有 \(executedDcaCount) 笔已执行定投。定投最大的价值是「纪律」；可以按原计划持续执行，并定期核对计划是否仍符合你的资金安排。")
+        }
+        if activeDcaPlanCount > 0 {
+            lines.append("目前有 \(activeDcaPlanCount) 个启用中的定投计划；这是计划状态，不代表已经扣款。")
         }
         if cashRatio <= 3 && totalAsset > 0 {
             lines.append("现金只剩 \(cashRatio.pct(1))，几乎满仓。留 5–10% 现金不是为了收益，是为了在下跌时有子弹、在急涨时不被迫卖。")
@@ -171,12 +177,12 @@ enum PortraitEngine {
 
         // ---- 偏好建议（写入 InvestmentProfile 用）----
         out.suggestedStyle = perMonth >= 8 ? "day" : perMonth >= 3 ? "swing" : perMonth >= 1 ? "mid" : "long"
-        out.suggestedRisk = (maxWeight >= 40 || cashRatio <= 5) ? "agg" : (maxWeight <= 20 && dcaCount > 0) ? "con" : "bal"
+        out.suggestedRisk = (maxWeight >= 40 || cashRatio <= 5) ? "agg" : (maxWeight <= 20 && (executedDcaCount > 0 || activeDcaPlanCount > 0)) ? "con" : "bal"
         out.suggestedMaxPosition = min(80, max(10, (maxWeight / 10).rounded(.up) * 10 + 10))
         out.suggestedHorizon = perMonth >= 8 ? "数天" : perMonth >= 3 ? "1-3个月" : perMonth >= 1 ? "3-6个月" : "1年以上"
         out.inferredMethod = perMonth >= 8
             ? "系统观察：高频手动交易，注意费用与情绪化下单。"
-            : dcaCount > 0 && perMonth < 1
+            : (executedDcaCount > 0 || activeDcaPlanCount > 0) && perMonth < 1
             ? "系统观察：低频 + 定投为主，很少手动操作。"
             : "系统观察：节奏适中，波段与中线之间。"
         return out
