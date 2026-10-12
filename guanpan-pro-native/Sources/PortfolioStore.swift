@@ -944,10 +944,31 @@ final class PortfolioStore: ObservableObject {
         } catch { nasSyncStatus = "上传失败：\(error.localizedDescription)" }
     }
 
+    /// 应用从 NAS 下载的文档。
+    ///
+    /// 关键安全点：**分时与日 K 走「合并」而不是「整段替换」**。
+    /// 之前这里是 `replaceData(... intradayBars: document.intradayBars)`，会把本机还
+    /// 没上传过的分钟点整段清空 —— 用户明确要求「不要弄丢数据」。现在本机独有的
+    /// 分钟点（远端没有的）会原样保留，与远端同键的（远端为准）覆盖，账本主体仍以
+    /// NAS 为准整段替换（账本冲突由上层 revision 指纹机制裁决，不在这里混）。
     private func applyNASDocument(_ document: NativeSyncDocument) {
         applyingNASData = true
-        replaceData(document.data, intradayBars: document.intradayBars, dailyBars: document.dailyBars)
+        if !document.intradayBars.isEmpty { mergeIntradayBars(document.intradayBars) }
+        if !document.dailyBars.isEmpty { mergeDailyBars(document.dailyBars) }
+        replaceData(document.data)
         applyingNASData = false
+    }
+
+    /// 把远端日 K 合并进本机（按 代码+日期 去重，远端为准）。本机独有的交易日保留。
+    private func mergeDailyBars(_ incoming: [DailyBar]) {
+        var byKey: [String: DailyBar] = [:]
+        for (code, arr) in dailyBars where !arr.isEmpty {
+            for b in arr { byKey["\(code)|\(b.date)"] = b }
+        }
+        for b in incoming { byKey["\(b.code)|\(b.date)"] = b }
+        let grouped = Dictionary(grouping: byKey.values, by: \.code)
+        dailyBars = grouped.mapValues { $0.sorted { $0.date < $1.date } }
+        saveDailyBars()
     }
 
     private func recordNASSync(revision: Int, document: NativeSyncDocument) {
@@ -1292,26 +1313,46 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
-    /// 指数分时。同样腾讯优先、东财兜底 —— 两边在休市时都会返回**最近交易日**的完整分时，
-    /// 所以周末打开也能看到一条完整曲线，而不是一张空图。
+    /// 指数分时。四源兜底，避免单点失败让详情页变成空图：
+    /// 腾讯（web.ifzq → ifzq 两个主机）→ 东财 trends2 → NAS 行情代理。
+    /// 两边在休市时都会返回**最近交易日**的完整分时，所以周末打开也能看到一条完整曲线。
     func fetchIndexMinutes(quote: MarketIndexQuote) async -> [IntradayBar] {
         let tencent = MarketIndexStore.catalog.first { $0.secid == quote.symbol }?.tencent
-        // `fetchTencentMinutes` 返回的是**非可选**数组，所以这里不能写
-        // `let points = await ...` 去当可选绑定用（会报
-        // 「initializer for conditional binding must have Optional type」）。
         if let tencent {
             let points = await fetchTencentMinutes(symbol: tencent)
             if !points.isEmpty { return points }
         }
-        return await fetchEastmoneyMinutes(secid: quote.symbol)
+        let em = await fetchEastmoneyMinutes(secid: quote.symbol)
+        if !em.isEmpty { return em }
+        // 最后走 NAS 行情代理兜底：直连腾讯/东财都抽风时（例如设备网络对这两个域名
+        // 有限制），经由家里 NAS 的 /api/minute 取同一份腾讯格式数据。
+        if let tencent,
+           let proxied = try? await NASSyncService.marketProxyData(path: "minute",
+               queryItems: [URLQueryItem(name: "code", value: tencent)]) {
+            let bars = parseTencentMinuteData(proxied, symbol: tencent)
+            if !bars.isEmpty { return bars }
+        }
+        return []
     }
 
     /// 腾讯分时（与 `MarketChartView` 同一条接口，抽到 store 里给指数详情页复用）。
+    /// 主机按稳定性排序：`web.ifzq.gtimg.cn` 走 CDN、比裸 `ifzq` 更稳，任一成功即返回。
     func fetchTencentMinutes(symbol: String) async -> [IntradayBar] {
-        guard let url = URL(string: "https://ifzq.gtimg.cn/appstock/app/minute/query?_var=m&code=\(symbol)") else { return [] }
-        var request = URLRequest(url: url); request.timeoutInterval = 12
-        guard let direct = try? await URLSession.shared.data(for: request),
-              let raw = String(data: direct.0, encoding: .utf8),
+        for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
+            guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=m&code=\(symbol)") else { continue }
+            var request = URLRequest(url: url); request.timeoutInterval = 12
+            guard let direct = try? await URLSession.shared.data(for: request),
+                  let bars = parseTencentMinuteData(direct.0, symbol: symbol), !bars.isEmpty else { continue }
+            return bars
+        }
+        return []
+    }
+
+    /// 把腾讯分时接口的整包字节解析成 `[IntradayBar]`。
+    /// 接口返回 `m={...}`（带 `_var=m` 前缀）或裸 JSON，这里都兼容：从第一个 `{` 截到最后一个 `}`。
+    /// `date` 字段实测是 `20261012`（8 位无横线），靠 `normalizedDay` 补成标准格式。
+    func parseTencentMinuteData(_ data: Data, symbol: String) -> [IntradayBar] {
+        guard let raw = String(data: data, encoding: .utf8),
               let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
               let root = try? JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any],
               let nodes = root["data"] as? [String: Any],

@@ -358,13 +358,49 @@ struct MarketChartView: View {
     }
     private var intradayLineColor: Color {
         switch store.data.intradayLineColorMode {
-        case .automatic: return .accentColor
+        // 「自动」按分时图惯例走黑白：浅色黑线、深色白线。
+        // 原来返回 .accentColor（默认蓝），和均价橙、IOPV 紫挤在同一条主图里分不清主线。
+        case .automatic: return .primary
         case .white: return .white
         case .black: return .black
         case .upDown:
-            guard let first = selectedIntradayBars.first, let last = selectedIntradayBars.last else { return .accentColor }
+            guard let first = selectedIntradayBars.first, let last = selectedIntradayBars.last else { return .primary }
             return last.price >= first.price ? .red : .green
         }
+    }
+
+    /// 分时图固定横轴：A 股上午 09:30–11:30、下午 13:00–15:00。
+    ///
+    /// 原来横轴由数据的首尾自动决定：盘中只采到 10:00 时整条线被拉满全宽，
+    /// 看着像"已经收盘"；补全后又突然变扁，每次刷新都在跳。固定域之后
+    /// 任何时候打开都是同一条轴，午休那段没有分钟点自然留空，
+    /// 价格 / MACD / 分时量三个图也才能真正上下对齐。
+    private var intradaySessionDomain: ClosedRange<Date>? {
+        guard let first = selectedIntradayBars.first else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        guard let start = formatter.date(from: "\(shanghaiDay(first.timestamp)) 09:30"),
+              let end = formatter.date(from: "\(shanghaiDay(first.timestamp)) 15:00") else { return nil }
+        return start...end
+    }
+
+    /// 实际给图表用的横轴域：拿不到交易日就用数据自身首尾兜底（导入的历史分时可能跨夜）。
+    private var intradayXDomain: ClosedRange<Date> {
+        if let session = intradaySessionDomain { return session }
+        let bars = selectedIntradayBars
+        return (bars.first?.timestamp ?? .now)...(bars.last?.timestamp ?? .now)
+    }
+
+    /// 分时 MACD 纵轴按数据零轴对称铺开（留 12% 余量）。
+    ///
+    /// 原来纵轴自动拟合：柱子一大就把 DIF/DEA 压成两条贴边的直线，
+    /// 而金叉死叉恰恰都发生在零轴附近 —— 域不对称时交叉点被挤到边缘，根本看不出来。
+    private var minuteMACDYDomain: ClosedRange<Double> {
+        let peak = minuteMACD.flatMap { [abs($0.dif), abs($0.dea), abs($0.histogram)] }.max() ?? 0
+        let bound = (peak.isFinite && peak > 0 ? peak : 1) * 1.12
+        return -bound...bound
     }
     private var priceLevels: PriceLevelSummary? {
         let today = shanghaiDay(.now)
@@ -648,6 +684,7 @@ struct MarketChartView: View {
                                 }
                             }
                             .frame(height: 320)
+                            .chartXScale(domain: intradayXDomain)
                             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
                             Picker("分时副图", selection: $intradaySubchart) {
                                 ForEach(IntradaySubchart.allCases) { item in Text(item.rawValue).tag(item) }
@@ -656,10 +693,20 @@ struct MarketChartView: View {
                                 Chart(minuteMACD) { point in
                                     BarMark(x: .value("时间", point.time), y: .value("MACD柱", point.histogram))
                                         .foregroundStyle(point.histogram >= 0 ? Color.red : Color.green)
-                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif)).foregroundStyle(Color.cyan)
-                                    LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea)).foregroundStyle(Color.orange)
-                                }.frame(height: 120).chartXAxis(.hidden)
-                            } else if minuteBuckets.contains(where: { $0.volume != nil }) {
+                                    LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif))
+                                        .foregroundStyle(Color.cyan).lineStyle(StrokeStyle(lineWidth: 1))
+                                    LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea))
+                                        .foregroundStyle(Color.orange).lineStyle(StrokeStyle(lineWidth: 1))
+                                    // 零轴：金叉死叉都发生在零轴附近，标出来才看得清交叉点
+                                    RuleMark(y: .value("零轴", 0))
+                                        .foregroundStyle(Color.secondary.opacity(0.5))
+                                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                                }
+                                .frame(height: 150)
+                                .chartXScale(domain: intradayXDomain)
+                                .chartYScale(domain: minuteMACDYDomain)
+                                .chartXAxis(.hidden)
+                            } else if selectedIntradayBars.contains(where: { $0.volume != nil }) {
                                 HStack(spacing: 7) {
                                     Text("量均线").font(.caption).foregroundStyle(.secondary)
                                     ForEach([20, 60, 250], id: \.self) { period in
@@ -667,8 +714,11 @@ struct MarketChartView: View {
                                     }
                                 }
                                 Chart {
-                                    ForEach(minuteBuckets.filter { $0.volume != nil }) { point in
-                                        BarMark(x: .value("时间", point.start), y: .value("成交量", point.volume ?? 0))
+                                    // 直接画本机采集的逐分钟成交量（与价格线同源），
+                                    // 不再依赖聚合后的 minuteBuckets —— 之前副图只认聚合桶，
+                                    // 某些来源成交量丢失后整张分时量就不显示。
+                                    ForEach(selectedIntradayBars.filter { $0.volume != nil }) { point in
+                                        BarMark(x: .value("时间", point.timestamp), y: .value("成交量", point.volume ?? 0))
                                             .foregroundStyle(Color.cyan.opacity(0.68))
                                     }
                                     ForEach(intradayVolumeMAs.sorted(), id: \.self) { period in
@@ -679,7 +729,10 @@ struct MarketChartView: View {
                                                 .lineStyle(StrokeStyle(lineWidth: 1.15))
                                         }
                                     }
-                                }.frame(height: 120).chartXAxis(.hidden)
+                                }
+                                .frame(height: 120)
+                                .chartXScale(domain: intradayXDomain)
+                                .chartXAxis(.hidden)
                             }
                             Text("腾讯当日分时 · 前台约 15 秒刷新 · \(minuteStatus)").font(.caption).foregroundStyle(.secondary)
                         } else {
