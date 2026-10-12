@@ -352,6 +352,13 @@ struct FundNAVPoint: Codable, Identifiable {
     var code: String
     var date: String
     var nav: Double
+    /// 这份净值是什么时候取到本机的。
+    ///
+    /// **为什么需要它**：场内基金当晚发布当天净值，净值日 = 当天；美股 / QDII 等境外市场
+    /// 基金净值日天然晚一个交易日（美股周六日、节假日休盘，但净值随后照样公布），
+    /// 净值日 ≠ 当天。所以「今天有没有更新过」只能看采集时间，不能看净值日期是不是今天。
+    /// 旧存档 / 导入数据没有这个字段时为 nil，相关判断退化回按净值日期比。
+    var fetchedAt: Date? = nil
 }
 
 struct FundTransaction: Codable, Identifiable {

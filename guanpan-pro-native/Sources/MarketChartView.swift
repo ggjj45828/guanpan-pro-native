@@ -1728,7 +1728,7 @@ struct MarketChartView: View {
                 (qt[symbol] ?? qt.first(where: { $0.key.caseInsensitiveCompare(symbol) == .orderedSame })?.value) as? [Any]
             }
             if let values = quoteValues,
-               values.count > 63, (values[61] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ETF" {
+               values.count > 44, (values[61] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ETF" {
                 func field(_ index: Int) -> Double? {
                     guard values.indices.contains(index) else { return nil }
                     if let text = values[index] as? String { return Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -1739,10 +1739,18 @@ struct MarketChartView: View {
                     turnoverPercent: field(38), amplitudePercent: field(43),
                     amountYi: amountInTenThousands.map { $0 / 10_000 }, marketCapYi: field(44))
                 intradayETFQuoteSummaryDay = day
-                if let premium = field(63), premium.isFinite, (-50...50).contains(premium),
-                   let last = parsed.last?.price, last.isFinite, last > 0, (1 + premium / 100) > 0 {
-                    let iopv = last / (1 + premium / 100)
-                    if iopv.isFinite, iopv > 0 {
+                // 折溢价率取扩展字段 77（百分数），基金份额参考净值 IOPV 取字段 78。
+                // 旧版取字段 63 —— 那是别的指标：广发纳指ETF 会被算成 4.12%，
+                // 而交易所公布的折溢价率是 14.01%，差了三倍多。
+                // IOPV 直接用字段 78，比「现价 /(1 + 溢价率)」反推更准。
+                let lastPrice = parsed.last?.price
+                if let premium = field(77), premium.isFinite, (-50...50).contains(premium) {
+                    var resolvedIOPV = field(78).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+                    if resolvedIOPV == nil, let last = lastPrice, last.isFinite, last > 0, (1 + premium / 100) > 0 {
+                        let derived = last / (1 + premium / 100)
+                        resolvedIOPV = derived.isFinite && derived > 0 ? derived : nil
+                    }
+                    if let iopv = resolvedIOPV {
                         intradayIOPV = iopv
                         intradayPremiumPercent = premium
                         if let time = parsed.last?.timestamp {

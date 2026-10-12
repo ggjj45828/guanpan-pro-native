@@ -200,22 +200,33 @@ final class PortfolioStore: ObservableObject {
         return intradayPnL / base * 100
     }
 
-    /// 这只场外基金的「当日盈亏」现在能不能算。
+    /// 这只基金是不是「还有更新的净值没拿到」。
     ///
     /// 场外基金净值一天只公布一次，通常要到当晚才出。开市日的白天（以及晚上更新之前），
     /// 库里最新的已公布净值还是上一个净值日的 —— 拿它两点相减算出来的「当日盈亏」
     /// 其实是上一个净值日的，显示出来只会被读成「今天场外赚了/亏了这么多」。
-    /// 所以：**开市日且今日净值尚未公布时不算**，等晚上净值更新后再计入；
+    /// 所以：**开市日内还没取到新净值时不算**，等晚上净值更新后再计入；
     /// 休市日照旧显示最近一个净值日的盈亏（界面会标出净值日）。
+    ///
+    /// **判定看采集时间，不看净值日期**：场内基金当晚发布当天净值，净值日 == 今天；
+    /// 美股 / QDII 这类境外市场基金的净值日天然晚一个交易日（美股周六日、节假日休盘，
+    /// 但净值随后照样公布），周一晚拿到的是周五美股收盘的净值 —— 它已经是最新数据，
+    /// 按「净值日期 < 今天」会把它误判成待更新，境外基金就永远进不了当日盈亏。
     private func isFundNAVPending(_ holding: Holding) -> Bool {
         guard holding.kind == .fund else { return false }
         // 休市日没有「今天的净值」这回事，照旧展示最近一个净值日
         guard !isMarketClosedToday else { return false }
         let today = MarketCalendar.isoDay(.now)
-        guard let latest = data.fundNAVHistory.filter { $0.code == holding.code }.map(\.date).max() else {
-            return false
+        guard let latest = data.fundNAVHistory
+            .filter({ $0.code == holding.code })
+            .max(by: { $0.date < $1.date }) else { return false }
+        // 有新数据就一定是今天取到的：A 股基金白天还没发布当天净值 → 待更新；
+        // 境外基金今晚刚取到上一交易日净值 → 已更新，照算。
+        if let fetchedAt = latest.fetchedAt {
+            return MarketCalendar.isoDay(fetchedAt) < today
         }
-        return latest < today
+        // 旧存档 / 导入数据没有采集时间，退化回按净值日期判断
+        return latest.date < today
     }
 
     /// 单只场外基金「最近一个净值日」的盈亏 = 份额 ×（最新净值 − 上一净值）。
@@ -223,7 +234,9 @@ final class PortfolioStore: ObservableObject {
     /// 场外基金一天只公布一次净值（通常 T+1 晚），没有盘中行情，
     /// 所以它和场内 ETF 永远不可能共用同一个「今天」。这里按净值日单独算，
     /// 界面必须把净值日写出来，否则又会被读成「今天的场外盈亏」。
-    /// **开市日且今日净值未公布时返回 0**（见 `isFundNAVPending`），
+    /// **口径**：只比「最新已公布净值 − 上一个已公布净值」，不掺任何日历日期 ——
+    /// 美股基金周末休盘但净值照常公布，上一期是上一个净值日而不是昨天。
+    /// **开市日内还没取到新净值时返回 0**（见 `isFundNAVPending`），
     /// 此时它也不进 `dayPnLGross`，总资产的当日盈亏只累场内。
     func fundDayPnL(of holding: Holding) -> Double {
         guard holding.kind == .fund, holding.quantity > 0 else { return 0 }
@@ -1897,7 +1910,12 @@ final class PortfolioStore: ObservableObject {
                         return abs(old.nav - point.nav) > 0.00000001
                     }
                     var merged = byDate
-                    for point in points { merged[point.date] = point }
+                    // 网络拿到的点统一盖采集时间：美股 / QDII 净值日晚一个交易日发布，
+                    // 「今天有没有更新」只能靠这个时间戳判断（见 isFundNAVPending）。
+                    let fetchStamp = Date.now
+                    for point in points {
+                        merged[point.date] = FundNAVPoint(code: point.code, date: point.date, nav: point.nav, fetchedAt: fetchStamp)
+                    }
                     data.fundNAVHistory.removeAll { $0.code == code }
                     data.fundNAVHistory.append(contentsOf: merged.values.sorted { $0.date < $1.date }.suffix(1800))
                     if let latest = points.last,
@@ -2171,8 +2189,22 @@ final class PortfolioStore: ObservableObject {
             let pct = Double(fields[32]) ?? 0
             let timestamp = fields.count > 30 ? parseTencentTimestamp(String(fields[30])) : nil
             let securityType = fields.count > 61 ? String(fields[61]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased() : ""
-            let rawPremium = fields.count > 63 ? Double(fields[63]) : nil
-            let premium = securityType == "ETF" ? rawPremium.flatMap { $0.isFinite && (-50...50).contains($0) ? $0 : nil } : nil
+            // 折溢价率在扩展字段 77（百分数），基金份额参考净值 IOPV 在字段 78 ——
+            // 实测 10 只 ETF 全部满足「字段77 = 现价 / 字段78 − 1」。
+            // 旧版取的是字段 63，那是别的指标：广发纳指ETF 被算成 4.12%，
+            // 而交易所公布的折溢价率是 14.01%（国泰纳指ETF 15.85%），差了三倍多。
+            let rawPremium = fields.count > 77 ? Double(fields[77]) : nil
+            let iopv = fields.count > 78 ? Double(fields[78]) : nil
+            let premium: Double? = {
+                guard securityType == "ETF" else { return nil }
+                if let rawPremium, rawPremium.isFinite, (-50...50).contains(rawPremium) { return rawPremium }
+                // 兜底：没有折溢价率字段时按 IOPV 反算 现价 / IOPV − 1
+                if let iopv, iopv.isFinite, iopv > 0, price > 0 {
+                    let computed = (price / iopv - 1) * 100
+                    return computed.isFinite && (-50...50).contains(computed) ? computed : nil
+                }
+                return nil
+            }()
             result[symbol] = (name, price, pct / 100, timestamp, premium)
         }
         return result

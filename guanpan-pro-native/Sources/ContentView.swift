@@ -1598,12 +1598,13 @@ struct HoldingsView: View {
             let dayValue = kind == .fund ? store.fundDayPnL : store.intradayPnL
             let hasDayValue = kind == .fund ? store.hasFundDayPnL : store.hasIntradayPnL
             let dayTitle = kind == .fund ? "净值日盈亏" : "今日盈亏"
-            // 开市日白天今日净值还没公布：场外盈亏不算，也不并进总资产的当日盈亏，
-            // 等晚间净值更新后再出现。这里把状态写清楚，避免拿上一个净值日的数字充当今天。
+            // 开市日白天还没取到新净值：场外盈亏不算，也不并进总资产的当日盈亏，
+            // 等晚间净值更新后再出现。美股 / QDII 净值日晚一个交易日公布，
+            // 取到即算更新（判定见 PortfolioStore.isFundNAVPending），不会被当成未更新。
             let dayDateNote = kind == .fund
                 ? (store.hasFundDayPnL
                     ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
-                    : (store.latestFundNAVDate.map { "净值 \(shortDay($0)) · 今日未更新" } ?? "无净值"))
+                    : (store.latestFundNAVDate.map { "净值 \(shortDay($0)) · 今日未取到" } ?? "无净值"))
                 : "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
             // 网页版的资产汇总卡是彩色区块（.sum）；这里按浮盈亏红绿上色，不再是一片灰白
             let cardTone: Color? = pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil
@@ -1866,27 +1867,41 @@ struct HoldingsView: View {
             .buttonStyle(.bordered).tint(store.effectiveAccentColor)
     }
 
-    /// 从该净值日开始保持彩虹强调，直到它之后的首个交易日 09:30。
+    /// 从「拿到这份最新净值」起保持彩虹强调，直到之后的首个交易日 09:30。
     /// 因而周五晚更新会跨周末保留，周一开市再自动恢复；不是简单到午夜就消失。
+    ///
+    /// **锚点是采集时间而不是净值日期**：美股 / QDII 基金净值日晚一个交易日发布
+    /// （美股周六日、节假日休盘但净值照常公布），周一晚取到周五美股收盘的净值，
+    /// 它同样是「刚刚更新」，卡片框要和 A 股基金一样亮起 —— 只看净值日期会因
+    /// 「周五 ≠ 周一」而漏掉。
     private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
         guard holding.kind == .fund,
-              let latestDay = store.data.fundNAVHistory
+              let latest = store.data.fundNAVHistory
                 .filter({ $0.code == holding.code })
-                .map(\.date).max() else { return false }
+                .max(by: { $0.date < $1.date }) else { return false }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         formatter.dateFormat = "yyyy-MM-dd"
-        guard let navDay = formatter.date(from: latestDay) else { return false }
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = formatter.timeZone
-        var candidate = calendar.date(byAdding: .day, value: 1, to: navDay) ?? navDay
+        // 锚点：优先采集时刻；旧存档没有时间戳时退回净值日当天（保持原有行为）
+        let anchor: Date
+        if let fetchedAt = latest.fetchedAt {
+            anchor = fetchedAt
+        } else {
+            guard let navDay = formatter.date(from: latest.date) else { return false }
+            anchor = navDay
+        }
+        guard now >= anchor else { return false }
+
+        var candidate = calendar.date(byAdding: .day, value: 1, to: anchor) ?? anchor
         for _ in 0..<14 where MarketCalendar.isClosure(candidate, custom: store.data.customMarketHolidays) {
             candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
         }
         guard let nextOpen = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: candidate) else { return false }
-        return now >= navDay && now < nextOpen
+        return now < nextOpen
     }
 
     private var fundFreshNAVGradient: LinearGradient {
