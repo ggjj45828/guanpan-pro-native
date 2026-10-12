@@ -145,9 +145,20 @@ struct IntradayCompanionDecision {
             cash -= trade.amount
         }
         guard cash.isFinite, cash >= -0.01 else { return nil }
+        // 只重建“能被交易流水解释”的持仓。纯手工录入（零买卖/红利流水）的标的，
+        // 反向回放不会改变其份额，会一直以“当前全额”出现在所有过去日期，
+        // 等于凭空判定它“早就满仓持有”——这种不可靠的旧快照必须排除。
+        var tradedIds = Set<String>()
+        for trade in data.ledger where (trade.kind ?? .etf) == .etf && (trade.affectsHoldings ?? true) {
+            tradedIds.insert("etf-\(trade.code)")
+        }
+        for trade in data.fundTransactions where trade.status == .confirmed {
+            tradedIds.insert("fund-\(trade.code)")
+        }
         let positions = quantities.compactMap { key, value -> (String, Holding.Kind, Double)? in
             let prefix = value.0 == .etf ? "etf-" : "fund-"
             guard key.hasPrefix(prefix) else { return nil }
+            guard tradedIds.contains(key) else { return nil }   // 零流水手工持仓不计入历史重建
             return (String(key.dropFirst(prefix.count)), value.0, max(0, value.1))
         }
         return (max(0, cash), positions)

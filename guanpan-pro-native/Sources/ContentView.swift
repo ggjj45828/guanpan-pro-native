@@ -78,7 +78,12 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 store.configureNASSync()
-                Task { await store.archiveTrackedIntraday() }
+                store.recordSnapshot()   // 打开 App 自动记当天快照，免得手动忘
+                Task {
+                    await store.archiveTrackedIntraday()
+                    await store.ensureBackfillHistory()
+                    _ = store.backfillVerifiableSnapshots()
+                }
             }
             else { store.pauseNASSyncPolling() }
         }
@@ -2964,9 +2969,15 @@ struct AssetsView: View {
                     } else {
                         Button("记录/更新今日快照") { store.recordSnapshot() }
                     }
-                    Button { let r = store.backfillVerifiableSnapshots(); snapshotBackfillMessage = r.added > 0 ? "已补全 \(r.added) 个可核实日期，\(r.skipped) 日保留空白。" : "没有可安全补全的日期。" } label: { Label("补全可核实的历史快照", systemImage: "calendar.badge.plus") }
+                    Button {
+                        Task {
+                            await store.ensureBackfillHistory()
+                            let r = store.backfillVerifiableSnapshots()
+                            snapshotBackfillMessage = r.added > 0 ? "已补全 \(r.added) 个可核实日期（用真实历史价重建），\(r.skipped) 日保留空白。" : "没有可安全补全的日期。"
+                        }
+                    } label: { Label("补全可核实的历史快照", systemImage: "calendar.badge.plus") }
                     if !snapshotBackfillMessage.isEmpty { Text(snapshotBackfillMessage).font(.footnote).foregroundStyle(.secondary) }
-                    Text("基金净值未全部公布时标为临时；净值更新后自动重算。漏记日期只用真实历史价格补全。")
+                    Text("打开 App 会自动记录当天快照、并自动补全漏开的日子（用那一天真实的收盘价 / 净值重建）。净值未全部公布时标为临时。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !store.snapshotMonths.isEmpty {
                         Picker("月份", selection: $selectedSnapshotMonth) {

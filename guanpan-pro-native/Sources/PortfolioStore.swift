@@ -450,6 +450,34 @@ final class PortfolioStore: ObservableObject {
         throw lastError
     }
 
+    /// 回补历史快照前，先把相关标的历史价格 / 净值补齐到最早交易日。
+    /// 这样漏开的日子也能用“那一天真实的收盘价 / 净值”重建，而不是因为本地没缓存就跳过。
+    /// 单只标的本地日 K 已达 640 个交易日上限（≈2.5 年）仍够不到最早交易日时不再重复拉取。
+    func ensureBackfillHistory() async {
+        let ledgerDays = data.ledger.map { dayString($0.date) }
+        let flowDays = data.cashFlows.map { dayString($0.date) }
+        let fundDays = data.fundTransactions.map(\.effectiveDate)
+        let allDays = (ledgerDays + flowDays + fundDays).filter { !$0.isEmpty }
+        let earliestDay = allDays.min()
+            ?? dayString(Calendar.current.date(byAdding: .year, value: -2, to: .now)!)
+        // 1) ETF / 证券：本地日 K 没覆盖到最早交易日时向前补齐（最多 640 个交易日）。
+        let etfCodes = Set(data.holdings.filter { $0.kind == .etf }.map(\.code)
+            + data.ledger.filter { ($0.kind ?? .etf) == .etf }.map(\.code))
+        for code in etfCodes where code.count == 6, code.allSatisfy(\.isNumber) {
+            let cached = dailyBars[code] ?? []
+            let reaches = cached.first.map { $0.date <= earliestDay } ?? false
+            let maxed = cached.count >= 640
+            if cached.isEmpty || (!reaches && !maxed) {
+                _ = try? await fetchDailyBars(code: code, count: 640, force: true)
+            }
+        }
+        // 2) 基金：若某只完全没有净值历史，触发一次全量净值刷新（含历史序列）。
+        let fundCodes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code)
+            + data.fundTransactions.map(\.code))
+        let missingFund = fundCodes.contains { code in !data.fundNAVHistory.contains { $0.code == code } }
+        if missingFund { _ = await refreshFundNAVsAndWait() }
+    }
+
     /// 用上证指数日 K 反推交易日历：**有 K 线的日期就是交易日**。
     ///
     /// 这样不用人工维护年度休市表：交易所怎么安排，K 线里就怎么体现 ——
