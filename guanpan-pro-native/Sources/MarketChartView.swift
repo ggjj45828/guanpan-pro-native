@@ -91,16 +91,20 @@ func hollowIntradayMACDColumn(time: Date, value: Double, interval: TimeInterval,
         let right = time.addingTimeInterval(halfWidth)
         let low = min(0, value)
         let high = max(0, value)
+        // 竖边：固定 x、y 取区间 —— `RuleMark(x:yStart:yEnd:)`
         RuleMark(x: .value("柱左边", left), yStart: .value("柱下沿", low), yEnd: .value("柱上沿", high))
             .foregroundStyle(color)
             .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
         RuleMark(x: .value("柱右边", right), yStart: .value("柱下沿", low), yEnd: .value("柱上沿", high))
             .foregroundStyle(color)
             .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
-        RuleMark(y: .value("柱顶边", value), xStart: .value("柱左边", left), xEnd: .value("柱右边", right))
+        // 横边：固定 y、x 取区间 —— `RuleMark(xStart:xEnd:y:)`。
+        // 参数顺序不能写成 `(y:xStart:xEnd:)`，Charts 没有那个重载，会报
+        // "incorrect argument labels in call (have 'y:xStart:xEnd:', expected 'xStart:xEnd:y:')"。
+        RuleMark(xStart: .value("柱左边", left), xEnd: .value("柱右边", right), y: .value("柱顶边", value))
             .foregroundStyle(color)
             .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
-        RuleMark(y: .value("柱基线", 0), xStart: .value("柱左边", left), xEnd: .value("柱右边", right))
+        RuleMark(xStart: .value("柱左边", left), xEnd: .value("柱右边", right), y: .value("柱基线", 0))
             .foregroundStyle(color)
             .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
     }

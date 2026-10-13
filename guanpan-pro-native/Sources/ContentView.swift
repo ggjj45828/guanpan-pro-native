@@ -4348,6 +4348,20 @@ struct DividendCalendarView: View {
         }
     }
 
+    /// 近 12 个月**已核实**派息折成的年现金收入。
+    ///
+    /// `HoldingsView` 里有同名计算属性，但两边都是 private，跨类型访问不到
+    /// （直接引用会报 `cannot find 'etfAnnualDividendIncome' in scope`）。
+    /// 这里按同一口径重算：`recordedAnnualPerShare` 只认已记录的**真实**派息，
+    /// 不做指数股息率外推，与模块概览的"实际派息"一致。
+    private var etfAnnualDividendIncome: Double {
+        store.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.reduce(0) { total, holding in
+            let perShare = ETFDividendProjection.recordedAnnualPerShare(for: holding,
+                                                                        events: store.data.etfDividendEvents)?.amount ?? 0
+            return total + holding.quantity * perShare
+        }
+    }
+
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
