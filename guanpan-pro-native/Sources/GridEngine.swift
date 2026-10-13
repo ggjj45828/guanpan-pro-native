@@ -106,7 +106,7 @@ extension PortfolioStore {
     }
 
     var gridTradingDays: [String] {
-        Array(Set(intradayBars.map(\.day))).sorted(by: >)
+        intradayAllDays
     }
 
     var gridBarCount: Int { intradayBars.count }
@@ -217,7 +217,12 @@ extension PortfolioStore {
     /// 「覆盖合格」的交易日：当天 ≥168 个分钟点，且任意相邻两点间隔 ≤10 分钟。
     /// gridRecommendation 与失败原因诊断共用这一判定，避免两处口径漂移。
     private func reliableIntradayDays(code: String) -> [[IntradayBar]] {
-        let grouped = Dictionary(grouping: intradayBars.filter { $0.code == code }, by: \.day)
+        // 只按该标的已有的交易日取数（走索引），不再对整份分钟档案做 filter。
+        var grouped: [String: [IntradayBar]] = [:]
+        for day in intradayDays(forCode: code) {
+            let dayBars = intradayBars(code: code, day: day)
+            if !dayBars.isEmpty { grouped[day] = dayBars }
+        }
         return grouped.values.compactMap { dayBars in
             let sorted = dayBars.sorted { $0.timestamp < $1.timestamp }
             guard sorted.count >= 168 else { return nil }
@@ -239,7 +244,7 @@ extension PortfolioStore {
         // （判断振幅与震荡性靠日线的 high/low 就够，不需要三天分时）。
         // 只有「分时不够且日线也不够」才真的给不出参数。
         if reliableDays.count < 3 && bars.count < 11 {
-            let totalDays = Set(intradayBars.filter { $0.code == code }.map(\.day)).count
+            let totalDays = intradayDays(forCode: code).count
             let detail = totalDays > reliableDays.count
                 ? "本机共有 \(totalDays) 个有分时记录的交易日，但只有 \(reliableDays.count) 天覆盖合格"
                 : "本机只有 \(reliableDays.count) 个覆盖合格的交易日"
@@ -357,9 +362,9 @@ extension PortfolioStore {
                 price: price, volume: volume, day: dayFormatter.string(from: timestamp)))
         }
         guard !parsed.isEmpty else { throw GridError.invalidCSV }
-        let minuteKeys = Set(parsed.map { "\($0.code)-\(Int($0.timestamp.timeIntervalSince1970 / 60))" })
-        intradayBars.removeAll { minuteKeys.contains("\($0.code)-\(Int($0.timestamp.timeIntervalSince1970 / 60))") }
-        let minuteUnique = Dictionary(parsed.map { ("\($0.code)-\(Int($0.timestamp.timeIntervalSince1970 / 60))", $0) }, uniquingKeysWith: { _, latest in latest })
+        let minuteKeys = Set(parsed.map { Self.intradayMinuteKey(code: $0.code, at: $0.timestamp) })
+        intradayBars.removeAll { minuteKeys.contains(Self.intradayMinuteKey(code: $0.code, at: $0.timestamp)) }
+        let minuteUnique = Dictionary(parsed.map { (Self.intradayMinuteKey(code: $0.code, at: $0.timestamp), $0) }, uniquingKeysWith: { _, latest in latest })
         rebuildIntradayMinuteIndex()
         mergeIntradayBars(Array(minuteUnique.values))
         return minuteUnique.count
@@ -375,7 +380,7 @@ extension PortfolioStore {
         guard !quotes.isEmpty else { return }
         let tz = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = tz; formatter.dateFormat = "yyyy-MM-dd"
-        let minute = Int(time.timeIntervalSince1970 / 60)
+        let minute = Self.minuteStamp(time)
         var added: [IntradayBar] = []
         for (code, price) in quotes where !code.isEmpty && price.isFinite && price > 0 {
             guard !containsIntradayMinute(code: code, at: time) else { continue }
@@ -387,7 +392,7 @@ extension PortfolioStore {
     }
 
     func replayGrid(plan: DayGridPlan, day: String) -> GridReplayResult? {
-        let bars = intradayBars.filter { $0.code == plan.code && $0.day == day }.sorted { $0.timestamp < $1.timestamp }
+        let bars = intradayBars(code: plan.code, day: day)
         guard bars.count >= 10, let first = bars.first, let last = bars.last else { return nil }
         let expected = 240.0
         let coverage = min(1, Double(bars.count) / expected)

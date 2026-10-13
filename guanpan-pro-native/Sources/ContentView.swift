@@ -1414,6 +1414,35 @@ struct HoldingsView: View {
         return "待核实"
     }
 
+    /// 股息率的口径说明：把「这个数是怎么算出来的」直接写出来。
+    ///
+    /// 用户报过「港股通红利股息只有 1.9%」。这个数**通常是分母/口径问题而不是算错**：
+    /// 分子只认本机记到的分红事件（人工修正 / 已核实记录 / 近三年年度均值 / 复权价差推算），
+    /// 本机没记全（月月分红的 ETF 尤其容易只记到几次）就会明显偏低。
+    /// 与其让用户猜，不如把次数、合计金额和覆盖入口都写在卡片上。
+    private func dividendYieldNote(for holding: Holding) -> String? {
+        if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 {
+            return "股息率 = 你手填的每份年分红 \(manual.num(4)) 元 ÷ 现价，不随本机记录变化。"
+        }
+        let source = annualDividendProjection(for: holding)?.source
+        let cutoff = ETFDividendProjection.yearAgoCutoff()
+        let recorded = ETFDividendProjection.mergedEvents(store.data.etfDividendEvents)
+            .filter { $0.code == holding.code && $0.date >= cutoff && $0.isEstimated != true }
+        let total = recorded.reduce(0) { $0 + $1.amountPerShare }
+        let basis: String
+        if source == .recorded || source == .projected {
+            basis = "近 12 个月已核实派息 \(recorded.count) 次、合计 \(total.num(4)) 元/份"
+        } else if source == .historicalAverage {
+            basis = "近 12 个月没有已核实派息，按近三年有派息年度的平均值试算"
+        } else if source == .inferred {
+            basis = "按前复权与不复权收盘价差推算的派息合计（未经公告核实）"
+        } else {
+            basis = "本机已记录的分红事件合计"
+        }
+        return "股息率 = \(basis) ÷ 现价。月月分红的品种若本机只记到几次，这个数就会偏低；"
+            + "可在「编辑持仓 → 每份年分红修正」直接填年化金额覆盖。"
+    }
+
     /// 网页版年股息区会列出主要贡献标的。这里沿用同一口径并只显示前三只，
     /// 避免资产概览被拉得过长；完整逐笔资料仍在「分红日历」。
     private var etfDividendContributors: [Holding] {
@@ -1822,6 +1851,13 @@ struct HoldingsView: View {
                         holdingMetricChip(dividendStatus(for: h), color: dividendStatus(for: h) == "不分红" ? .secondary : .orange)
                     }
                     if hasDay { holdingMetricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
+                }
+                // 把股息率的口径写在卡片上：偏低的常见原因是「月月分红的品种本机只记到几次」，
+                // 而不是算错。用户能据此自己判断要不要去「编辑持仓」覆盖。
+                if dividendYield != nil, let note = dividendYieldNote(for: h) {
+                    Text(note)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             if kind == .fund, let pair = navPairs[h.code] {
@@ -4943,23 +4979,35 @@ struct FundDCAReplayView: View {
     }
 }
 
-/// 带说明的数字输入行：标题、输入框，以及「这个数字是做什么用的、怎么填」。
+/// 带字段名、示例值和说明的数字输入行。
 ///
-/// 中长期网格规划与新增资金加仓试算都用它 —— 这两个表单的字段名本身太短
-/// （「现金预留」「每格幅度」），不写清楚用户只能猜；说明直接贴在输入框下面，
-/// 不用展开帮助页，也不用回头问。
+/// 中长期网格规划与新增资金加仓试算都用它。**字段名必须常显**（不能只当占位符）：
+/// 占位符一填进内容就消失，用户回头根本不知道自己填的那个框是什么；
+/// 所以这里是「字段名在上、示例值当占位符、说明在下面」，
+/// 与「日内网格」的 `gridNumberField` 保持同一套观感。
 struct NumberFieldWithHint: View {
     let title: String
-    let hint: String
+    /// 占位符只放示例值（如 3000 / 1.5 / 0），不放整句话。
+    let example: String
+    let hint: String?
     @Binding var text: String
     let keyboard: UIKeyboardType
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            TextField(title, text: $text).keyboardType(keyboard)
-            Text(hint)
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(title).scaledFont(10, weight: .medium).foregroundStyle(.secondary)
+            TextField(example, text: $text)
+                .keyboardType(keyboard)
+                .font(.system(.subheadline, design: .rounded))
+                .monospacedDigit()
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(Color(uiColor: .secondarySystemBackground).opacity(0.6),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            if let hint {
+                Text(hint)
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -4982,13 +5030,13 @@ struct AddCashSimulationView: View {
         NavigationStack {
             Form {
                 Section("试算参数") {
-                    NumberFieldWithHint(title: "新增资金（元）",
+                    NumberFieldWithHint(title: "新增资金（元）", example: "10000",
                                         hint: "这次打算新投入的金额，只用于试算，不会改动账户余额或持仓。",
                                         text: $cashText, keyboard: .decimalPad)
-                    NumberFieldWithHint(title: "现金预留（%）",
+                    NumberFieldWithHint(title: "现金预留（%）", example: "10",
                                         hint: "从新增资金里留出多少不动，应付下跌补仓和临时用钱。填 10 就是只投 90%；填 0 是全投，满仓时遇到急跌会比较被动。",
                                         text: $reserveText, keyboard: .decimalPad)
-                    NumberFieldWithHint(title: "每笔手续费（元）",
+                    NumberFieldWithHint(title: "每笔手续费（元）", example: "0.10",
                                         hint: "按「一笔」交易的固定费用估算，先扣费用再分配金额；买 N 只就算 N 笔。",
                                         text: $feeText, keyboard: .decimalPad)
                     Button("开始试算") { calculate() }
@@ -6380,31 +6428,33 @@ private struct StrategicGridPlannerView: View {
                         LabeledContent("当前行情", value: selected.price > 0 ? selected.price.num(4) : "暂无")
                         LabeledContent("日线数据", value: "\(store.dailyBars[code]?.count ?? 0) 根")
                     }
-                    NumberFieldWithHint(title: "可用投入资金（元）",
+                    NumberFieldWithHint(title: "计划资金（元）", example: "3000",
                                         hint: "只用于规划买卖档位和每档预算，不会动用真实账户。金额越少，能排下的档位越少。",
                                         text: $capital, keyboard: .decimalPad)
-                    NumberFieldWithHint(title: "目标每格幅度（%，留空自动估算）",
+                    NumberFieldWithHint(title: "每档间距（%）", example: "留空＝按近 14 日波动自动估算",
                                         hint: "相邻两档的价差：填 1.5 表示价格每变动 1.5% 就挂一档。留空则按近 14 日 ATR 自动估算；手动填一般是刻意做得比实测波动更宽或更窄。",
                                         text: $gapPercent, keyboard: .decimalPad)
-                    NumberFieldWithHint(title: "现有持仓（份）",
+                    NumberFieldWithHint(title: "现有持仓（份）", example: "0",
                                         hint: "用来检查上方卖档有没有货可卖；填 0 就只生成买档。这里是「份」不是「手」，1 手 = 100 份，持有 3 手请填 300。",
                                         text: $ownedShares, keyboard: .numberPad)
                     Button("生成中长期网格") { generate() }.disabled(code.isEmpty)
                     if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.orange) }
                 }
                 if let result {
-                    Section("规划摘要") {
-                        LabeledContent("参考现价", value: result.current.num(4))
-                        LabeledContent("计划价格区间", value: "\(result.lower.num(3)) – \(result.upper.num(3))（\(result.count) 档）")
-                        LabeledContent("目标格距", value: "\(result.gridPercent.num(2))%")
-                        LabeledContent("近 14 日 ATR 波动", value: "\(result.atrPercent.num(2))%")
-                        LabeledContent("每个买档预算", value: result.budgetPerBuy.cny(0))
-                        LabeledContent("买档 / 卖档", value: "\(result.buyCount) / \(result.sellCount)")
-                        LabeledContent("卖档预计需要", value: "\(result.requiredShares) 份 · 当前 \(Int(result.ownedShares)) 份")
-                        if let ma = result.ma250 { LabeledContent("MA250趋势参考", value: result.current >= ma ? "现价在线上（MA250 \(ma.num(3))）" : "现价在线下（MA250 \(ma.num(3))）") }
-                        else { LabeledContent("MA250趋势参考", value: "日线不足 250 根") }
+                    Section("生成的计划（对照着看）") {
+                        Text("每行读法：价位 = 挂单价格；右百分比 = 距当前价多远；「约 N 份」= 这一档按预算能买/能卖的份额。现价下方是买入档，上方是卖出档。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        LabeledContent("当前价（参考）", value: result.current.num(4))
+                        LabeledContent("网格覆盖价格", value: "\(result.lower.num(3)) – \(result.upper.num(3))（共 \(result.count) 档）")
+                        LabeledContent("每档间距", value: "\(result.gridPercent.num(2))%")
+                        LabeledContent("近 14 日日均波动（ATR）", value: "\(result.atrPercent.num(2))%")
+                        LabeledContent("每档预算", value: result.budgetPerBuy.cny(0))
+                        LabeledContent("下方买档 / 上方卖档", value: "\(result.buyCount) 档 / \(result.sellCount) 档")
+                        LabeledContent("卖档需要持有", value: "\(result.requiredShares) 份（你填了 \(Int(result.ownedShares)) 份）")
+                        if let ma = result.ma250 { LabeledContent("年线（MA250）", value: result.current >= ma ? "现价在年线上方 \(ma.num(3))" : "现价在年线下方 \(ma.num(3))") }
+                        else { LabeledContent("年线（MA250）", value: "日线不足 250 根，暂无") }
                     }
-                    Section("价位表 · 上方卖档 / 下方买档") {
+                    Section("价位表 · 从上到下＝从高到低") {
                         ForEach(result.levels.reversed()) { level in
                             let isBuy = level.price < result.current
                             HStack {

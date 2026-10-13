@@ -82,8 +82,7 @@ struct IntradayCompanionDecision {
         var dipSetup = false
         var stabilization = false
         let today = companionDay()
-        let minutePoints = intradayBars.filter { $0.code == code && $0.day == today }
-            .sorted { $0.timestamp < $1.timestamp }
+        let minutePoints = intradayBars(code: code, day: today)
         let prices = minutePoints.map(\.price)
         if !prices.isEmpty {
             let avg = prices.reduce(0, +) / Double(prices.count)

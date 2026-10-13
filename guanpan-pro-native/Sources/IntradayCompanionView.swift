@@ -112,8 +112,7 @@ struct IntradayCompanionView: View {
         aiBusy = true
         defer { aiBusy = false }
         let today = shanghaiDay(.now)
-        let points = store.intradayBars.filter { $0.code == holding.code && $0.day == today }
-            .sorted { $0.timestamp < $1.timestamp }.suffix(120)
+        let points = store.intradayBars(code: holding.code, day: today).suffix(120)
         let minuteText = points.map { "\($0.timestamp.formatted(date: .omitted, time: .shortened)) \($0.price.num(4))" }
             .joined(separator: "\n")
         let profile = store.data.investmentProfile

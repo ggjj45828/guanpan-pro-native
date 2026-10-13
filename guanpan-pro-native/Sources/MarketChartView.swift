@@ -304,12 +304,21 @@ struct MarketChartView: View {
             }.sorted { $0.date < $1.date }
         }
     }
+    /// 本机已有分时记录的交易日（倒序）。
+    ///
+    /// 走 store 的「code → 交易日集合」索引，不再 `store.intradayBars.filter{...}`：
+    /// 后者是 O(档案总点数)，而 body 一帧里会取十几次，档案越长滑动越卡。
     private var intradayDays: [String] {
-        Array(Set(store.intradayBars.filter { $0.code == holding.code }.map(\.day))).sorted(by: >)
+        store.intradayDays(forCode: holding.code)
     }
+    /// 当前实际生效的交易日：用户选的还在就用它，否则退回最近一个有记录的交易日。
+    private var intradaySelectedDay: String {
+        let days = intradayDays
+        return days.contains(selectedIntradayDay) ? selectedIntradayDay : (days.first ?? "")
+    }
+    /// 所选交易日的分时点（时间升序）。索引里已经排好序，这里不再重复 sort。
     private var selectedIntradayBars: [IntradayBar] {
-        let day = intradayDays.contains(selectedIntradayDay) ? selectedIntradayDay : (intradayDays.first ?? "")
-        return store.intradayBars.filter { $0.code == holding.code && $0.day == day }.sorted { $0.timestamp < $1.timestamp }
+        store.intradayBars(code: holding.code, day: intradaySelectedDay)
     }
 
     /// 分时均价点：有量就用「累计成交额 / 累计量」的加权均价，
@@ -404,8 +413,10 @@ struct MarketChartView: View {
         // 一旦同一分钟出现两条（备份合并、旧档案重复日期都可能出现），
         // 那个构造器会直接 trap（Fatal error: Duplicate values for key），整个 App 闪退。
         var byMinute: [Int: IntradayIOPVPoint] = [:]
-        for point in archived { byMinute[Int(point.timestamp.timeIntervalSince1970 / 60)] = point }
-        for point in intradayIOPVPoints { byMinute[Int(point.timestamp.timeIntervalSince1970 / 60)] = point }
+        // 分钟键一律走 `PortfolioStore.minuteStamp`：`Int(时间戳 / 60)` 遇到坏时间戳
+        // （非有限值 / 超出 Int 范围）会直接 trap，这种崩法 catch 不到。
+        for point in archived { byMinute[PortfolioStore.minuteStamp(point.timestamp)] = point }
+        for point in intradayIOPVPoints { byMinute[PortfolioStore.minuteStamp(point.timestamp)] = point }
         return byMinute.values.sorted { $0.timestamp < $1.timestamp }
     }
     private var selectedDayETFQuoteSummary: IntradayETFQuoteSummary? {
@@ -424,7 +435,14 @@ struct MarketChartView: View {
         case .minute30: width = 30 * 60
         default: width = 60 * 60
         }
-        let grouped = Dictionary(grouping: selectedIntradayBars) { Int($0.timestamp.timeIntervalSince1970 / width) }
+        let grouped = Dictionary(grouping: selectedIntradayBars) { bar -> Int in
+            let seconds = bar.timestamp.timeIntervalSince1970
+            guard seconds.isFinite else { return 0 }
+            // 先夹到安全范围再转 Int：这里的 `Int(_:)` 以前直接吃原始时间戳，
+            // 备份或 NAS 档案里出现一个坏时间戳就会在打开分时图的瞬间闪退。
+            let clamped = min(max(seconds, -6.0e11), 6.0e11)
+            return Int(clamped / width)
+        }
         return grouped.compactMap { key, rows in
             guard let last = rows.max(by: { $0.timestamp < $1.timestamp }) else { return nil }
             let volumeRows = rows.compactMap(\.volume)
@@ -1320,7 +1338,7 @@ struct MarketChartView: View {
             let refreshed = try await store.fetchAndArchiveLatestIntraday(code: holding.code)
             guard let day = refreshed.last?.day else { throw URLError(.cannotParseResponse) }
             selectedIntradayDay = day
-            let savedCount = store.intradayBars.filter { $0.code == holding.code && $0.day == day }.count
+            let savedCount = store.intradayCount(code: holding.code, day: day)
             minuteStatus = "已更新 \(day) · 本机现有 \(savedCount) 个分钟点"
             refreshFeedback.finish(minuteStatus, succeeded: true)
         } catch {
@@ -1565,7 +1583,11 @@ struct MarketChartView: View {
                     let chartWidth = max(240, UIScreen.main.bounds.width - 64)
                     let pointsPerBar = max(5, chartWidth / CGFloat(max(1, zoomedBarCount)))
                     let unapplied = value.translation.width - chartDragAppliedX
-                    let step = Int(unapplied / pointsPerBar)
+                    // 手势状态异常时 translation 可能大到离谱，`Int(_:)` 超出 Int 范围会直接
+                    // trap；先在安全范围内夹一次再转（拖动的可见效果不受影响）。
+                    let rawStep = unapplied / pointsPerBar
+                    guard rawStep.isFinite else { return }
+                    let step = Int(min(max(rawStep, -1_000_000), 1_000_000))
                     guard step != 0 else { return }
                     // 内容跟手：向右拖查看更早的 K 线，向左拖回最近行情。
                     chartPanOffset = min(maxChartPanOffset, max(0, chartPanOffset + step))
@@ -2148,6 +2170,7 @@ struct MarketChartView: View {
             var root: [String: Any]?
             if let raw = String(data: data, encoding: .utf8),
                let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"),
+               start <= end,
                let decoded = try? JSONSerialization.jsonObject(with: Data(raw[start...end].utf8)) as? [String: Any] {
                 root = decoded
             }

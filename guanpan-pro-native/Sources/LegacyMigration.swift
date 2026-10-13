@@ -566,7 +566,7 @@ enum LegacyMigration {
                 }
             }
         }
-        let unique = Dictionary(rows.map { ("\($0.code)|\(Int($0.timestamp.timeIntervalSince1970 / 60))", $0) }, uniquingKeysWith: { _, later in later })
+        let unique = Dictionary(rows.map { ("\($0.code)|\(PortfolioStore.minuteStamp($0.timestamp))", $0) }, uniquingKeysWith: { _, later in later })
         return unique.values.sorted { $0.timestamp < $1.timestamp }
     }
 

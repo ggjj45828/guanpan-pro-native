@@ -77,38 +77,34 @@ struct IntradayArchiveView: View {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// 一次遍历完成全部标的覆盖统计，避免列表每一行都重新扫描整份多年分钟档案。
+    /// 覆盖统计。从 store 的「code|day」索引直接读，只做 O(标的 × 交易日) 次字典操作。
+    ///
+    /// 旧实现每帧遍历整份分钟档案，并为每个「标的 + 交易日」新建一个 Set 去重 ——
+    /// 档案攒到几十万个点以后，光这一项就够把这一页拖到滑不动。分时点在入库时
+    /// 已经按「代码 + 自然分钟」去过重，所以这里直接取条数即可，不必再建 Set。
     private var coverageByCode: [String: Coverage] {
-        var minutes: [String: [String: Set<Int>]] = [:]
-        var iopvMinutes: [String: [String: Set<Int>]] = [:]
-        for bar in store.intradayBars {
-            let key = normalizedCode(bar.code)
-            let minute = Int(bar.timestamp.timeIntervalSince1970 / 60)
-            minutes[key, default: [:]][bar.day, default: []].insert(minute)
-            if let iopv = bar.iopv, iopv.isFinite, iopv > 0 {
-                iopvMinutes[key, default: [:]][bar.day, default: []].insert(minute)
-            }
-        }
         var result: [String: Coverage] = [:]
-        for (code, days) in minutes {
-            let latest = days.keys.max()
-            result[code] = Coverage(latestDay: latest, latestCount: latest.flatMap { days[$0]?.count } ?? 0,
-                                    latestIOPVCount: latest.flatMap { iopvMinutes[code]?[$0]?.count } ?? 0)
+        for (code, days) in store.intradayCoverageByCode {
+            guard let latest = days.keys.max(), let entry = days[latest] else { continue }
+            result[code] = Coverage(latestDay: latest, latestCount: entry.points,
+                                    latestIOPVCount: entry.iopvPoints)
         }
         return result
     }
 
+    /// 把用户选中的代码解析成档案里实际存的那个写法
+    /// （档案可能存的是 `sh510300`，而选择器里是 `510300`）。
+    private var resolvedCode: String {
+        let target = normalizedCode(selectedCode)
+        return store.intradayCodes.first { normalizedCode($0) == target } ?? selectedCode
+    }
+
     private var days: [String] {
-        Array(Set(store.intradayBars.filter { normalizedCode($0.code) == normalizedCode(selectedCode) }.map(\.day))).sorted(by: >)
+        store.intradayDays(forCode: resolvedCode)
     }
 
     private var bars: [IntradayBar] {
-        let source = store.intradayBars.filter {
-            normalizedCode($0.code) == normalizedCode(selectedCode) && $0.day == selectedDay
-        }
-        let unique = Dictionary(grouping: source) { Int($0.timestamp.timeIntervalSince1970 / 60) }
-        return unique.values.compactMap { $0.max(by: { $0.timestamp < $1.timestamp }) }
-            .sorted { $0.timestamp < $1.timestamp }
+        store.intradayBars(code: resolvedCode, day: selectedDay)
     }
 
     private func normalizedCode(_ value: String) -> String {

@@ -40,6 +40,22 @@ final class PortfolioStore: ObservableObject {
     private var lastIntradayNASSyncAt = Date.distantPast
     /// 分时去重索引。不能每 5 秒为每只标的扫描多年历史；统一按“代码 + 自然分钟”判断。
     private var intradayMinuteKeys: Set<String> = []
+    /// 「分钟键 → 分时点」主索引。
+    ///
+    /// 合并分时时**以它为底改写**，而不是为全部 N 个历史点重新算一遍分钟键：
+    /// 档案只增不减，旧写法每次合并都要新分配 N 个字符串键 + 一张 N 项字典，
+    /// 档案一大就是一次几百 MB 的瞬时内存峰值 —— 打开分时页 / 日 K 时被系统
+    /// 杀进程（闪退）往往就发生在这一步。同时也是「本次合并有没有实质变化」的判定源。
+    private var intradayBarByKey: [String: IntradayBar] = [:]
+    /// `code|day` → 该标的该交易日、按时间升序的分时点。
+    ///
+    /// 详情页 / 分时档案页 / 盘中陪伴 / 网格要「某标某日」的分时一律走
+    /// `intradayBars(code:day:)`，**不要**再对整个 `intradayBars` 做 filter：
+    /// 那是 O(档案总点数)，而 `MarketChartView.body` 一帧里会取十几次，
+    /// 档案越长越卡 —— 这正是「有的页面上下滑动特别卡」的主因。
+    private var intradayBarsByCodeDay: [String: [IntradayBar]] = [:]
+    /// `code` → 已有分时记录的交易日集合（稳定 O(1) 增改，读的时候再排序）。
+    private var intradayDaySetByCode: [String: Set<String>] = [:]
     private var lastAutomaticMarketSaveAt = Date.distantPast
     private var applyingNASData = false
     private var isUndoingSave = false
@@ -417,7 +433,11 @@ final class PortfolioStore: ObservableObject {
         intradayBars = Self.uniqueIntradayBars(loaded)
         rebuildIntradayMinuteIndex()
         // 旧版实时点带秒，与整分钟行情会形成重复。首次载入时压成一条/分钟并重写紧凑文件。
-        if loaded.count != intradayBars.count || loaded.contains(where: { Int($0.timestamp.timeIntervalSince1970) % 60 != 0 }) {
+        // 判定用「归一化后时间戳是否变化」，不再用 `Int(时间戳) % 60` —— 一旦文件里出现
+        // 坏时间戳（非有限值），`Int(_:)` 会直接 trap，整个 App 在启动即闪退。
+        let needsRewrite = loaded.count != intradayBars.count
+            || loaded.contains { Self.normalizedIntradayBar($0).timestamp != $0.timestamp }
+        if needsRewrite {
             saveIntradayBars()
         }
     }
@@ -435,23 +455,132 @@ final class PortfolioStore: ObservableObject {
         return byMinute.values.sorted { $0.timestamp < $1.timestamp }
     }
 
+    /// 把时间戳压到自然分钟。
+    ///
+    /// `Int(_:)` 对 NaN / ±无穷 / 超出 Int 范围的值会**直接 trap**（Swift 的 trap 无处
+    /// catch，必崩）。备份文件、旧网页回填、NAS 档案里只要出现一个坏时间戳，
+    /// 全 App 都会在加载或合并分时的那一下闪退，所以这里先夹一次再转。
+    /// 纯函数，显式 `nonisolated`：备份迁移（`LegacyMigration` 是非主线程隔离的 enum）
+    /// 也要用它，标成 `@MainActor` 会在那边报「调用主线程隔离方法」的编译错误。
+    nonisolated static func minuteStamp(_ time: Date) -> Int {
+        let seconds = time.timeIntervalSince1970
+        guard seconds.isFinite else { return 0 }
+        let clamped = min(max(seconds, -6.0e11), 6.0e11)   // ±19000 年，远超任何真实行情
+        return Int(clamped / 60)
+    }
+
     private static func normalizedIntradayBar(_ bar: IntradayBar) -> IntradayBar {
         var normalized = bar
-        let minute = Int(bar.timestamp.timeIntervalSince1970 / 60)
-        normalized.timestamp = Date(timeIntervalSince1970: TimeInterval(minute * 60))
+        normalized.timestamp = Date(timeIntervalSince1970: TimeInterval(Self.minuteStamp(bar.timestamp) * 60))
         return normalized
     }
 
     static func intradayMinuteKey(code: String, at time: Date) -> String {
-        "\(code)-\(Int(time.timeIntervalSince1970 / 60))"
+        "\(code)-\(Self.minuteStamp(time))"
     }
+
+    /// 「标的 + 交易日」在索引里的键。做成静态方法是为了让调用方和存储共用同一种拼法。
+    static func codeDayKey(code: String, day: String) -> String { "\(code)|\(day)" }
 
     func containsIntradayMinute(code: String, at time: Date) -> Bool {
         intradayMinuteKeys.contains(Self.intradayMinuteKey(code: code, at: time))
     }
 
+    // MARK: - 分时读取（一律走索引，不要扫全量档案）
+
+    /// 某标的某交易日的分时点，按时间升序。O(1) 字典命中 + 已排好序的小数组。
+    func intradayBars(code: String, day: String) -> [IntradayBar] {
+        intradayBarsByCodeDay[Self.codeDayKey(code: code, day: day)] ?? []
+    }
+
+    /// 某标的已有分时记录的交易日，新的在前。
+    func intradayDays(forCode code: String) -> [String] {
+        (intradayDaySetByCode[code] ?? []).sorted(by: >)
+    }
+
+    /// 某标的某交易日已保存的分时点数。
+    func intradayCount(code: String, day: String) -> Int {
+        intradayBarsByCodeDay[Self.codeDayKey(code: code, day: day)]?.count ?? 0
+    }
+
+    /// 本机已有分时记录的全部代码（按档案里存的原始写法，未做 sh/sz 归一化）。
+    /// 数量是「标的数」量级，遍历它做归一化匹配远比遍历全部分钟点便宜。
+    var intradayCodes: [String] { Array(intradayDaySetByCode.keys) }
+
+    /// 本机分时档案里出现过的全部交易日（倒序）。
+    var intradayAllDays: [String] {
+        var union = Set<String>()
+        for days in intradayDaySetByCode.values { union.formUnion(days) }
+        return union.sorted(by: >)
+    }
+
+    /// 把账本里的代码解析成档案里实际使用的那个写法。
+    ///
+    /// 档案可能存 `sh510300`，而自选/持仓里写的是 `510300`（或反过来）。
+    /// 这里只遍历「标的数」量级的代码表做一次归一化比较，
+    /// 取代以前「每只标的都把整份分钟档案扫一遍」的 O(标的 × 总点数) 写法。
+    func resolvedIntradayCode(_ code: String) -> String {
+        if intradayDaySetByCode[code] != nil { return code }
+        let target = intradayCodeKey(code)
+        for candidate in intradayDaySetByCode.keys where intradayCodeKey(candidate) == target {
+            return candidate
+        }
+        return code
+    }
+
+    /// `code` → `day` → （总点数, 带有效 IOPV 的点数）。
+    /// 供分时档案页做覆盖统计：只走 O(标的 × 交易日) 的字典操作，不遍历分钟点。
+    var intradayCoverageByCode: [String: [String: (points: Int, iopvPoints: Int)]] {
+        var result: [String: [String: (points: Int, iopvPoints: Int)]] = [:]
+        for (_, list) in intradayBarsByCodeDay {
+            guard let sample = list.first else { continue }
+            var iopvPoints = 0
+            for bar in list where (bar.iopv ?? 0) > 0 { iopvPoints += 1 }
+            result[sample.code, default: [:]][sample.day] = (list.count, iopvPoints)
+        }
+        return result
+    }
+
+    /// 分时索引的唯一重建入口。**只在整批替换/首次载入时调用**；
+    /// 增量合并请走 `mergeIntradayBars`（它只在真有变化时才会重活一次）。
     func rebuildIntradayMinuteIndex() {
-        intradayMinuteKeys = Set(intradayBars.map { Self.intradayMinuteKey(code: $0.code, at: $0.timestamp) })
+        var byKey: [String: IntradayBar] = [:]
+        byKey.reserveCapacity(intradayBars.count)
+        var byCodeDay: [String: [IntradayBar]] = [:]
+        var daySetByCode: [String: Set<String>] = [:]
+        for bar in intradayBars {
+            byKey[Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)] = bar
+            byCodeDay[Self.codeDayKey(code: bar.code, day: bar.day), default: []].append(bar)
+            daySetByCode[bar.code, default: []].insert(bar.day)
+        }
+        // 每一天最多 242 个点：只对同一天内部排序，不做全量 sort。
+        for key in Array(byCodeDay.keys) {
+            guard let list = byCodeDay[key], list.count > 1 else { continue }
+            byCodeDay[key] = list.sorted { $0.timestamp < $1.timestamp }
+        }
+        intradayBarByKey = byKey
+        intradayBarsByCodeDay = byCodeDay
+        intradayDaySetByCode = daySetByCode
+        intradayMinuteKeys = Set(byKey.keys)
+    }
+
+    /// 本次合并里有没有「值得重建」的实质变化。
+    ///
+    /// 绝大多数合并都是空转：盘中每 15 秒的刷新、重开当天分时页、NAS 两天重叠回补，
+    /// 拿到的分钟点通常与已存的完全一致。旧实现无论有没有变化都要重建整张 N 项字典
+    /// 和 N 个新字符串键 —— 空转也付全价，档案越长越慢、峰值内存越高。
+    private func intradayMergeWouldChange(_ bars: [IntradayBar]) -> Bool {
+        for raw in bars {
+            let bar = Self.normalizedIntradayBar(raw)
+            let key = Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)
+            guard let prior = intradayBarByKey[key] else { return true }
+            let volume = bar.volume ?? prior.volume
+            let iopv = bar.iopv ?? prior.iopv
+            if prior.price != bar.price || prior.volume != volume || prior.iopv != iopv || prior.day != bar.day {
+                return true
+            }
+        }
+        return false
     }
     private func dailyBarsURL() -> URL? {
         guard let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -658,11 +787,15 @@ final class PortfolioStore: ObservableObject {
     }
     func mergeIntradayBars(_ bars: [IntradayBar]) {
         guard !bars.isEmpty else { return }
-        var byMinute: [String: IntradayBar] = [:]
-        for raw in intradayBars {
-            let bar = Self.normalizedIntradayBar(raw)
-            byMinute[Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)] = bar
-        }
+        // ① 空转快速返回：绝大多数合并（盘中 15 秒刷新、重开当天分时页、NAS 两天重叠回补）
+        //    拿到的分钟点与已存的完全一致。旧实现无论有没有变化都要为全部 N 个点重建
+        //    一张字典和 N 个分钟键字符串，档案越长越慢、瞬时内存峰值越高 —— 打开分时 /
+        //    日 K 时被系统杀进程（看起来就是闪退），往往就发生在这一步。
+        //    先判一遍，没变化就 O(本次条数) 直接返回，不动任何状态。
+        guard intradayMergeWouldChange(bars) else { return }
+        // ② 以「分钟键索引」为底改写。`Dictionary` 是值语义，这里先共享存储，
+        //    直到真正写入才复制一次，比重新计算 N 个分钟键字符串便宜得多。
+        var byMinute = intradayBarByKey
         var changed: [IntradayBar] = []
         for raw in bars {
             var bar = Self.normalizedIntradayBar(raw)
@@ -676,6 +809,7 @@ final class PortfolioStore: ObservableObject {
             changed.append(bar)
         }
         guard !changed.isEmpty else { return }
+        intradayBarByKey = byMinute
         intradayBars = byMinute.values.sorted { $0.timestamp < $1.timestamp }
         rebuildIntradayMinuteIndex()
         appendIntradayBars(changed)
@@ -794,7 +928,7 @@ final class PortfolioStore: ObservableObject {
         let providerBars = parsed + eastmoney
         let providerDay = providerBars.map(\.day).max()
         let currentCombinedCount = Set(providerBars.filter { $0.day == providerDay }
-            .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+            .map { Self.minuteStamp($0.timestamp) }).count
         var proxied: [IntradayBar] = []
         if currentCombinedCount < targetCount,
            let proxyBytes = try? await NASSyncService.marketProxyData(
@@ -809,7 +943,7 @@ final class PortfolioStore: ObservableObject {
         guard let latestDay = all.map(\.day).max() else { throw lastError }
         var byMinute: [Int: IntradayBar] = [:]
         for bar in all where bar.day == latestDay {
-            let key = Int(bar.timestamp.timeIntervalSince1970 / 60)
+            let key = Self.minuteStamp(bar.timestamp)
             if var prior = byMinute[key] {
                 if prior.volume == nil { prior.volume = bar.volume }
                 byMinute[key] = prior
@@ -873,10 +1007,9 @@ final class PortfolioStore: ObservableObject {
             guard data.intradayCaptureEnabled else { return (0, 0) }
             let lastRun = UserDefaults.standard.object(forKey: intradayArchiveLastRunKey) as? Date ?? .distantPast
             let incomplete = codes.contains { code in
-                let local = intradayBars.filter { intradayCodeKey($0.code) == intradayCodeKey(code) }
-                let latestDay = local.map(\.day).max()
-                let count = Set(local.filter { $0.day == latestDay }
-                    .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+                let stored = resolvedIntradayCode(code)
+                let latestDay = intradayDays(forCode: stored).first
+                let count = latestDay.map { intradayCount(code: stored, day: $0) } ?? 0
                 return count < expectedIntradayPointCount(now: .now, dataDay: latestDay, code: code)
             }
             let retryInterval: TimeInterval = incomplete ? 5 * 60 : 30 * 60
@@ -919,10 +1052,9 @@ final class PortfolioStore: ObservableObject {
         let pointCount = downloaded.count
         let latestDay = downloaded.map(\.day).max()
         let remaining = codes.filter { code in
-            let local = intradayBars.filter { intradayCodeKey($0.code) == intradayCodeKey(code) }
-            let day = local.map(\.day).max()
-            let count = Set(local.filter { $0.day == day }
-                .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+            let stored = resolvedIntradayCode(code)
+            let day = intradayDays(forCode: stored).first
+            let count = day.map { intradayCount(code: stored, day: $0) } ?? 0
             return count < expectedIntradayPointCount(now: .now, dataDay: day, code: code)
         }.count
         let coverage = latestDay.map { "\($0) · 本次行情取回 \(pointCount) 点 · 本机已保存并去重" }
@@ -1663,7 +1795,7 @@ final class PortfolioStore: ObservableObject {
         // （报 "unable to type-check this expression in reasonable time"），
         // 中间量显式标注类型即可。
         let tencentBars: [IntradayBar] = sources.flatMap { $0 }
-        let tencentMinutes: [Int] = tencentBars.map { Int($0.timestamp.timeIntervalSince1970 / 60) }
+        let tencentMinutes: [Int] = tencentBars.map { Self.minuteStamp($0.timestamp) }
         let tencentCount = Set(tencentMinutes).count
         let targetCount = tencent?.lowercased().hasPrefix("us") == true ? 390 : 242
         // 腾讯已给出完整 A 股交易日时不再等待第二接口；只在有明显缺口时补数。
@@ -1677,7 +1809,7 @@ final class PortfolioStore: ObservableObject {
         let mergedBars: [IntradayBar] = sources.flatMap { $0 }
         let targetDay = mergedBars.map(\.day).max()
         let targetBars = mergedBars.filter { $0.day == targetDay }
-        let targetMinutes: [Int] = targetBars.map { Int($0.timestamp.timeIntervalSince1970 / 60) }
+        let targetMinutes: [Int] = targetBars.map { Self.minuteStamp($0.timestamp) }
         let count = Set(targetMinutes).count
         if count < targetCount, let tencent,
            let bytes = try? await NASSyncService.marketProxyData(path: "minute",
@@ -1688,7 +1820,7 @@ final class PortfolioStore: ObservableObject {
         guard let latestDay = sources.flatMap({ $0 }).map(\.day).max() else { return [] }
         var byMinute: [Int: IntradayBar] = [:]
         for bar in sources.flatMap({ $0 }) where bar.day == latestDay && bar.price.isFinite && bar.price > 0 {
-            let key = Int(bar.timestamp.timeIntervalSince1970 / 60)
+            let key = Self.minuteStamp(bar.timestamp)
             if var prior = byMinute[key] {
                 if prior.volume == nil { prior.volume = bar.volume }
                 byMinute[key] = prior
