@@ -17,37 +17,42 @@ extension BinaryFloatingPoint {
         return "—"
     }
 
+    /// **关闭千分位分组**：份额、成交量、金额一律按「2222」显示，不写成「2,222」。
+    ///
+    /// `.decimal` 样式的 `usesGroupingSeparator` 默认为 true，`zh_CN` 下 4 位数就会插逗号 ——
+    /// 用户看到的「2222 显示成 2,222」就是这个默认值造成的。国内行情/账本界面习惯直接连写，
+    /// 所以在所有展示格式化入口统一关掉，改一处即可覆盖全 App。
+    private func plainNumberFormatter(style: NumberFormatter.Style,
+                                      digits: Int,
+                                      minimumFractionDigits: Int? = nil) -> NumberFormatter {
+        let nf = NumberFormatter()
+        nf.numberStyle = style
+        nf.locale = Locale(identifier: "zh_CN")
+        nf.usesGroupingSeparator = false
+        nf.minimumFractionDigits = minimumFractionDigits ?? digits
+        nf.maximumFractionDigits = digits
+        return nf
+    }
+
     func cny(_ digits: Int = 2) -> String {
         guard Double(self).isFinite else { return "—" }
-        let nf = NumberFormatter()
-        nf.numberStyle = .currency
+        let nf = plainNumberFormatter(style: .currency, digits: digits)
         nf.currencyCode = "CNY"
-        nf.locale = Locale(identifier: "zh_CN")
-        nf.minimumFractionDigits = digits
-        nf.maximumFractionDigits = digits
         return nf.string(from: NSNumber(value: Double(self))) ?? String(format: "%.*f", digits, Double(self))
     }
 
     func num(_ digits: Int) -> String {
         guard Double(self).isFinite else { return "—" }
-        let nf = NumberFormatter()
-        nf.numberStyle = .decimal
-        nf.locale = Locale(identifier: "zh_CN")
-        nf.minimumFractionDigits = digits
-        nf.maximumFractionDigits = digits
+        let nf = plainNumberFormatter(style: .decimal, digits: digits)
         return nf.string(from: NSNumber(value: Double(self))) ?? String(format: "%.*f", digits, Double(self))
     }
 
-    /// 紧凑数字：最多保留 `digits` 位小数，去掉尾随零，带千分位分组。
-    /// 与 `num` 的区别：`num` 固定小数位（"1,234.5000"），`compactNum` 去尾零（"1,234.5" / "1,234"）。
+    /// 紧凑数字：最多保留 `digits` 位小数，去掉尾随零。
+    /// 与 `num` 的区别：`num` 固定小数位（"1234.5000"），`compactNum` 去尾零（"1234.5" / "1234"）。
     func compactNum(_ digits: Int) -> String {
         let v = Double(self)
         guard v.isFinite else { return "—" }
-        let nf = NumberFormatter()
-        nf.numberStyle = .decimal
-        nf.locale = Locale(identifier: "zh_CN")
-        nf.minimumFractionDigits = 0
-        nf.maximumFractionDigits = digits
+        let nf = plainNumberFormatter(style: .decimal, digits: digits, minimumFractionDigits: 0)
         return nf.string(from: NSNumber(value: v)) ?? String(format: "%.*f", digits, v)
     }
 
@@ -56,46 +61,39 @@ extension BinaryFloatingPoint {
     /// 千万不要用 NumberFormatter 的 .percent 样式：那个样式约定输入是 0.0105 这类小数，
     /// 会自动再 ×100。调用方必须传百分数单位；行情模型的 changePct 是小数比例，使用前要乘 100。
     func pct(_ digits: Int) -> String {
-        let nf = NumberFormatter()
-        nf.numberStyle = .decimal
-        nf.locale = Locale(identifier: "zh_CN")
-        nf.minimumFractionDigits = digits
-        nf.maximumFractionDigits = digits
         let v = Double(self)
         guard v.isFinite else { return "—" }
+        let nf = plainNumberFormatter(style: .decimal, digits: digits)
         return (nf.string(from: NSNumber(value: v)) ?? String(format: "%.*f", digits, v)) + "%"
     }
 }
 
 extension Decimal {
-    func cny(_ digits: Int = 2) -> String {
+    /// 与 `BinaryFloatingPoint` 同口径：`usesGroupingSeparator = false`，
+    /// 金额与数量都按「2222」连写，不出现「2,222」。
+    private func plainNumberFormatter(style: NumberFormatter.Style, digits: Int) -> NumberFormatter {
         let nf = NumberFormatter()
-        nf.numberStyle = .currency
-        nf.currencyCode = "CNY"
+        nf.numberStyle = style
         nf.locale = Locale(identifier: "zh_CN")
+        nf.usesGroupingSeparator = false
         nf.minimumFractionDigits = digits
         nf.maximumFractionDigits = digits
+        return nf
+    }
+
+    func cny(_ digits: Int = 2) -> String {
+        let nf = plainNumberFormatter(style: .currency, digits: digits)
+        nf.currencyCode = "CNY"
         return nf.string(from: self as NSDecimalNumber) ?? "\(self)"
     }
 
     func num(_ digits: Int) -> String {
-        let nf = NumberFormatter()
-        nf.numberStyle = .decimal
-        nf.locale = Locale(identifier: "zh_CN")
-        nf.minimumFractionDigits = digits
-        nf.maximumFractionDigits = digits
-        return nf.string(from: self as NSDecimalNumber) ?? "\(self)"
+        plainNumberFormatter(style: .decimal, digits: digits).string(from: self as NSDecimalNumber) ?? "\(self)"
     }
 
     /// 传入值已是百分数（见 Double.pct 的说明），直接加 % 格式化。
     func pct(_ digits: Int) -> String {
-        let nf = NumberFormatter()
-        nf.numberStyle = .decimal
-        nf.locale = Locale(identifier: "zh_CN")
-        nf.minimumFractionDigits = digits
-        nf.maximumFractionDigits = digits
-        let s = nf.string(from: self as NSDecimalNumber)
-        return (s ?? "\(self)") + "%"
+        (plainNumberFormatter(style: .decimal, digits: digits).string(from: self as NSDecimalNumber) ?? "\(self)") + "%"
     }
 }
 

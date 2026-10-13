@@ -2127,7 +2127,11 @@ final class PortfolioStore: ObservableObject {
                             && (newestStoredDate.map { point.date > $0 } ?? (point.date == newestFetchedDate))
                         let isLegacyCurrentDayPoint = point.date == MarketCalendar.isoDay(fetchStamp)
                             && previous?.fetchedAt == nil
-                        let fetchedAt = previous?.fetchedAt ?? ((valueChanged || isNewPublishedPoint || isLegacyCurrentDayPoint) ? fetchStamp : nil)
+                        // 本次确实带来了新净值 / 修正值时才盖章；但盖章用「旧的与新的取较晚」，
+                        // 而不是「旧的一律优先」—— 否则备份 / NAS 存档里那条更早的采集时刻会把
+                        // 今晚刚拿到的更新压掉，卡片永远不会亮起。
+                        let candidateStamp: Date? = (valueChanged || isNewPublishedPoint || isLegacyCurrentDayPoint) ? fetchStamp : nil
+                        let fetchedAt = [previous?.fetchedAt, candidateStamp].compactMap { $0 }.max()
                         let previousSourcePoint = pointIndex > 0 ? points[pointIndex - 1] : nil
                         let observedDelta: Double?
                         if let existingDelta = previous?.observedDelta { observedDelta = existingDelta }

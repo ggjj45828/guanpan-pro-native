@@ -1320,7 +1320,8 @@ struct HoldingsView: View {
     /// 长按菜单删除的确认目标
     @State private var removeTarget: Holding?
     @State private var searchText = ""
-    /// 驱动“最新净值已更新”彩虹强调在下一交易日 09:30 准时恢复普通卡片。
+    /// 驱动“最新净值已更新”彩虹强调。窗口只到采集当天结束，所以每 60 秒推一次时钟，
+    /// 跨过午夜（本地时间）后这一分钟之内就会自动恢复普通卡片。
     @State private var fundFreshnessClock = Date.now
     /// 「最近基金流水」默认收起：10 笔流水加上待核对的估算费能占掉大半屏，
     /// 把持仓卡和基金工具挤到下面。展开状态记在 AppStorage 里，下次打开保持用户选择。
@@ -1764,17 +1765,23 @@ struct HoldingsView: View {
         // 净值对与摊薄已实现盈亏都只算一次，供所有行复用（见 fundNAVPairs / dilutedRealizedSums）。
         let navPairs = fundNAVPairs
         let dilutedRealized = store.dilutedRealizedSums()
+        // 本页全部场外基金里最新的一个净值日。用来标出「哪只还没公布新净值」——
+        // 彩虹框只跟「这只基金自己有没有新净值」有关，落后于组内最新净值日的基金
+        // 不会、也不应该亮，这里把原因直接写在卡片上，不用用户猜。
+        let latestNAVDate = navPairs.values.map(\.latest.date).max()
         if isSearching && rows.isEmpty {
             Text("没有匹配「\(searchQuery)」的持仓")
                 .foregroundStyle(.secondary)
         }
         ForEach(rows) { h in
-            holdingRow(h, navPairs: navPairs, dilutedRealized: dilutedRealized).listRowBackground(Color.clear)
+            holdingRow(h, navPairs: navPairs, latestNAVDate: latestNAVDate, dilutedRealized: dilutedRealized)
+                .listRowBackground(Color.clear)
         }
     }
 
     @ViewBuilder private func holdingRow(_ h: Holding,
                                          navPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)],
+                                         latestNAVDate: String?,
                                          dilutedRealized: [String: Double]) -> some View {
         // 列布局对齐养基宝：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），
         // 市值在名称行右侧，占总资产挪到底部信息行 —— 4 列太挤，3 列是它的可读上限。
@@ -1825,6 +1832,12 @@ struct HoldingsView: View {
                         .font(.caption).foregroundStyle(change >= 0 ? .red : .green)
                 } else {
                     Text("最新净值日期：\(latest.date)").font(.caption).foregroundStyle(.secondary)
+                }
+                // 没亮彩虹的常见原因：这只基金的最新净值日还落后于本组其它基金
+                // （QDII 里美股、全球配置的公布节奏不同，T+1 / T+2 都可能）。
+                if let newest = latestNAVDate, latest.date < newest {
+                    Text("净值日 \(shortDay(latest.date)) · 本组已更新到 \(shortDay(newest))，这只的新净值还没公布；公布当晚卡片才会亮起")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
             // 小屏/大字号下将操作按钮自动换行，避免“基金工具 / 定投 / 编辑”等入口被挤出屏幕。
@@ -1903,41 +1916,30 @@ struct HoldingsView: View {
             .buttonStyle(.bordered).tint(store.effectiveAccentColor)
     }
 
-    /// 从「拿到这份最新净值」起保持彩虹强调，直到之后的首个交易日 09:30。
-    /// 因而周五晚更新会跨周末保留，周一开市再自动恢复；不是简单到午夜就消失。
+    /// 从「拿到这份最新净值」起保持彩虹强调，**只保留到当天结束**。
+    /// 因而周五晚更新只亮周五当晚，周六周日已是普通卡片；下一个交易日晚上公布新净值时再亮。
     ///
     /// **锚点是采集时间而不是净值日期**：美股 / QDII 基金净值日晚一个交易日发布
     /// （美股周六日、节假日休盘但净值照常公布），周一晚取到周五美股收盘的净值，
     /// 它同样是「刚刚更新」，卡片框要和 A 股基金一样亮起 —— 只看净值日期会因
     /// 「周五 ≠ 周一」而漏掉。
+    ///
+    /// 旧实现把窗口拉到「之后首个交易日 09:30」，于是周五晚更新的基金整个周末都在发彩虹，
+    /// 用户反馈「第二天都休市了怎么还是彩虹框」—— 彩虹是「今晚净值刚更新」的即时提示，
+    /// 不是「本机存着这份净值」的状态标记，所以窗口收回到采集当天。
     private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
         guard holding.kind == .fund,
               let latest = store.data.fundNAVHistory
                 .filter({ $0.code == holding.code })
                 .max(by: { $0.date < $1.date }) else { return false }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        formatter.dateFormat = "yyyy-MM-dd"
-
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = formatter.timeZone
-        // 锚点：优先采集时刻；旧存档没有时间戳时退回净值日当天（保持原有行为）
-        let anchor: Date
+        let today = MarketCalendar.isoDay(now)
         if let fetchedAt = latest.fetchedAt {
-            anchor = fetchedAt
-        } else {
-            guard let navDay = formatter.date(from: latest.date) else { return false }
-            anchor = navDay
+            // 采集时刻必须落在今天：昨天的净值即使本机还留着，也不再算「刚刚更新」。
+            return now >= fetchedAt && MarketCalendar.isoDay(fetchedAt) == today
         }
-        guard now >= anchor else { return false }
-
-        var candidate = calendar.date(byAdding: .day, value: 1, to: anchor) ?? anchor
-        for _ in 0..<14 where MarketCalendar.isClosure(candidate, custom: store.data.customMarketHolidays) {
-            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-        }
-        guard let nextOpen = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: candidate) else { return false }
-        return now < nextOpen
+        // 旧存档 / 导入数据没有采集时刻：退化为「净值日本身就是今天」
+        // （A 股基金当晚公布的就是当天净值），不拿昨天的净值日冒充今天更新。
+        return latest.date == today
     }
 
     private var fundFreshNAVGradient: LinearGradient {

@@ -3,11 +3,14 @@ import Foundation
 
 // MARK: - 账户智能画像（对齐网页版「私人顾问 · 画像」）
 //
-// 网页版会「看你的行为，不用你说」：从交易流水里推断交易风格、风险偏好、纪律性，
-// 再把画像喂给大模型做建议。这里做同一件事：
-//   1. 本机规则引擎先行 —— 不配 Key 也能推断画像（零成本、可解释、可审计）；
-//   2. 配了 Key 时可选大模型深度推断 —— 把规则算出的指标发给模型，让它下结论。
-// 所有指标只来自本机账本（ledger / fundTransactions / 快照 / 持仓），不上传任何数据。
+// 网页版会「看你的行为，不用你说」：从交易流水里推断交易风格、风险偏好、纪律性。
+// 这里做同一件事，但把「谁下结论」分得很清楚：
+//   1. 本机规则引擎先行 —— 不配 Key 也能看到一份可解释、可审计的画像（零成本）；
+//   2. 配了 Key 时，**大模型拿原始材料自己生成画像与建议** —— 发给它的是持仓、
+//      交易流水、行情变化这些事实，不是本机算好的结论。给它本机结论再让它「验证
+//      或反驳」，等于把本机规则当标准答案，模型只会顺着复述；所以本机推断出的
+//      风格 / 风险偏好一律不进 prompt。
+// 所有材料只来自本机账本（ledger / fundTransactions / 快照 / 持仓），不上传任何数据。
 
 // MARK: 画像数据模型
 
@@ -192,28 +195,93 @@ enum PortraitEngine {
         buys.filter { $0.isAutomaticDCA != true }.count
     }
 
-    /// 把本机指标拼成大模型提示词（配了 Key 时才发送）
-    static func portraitPrompt(_ p: AccountPortrait, data: PortfolioData, totalAsset: Double) -> String {
-        let fmt: (Double) -> String = { String(format: "%.2f", $0) }
-        let metrics = p.metrics.map { "- \($0.title)：\($0.value)" }.joined(separator: "\n")
-        let holdings = data.holdings.map {
-            "- \($0.name)（\($0.code)）：市值 \(fmt($0.marketValue))，浮盈亏 \(fmt($0.pnl))"
-        }.joined(separator: "\n")
-        let holdingsText = holdings.isEmpty ? "（暂无）" : holdings
-        let inferenceSummary: String
-        if p.sampleSize > 0 {
-            inferenceSummary = "本机规则初步推断（请验证或反驳）：风格「\(p.suggestedStyle)」，风险「\(p.suggestedRisk)」，单仓上限参考 \(Int(p.suggestedMaxPosition))%。"
-        } else {
-            inferenceSummary = "目前没有可用买卖流水，不要推断交易风格或胜率；只根据当前持仓市值与现金比例给出结构性建议。"
+    /// 把**原始材料**发给大模型，让它**自己**生成画像与建议（配了 Key 时才发送）。
+    ///
+    /// 为什么不再发本机结论：先给「你是波段选手 / 风险激进」再让模型「验证或反驳」，
+    /// 等于把本机规则设成了标准答案 —— 模型只会顺着复述，画像是被算出来的，不是被看出来的。
+    /// 现在只发事实：持仓明细、交易流水明细、行情与结构变化，再加一份标注为「素材」的统计。
+    /// 判断留给模型，并强制它逐条引用证据、证据不足时写「样本不足」。
+    ///
+    /// **标 `@MainActor`**：这里要读 `store.data` / `store.indexQuotes` / `store.totalAsset`，
+    /// 而 `PortfolioStore` 是主线程隔离的。调用点 `runAI` 本来就在主线程。
+    @MainActor
+    static func portraitPrompt(_ p: AccountPortrait, store: PortfolioStore) -> String {
+        let data = store.data
+        let totalAsset = store.totalAsset
+
+        // ---- 账户总览 ----
+        let cashRatio = totalAsset > 0 ? data.cash / totalAsset * 100 : 0
+        let overview = "总资产 \(totalAsset.num(2)) 元；持仓 \(data.holdings.count) 只；现金 \(data.cash.num(2)) 元（占总资产 \(cashRatio.num(1))%）。"
+
+        // ---- 持仓明细（带当日涨跌；行情没缓存就如实写「未缓存」，不补数）----
+        let holdingLines = data.holdings.map { h -> String in
+            let weight = totalAsset > 0 ? h.marketValue / totalAsset * 100 : 0
+            let costPct = h.cost > 0 ? (h.current - h.cost) / h.cost * 100 : 0
+            let quote = data.quotes.first { $0.code == h.code }
+            let today = quote.map { "，当日 \($0.changePct >= 0 ? "+" : "")\(($0.changePct * 100).num(2))%" } ?? "，当日行情未缓存"
+            return "- \(h.name)（\(h.code)）\(h.kind == .etf ? "ETF" : "场外基金")：\(h.quantity.compactNum(4)) 份，成本 \(h.cost.num(4))，现价 \(h.current.num(4))\(today)，市值 \(h.marketValue.num(2))，浮盈亏 \(h.pnl.num(2))（\(costPct.num(2))%），占总资产 \(weight.num(1))%"
         }
+        let holdingsBlock = holdingLines.isEmpty ? "（暂无持仓）" : holdingLines.joined(separator: "\n")
+
+        // ---- 交易流水明细（两类各取近 20 笔，按时间倒序）----
+        let ledgerSorted = data.ledger.sorted { $0.date > $1.date }
+        let ledgerLines = ledgerSorted.prefix(20).map { e -> String in
+            "- \(shortDay(e.date)) \(e.side == .buy ? "买入" : "卖出") \(e.name)（\(e.code)）\(e.quantity.compactNum(4)) 份 @ \(e.price.num(4))，金额 \(e.gross.num(2))，费 \(e.fee.num(2))，已实现盈亏 \(e.realizedPnL.num(2))"
+        }
+        let fundTrades = data.fundTransactions.filter { $0.side != .dividend }
+        let fundSorted = fundTrades.sorted { $0.effectiveDate > $1.effectiveDate }
+        let fundLines = fundSorted.prefix(20).map { t -> String in
+            let dcaTag = t.isAutomaticDCA == true ? "（定投）" : ""
+            return "- \(String(t.effectiveDate.prefix(10))) \(t.side == .buy ? "买入" : "卖出")\(dcaTag) \(t.name)（\(t.code)）\(t.amount.num(2)) 元 @ 净值 \(t.nav.num(4))，费 \(t.fee.num(2))，已实现盈亏 \(t.realizedPnL.num(2))"
+        }
+        var tradeParts: [String] = []
+        if !ledgerLines.isEmpty {
+            tradeParts.append("证券 / ETF 台账（近 \(ledgerLines.count) 笔）：\n\(ledgerLines.joined(separator: "\n"))")
+        }
+        if !fundLines.isEmpty {
+            tradeParts.append("场外基金流水（近 \(fundLines.count) 笔，不含分红）：\n\(fundLines.joined(separator: "\n"))")
+        }
+        let tradesBlock = tradeParts.isEmpty ? "（账本里还没有买卖流水）" : tradeParts.joined(separator: "\n")
+
+        // ---- 行情与结构变化：复用首页组合分析那一套素材，口径一致 ----
+        var marketParts: [String] = []
+        if let market = AIContextBuilder.marketSection(store: store) { marketParts.append(market) }
+        if let risk = AIContextBuilder.portfolioRiskSection(store: store) { marketParts.append(risk) }
+        if let tech = AIContextBuilder.technicalSection(store: store, codes: data.holdings.map(\.code)) {
+            marketParts.append(tech)
+        }
+        let marketBlock = marketParts.isEmpty ? "（暂无行情 / 技术面缓存）" : marketParts.joined(separator: "\n")
+
+        // ---- 本机统计：只是素材，明确写清「不是结论」----
+        let metricsBlock = p.metrics.map { "- \($0.title)：\($0.value)" }.joined(separator: "\n")
+        let sampleNote = p.sampleSize > 0
+            ? "以上统计来自本机 \(p.sampleSize) 条交易样本。"
+            : "账本里没有可用的买卖流水 —— 不要推断交易风格、胜率或操作习惯，只分析当前持仓结构。"
+
         return """
-        请基于以下本机账本统计，给出有判断、有因果链的账户诊断，不要把行为指标或持仓逐项念出来。先区分「流水能证明的行为」与「当前结构反映的风险」，再挑出最值得处理的一到两个问题，说明它们为何比其他问题优先。按「行为画像（样本足够时）、关键问题及证据、接下来怎么做、什么信号出现要暂停/复核」组织；每条建议必须写明触发条件、动作和边界。明确区分事实与推断；没有买卖流水时说明无法判断胜率和操作习惯，只分析当前持仓结构。语气直接，不嘲讽，不承诺收益，不编造数据。
-        总资产：\(fmt(totalAsset))，现金 \(fmt(data.cash))。
-        行为指标：
-        \(metrics)
-        当前持仓：
-        \(holdingsText)
-        \(inferenceSummary)
+        你是投资行为分析师。下面是某个个人账户的**原始材料**：持仓、交易流水、行情变化，以及一份由本机规则算出的统计。请你**自己**从中生成这个账户主人的画像和后续建议 —— 画像的结论必须由你得出，不要把下面的统计当成既定结论来复述，也不要只做点评。先区分「流水能证明的事实」与「你的推断」，再下判断。
+
+        【账户总览】
+        \(overview)
+
+        【持仓明细】
+        \(holdingsBlock)
+
+        【交易流水明细】
+        \(tradesBlock)
+
+        【行情与结构变化】
+        \(marketBlock)
+
+        【本机统计（由上面的流水算出，仅供参考的素材，不是结论）】
+        \(metricsBlock)
+        （\(sampleNote)）
+
+        请按下面四段输出，用词直接、不嘲讽、不承诺收益、不编造数据：
+        1. 画像：从交易风格、风险偏好、纪律性、偏好标的（能力圈）、典型行为特征五个方面给判断。每一方面都要引用上面具体的持仓或流水作为证据（写成「因为…所以判断…」）；证据不足的方面明确写「样本不足，无法判断」，不要用含糊措辞带过。
+        2. 关键问题：挑出最值得处理的 1-2 个，说明它们为什么比其他问题优先，以及各自对应上面哪条证据。
+        3. 建议：每条写清「触发条件 / 动作 / 边界」，并说明它针对第 2 段里的哪个问题。
+        4. 复核信号：出现什么情况（数值、行为或市场条件）应该停下来重新评估这份画像。
         """
     }
 }
@@ -251,7 +319,7 @@ struct AccountPortraitView: View {
                 }
                 if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) }.plainCard(isLight: isLight) }
                 Section {
-                    Text("画像只描述你已经发生的行为，不预测市场，也不构成投资建议。所有计算在本机完成；只有你主动点「大模型深度推断」时，上述统计才会发送到你配置的接口。")
+                    Text("画像只描述你已经发生的行为，不预测市场，也不构成投资建议。所有计算在本机完成；只有你主动点「让大模型生成我的画像」时，上面那些持仓、流水与行情材料才会发送到你配置的接口。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -346,7 +414,7 @@ struct AccountPortraitView: View {
 
     private func suggestionSection(_ p: AccountPortrait) -> some View {
         Section {
-            Label("偏好建议", systemImage: "slider.horizontal.3").font(.headline)
+            Label("本机推断的偏好（可一键写入）", systemImage: "slider.horizontal.3").font(.headline)
             LabeledContent("交易风格", value: styleName(p.suggestedStyle))
             LabeledContent("风险偏好", value: riskName(p.suggestedRisk))
             LabeledContent("单标的仓位上限", value: "\(Int(p.suggestedMaxPosition))%")
@@ -371,18 +439,20 @@ struct AccountPortraitView: View {
 
     @ViewBuilder private func aiSection(_ p: AccountPortrait) -> some View {
         Section {
-            Label("大模型复核（可选）", systemImage: "sparkles").font(.headline)
+            Label("AI 生成画像与建议（可选）", systemImage: "sparkles").font(.headline)
+            Text("把持仓、交易流水和行情变化交给大模型，由它自己推断你是什么类型的投资者、存在什么问题、接下来怎么做。上面「系统观察」是本机规则算的，这里是大模型独立生成的，两者不一致时以证据更具体的一方为准。")
+                .font(.footnote).foregroundStyle(.secondary)
             if keySaved {
                 Button {
                     Task { await runAI(p) }
                 } label: {
                     HStack {
                         if aiBusy { ProgressView().padding(.trailing, 4) }
-                        Text(aiBusy ? "正在推断…" : "让大模型验证这份画像")
+                        Text(aiBusy ? "正在生成…" : "让大模型生成我的画像")
                     }
                 }.disabled(aiBusy)
             } else {
-                Text("还没有配置 API 密钥。到「更多 → AI 账户分析」里填好接口与密钥后，这里就能让大模型基于同样的数据做更深入的推断。")
+                Text("还没有配置 API 密钥。到「更多 → AI 账户分析」里填好接口与密钥后，这里就能让大模型基于同样的原始数据自己生成画像与建议。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if !aiResult.isEmpty {
@@ -407,7 +477,7 @@ struct AccountPortraitView: View {
         do {
             let result = try await AIAnalysisService.chat(
                 config: store.data.aiAnalysisConfig,
-                prompt: PortraitEngine.portraitPrompt(p, data: store.data, totalAsset: store.totalAsset))
+                prompt: PortraitEngine.portraitPrompt(p, store: store))
             aiResult = result
             store.data.savedPortraitAIAnalysis = SavedAIAnalysis(text: result)
             store.saveAIAnalysisCache()

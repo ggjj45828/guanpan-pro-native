@@ -400,7 +400,11 @@ struct MarketChartView: View {
             return IntradayIOPVPoint(timestamp: bar.timestamp, value: value)
         }
         guard intradayIOPVDay == selectedIntradayDay else { return archived }
-        var byMinute = Dictionary(uniqueKeysWithValues: archived.map { (Int($0.timestamp.timeIntervalSince1970 / 60), $0) })
+        // 逐条写入，不用 `Dictionary(uniqueKeysWithValues:)`：
+        // 一旦同一分钟出现两条（备份合并、旧档案重复日期都可能出现），
+        // 那个构造器会直接 trap（Fatal error: Duplicate values for key），整个 App 闪退。
+        var byMinute: [Int: IntradayIOPVPoint] = [:]
+        for point in archived { byMinute[Int(point.timestamp.timeIntervalSince1970 / 60)] = point }
         for point in intradayIOPVPoints { byMinute[Int(point.timestamp.timeIntervalSince1970 / 60)] = point }
         return byMinute.values.sorted { $0.timestamp < $1.timestamp }
     }
@@ -457,8 +461,11 @@ struct MarketChartView: View {
     private var hasIntradayVolume: Bool {
         minuteBuckets.contains { ($0.volume ?? 0) > 0 }
     }
-    private func volumeColor(at index: Int) -> Color {
-        let buckets = minuteBuckets
+    /// 量柱涨跌配色。**必须把当次渲染用的桶数组传进来**，不要在函数体里重新读 `minuteBuckets`：
+    /// 重读会拿到「此刻」的数组，而 ForEach 的 index 是上一刻算出来的下标 ——
+    /// 盘中每 15 秒刷新一次，数组长度刚好在这两处之间变化时就会下标越界崩溃。
+    private func volumeColor(at index: Int, in buckets: [MinuteBucket]) -> Color {
+        guard buckets.indices.contains(index) else { return Color.secondary }
         let previous = index > 0 ? buckets[index - 1].close : (intradayPrevClose ?? buckets[index].close)
         return buckets[index].close >= previous ? Color.red.opacity(0.82) : Color.green.opacity(0.82)
     }
@@ -548,14 +555,26 @@ struct MarketChartView: View {
         } else {
             end = close
         }
-        return intradayChartTime(start)...intradayChartTime(end)
+        // 压缩午休后 15:00 会映射到 13:31，仍晚于 09:30；这里再做一次上下界保护，
+        // 任何情况下都不把「下界 > 上界」的区间交给 Swift Charts（那是一定崩的）。
+        let lower = min(intradayChartTime(start), intradayChartTime(end))
+        let upper = max(intradayChartTime(start), intradayChartTime(end))
+        guard upper > lower else { return nil }
+        return lower...upper
     }
 
     /// 实际给图表用的横轴域：拿不到交易日就用数据自身首尾兜底（导入的历史分时可能跨夜）。
     private var intradayXDomain: ClosedRange<Date> {
         if let session = intradaySessionDomain { return session }
         let bars = selectedIntradayBars
-        return intradayChartTime(bars.first?.timestamp ?? .now)...intradayChartTime(bars.last?.timestamp ?? .now)
+        let first = intradayChartTime(bars.first?.timestamp ?? .now)
+        let last = intradayChartTime(bars.last?.timestamp ?? .now)
+        // 兜底区间同样要保证下界 < 上界：没有分时点、或数据乱序时 first/last 会相等甚至倒挂，
+        // 退化区间会让图表内部缩放除零。最少给一小时可见窗口。
+        let lower = min(first, last)
+        let upper = max(first, last)
+        if upper.timeIntervalSince(lower) < 60 { return lower...lower.addingTimeInterval(3600) }
+        return lower...upper
     }
 
     /// 分时 MACD 纵轴按数据零轴对称铺开（留 12% 余量）。
@@ -861,8 +880,11 @@ struct MarketChartView: View {
                             .frame(height: 240)
                             .chartXScale(domain: intradayXDomain)
                             .chartXAxis {
-                                if compressIntradayLunch {
-                                    AxisMarks(values: intradayAxisTicks.map { $0.time }) { value in
+                                // 只有拿到刻度点时改用固定刻度；空数组会得到一个没有刻度的横轴，
+                                // 所以这里连 `isEmpty` 一起判断，拿不到就回落到自动刻度。
+                                let ticks = intradayAxisTicks
+                                if compressIntradayLunch, !ticks.isEmpty {
+                                    AxisMarks(values: ticks.map { $0.time }) { value in
                                         AxisValueLabel { if let time = value.as(Date.self) { Text(intradayAxisLabel(time)) } }
                                     }
                                 } else {
@@ -902,12 +924,16 @@ struct MarketChartView: View {
                                 .chartXAxis(.hidden)
                                 .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                             } else if minuteBuckets.contains(where: { $0.volume != nil }) {
+                                // 先取快照再枚举：下标、取数、配色全部锚在这份快照上，
+                                // 刷新把 `minuteBuckets` 换掉时下标也不会比数组长。
+                                // 闭包内**不要**再写 `minuteBuckets[...]`，那会读到新数组。
+                                let buckets = minuteBuckets
                                 Chart {
-                                    ForEach(minuteBuckets.indices, id: \.self) { index in
-                                        let point = minuteBuckets[index]
+                                    ForEach(buckets.indices, id: \.self) { index in
+                                        let point = buckets[index]
                                         if let volume = point.volume {
-                                            BarMark(x: .value("时间", intradayChartTime(point.start)), y: .value("成交量", volume), width: .fixed(intradayBarWidth(minuteBuckets.count)))
-                                                .foregroundStyle(volumeColor(at: index))
+                                            BarMark(x: .value("时间", intradayChartTime(point.start)), y: .value("成交量", volume), width: .fixed(intradayBarWidth(buckets.count)))
+                                                .foregroundStyle(volumeColor(at: index, in: buckets))
                                                 .cornerRadius(1)
                                         }
                                     }
@@ -1333,8 +1359,11 @@ struct MarketChartView: View {
         let magnification = pinchScale.isFinite ? max(0.1, pinchScale) : 1
         let zoom = chartZoom.isFinite ? max(0.1, chartZoom) : 1
         let scaledCount = Double(comfortableDefault) / (zoom * magnification)
+        // 先夹到 [1, 总数] 再转 Int：`Int()` 对 NaN / 无穷大会直接 trap，
+        // 手势在手势状态里给出异常 magnification 时就会把整个页面带走。
         guard scaledCount.isFinite else { return min(periodAllBars.count, comfortableDefault) }
-        return min(periodAllBars.count, max(6, Int(scaledCount)))
+        let clamped = min(max(scaledCount, 1), Double(max(1, periodAllBars.count)))
+        return min(periodAllBars.count, max(6, Int(clamped)))
     }
 
     private var maxChartPanOffset: Int { max(0, periodAllBars.count - zoomedBarCount) }
@@ -1419,7 +1448,12 @@ struct MarketChartView: View {
     private var visibleTradeEntries: [LedgerEntry] {
         guard selectedChartPeriod == .day else { return [] }
         let dates = Set(zoomedPeriodBars.map(\.date))
-        return store.data.ledger.filter { $0.code == holding.code && dates.contains(shanghaiDay($0.date)) }
+        let matching = store.data.ledger.filter { $0.code == holding.code && dates.contains(shanghaiDay($0.date)) }
+        // 旧备份 / 跨设备合并可能留下 id 完全相同的重复流水。日 K 上的 B/S 标记
+        // 用流水 id 当 SwiftUI 标识，重复标识会让 Chart 的 ForEach 渲染异常，
+        // 所以这里先按 id 去重，再按日期排序。
+        let unique = Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return unique.values.sorted { $0.date < $1.date }
     }
 
     /// 日 K 上的成交标记。**B 画在当日最低价下方、S 画在当日最高价上方** ——
@@ -1448,7 +1482,10 @@ struct MarketChartView: View {
     }
 
     private func transactions(on day: String) -> [LedgerEntry] {
-        store.data.ledger.filter { $0.code == holding.code && shanghaiDay($0.date) == day }
+        let matching = store.data.ledger.filter { $0.code == holding.code && shanghaiDay($0.date) == day }
+        // 同 visibleTradeEntries：重复 id 的旧流水先去掉，避免 List / ForEach 标识冲突。
+        return Array(Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values)
+            .sorted { $0.date < $1.date }
     }
 
     private func selectedDailyBarCard(_ bar: DailyBar) -> some View {
@@ -1903,8 +1940,9 @@ struct MarketChartView: View {
                 }
                 .frame(height: 300).chartXScale(domain: intradayXDomain).chartYScale(domain: intradayPriceYDomain)
                 .chartXAxis {
-                    if compressIntradayLunch {
-                        AxisMarks(values: intradayAxisTicks.map { $0.time }) { value in
+                    let ticks = intradayAxisTicks
+                    if compressIntradayLunch, !ticks.isEmpty {
+                        AxisMarks(values: ticks.map { $0.time }) { value in
                             AxisValueLabel { if let time = value.as(Date.self) { Text(intradayAxisLabel(time)).font(.system(size: 9)) } }
                         }
                     } else {
@@ -1933,12 +1971,14 @@ struct MarketChartView: View {
                     }.frame(height: 165).chartXScale(domain: intradayXDomain).chartYScale(domain: minuteMACDYDomain).chartXAxis(.hidden)
                         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                 } else if hasIntradayVolume {
+                    // 同 30/60 分图：先快照再枚举，下标 / 取数 / 配色都锚在这份快照上（防刷新时下标越界）。
+                    let volumeBuckets = minuteBuckets
                     Chart {
-                        ForEach(minuteBuckets.indices, id: \.self) { index in
-                            let point = minuteBuckets[index]
+                        ForEach(volumeBuckets.indices, id: \.self) { index in
+                            let point = volumeBuckets[index]
                             if let volume = point.volume, volume > 0 {
-                            BarMark(x: .value("时间", intradayChartTime(point.start)), y: .value("量", volume), width: .fixed(intradayBarWidth(minuteBuckets.count)))
-                                    .foregroundStyle(volumeColor(at: index))
+                                BarMark(x: .value("时间", intradayChartTime(point.start)), y: .value("量", volume), width: .fixed(intradayBarWidth(volumeBuckets.count)))
+                                    .foregroundStyle(volumeColor(at: index, in: volumeBuckets))
                                     .cornerRadius(1)
                             }
                         }
@@ -2368,7 +2408,11 @@ struct LandscapeChartView: View {
     /// 缩放后实际显示的 K 线根数。下限 20 根：再少就没有形态可言了。
     private var visibleBars: [DailyBar] {
         guard !allBars.isEmpty else { return [] }
-        let target = Int((CGFloat(allBars.count) / (zoom * pinch)).rounded())
+        // `zoom * pinch` 在手势异常时可能为 0 / NaN / 无穷大，`Int()` 转换会直接 trap，
+        // 所以先退化成 1 倍，再夹到合法范围后才转 Int。
+        let scale = zoom * pinch
+        let safeScale = (scale.isFinite && scale > 0.0001) ? scale : 1
+        let target = Int(min(max(CGFloat(allBars.count) / safeScale, 20), CGFloat(allBars.count)).rounded())
         return Array(allBars.suffix(min(max(target, 20), allBars.count)))
     }
 
