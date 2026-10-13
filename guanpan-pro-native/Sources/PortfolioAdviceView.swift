@@ -103,6 +103,7 @@ struct PortfolioAdviceView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("账户决策提示")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }

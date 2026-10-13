@@ -51,9 +51,14 @@ struct IntradayArchiveView: View {
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
+    /// 按屏幕宽度和实际点数计算柱宽：少量数据不会变成细线，全天 242 点也不会互相盖住。
+    private func minuteBarWidth(_ count: Int) -> CGFloat {
+        let plotWidth = max(200, UIScreen.main.bounds.width - 112)
+        return min(8, max(1.2, plotWidth / CGFloat(max(count, 1)) * 0.72))
+    }
     private var priceLineColor: Color {
         switch store.data.intradayLineColorMode {
-        case .automatic: return .primary
+        case .automatic: return isLight ? .black : .white
         case .white: return .white
         case .black: return .black
         case .upDown:
@@ -74,22 +79,34 @@ struct IntradayArchiveView: View {
 
     /// 一次遍历完成全部标的覆盖统计，避免列表每一行都重新扫描整份多年分钟档案。
     private var coverageByCode: [String: Coverage] {
-        var counts: [String: [String: Int]] = [:]
-        for bar in store.intradayBars { counts[bar.code, default: [:]][bar.day, default: 0] += 1 }
-        return counts.mapValues { days in
+        var minutes: [String: [String: Set<Int>]] = [:]
+        for bar in store.intradayBars {
+            let key = normalizedCode(bar.code)
+            minutes[key, default: [:]][bar.day, default: []].insert(Int(bar.timestamp.timeIntervalSince1970 / 60))
+        }
+        return minutes.mapValues { days in
             let latest = days.keys.max()
-            return Coverage(latestDay: latest, latestCount: latest.flatMap { days[$0] } ?? 0)
+            return Coverage(latestDay: latest, latestCount: latest.flatMap { days[$0]?.count } ?? 0)
         }
     }
 
     private var days: [String] {
-        Array(Set(store.intradayBars.filter { $0.code == selectedCode }.map(\.day))).sorted(by: >)
+        Array(Set(store.intradayBars.filter { normalizedCode($0.code) == normalizedCode(selectedCode) }.map(\.day))).sorted(by: >)
     }
 
     private var bars: [IntradayBar] {
-        store.intradayBars
-            .filter { $0.code == selectedCode && $0.day == selectedDay }
+        let source = store.intradayBars.filter {
+            normalizedCode($0.code) == normalizedCode(selectedCode) && $0.day == selectedDay
+        }
+        let unique = Dictionary(grouping: source) { Int($0.timestamp.timeIntervalSince1970 / 60) }
+        return unique.values.compactMap { $0.max(by: { $0.timestamp < $1.timestamp }) }
             .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func normalizedCode(_ value: String) -> String {
+        let code = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for prefix in ["sh", "sz", "bj"] where code.hasPrefix(prefix) { return String(code.dropFirst(2)) }
+        return code
     }
 
     private var chartTimeDomain: ClosedRange<Date>? {
@@ -139,7 +156,7 @@ struct IntradayArchiveView: View {
 
     private var tradePoints: [TradePoint] {
         guard !bars.isEmpty else { return [] }
-        return store.data.ledger.filter { $0.code == selectedCode && shanghaiDay($0.date) == selectedDay }.compactMap { trade in
+        return store.data.ledger.filter { normalizedCode($0.code) == normalizedCode(selectedCode) && shanghaiDay($0.date) == selectedDay }.compactMap { trade in
             let nearest = bars.min { abs($0.timestamp.timeIntervalSince(trade.date)) < abs($1.timestamp.timeIntervalSince(trade.date)) }
             guard let nearest else { return nil }
             return TradePoint(id: trade.id, time: nearest.timestamp, price: trade.price > 0 ? trade.price : nearest.price, side: trade.side)
@@ -168,18 +185,22 @@ struct IntradayArchiveView: View {
                     archiveContent
                 }
                 .toneCard(store.effectiveAccentColor, isLight: isLight)
+                .listRowInsets(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
 
                 Section("覆盖状态") {
                     coverageContent
                 }
                 .plainCard(isLight: isLight)
+                .listRowInsets(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
 
                 Section("历史复盘 / 学习") {
                     replayContent
                 }
                 .plainCard(isLight: isLight)
+                .listRowInsets(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
@@ -225,7 +246,7 @@ struct IntradayArchiveView: View {
         } else {
             let coverageMap = coverageByCode
             ForEach(instruments) { instrument in
-                let coverage = coverageMap[instrument.code] ?? Coverage(latestDay: nil, latestCount: 0)
+                let coverage = coverageMap[normalizedCode(instrument.code)] ?? Coverage(latestDay: nil, latestCount: 0)
                 let latestDay = coverage.latestDay
                 let count = coverage.latestCount
                 Button {
@@ -283,7 +304,7 @@ struct IntradayArchiveView: View {
                 priceChart
 
                 HStack(spacing: 14) {
-                    Label("价格", systemImage: "minus").foregroundStyle(store.effectiveAccentColor)
+                    Label("价格", systemImage: "minus").foregroundStyle(priceLineColor)
                     Label("均价", systemImage: "minus").foregroundStyle(.orange)
                     Text("点图看分钟值 · B买入 / S卖出")
                         .foregroundStyle(.secondary)
@@ -298,6 +319,12 @@ struct IntradayArchiveView: View {
                 if subchart == .volume {
                     volumeChart
                 } else {
+                    HStack(spacing: 12) {
+                        Label("DIF", systemImage: "minus").foregroundStyle(.blue)
+                        Label("DEA", systemImage: "minus").foregroundStyle(.orange)
+                        Text("柱：红正 / 绿负").foregroundStyle(.secondary)
+                    }
+                    .font(.caption2)
                     macdChart
                 }
 
@@ -361,7 +388,7 @@ struct IntradayArchiveView: View {
             ForEach(bars.indices, id: \.self) { index in
                 let point = bars[index]
                 if let volume = point.volume, volume > 0 {
-                    BarMark(x: .value("时间", point.timestamp), y: .value("成交量", volume))
+                BarMark(x: .value("时间", point.timestamp), y: .value("成交量", volume), width: .fixed(minuteBarWidth(bars.count)))
                         .foregroundStyle(volumeColor(at: index).opacity(0.78))
                         .cornerRadius(1)
                 }
@@ -370,11 +397,12 @@ struct IntradayArchiveView: View {
         .frame(height: 110)
         .chartXScale(domain: timeDomain)
         .chartXAxis(.hidden)
+        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
     }
 
     @ViewBuilder private var macdChart: some View {
         Chart(macd) { point in
-            BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram))
+            BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram), width: .fixed(minuteBarWidth(macd.count)))
                 .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.76) : Color.green.opacity(0.76))
                 .cornerRadius(1)
             RuleMark(y: .value("零轴", 0))
@@ -391,6 +419,7 @@ struct IntradayArchiveView: View {
         .chartYScale(domain: macdDomain)
         .chartXScale(domain: timeDomain)
         .chartXAxis(.hidden)
+        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
     }
 
     @MainActor private func manuallyArchive() async {

@@ -103,7 +103,10 @@ extension View {
     /// 挂在弹窗内容的根视图上即可，层级不限；同一个弹窗重复挂也不会画错（同色叠加）。
     /// 漏挂的直接后果就是「弹窗透明、下层页面透上来」，所以**新增弹窗时必须带上它**。
     func themedSheetBackground() -> some View {
-        background { ThemedSheetBackground() }
+        let surface = AppTheme.palette(for: AppAppearance.resolved(appAppearance)).surface
+        return background { ThemedSheetBackground() }
+            .toolbarBackground(surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
     }
 }
 

@@ -32,9 +32,9 @@ enum CardTone {
 /// 全 App 共用的版式尺寸。把卡片、间距和触控高度集中管理，避免不同页面越改越散。
 enum AppLayout {
     static let cardRadius: CGFloat = 16
-    static let cardPadding: CGFloat = 14
+    static let cardPadding: CGFloat = 12
     static let rowVerticalInset: CGFloat = 6
-    static let pageHorizontalInset: CGFloat = 16
+    static let pageHorizontalInset: CGFloat = 12
     /// Apple 平台常用的最低触控高度；文字可以紧凑，但按钮不能难点。
     static let minimumTapHeight: CGFloat = 44
 }
@@ -87,6 +87,7 @@ extension View {
     /// 主列表统一使用紧凑分区，但保留 44pt 点击区，减少误触和“看得见点不中”。
     func appListLayout() -> some View {
         environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
+            .listStyle(.plain)
             .listSectionSpacing(.compact)
     }
 }

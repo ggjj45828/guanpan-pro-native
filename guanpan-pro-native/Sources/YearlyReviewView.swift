@@ -255,8 +255,8 @@ struct YearlyReviewView: View {
                     .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
-            .listStyle(.insetGrouped)
             .navigationTitle("\(year) 年度账单")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

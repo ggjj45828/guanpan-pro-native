@@ -102,6 +102,7 @@ struct ReturnSourceView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("收益来源拆解")
             .toolbarBackground(.hidden, for: .navigationBar)

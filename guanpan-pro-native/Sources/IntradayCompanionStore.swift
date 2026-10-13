@@ -1,10 +1,22 @@
 import Foundation
 
 struct IntradayCompanionDecision {
-    enum Level: String { case ready = "可执行", wait = "等确认", avoid = "暂不建议", invalid = "无法执行" }
+    enum Level: String { case ready = "条件较匹配", wait = "等待确认", avoid = "暂不建议", invalid = "计划/数据不足" }
     var level: Level
     var reasons: [String]
     var summary: String { reasons.joined(separator: "；") }
+
+    func title(for side: IntradayCompanionIntent.Side) -> String {
+        switch (side, level) {
+        case (.buy, .ready): return "回调与企稳条件较匹配，可考虑分批"
+        case (.buy, .wait): return "先等止跌或反弹确认"
+        case (.buy, .avoid): return "下行风险偏高，暂不建议抄底"
+        case (.sell, .ready): return "出现多项减仓依据，可评估分批减仓"
+        case (.sell, .wait): return "卖出依据不足，先观察持仓趋势"
+        case (.sell, .avoid): return "目前没有足够理由支持卖出"
+        case (_, .invalid): return "计划或行情数据不足，无法判断"
+        }
+    }
 }
 
 @MainActor extension PortfolioStore {
@@ -31,27 +43,170 @@ struct IntradayCompanionDecision {
         let holding = data.holdings.first { $0.code == code && $0.kind == .etf }
         let price = explicit ?? data.quotes.first(where: { $0.code == code })?.price ?? holding?.current ?? 0
         guard price > 0 else { return .init(level: .invalid, reasons: ["缺少可核实的最新价格"]) }
+        if side == .sell, (holding?.quantity ?? 0) <= 0 {
+            return .init(level: .invalid, reasons: ["当前没有这只标的的持仓"])
+        }
         if side == .sell, quantity > (holding?.quantity ?? 0) { return .init(level: .invalid, reasons: ["卖出份额超过当前持仓"]) }
         let amount = quantity * price
         if side == .buy, amount > data.cash + 0.01 { return .init(level: .invalid, reasons: ["计划金额高于参考现金"]) }
-        let after = max(0, (holding?.marketValue ?? 0) + (side == .buy ? amount : -amount))
+        let currentHoldingValue = (holding?.quantity ?? 0) * price
+        let after = max(0, currentHoldingValue + (side == .buy ? amount : -amount))
         let weight = after / max(totalAsset, 0.01) * 100
         let limit = holding?.maxPositionPercent ?? (data.globalPositionLimitPercent > 0 ? data.globalPositionLimitPercent : data.investmentProfile.maxPositionPercent)
         if side == .buy, limit > 0, weight > limit { return .init(level: .avoid, reasons: ["买入后仓位约 \(weight.num(1))%，超过上限 \(limit.num(1))%"] ) }
-        var reasons = ["成交后仓位约 \(weight.num(1))%"], strength = 0
+        let profile = data.investmentProfile
+        let riskName: String
+        switch profile.risk {
+        case "low", "conservative", "con", "保守": riskName = "保守"
+        case "high", "aggressive", "agg", "激进": riskName = "激进"
+        default: riskName = "平衡"
+        }
+        let styleName: String
+        switch profile.style {
+        case "scalp", "day": styleName = "超短线"
+        case "short": styleName = "短线"
+        case "mid", "medium": styleName = "中线"
+        case "long": styleName = "长线定投"
+        default: styleName = "波段"
+        }
+        let declaredPreference = profile.preference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alreadyIncludesDip = declaredPreference.localizedCaseInsensitiveContains("抄底")
+            || declaredPreference.localizedCaseInsensitiveContains("回调")
+        let dipPreference = declaredPreference.isEmpty
+            ? "喜欢抄底，偏好回调后分批布局（按你刚刚说明）"
+            : (alreadyIncludesDip ? declaredPreference : "\(declaredPreference)；同时喜欢抄底、偏好回调后分批布局")
+        var reasons = ["画像：\(styleName) · \(riskName) · 持有周期 \(profile.horizon) · 偏好：\(dipPreference)",
+                       "成交后仓位约 \(weight.num(1))%；单仓上限 \(limit.num(1))%"]
+        var strength = 0
+        var sellRiskSignals = 0
+        var dipSetup = false
+        var stabilization = false
         let today = companionDay()
-        let prices = intradayBars.filter { $0.code == code && $0.day == today }.map(\.price)
+        let minutePoints = intradayBars.filter { $0.code == code && $0.day == today }
+            .sorted { $0.timestamp < $1.timestamp }
+        let prices = minutePoints.map(\.price)
         if !prices.isEmpty {
             let avg = prices.reduce(0, +) / Double(prices.count)
-            strength += price >= avg ? 1 : -1; reasons.append(price >= avg ? "现价在分时均价上方" : "现价在分时均价下方")
-        } else { reasons.append("分时样本不足，判断降级") }
+            if price < avg {
+                dipSetup = true
+                strength += 1
+                reasons.append("现价低于今日分时均价，符合回调观察条件；这本身不是买点")
+            } else {
+                reasons.append("现价回到今日分时均价上方，短线有修复迹象")
+                strength += 1
+                stabilization = true
+            }
+        } else { reasons.append("今日分时样本不足，不能确认盘中低点或反弹") }
+        if prices.count >= 6 {
+            let recent = prices.suffix(3).reduce(0, +) / 3
+            let prior = prices.suffix(6).prefix(3).reduce(0, +) / 3
+            if recent > prior * 1.001 {
+                stabilization = true
+                strength += 1
+                reasons.append("最近几分钟均价抬高，出现初步企稳迹象")
+            } else if recent < prior * 0.999 {
+                strength -= 2
+                sellRiskSignals += 1
+                reasons.append("最近几分钟仍在走低，暂不把下跌当成抄底信号")
+            } else {
+                reasons.append("最近几分钟横盘，暂未确认反弹")
+            }
+        }
         let completed = (dailyBars[code] ?? []).filter { $0.date < today }
         if completed.count >= 20 {
-            let ma20 = completed.suffix(20).map(\.close).reduce(0, +) / 20
-            strength += price >= ma20 ? 1 : -1; reasons.append(price >= ma20 ? "现价在 MA20 上方" : "现价在 MA20 下方")
+            let recentBars = Array(completed.suffix(20))
+            let ma20 = recentBars.map(\.close).reduce(0, +) / 20
+            if price < ma20 {
+                dipSetup = true
+                strength += 1
+                sellRiskSignals += 1
+                reasons.append("现价低于 MA20，属于回调区域；需看企稳和风险，不因破线自动买入")
+            } else {
+                reasons.append("现价在 MA20 上方，趋势确认较好，但不属于明显低位")
+            }
+            let low20 = recentBars.map(\.low).min() ?? ma20
+            let high20 = recentBars.map(\.high).max() ?? ma20
+            let rangePosition = high20 > low20 ? (price - low20) / (high20 - low20) : 0.5
+            if rangePosition <= 0.2 {
+                dipSetup = true
+                strength += 1
+                reasons.append("处于近 20 日区间低位，和你的抄底偏好相符")
+            } else if rangePosition >= 0.8, side == .buy {
+                strength -= 1
+                reasons.append("已接近近 20 日区间高位，追买与抄底偏好不符")
+            }
+            if completed.count >= 60 {
+                let ma60 = completed.suffix(60).map(\.close).reduce(0, +) / 60
+                if price < ma20 && ma20 < ma60 {
+                    strength -= 2
+                    sellRiskSignals += 1
+                    stabilization = false
+                    reasons.append("MA20 低于 MA60 且现价在 MA20 下方，中期下行风险较高")
+                }
+            }
         }
-        if let change = marketChanges[code] { strength += change > 0.003 ? 1 : change < -0.003 ? -1 : 0; reasons.append("当日涨跌 \((change * 100).pct(2))") }
-        let level: IntradayCompanionDecision.Level = side == .buy ? (strength >= 2 ? .ready : strength <= -2 ? .avoid : .wait) : (strength <= -2 ? .ready : strength >= 2 ? .wait : .ready)
+        if let change = marketChanges[code] {
+            reasons.append("当日涨跌 \((change * 100).pct(2))")
+            if side == .buy {
+                if change <= -0.003 && change > -0.03 { dipSetup = true; strength += 1; reasons.append("当日回落幅度可纳入分批观察") }
+                if change <= -0.03 { strength -= 2; stabilization = false; reasons.append("当日跌幅较大，先观察是否止跌，避免接住加速下跌") }
+                if change >= 0.03 { strength -= 1; reasons.append("当日涨幅较大，避免因上涨追买") }
+            } else if change <= -0.02 {
+                strength -= 1
+                sellRiskSignals += 1
+                reasons.append("明显走弱需复核持仓风险，但不能只因下跌就卖出")
+            }
+        }
+        let currentHoldingWeight = currentHoldingValue / max(totalAsset, 0.01) * 100
+        if side == .sell, let holding, let holdingLimit = holding.maxPositionPercent,
+           currentHoldingWeight > holdingLimit {
+            sellRiskSignals += 1
+            reasons.append("当前仓位约 \(currentHoldingWeight.num(1))%，高于该标的上限 \(holdingLimit.num(1))%；本次计划后约 \(weight.num(1))%")
+        } else if side == .sell, holding?.maxPositionPercent == nil,
+                  profile.maxPositionPercent > 0, currentHoldingWeight > profile.maxPositionPercent {
+            sellRiskSignals += 1
+            reasons.append("当前仓位约 \(currentHoldingWeight.num(1))%，高于画像单仓上限 \(profile.maxPositionPercent.num(1))%；本次计划后约 \(weight.num(1))%")
+        }
+        if side == .sell, let holding, holding.cost > 0 {
+            let pnlPercent = (price / holding.cost - 1) * 100
+            reasons.append("当前相对持仓成本\(pnlPercent >= 0 ? "盈利" : "浮亏")约 \(abs(pnlPercent).num(2))%；盈亏本身不单独作为卖出理由")
+        }
+        let avoidText = profile.avoid.trimmingCharacters(in: .whitespacesAndNewlines)
+        let holdingNameIsAvoided = holding.map { avoidText.localizedCaseInsensitiveContains($0.name) } ?? false
+        let avoidBuy = side == .buy && !avoidText.isEmpty && (
+            avoidText.localizedCaseInsensitiveContains(code)
+            || holdingNameIsAvoided
+            || (dipSetup && (avoidText.localizedCaseInsensitiveContains("抄底")
+                             || avoidText.localizedCaseInsensitiveContains("下跌")))
+            || (!dipSetup && (avoidText.localizedCaseInsensitiveContains("追涨")
+                              || avoidText.localizedCaseInsensitiveContains("追高")
+                              || avoidText.localizedCaseInsensitiveContains("高位买")))
+        )
+        if avoidBuy { strength -= 3; reasons.append("当前买入情景触发了你的画像回避项：\(avoidText)") }
+        if side == .buy && riskName == "保守" && !stabilization {
+            strength -= 1
+            reasons.append("保守风险偏好：还没企稳时不建议仅因价格低而抄底")
+        }
+        if side == .buy && riskName == "激进" && dipSetup && stabilization { strength += 1 }
+        let level: IntradayCompanionDecision.Level
+        if side == .buy {
+            let readyThreshold = riskName == "保守" ? 3 : (riskName == "激进" ? 1 : 2)
+            level = dipSetup && stabilization && strength >= readyThreshold ? .ready : (strength <= -2 ? .avoid : .wait)
+        } else {
+            // 数量足够只代表账本份额校验通过。卖出建议要求至少两项相互独立的风险/仓位依据；
+            // 单纯浮亏、日内下跌或用户填了卖出份额，都不会被当成卖出理由。
+            let sellThreshold = (profile.style == "long" || riskName == "保守") ? 3 : 2
+            if sellRiskSignals >= sellThreshold {
+                level = .ready
+                reasons.append("卖出判断来自上述多项趋势/仓位信号，仍建议按计划分批复核，不是自动下单")
+            } else if sellRiskSignals == 1 {
+                level = .wait
+                reasons.append("目前只有一项减仓依据，尚不足以确认卖点")
+            } else {
+                level = .avoid
+                reasons.append("份额充足只是可卖校验通过；当前没有足够技术或仓位理由支持卖出")
+            }
+        }
         return .init(level: level, reasons: reasons)
     }
     func evaluateIntradayCompanions() {
@@ -67,7 +222,7 @@ struct IntradayCompanionDecision {
             // 价格百分比会随刷新变化，不能每次文字变动都推通知；只有结论档位改变才提醒。
             if previousLevel != decision.level.rawValue {
                 data.intradayCompanionIntents[i].lastNotifiedAt = .now
-                Task { try? await NativeNotifications.send(title: "观盘 Pro · 盘中 AI 陪伴", body: "\(intent.name)：\(decision.level.rawValue)。\(decision.summary)") }
+                Task { try? await NativeNotifications.send(title: "观盘 Pro · 盘中 AI 陪伴", body: "\(intent.name)：\(decision.title(for: intent.side))。\(decision.summary)") }
             }
         }
         if changed { save(label: nil) }
@@ -75,7 +230,86 @@ struct IntradayCompanionDecision {
 
     func snapshotQuality(for day: String) -> PortfolioSnapshot.Quality {
         let funds = data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
-        return funds.allSatisfy { fund in data.fundNAVHistory.contains { $0.code == fund.code && $0.date >= day } } ? .settled : .provisional
+        return funds.allSatisfy { fund in
+            let points = data.fundNAVHistory.filter { $0.code == fund.code }
+            if day == companionDay() {
+                // 今日快照要等今天实际取到新公布净值；昨天的近似净值不能让它提前显示已结算。
+                guard let latest = points.max(by: { $0.date < $1.date }) else { return false }
+                if let fetchedAt = latest.fetchedAt { return companionDay(fetchedAt) == day }
+                return latest.date == day
+            }
+            guard let latest = points.filter({ $0.date <= day }).max(by: { $0.date < $1.date }) else { return false }
+            return calendarDayDistance(from: latest.date, to: day).map { $0 <= 4 } ?? false
+        } ? .settled : .provisional
+    }
+
+    /// 新基金净值到账后，回头处理被旧净值标成临时的历史快照。
+    /// 能由完整流水和真实历史价格重算时更新资产；无法核实则只更新“净值已到”状态，
+    /// 并说明总额沿用原值，用户可用手动快照录入真实金额。
+    @discardableResult func reconcileProvisionalSnapshotsAfterNAVUpdate() -> Int {
+        let today = companionDay()
+        var changed = 0
+        for index in data.snapshots.indices where data.snapshots[index].quality == .provisional {
+            let day = data.snapshots[index].date
+            guard day < today, snapshotQuality(for: day) == .settled else { continue }
+            if let state = reconstructedState(on: day),
+               let total = historicalPortfolioTotal(on: day, state: state) {
+                data.snapshots[index].total = total
+                data.snapshots[index].cash = state.cash
+                data.snapshots[index].quality = .settled
+                data.snapshots[index].note = nil
+            } else {
+                data.snapshots[index].quality = .settled
+                data.snapshots[index].note = "基金净值已公布；总资产沿用原记录，因缺少可核实的完整流水/历史价格未重算，可手动修正。"
+            }
+            changed += 1
+        }
+        if changed > 0 { data.snapshots.sort { $0.date < $1.date } }
+        return changed
+    }
+
+    private func historicalPortfolioTotal(on day: String,
+        state: (cash: Double, positions: [(code: String, kind: Holding.Kind, quantity: Double)])) -> Double? {
+        var total = state.cash
+        for position in state.positions where position.quantity > 0.000001 {
+            let price: Double?
+            if position.kind == .fund {
+                price = data.fundNAVHistory.filter { $0.code == position.code && $0.date <= day }
+                    .max(by: { $0.date < $1.date })?.nav
+            } else {
+                price = dailyBars[position.code]?.last(where: { $0.date == day })?.close
+            }
+            guard let price, price.isFinite, price > 0 else { return nil }
+            total += position.quantity * price
+        }
+        return total.isFinite && total >= 0 ? total : nil
+    }
+
+    func recordManualSnapshot(date: String, total: Double, cash: Double) throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let parsed = formatter.date(from: date), formatter.string(from: parsed) == date,
+              date <= companionDay(), total.isFinite, total >= 0,
+              cash.isFinite, cash >= 0, cash <= total else { throw StoreError.invalidManualSnapshot }
+        let point = PortfolioSnapshot(date: date, total: total, cash: cash, recordedAt: nil,
+                                      quality: .manual, note: "手动录入并核实的真实值")
+        if let index = data.snapshots.firstIndex(where: { $0.date == date }) { data.snapshots[index] = point }
+        else { data.snapshots.append(point) }
+        data.snapshots.sort { $0.date < $1.date }
+        save(label: "手动校正历史快照")
+    }
+
+    private func calendarDayDistance(from start: String, to end: String) -> Int? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let a = formatter.date(from: start), let b = formatter.date(from: end) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar.dateComponents([.day], from: a, to: b).day
     }
     @discardableResult func backfillVerifiableSnapshots() -> (added: Int, skipped: Int) {
         let today = companionDay(), existing = Set(data.snapshots.map(\.date))
@@ -90,23 +324,28 @@ struct IntradayCompanionDecision {
             return (added: 0, skipped: 0)
         }
         let etfPrices = dailyBars.mapValues { Dictionary($0.map { ($0.date, $0.close) }, uniquingKeysWith: { _, newest in newest }) }
-        let fundPrices = Dictionary(grouping: data.fundNAVHistory, by: \.code)
-            .mapValues { Dictionary($0.map { ($0.date, $0.nav) }, uniquingKeysWith: { _, newest in newest }) }
+        let fundPrices = Dictionary(grouping: data.fundNAVHistory.filter { $0.nav.isFinite && $0.nav > 0 }, by: \.code)
+            .mapValues { $0.sorted { $0.date < $1.date } }
         var added = 0, skipped = 0
         for day in days.filter({ $0 >= accountStartDay && $0 < today && !existing.contains($0) }).sorted() {
             guard let state = reconstructedState(on: day) else { skipped += 1; continue }
             var total = state.cash, complete = state.cash.isFinite && state.cash >= -0.01
             for position in state.positions where position.quantity > 0.000001 {
-                let price = position.kind == .fund
-                    ? fundPrices[position.code]?[day]
-                    : etfPrices[position.code]?[day]
+                let price: Double?
+                if position.kind == .fund {
+                    // 境外/QDII 净值通常次日公布；净值日期仍是它代表的估值日。
+                    // 用截至目标日最近的已公布净值，避免“日期不完全相等”导致整日资产和盈亏被漏算。
+                    price = fundPrices[position.code]?.last(where: { $0.date <= day })?.nav
+                } else {
+                    price = etfPrices[position.code]?[day]
+                }
                 guard let price, price.isFinite, price > 0 else { complete = false; break }
                 total += position.quantity * price
             }
             guard complete else { skipped += 1; continue }
             data.snapshots.append(.init(date: day, total: total, cash: max(0, state.cash), recordedAt: nil,
                                         quality: .reconstructed,
-                                        note: "按真实历史价格、持仓流水与现金流水反向重建")); added += 1
+                                        note: "按真实历史价格、持仓流水与现金流水反向重建；场外基金采用截至当日最近已公布净值")); added += 1
         }
         if added > 0 { data.snapshots.sort { $0.date < $1.date }; save(label: "补全可核实历史快照") }
         return (added, skipped)

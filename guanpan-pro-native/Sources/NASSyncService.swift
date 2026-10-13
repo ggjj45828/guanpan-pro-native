@@ -33,6 +33,12 @@ private struct NASSyncHistoryResponse: Decodable {
 
 private struct NASSyncErrorResponse: Decodable { var err: String? }
 
+private struct NASMarketArchivePage: Decodable {
+    var bars: [IntradayBar]
+    var nextOffset: Int
+    var hasMore: Bool
+}
+
 enum NASSyncService {
     static let urlKey = "guanpan.native.nas.url"
     static let tokenKey = "guanpan.native.nas.token"
@@ -146,6 +152,46 @@ enum NASSyncService {
             } catch { lastError = error }
         }
         throw lastError
+    }
+
+    /// Reads the NAS's independent, permanent intraday archive. Pages are fetched
+    /// incrementally so a large archive does not create an oversized HTTP response.
+    static func marketArchive() async throws -> [IntradayBar] {
+        guard let base = UserDefaults.standard.string(forKey: urlKey),
+              !base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        let root = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard var components = URLComponents(string: root) else { throw NASSyncError.invalidAddress }
+        let last = UserDefaults.standard.double(forKey: "guanpan.native.nas.marketArchive.lastTimestamp")
+        // 两天重叠补偿旧档修正和临时网络中断；首次连接则完整拉取 NAS 已存档案。
+        let after = last > 0 ? max(0, Int(last) - 2 * 86_400) : 0
+        var offset = 0
+        var result: [IntradayBar] = []
+        repeat {
+            components.path = "/" + ([components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")), "api/market/archive"]
+                .filter { !$0.isEmpty }.joined(separator: "/"))
+            components.queryItems = [URLQueryItem(name: "after", value: String(after)),
+                                     URLQueryItem(name: "offset", value: String(offset)),
+                                     URLQueryItem(name: "limit", value: "5000")]
+            guard let url = components.url else { throw NASSyncError.invalidAddress }
+            var request = URLRequest(url: url); request.timeoutInterval = 45
+            if let token = NASCredentialStore.load(), !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let (bytes, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let detail = (try? JSONSerialization.jsonObject(with: bytes) as? [String: Any])?["err"] as? String
+                throw NASSyncError.server(detail ?? "读取 NAS 分时档案失败（HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)）")
+            }
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            let page = try decoder.decode(NASMarketArchivePage.self, from: bytes)
+            result.append(contentsOf: page.bars)
+            offset = page.nextOffset
+            if !page.hasMore { break }
+        } while true
+        if let newest = result.map({ $0.timestamp.timeIntervalSince1970 }).max() {
+            UserDefaults.standard.set(newest, forKey: "guanpan.native.nas.marketArchive.lastTimestamp")
+        }
+        return result
     }
 
     static func legacyBackup(base: String, token: String) async throws -> (revision: Int, data: Data?) {

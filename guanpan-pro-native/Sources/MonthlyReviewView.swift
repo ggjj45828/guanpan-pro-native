@@ -91,6 +91,7 @@ struct MonthlyReviewView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("月度投资复盘")
             .toolbar {

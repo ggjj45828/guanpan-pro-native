@@ -80,8 +80,8 @@ enum MarketIndexStore {
         }
     }
 
-    /// 顺序即展示顺序：先 A 股宽基，再港股，再美股，最后日韩 ——
-    /// 手机上一屏先看到自己常看的，剩下的左滑。
+    /// 顺序即展示顺序：常用的上证、深证、标普和纳指 100 放在首页首屏，
+    /// 其他指数继续横向滑动查看。
     ///
     /// **为什么三个源都要**（都是实测结论，不是推测）：
     /// · 腾讯 `qt.gtimg.cn` 覆盖 A 股 / 港股 / 美股，但**没有**日经与东证 ——
@@ -97,15 +97,14 @@ enum MarketIndexStore {
     static let catalog: [Entry] = [
         Entry(secid: "1.000001", tencent: "sh000001", name: "上证指数"),
         Entry(secid: "0.399001", tencent: "sz399001", name: "深证成指"),
+        Entry(secid: "100.SPX", tencent: "usINX", name: "标普500", sina: "b_SPX"),
+        // NDX 是纳斯达克 100；IXIC 是纳斯达克综合指数，二者不能混用。
+        Entry(secid: "100.NDX", tencent: "usNDX", name: "纳斯达克100"),
         Entry(secid: "0.399006", tencent: "sz399006", name: "创业板指"),
         Entry(secid: "1.000300", tencent: "sh000300", name: "沪深300"),
         Entry(secid: "1.000688", tencent: "sh000688", name: "科创50"),
         Entry(secid: "100.HSI", tencent: "hkHSI", name: "恒生指数", sina: "b_HSI"),
         Entry(secid: "124.HSTECH", tencent: "hkHSTECH", name: "恒生科技"),
-        Entry(secid: "100.SPX", tencent: "usINX", name: "标普500", sina: "b_SPX"),
-        // NDX 是纳斯达克 100；IXIC 是纳斯达克综合指数，二者不能混用。
-        // 放在标普旁边，首页无需继续横滑一大段才能找到。
-        Entry(secid: "100.NDX", tencent: "usNDX", name: "纳斯达克100"),
         Entry(secid: "100.DJIA", tencent: "usDJI", name: "道琼斯"),
         Entry(secid: "100.N225", tencent: nil, name: "日经225", sina: "int_nikkei"),
         Entry(secid: "100.TOPIX", tencent: nil, name: "东证TOPIX", sina: "b_TOPIX"),
@@ -186,13 +185,14 @@ struct ETFDividendEvent: Codable, Identifiable {
     var code: String
     var date: String
     var amountPerShare: Double
+    /// True for old events inferred from adjusted prices, which do not verify a cash payout.
+    /// Optional keeps existing JSON archives decodable; missing means a recorded event.
+    var isEstimated: Bool? = nil
 }
 
-/// 年股息展示的本机试算器。它不替代基金公告：有人工修正或近 12 个月真实事件时
-/// 一律优先使用真实值；完全没有资料时，才按 ETF 名称所属的指数风格给一个保守的
-/// 年化现金分配率，方便先估算当前持仓一年的可能现金流。
+/// ETF 年股息只采用人工录入或近 12 个月已记录的现金分红，不按指数风格猜测。
 enum ETFDividendProjection {
-    enum Source: Equatable { case manual, recorded, estimated }
+    enum Source: Equatable { case manual, recorded }
 
     /// 共享的上海时区日期格式化器。DateFormatter 建一次约毫秒级，
     /// 而年股息试算在自选列表里是「每行每次渲染」都会走的路径，必须复用。
@@ -221,15 +221,6 @@ enum ETFDividendProjection {
         return cachedCutoffValue
     }
 
-    static func estimatedYieldPercent(code: String, name: String) -> Double {
-        let text = (code + name).lowercased()
-        if text.contains("红利") || text.contains("高股息") { return 4.0 }
-        if text.contains("银行") { return 4.0 }
-        if text.contains("纳指") || text.contains("nasdaq") || text.contains("科技") || text.contains("成长") { return 0.5 }
-        if text.contains("沪深") || text.contains("中证") || text.contains("a500") || text.contains("上证50") { return 1.5 }
-        return 1.0
-    }
-
     static func annualPerShare(for holding: Holding, events: [ETFDividendEvent], now: Date = .now)
         -> (amount: Double, source: Source)? {
         if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
@@ -237,11 +228,10 @@ enum ETFDividendProjection {
         }
         let cutoff = yearAgoCutoff(now: now)
         let recorded = events
-            .filter { $0.code == holding.code && $0.date >= cutoff }
+            .filter { $0.code == holding.code && $0.date >= cutoff && $0.isEstimated != true }
             .reduce(0) { $0 + $1.amountPerShare }
         if recorded > 0 { return (recorded, .recorded) }
-        guard holding.current.isFinite, holding.current > 0 else { return nil }
-        return (holding.current * estimatedYieldPercent(code: holding.code, name: holding.name) / 100, .estimated)
+        return nil
     }
 }
 
@@ -324,7 +314,7 @@ struct TradePlan: Codable, Identifiable {
 }
 
 struct PortfolioSnapshot: Codable, Identifiable {
-    enum Quality: String, Codable { case provisional, settled, reconstructed }
+    enum Quality: String, Codable { case provisional, settled, reconstructed, manual }
     var id: String { date }
     var date: String
     var total: Double

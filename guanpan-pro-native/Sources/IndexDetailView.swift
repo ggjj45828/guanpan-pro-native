@@ -69,7 +69,7 @@ struct IndexDetailView: View {
                         .scaledFont(10).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(16)
+                .padding(12)
             }
             .navigationTitle(index.name)
             .navigationBarTitleDisplayMode(.inline)

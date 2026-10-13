@@ -162,7 +162,10 @@ enum LegacyMigration {
                 for event in events {
                     guard let date = validDay(string(event["d"])), let amount = number(event["a"]),
                           amount.isFinite, amount > 0 else { continue }
-                    result.etfDividendEvents.append(ETFDividendEvent(code: code, date: date, amountPerShare: amount))
+                    // Legacy events were reconstructed from adjusted-price factors;
+                    // preserve them for reference but never treat them as verified cash payouts.
+                    result.etfDividendEvents.append(ETFDividendEvent(code: code, date: date,
+                                                                     amountPerShare: amount, isEstimated: true))
                 }
             }
             result.etfDividendEvents = Array(Dictionary(result.etfDividendEvents.map { ("\($0.code)|\($0.date)", $0) }, uniquingKeysWith: { _, later in later }).values)

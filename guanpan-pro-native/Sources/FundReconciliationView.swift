@@ -70,6 +70,7 @@ struct FundReconciliationView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("基金流水核对")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }

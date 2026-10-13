@@ -94,6 +94,7 @@ struct TradePreviewView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("交易前沙盘")
             .keyboardDoneToolbar()

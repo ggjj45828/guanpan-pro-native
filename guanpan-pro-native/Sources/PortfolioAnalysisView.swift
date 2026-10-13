@@ -136,6 +136,7 @@ struct PortfolioAnalysisView: View {
                 .toneCard(CardTone.pnl(impact), isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("资产穿透与压力测试")

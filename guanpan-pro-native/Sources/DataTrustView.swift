@@ -127,6 +127,7 @@ struct DataTrustView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("数据可信度")

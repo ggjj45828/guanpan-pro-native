@@ -220,6 +220,7 @@ struct MarketChartView: View {
     @State private var intradayIOPVPoints: [IntradayIOPVPoint] = []
     @State private var intradayETFQuoteSummary: IntradayETFQuoteSummary?
     @State private var intradayETFQuoteSummaryDay = ""
+    @State private var lastIOPVFallbackAt: Date?
     @State private var chartZoom = 1.0
     @GestureState private var pinchScale = 1.0
     @State private var chartPanOffset = 0
@@ -362,6 +363,11 @@ struct MarketChartView: View {
                                 volume: volumeRows.isEmpty ? nil : volumeRows.reduce(0, +))
         }.sorted { $0.start < $1.start }
     }
+    /// 连续时间轴上的柱宽按点数自适应，既保留柱间距，也避免 242 点挤成实心色块。
+    private func intradayBarWidth(_ count: Int) -> CGFloat {
+        let plotWidth = max(200, UIScreen.main.bounds.width - 112)
+        return min(8, max(1.2, plotWidth / CGFloat(max(count, 1)) * 0.72))
+    }
     private var minuteMACD: [MinuteMACDPoint] {
         guard minuteBuckets.count >= 2 else { return [] }
         var fast = minuteBuckets[0].close, slow = fast, dea = 0.0
@@ -407,7 +413,7 @@ struct MarketChartView: View {
         switch store.data.intradayLineColorMode {
         // 「自动」按分时图惯例走黑白：浅色黑线、深色白线。
         // 原来返回 .accentColor（默认蓝），和均价橙、IOPV 紫挤在同一条主图里分不清主线。
-        case .automatic: return .primary
+        case .automatic: return colorScheme == .dark ? .white : .black
         case .white: return .white
         case .black: return .black
         case .upDown:
@@ -416,20 +422,29 @@ struct MarketChartView: View {
         }
     }
 
-    /// 分时图固定横轴：A 股上午 09:30–11:30、下午 13:00–15:00。
-    ///
-    /// 原来横轴由数据的首尾自动决定：盘中只采到 10:00 时整条线被拉满全宽，
-    /// 看着像"已经收盘"；补全后又突然变扁，每次刷新都在跳。固定域之后
-    /// 任何时候打开都是同一条轴，午休那段没有分钟点自然留空，
-    /// 价格 / MACD / 分时量三个图也才能真正上下对齐。
+    /// 盘中随已到达的分钟线扩展，让曲线使用主要绘图区；收盘和历史日展示完整交易时段。
+    /// 主图、MACD 与分时量共用横轴域，时间点上下对应。
     private var intradaySessionDomain: ClosedRange<Date>? {
         guard let first = selectedIntradayBars.first else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        guard let start = formatter.date(from: "\(shanghaiDay(first.timestamp)) 09:30"),
-              let end = formatter.date(from: "\(shanghaiDay(first.timestamp)) 15:00") else { return nil }
+        let day = shanghaiDay(first.timestamp)
+        guard let start = formatter.date(from: "\(day) 09:30"),
+              let close = formatter.date(from: "\(day) 15:00") else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        var shanghaiCalendar = calendar
+        shanghaiCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let parts = shanghaiCalendar.dateComponents([.hour, .minute], from: .now)
+        let minuteOfDay = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        let isTradingSession = (minuteOfDay >= 570 && minuteOfDay <= 690) || (minuteOfDay >= 780 && minuteOfDay < 900)
+        let end: Date
+        if day == shanghaiDay(.now), isTradingSession, let latest = selectedIntradayBars.last?.timestamp {
+            end = min(close, max(start.addingTimeInterval(3600), latest.addingTimeInterval(720)))
+        } else {
+            end = close
+        }
         return start...end
     }
 
@@ -700,8 +715,8 @@ struct MarketChartView: View {
                         }
                         .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
                         HStack(spacing: 12) {
-                            Text("实时参考净值 (IOPV)：\(selectedDayIOPV?.num(4) ?? "暂无")").foregroundStyle(.purple)
-                            Text("溢价率：\(selectedDayPremium?.pct(2) ?? "暂无")")
+                            Text("实时参考净值 (IOPV)：\(selectedDayIOPV?.num(4) ?? "行情源暂未提供")").foregroundStyle(.purple)
+                            Text("溢价率：\(selectedDayPremium?.pct(2) ?? "暂不可用")")
                                 .foregroundStyle((selectedDayPremium ?? 0) >= 0 ? .red : .green)
                         }
                         .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
@@ -711,31 +726,26 @@ struct MarketChartView: View {
                         }
                         if selectedIntradayBars.count > 1 {
                             intradayPanel
+                                .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+                                .listRowSeparator(.hidden)
                             Text("行情源当日分时 · 前台约 15 秒刷新 · \(minuteStatus)").font(.caption).foregroundStyle(.secondary)
                         } else {
                             ContentUnavailableView("暂无当日分时", systemImage: "chart.xyaxis.line", description: Text(minuteStatus))
                         }
-                        VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 10) {
                             Button { Task { await manuallyRefreshMinute() } } label: {
-                                HStack(spacing: 6) {
-                                    RefreshToolbarIcon(isRefreshing: isManuallyRefreshingMinute)
-                                    Text("刷新并补齐")
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
+                                Label(isManuallyRefreshingMinute ? "正在补齐…" : "刷新分时并补齐",
+                                      systemImage: isManuallyRefreshingMinute ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                                    .frame(maxWidth: .infinity, minHeight: 42)
                             }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.bordered)
                             .accessibilityLabel("刷新并补齐当前标的分时")
                             .disabled(isManuallyRefreshingMinute)
-                            .padding(.vertical, 8)
-                            Divider()
                             Button { showIntradayCompanion = true } label: {
                                 Label("盘中 AI 陪伴", systemImage: "sparkles.rectangle.stack")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
+                                    .frame(maxWidth: .infinity, minHeight: 42)
                             }
-                            .buttonStyle(.borderless)
-                            .padding(.vertical, 8)
+                            .buttonStyle(.bordered)
                         }
                     } else if selectedChartPeriod == .minute30 || selectedChartPeriod == .minute60 {
                         if minuteBuckets.count > 1 {
@@ -746,28 +756,51 @@ struct MarketChartView: View {
                                     .interpolationMethod(.linear)
                             }
                             .frame(height: 240)
+                            .chartXScale(domain: intradayXDomain)
                             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
+                            .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                             Picker("分时副图", selection: $intradaySubchart) {
                                 ForEach(IntradaySubchart.allCases) { item in Text(item.rawValue).tag(item) }
                             }.pickerStyle(.segmented)
                             if intradaySubchart == .macd {
-                                Chart(minuteMACD) { point in
-                                    BarMark(x: .value("时间", point.time), y: .value("MACD柱", point.histogram))
-                                        .foregroundStyle(point.histogram >= 0 ? Color.red : Color.green)
+                                Chart {
+                                    ForEach(minuteMACD) { point in
+                                    BarMark(x: .value("时间", point.time), y: .value("MACD柱", point.histogram), width: .fixed(intradayBarWidth(minuteMACD.count)))
+                                        .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.78) : Color.green.opacity(0.78))
+                                        .cornerRadius(1)
                                     LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
-                                        .foregroundStyle(Color.cyan)
+                                        .foregroundStyle(Color.blue)
+                                        .lineStyle(StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
+                                        .interpolationMethod(.linear)
                                     LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
                                         .foregroundStyle(Color.orange)
+                                        .lineStyle(StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
+                                        .interpolationMethod(.linear)
+                                    }
+                                    RuleMark(y: .value("零轴", 0))
+                                        .foregroundStyle(Color.secondary.opacity(0.55))
+                                        .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
                                 }
                                 .frame(height: 110)
+                                .chartXScale(domain: intradayXDomain)
+                                .chartYScale(domain: minuteMACDYDomain)
                                 .chartXAxis(.hidden)
+                                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                             } else if minuteBuckets.contains(where: { $0.volume != nil }) {
-                                Chart(minuteBuckets.filter { $0.volume != nil }) { point in
-                                    BarMark(x: .value("时间", point.start), y: .value("成交量", point.volume ?? 0))
-                                        .foregroundStyle(Color.cyan)
+                                Chart {
+                                    ForEach(minuteBuckets.indices, id: \.self) { index in
+                                        let point = minuteBuckets[index]
+                                        if let volume = point.volume {
+                                            BarMark(x: .value("时间", point.start), y: .value("成交量", volume), width: .fixed(intradayBarWidth(minuteBuckets.count)))
+                                                .foregroundStyle(volumeColor(at: index))
+                                                .cornerRadius(1)
+                                        }
+                                    }
                                 }
                                 .frame(height: 110)
+                                .chartXScale(domain: intradayXDomain)
                                 .chartXAxis(.hidden)
+                                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                             } else {
                                 Text("所选分时记录没有成交量列；导入含 volume 列的 CSV 后可查看分时量。")
                                     .font(.footnote).foregroundStyle(.secondary)
@@ -1009,6 +1042,7 @@ struct MarketChartView: View {
             .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .themedSheetBackground()
@@ -1019,6 +1053,16 @@ struct MarketChartView: View {
                         Label("横屏大图", systemImage: "arrow.up.left.and.arrow.down.right")
                     }
                 }
+            }
+            .overlay(alignment: .leading) {
+                Color.clear.frame(width: 22).contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 24).onEnded { value in
+                        guard value.startLocation.x <= 22,
+                              value.translation.width >= 85,
+                              abs(value.translation.height) < 70 else { return }
+                        dismiss()
+                    })
+                    .accessibilityHidden(true)
             }
             .fullScreenCover(isPresented: $showLandscapeChart) {
                 LandscapeChartView(holding: holding)
@@ -1058,6 +1102,7 @@ struct MarketChartView: View {
                     .navigationTitle("\(holding.name) · AI 分析")
                     .navigationBarTitleDisplayMode(.inline)
                     .scrollContentBackground(.hidden)
+                    .listStyle(.plain)
                     .appListLayout()
                     .background(.clear)
                     .themedSheetBackground()
@@ -1100,6 +1145,21 @@ struct MarketChartView: View {
                 // 显示区间可以只有 60 日，但 MA250 需要更早的 250 根收盘价作计算窗口。
                 // 本地历史不足时主动拉取最多 640 根，缩放/缩短横坐标范围不影响均线计算。
                 if allBars.count < 250 { await load(force: !allBars.isEmpty) }
+                // 实时接口可能返回 200 点以上但仍缺少收盘前的分钟；首次打开时仍走
+                // 完整归档链路补齐，避免把 214/242 这种不完整数据误判为整日完成。
+                if selectedIntradayBars.count < 242 {
+                    do {
+                        let completed = try await store.fetchAndArchiveLatestIntraday(code: holding.code)
+                        if let day = completed.last?.day {
+                            selectedIntradayDay = day
+                            minuteStatus = "已补齐行情源数据：\(completed.count) 点 · \(day)"
+                        }
+                    } catch {
+                        minuteStatus = selectedIntradayBars.isEmpty
+                            ? "暂时无法补齐分时：\(error.localizedDescription)"
+                            : "补齐暂不可用，继续显示本机已保存的 \(selectedIntradayBars.count) 点"
+                    }
+                }
                 while !Task.isCancelled {
                     await fetchTencentMinute()
                     try? await Task.sleep(for: .seconds(15))
@@ -1727,7 +1787,7 @@ struct MarketChartView: View {
                 .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                 if intradaySubchart == .macd {
                     Chart(minuteMACD) { p in
-                        BarMark(x: .value("时间", p.time), y: .value("柱", p.histogram))
+                        BarMark(x: .value("时间", p.time), y: .value("柱", p.histogram), width: .fixed(intradayBarWidth(minuteMACD.count)))
                             .foregroundStyle(p.histogram >= 0 ? Color.red.opacity(0.82) : Color.green.opacity(0.82))
                             .cornerRadius(1)
                         LineMark(x: .value("时间", p.time), y: .value("DIF", p.dif), series: .value("MACD序列", "DIF")).foregroundStyle(Color.blue)
@@ -1736,12 +1796,13 @@ struct MarketChartView: View {
                             .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
                         RuleMark(y: .value("零轴", 0)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3,3]))
                     }.frame(height: 125).chartXScale(domain: intradayXDomain).chartYScale(domain: minuteMACDYDomain).chartXAxis(.hidden)
+                        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                 } else if hasIntradayVolume {
                     Chart {
                         ForEach(minuteBuckets.indices, id: \.self) { index in
                             let point = minuteBuckets[index]
                             if let volume = point.volume, volume > 0 {
-                                BarMark(x: .value("时间", point.start), y: .value("量", volume))
+                                BarMark(x: .value("时间", point.start), y: .value("量", volume), width: .fixed(intradayBarWidth(minuteBuckets.count)))
                                     .foregroundStyle(volumeColor(at: index))
                                     .cornerRadius(1)
                             }
@@ -1755,6 +1816,7 @@ struct MarketChartView: View {
                         }
                     }
                         .frame(height: 125).chartXScale(domain: intradayXDomain).chartXAxis(.hidden)
+                        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.13)); AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary) } }
                 } else {
                     VStack(spacing: 6) {
                         Image(systemName: "chart.bar.xaxis")
@@ -1799,8 +1861,8 @@ struct MarketChartView: View {
                     Text("DIF / DEA").font(.system(size: 8)).foregroundStyle(.secondary)
                 }
                 Spacer()
-            }.frame(width: 76)
-        }.padding(8).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }.frame(width: 68)
+        }.padding(6).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
     private func rail(_ title: String, _ on: Bool, _ color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).font(.system(size: 11, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 7).foregroundStyle(on ? Color.white : Color.secondary).background(on ? color : Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 7)) }.buttonStyle(.plain)
@@ -1917,8 +1979,9 @@ struct MarketChartView: View {
             let quoteValues = (root?["qt"] as? [String: Any]).flatMap { qt in
                 (qt[symbol] ?? qt.first(where: { $0.key.caseInsensitiveCompare(symbol) == .orderedSame })?.value) as? [Any]
             }
+            var resolvedIOPVFromMinute = false
             if let values = quoteValues,
-               values.count > 44, (values[61] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ETF" {
+               values.count > 61, (values[61] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ETF" {
                 func field(_ index: Int) -> Double? {
                     guard values.indices.contains(index) else { return nil }
                     if let text = values[index] as? String { return Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -1929,29 +1992,64 @@ struct MarketChartView: View {
                     turnoverPercent: field(38), amplitudePercent: field(43),
                     amountYi: amountInTenThousands.map { $0 / 10_000 }, marketCapYi: field(44))
                 intradayETFQuoteSummaryDay = day
-                // 折溢价率取扩展字段 77（百分数），基金份额参考净值 IOPV 取字段 78。
-                // 旧版取字段 63 —— 那是别的指标：广发纳指ETF 会被算成 4.12%，
-                // 而交易所公布的折溢价率是 14.01%，差了三倍多。
-                // IOPV 直接用字段 78，比「现价 /(1 + 溢价率)」反推更准。
+                // 腾讯 qt 字段 78 就是 IOPV（实时参考净值），字段 77 是折溢价率（百分数），
+                // 两者满足 77 == 现价 / 78 − 1。**IOPV 直接读字段 78**，不反推：
+                // 字段 77 只保留两位小数，反推出来的 IOPV 会带千分级误差；字段 78 缺失时才反推兜底。
+                // 字段 63 既不是溢价率也不是涨跌幅，不要用它（曾导致纳指ETF 溢价率少算三倍多）。
                 let lastPrice = parsed.last?.price
-                if let premium = field(77), premium.isFinite, (-50...50).contains(premium) {
-                    var resolvedIOPV = field(78).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-                    if resolvedIOPV == nil, let last = lastPrice, last.isFinite, last > 0, (1 + premium / 100) > 0 {
-                        let derived = last / (1 + premium / 100)
-                        resolvedIOPV = derived.isFinite && derived > 0 ? derived : nil
+                let premium = field(77).flatMap { $0.isFinite ? $0 : nil }
+                let directIOPV = field(78)
+                var resolvedIOPV: Double?
+                if let directIOPV, directIOPV.isFinite, directIOPV > 0 {
+                    resolvedIOPV = directIOPV
+                } else if let premium, (-50...50).contains(premium),
+                          let last = lastPrice, last.isFinite, last > 0, (1 + premium / 100) > 0 {
+                    let derived = last / (1 + premium / 100)
+                    resolvedIOPV = derived.isFinite && derived > 0 ? derived : nil
+                }
+                if let iopv = resolvedIOPV, let resolvedPremium = premium, (-50...50).contains(resolvedPremium) {
+                    resolvedIOPVFromMinute = true
+                    intradayIOPV = iopv
+                    intradayPremiumPercent = resolvedPremium
+                    if let time = parsed.last?.timestamp {
+                        let currentDay = parsed.last?.day ?? day
+                        if intradayIOPVDay != currentDay { intradayIOPVPoints = [] }
+                        intradayIOPVDay = currentDay
+                        intradayIOPVPoints.removeAll { Calendar.current.isDate($0.timestamp, equalTo: time, toGranularity: .minute) }
+                        intradayIOPVPoints.append(IntradayIOPVPoint(timestamp: time, value: iopv))
+                        if intradayIOPVPoints.count > 400 { intradayIOPVPoints.removeFirst(intradayIOPVPoints.count - 400) }
                     }
-                    if let iopv = resolvedIOPV {
-                        intradayIOPV = iopv
-                        intradayPremiumPercent = premium
-                        if let time = parsed.last?.timestamp {
-                            let currentDay = parsed.last?.day ?? day
-                            if intradayIOPVDay != currentDay { intradayIOPVPoints = [] }
-                            intradayIOPVDay = currentDay
-                            intradayIOPVPoints.removeAll { Calendar.current.isDate($0.timestamp, equalTo: time, toGranularity: .minute) }
-                            intradayIOPVPoints.append(IntradayIOPVPoint(timestamp: time, value: iopv))
-                            if intradayIOPVPoints.count > 400 { intradayIOPVPoints.removeFirst(intradayIOPVPoints.count - 400) }
-                        }
+                } else if let iopv = resolvedIOPV {
+                    // 只有 IOPV、没有溢价率（极端情况）：仍然把 IOPV 画出来，溢价率按现价反算
+                    resolvedIOPVFromMinute = true
+                    intradayIOPV = iopv
+                    if let last = lastPrice, last > 0 {
+                        intradayPremiumPercent = (last / iopv - 1) * 100
                     }
+                    if let time = parsed.last?.timestamp {
+                        let currentDay = parsed.last?.day ?? day
+                        if intradayIOPVDay != currentDay { intradayIOPVPoints = [] }
+                        intradayIOPVDay = currentDay
+                        intradayIOPVPoints.removeAll { Calendar.current.isDate($0.timestamp, equalTo: time, toGranularity: .minute) }
+                        intradayIOPVPoints.append(IntradayIOPVPoint(timestamp: time, value: iopv))
+                        if intradayIOPVPoints.count > 400 { intradayIOPVPoints.removeFirst(intradayIOPVPoints.count - 400) }
+                    }
+                }
+            }
+            // 分时接口有时只返回分钟线、不带 qt 汇总字段；独立查询腾讯实时 ETF 报价补 IOPV。
+            // 最多每分钟尝试一次，避免每个 15 秒刷新周期额外等待行情请求。
+            let shouldRetryIOPV = lastIOPVFallbackAt.map { Date.now.timeIntervalSince($0) >= 60 } ?? true
+            if holding.kind == .etf, !resolvedIOPVFromMinute, shouldRetryIOPV {
+                lastIOPVFallbackAt = .now
+                if let snapshot = try? await store.lookupETFRealtimeIOPV(code: holding.code) {
+                    intradayIOPV = snapshot.value
+                    intradayPremiumPercent = snapshot.premiumPercent
+                    if intradayIOPVDay != day { intradayIOPVPoints = [] }
+                    intradayIOPVDay = day
+                    let time = snapshot.updatedAt ?? parsed.last?.timestamp ?? .now
+                    intradayIOPVPoints.removeAll { Calendar.current.isDate($0.timestamp, equalTo: time, toGranularity: .minute) }
+                    intradayIOPVPoints.append(IntradayIOPVPoint(timestamp: time, value: snapshot.value))
+                    if intradayIOPVPoints.count > 400 { intradayIOPVPoints.removeFirst(intradayIOPVPoints.count - 400) }
                 }
             }
             store.mergeIntradayBars(parsed)

@@ -156,6 +156,7 @@ struct QuantitativeEngineView: View {
                 .toneCard(CardTone.accent, isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("量化引擎")

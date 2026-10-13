@@ -78,7 +78,10 @@ struct ContentView: View {
             store.refreshQuotes()
             store.refreshIndexQuotes()
             store.maybeRefreshFundNAVsAfterMarketClose()
-            Task { await store.archiveTrackedIntraday() }
+            Task {
+                await store.syncNASMarketArchive()
+                await store.archiveTrackedIntraday()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -88,6 +91,7 @@ struct ContentView: View {
                 store.maybeRefreshFundNAVsAfterMarketClose()
                 store.recordSnapshot()   // 打开 App 自动记当天快照，免得手动忘
                 Task {
+                    await store.syncNASMarketArchive()
                     await store.archiveTrackedIntraday()
                     await store.ensureBackfillHistory()
                 }
@@ -320,18 +324,13 @@ struct DashboardView: View {
         guard q.price > 0 else { return nil }
         let holding = store.data.holdings.first { $0.kind == .etf && $0.code == q.code }
         if let holding, let projection = ETFDividendProjection.annualPerShare(for: holding, events: store.data.etfDividendEvents) {
-            return projection.amount / q.price * 100
+            return projection.amount > 0 ? projection.amount / q.price * 100 : nil
         }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone; formatter.dateFormat = "yyyy-MM-dd"
-        let cutoff = formatter.string(from: calendar.date(byAdding: .day, value: -365, to: .now) ?? .distantPast)
+        let cutoff = ETFDividendProjection.yearAgoCutoff()
         let annual = store.data.etfDividendEvents
-            .filter { $0.code == q.code && $0.date >= cutoff }
+            .filter { $0.code == q.code && $0.date >= cutoff && $0.isEstimated != true }
             .reduce(0) { $0 + $1.amountPerShare }
-        if annual > 0 { return annual / q.price * 100 }
-        return ETFDividendProjection.estimatedYieldPercent(code: q.code, name: q.name)
+        return annual > 0 ? annual / q.price * 100 : nil
     }
 
     private var intradayOpportunities: [IntradayOpportunity] {
@@ -372,7 +371,6 @@ struct DashboardView: View {
         .sorted { lhs, rhs in
             lhs.score == rhs.score ? lhs.quote.code < rhs.quote.code : lhs.score > rhs.score
         }
-        .prefix(3)
         .map { $0 }
     }
 
@@ -401,7 +399,7 @@ struct DashboardView: View {
                 }
                 Section("账户") {
                     accountSummaryCard
-                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 8, trailing: 12))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -532,6 +530,7 @@ struct DashboardView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear).navigationTitle("总览")
             .navigationBarTitleDisplayMode(.inline)
@@ -651,7 +650,7 @@ struct DashboardView: View {
             if store.indexQuotes.isEmpty {
                 Text("点右上角刷新按钮获取指数行情")
                     .scaledFont(11).foregroundStyle(.secondary)
-                    .padding(.horizontal, 16).padding(.vertical, 5)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -662,7 +661,7 @@ struct DashboardView: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 2)
                 }
             }
@@ -676,7 +675,7 @@ struct DashboardView: View {
                         .lineLimit(1).layoutPriority(-1)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
         }
     }
 
@@ -761,7 +760,7 @@ struct DashboardView: View {
                 MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
                            toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
             ])
-            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 场外基金（\(fundNAVDateNote)）；场内实时变化，场外要等晚间净值公布后才计入合计。两处数据日期不同，没取到数显示 --，不臆测补数。")
+            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 今天新采集的场外基金净值变化（\(fundNAVDateNote)）。海外净值可能代表前一交易日，但按实际公布/采集日计入；旧净值不重复计入今天。")
                 .scaledFont(10).foregroundStyle(.secondary)
         }
         .cardSurface(tone: CardTone.pnl(store.totalPnL))
@@ -781,12 +780,14 @@ struct DashboardView: View {
         }
         guard store.hasDayPnLGross else { return "当日盈亏" }
         if store.hasIntradayPnL, let day = store.intradayQuoteDate.map({ shortDay($0) }) {
-            if !store.isIntradayQuoteToday { return "休市 · \(day) 盈亏" }
+            if !store.isIntradayQuoteToday {
+                return store.hasFundDayPnL ? "行情休市 \(day) · 净值今日更新" : "休市 · \(day) 盈亏"
+            }
             return store.isMarketOpenNow ? "今日盈亏" : "今日收盘盈亏"
         }
-        // 只有场外基金：净值通常 T+1 公布，永远晚于当天，直接标净值日。
+        // 境外基金净值日晚一交易日公布，显示采集日与净值代表日，避免误以为旧收益。
         if store.hasFundDayPnL, let day = store.latestFundNAVDate.map({ shortDay($0) }) {
-            return "净值 \(day) 盈亏"
+            return "净值今日更新 · 净值日 \(day)"
         }
         return "当日盈亏"
     }
@@ -804,7 +805,7 @@ struct DashboardView: View {
     private var fundNAVDateNote: String {
         guard let date = store.latestFundNAVDate else { return "无净值" }
         guard store.hasFundDayPnL else { return "净值 \(shortDay(date)) · 今日未更新" }
-        return "净值 \(shortDay(date))"
+        return "净值日 \(shortDay(date)) · 今天新更新"
     }
 
     // MARK: - 自选行渲染
@@ -818,7 +819,7 @@ struct DashboardView: View {
                 watchCard(q)
             }
             .buttonStyle(.plain)
-            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+            .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
             .listRowBackground(Color.clear)
             .contextMenu { watchContextMenu(q) }
         }
@@ -1008,7 +1009,7 @@ struct MoreHubView: View {
                             }
                         }
                     }
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                     .listRowBackground(Color.clear)
                 } header: { Text("AI 与智能分析") } footer: {
                     Text("投资偏好（画像）与模型接口在「AI 账户分析」页内配置；密钥只存本机钥匙串。")
@@ -1034,7 +1035,7 @@ struct MoreHubView: View {
                             }
                         }
                     }
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                     .listRowBackground(Color.clear)
                 } header: { Text("工具与设置") }
 
@@ -1052,10 +1053,13 @@ struct MoreHubView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear)
             .navigationTitle("更多")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .navigationDestination(isPresented: $showAnalysisTools) { ToolsView(title: "分析工具") }
             .navigationDestination(isPresented: $showPlanningTools) { ToolsView(title: "计划与复盘") }
             .navigationDestination(isPresented: $showAppSettings) { SettingsView(mode: .app) }
@@ -1176,6 +1180,7 @@ struct QuoteAlertEditor: View {
                 if !error.isEmpty { Text(error).foregroundStyle(.red) }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("价格提醒")
             .keyboardDoneToolbar()
@@ -1249,6 +1254,7 @@ struct WatchEditor: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear).navigationTitle("添加自选").keyboardDoneToolbar()
                 .task(id: code) {
                     let requested = code.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1358,7 +1364,7 @@ struct HoldingsView: View {
         }
     }
 
-    /// 年股息先用人工修正或近 12 个月真实分红事件；没有资料时按 ETF 风格做保守试算。
+    /// 年股息只采用人工修正或近 12 个月已记录的分红事件；没有派息记录时显示“不分红”。
     private func annualDividendProjection(for holding: Holding) -> (amount: Double, source: ETFDividendProjection.Source)? {
         ETFDividendProjection.annualPerShare(for: holding, events: store.data.etfDividendEvents)
     }
@@ -1374,15 +1380,7 @@ struct HoldingsView: View {
     }
 
     private var hasETFDividendData: Bool {
-        holdings.contains { holding in
-            holding.kind == .etf && holding.quantity > 0 && annualDividendPerShare(for: holding) != nil
-        }
-    }
-
-    private var hasEstimatedETFDividend: Bool {
-        holdings.contains { holding in
-            holding.kind == .etf && holding.quantity > 0 && annualDividendProjection(for: holding)?.source == .estimated
-        }
+        etfAnnualDividendIncome > 0
     }
 
     /// 网页版年股息区会列出主要贡献标的。这里沿用同一口径并只显示前三只，
@@ -1513,6 +1511,7 @@ struct HoldingsView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
@@ -1600,7 +1599,7 @@ struct HoldingsView: View {
             let dayTitle = kind == .fund ? "净值日盈亏" : "今日盈亏"
             // 开市日白天还没取到新净值：场外盈亏不算，也不并进总资产的当日盈亏，
             // 等晚间净值更新后再出现。美股 / QDII 净值日晚一个交易日公布，
-            // 取到即算更新（判定见 PortfolioStore.isFundNAVPending），不会被当成未更新。
+            // 只把今天实际采集的新净值算作今日收益；海外基金的净值日可能晚一天。
             let dayDateNote = kind == .fund
                 ? (store.hasFundDayPnL
                     ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
@@ -1639,15 +1638,15 @@ struct HoldingsView: View {
                     let dividendYield = value > 0 && hasETFDividendData ? dividendIncome / value * 100 : nil
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(hasEstimatedETFDividend ? "预计年股息收入" : "年股息收入（近12个月）").scaledFont(10).foregroundStyle(.secondary)
-                            Text(hasETFDividendData ? dividendIncome.cny() : "暂无")
+                            Text("年股息收入（近12个月实际派息）").scaledFont(10).foregroundStyle(.secondary)
+                            Text(hasETFDividendData ? dividendIncome.cny() : "不分红")
                                 .scaledFont(17, weight: .bold, design: .rounded)
                                 .foregroundStyle(dividendIncome > 0 ? Color(red: 0.07, green: 0.68, blue: 0.48) : .secondary)
                         }
                         Spacer(minLength: 12)
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("组合股息率").scaledFont(10).foregroundStyle(.secondary)
-                            Text(dividendYield?.pct(2) ?? "暂无")
+                            Text(dividendYield?.pct(2) ?? "不分红")
                                 .scaledFont(15, weight: .bold, design: .rounded)
                                 .foregroundStyle(dividendYield == nil ? Color.secondary : Color.orange)
                         }
@@ -1670,9 +1669,7 @@ struct HoldingsView: View {
                             }
                         }
                     }
-                    Text(hasEstimatedETFDividend
-                         ? "优先按已录入分红；缺资料的 ETF 依据指数风格股息率试算，仅作现金流参考，公告发布后会自动以真实值为准。"
-                         : "按已录入的每份年分红修正，或近 12 个月分红事件 × 当前份额估算。")
+                    Text("仅统计人工修正或近 12 个月已记录的现金分红 × 当前份额；没有派息记录时显示“不分红”，不按指数或名称猜测。")
                         .scaledFont(9).foregroundStyle(.secondary)
                 }
                 Text(kind == .fund
@@ -1704,7 +1701,7 @@ struct HoldingsView: View {
                 }
             }
             .cardSurface(tone: cardTone)
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 8, trailing: 12))
             .listRowBackground(Color.clear)
         }
     }
@@ -1774,9 +1771,9 @@ struct HoldingsView: View {
                         holdingMetricChip("溢价 \(premium.pct(2))", color: abs(premium) >= 1 ? .orange : .purple)
                     }
                     if let dividendYield {
-                        holdingMetricChip("\(annualProjection?.source == .estimated ? "预估" : "股息") \(dividendYield.pct(2))", color: Color(red: 0.07, green: 0.68, blue: 0.48))
+                        holdingMetricChip("股息 \(dividendYield.pct(2))", color: Color(red: 0.07, green: 0.68, blue: 0.48))
                     } else {
-                        holdingMetricChip("股息暂无", color: .secondary)
+                        holdingMetricChip("不分红", color: .secondary)
                     }
                     if hasDay { holdingMetricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
                 }
@@ -2124,6 +2121,7 @@ struct TradeCSVImportView: View {
                 if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("导入成交历史")
             .navigationBarTitleDisplayMode(.inline)
@@ -2206,6 +2204,7 @@ struct TradeLedgerManagementView: View {
                 if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.orange) } }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle("交易流水")
@@ -2277,6 +2276,7 @@ struct ArchivedFundHistoryView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle(item.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -2310,6 +2310,7 @@ struct FundBackfillView: View {
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("补录基金历史起点")
             .keyboardDoneToolbar()
@@ -2378,6 +2379,7 @@ struct FundDCAPlanEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle(isEditing ? "修改自动定投" : "设置自动定投")
             .keyboardDoneToolbar()
@@ -2463,6 +2465,7 @@ struct FundFeePolicyEditor: View {
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("\(fund.name)赎回费率")
             .keyboardDoneToolbar()
@@ -2524,6 +2527,7 @@ struct FundDividendEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("记录基金分红")
             .keyboardDoneToolbar()
@@ -2598,6 +2602,7 @@ struct FundIncomeCalendarView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("基金收益日历")
             .navigationBarTitleDisplayMode(.inline)
@@ -2740,6 +2745,7 @@ struct FundQuantView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .sheet(item: $dcaEditorTarget) { target in
                 FundDCAPlanEditor(holding: target).themedSheetBackground()
@@ -2896,6 +2902,7 @@ struct FundNAVHistoryView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle(fund.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -2970,6 +2977,7 @@ struct HoldingEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .onChange(of: code) { oldValue, newValue in
                 let filtered = String(newValue.filter(\.isNumber).prefix(6))
@@ -3094,6 +3102,7 @@ struct TradeEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("记一笔交易")
             .keyboardDoneToolbar()
@@ -3174,6 +3183,7 @@ private struct FundFeeReconciliationEditor: View {
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("核对实际赎回费")
             .keyboardDoneToolbar()
@@ -3213,6 +3223,10 @@ struct AssetsView: View {
     @State private var snapshotBackfillMessage = ""
     @State private var snapshotDetailsExpanded = false
     @State private var snapshotDeleteTarget: PortfolioSnapshot?
+    @State private var manualSnapshotExpanded = false
+    @State private var manualSnapshotDate = ""
+    @State private var manualSnapshotTotal = ""
+    @State private var manualSnapshotCash = ""
     @State private var showClearReconstructedSnapshots = false
 
     private var snapshotChartData: [PortfolioSnapshot] {
@@ -3288,10 +3302,41 @@ struct AssetsView: View {
                     .cardSurface(tone: store.hasDayPnLGross
                                  ? (store.dayPnLGross > 0.005 ? PnLColor.up : store.dayPnLGross < -0.005 ? PnLColor.down : nil)
                                  : (store.totalPnL > 0.005 ? PnLColor.up : store.totalPnL < -0.005 ? PnLColor.down : nil))
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
                 } header: { Text("账户总览") }
                 Section("历史快照") {
+                    Button(manualSnapshotExpanded ? "收起手动录入" : "手动录入/修正某日真实值") {
+                        if !manualSnapshotExpanded {
+                            if manualSnapshotDate.isEmpty {
+                                let formatter = DateFormatter()
+                                formatter.locale = Locale(identifier: "en_US_POSIX")
+                                formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+                                formatter.dateFormat = "yyyy-MM-dd"
+                                manualSnapshotDate = formatter.string(from: .now)
+                            }
+                            if manualSnapshotCash.isEmpty { manualSnapshotCash = store.data.cash.num(2) }
+                        }
+                        manualSnapshotExpanded.toggle()
+                    }
+                    if manualSnapshotExpanded {
+                        TextField("日期 YYYY-MM-DD", text: $manualSnapshotDate)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        TextField("当日真实总资产", text: $manualSnapshotTotal).keyboardType(.decimalPad)
+                        TextField("当日现金", text: $manualSnapshotCash).keyboardType(.decimalPad)
+                        Button("保存这天的真实快照") {
+                            do {
+                                try store.recordManualSnapshot(date: manualSnapshotDate,
+                                    total: Double(manualSnapshotTotal) ?? .nan,
+                                    cash: Double(manualSnapshotCash) ?? .nan)
+                                snapshotBackfillMessage = "已保存并标记为手动核实：\(manualSnapshotDate)"
+                                manualSnapshotExpanded = false
+                            } catch { snapshotBackfillMessage = "未保存：\(error.localizedDescription)" }
+                        }
+                        .disabled(manualSnapshotDate.isEmpty || manualSnapshotTotal.isEmpty || manualSnapshotCash.isEmpty)
+                        Text("手动值会覆盖该日期快照，并用于后续区间盈亏；可在下方删除后重录。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     // 休市日不给记录入口：这天的总资产和上一交易日几乎一样
                     // （场外净值不更新、场内是上一交易日的收盘价），记了只会让
                     // 收益曲线多出一段平线，还会把「区间收益」的分母算歪。
@@ -3393,7 +3438,26 @@ struct AssetsView: View {
                     ForEach(Array(sortedSnapshots.indices.reversed()), id: \.self) { index in
                         let s = sortedSnapshots[index]
                         VStack(alignment: .leading, spacing: 4) {
-                            HStack { Text(s.date); if s.quality == .provisional { Text("临时").font(.caption2).foregroundStyle(.orange) } else if s.quality == .settled { Text("已结算").font(.caption2).foregroundStyle(.green) } else if s.quality == .reconstructed { Text("历史重建").font(.caption2).foregroundStyle(.blue) }; Spacer(); Text((s.total).cny()) }
+                            HStack {
+                                Text(s.date)
+                                if s.quality == .provisional { Text("临时").font(.caption2).foregroundStyle(.orange) }
+                                else if s.quality == .settled { Text("已结算").font(.caption2).foregroundStyle(.green) }
+                                else if s.quality == .reconstructed { Text("历史重建").font(.caption2).foregroundStyle(.blue) }
+                                else if s.quality == .manual { Text("手动核实").font(.caption2).foregroundStyle(.purple) }
+                                Spacer()
+                                Text((s.total).cny())
+                                Button("修正") {
+                                    manualSnapshotDate = s.date
+                                    manualSnapshotTotal = s.total.num(2)
+                                    manualSnapshotCash = s.cash.num(2)
+                                    manualSnapshotExpanded = true
+                                    snapshotDetailsExpanded = false
+                                }
+                                .font(.caption)
+                            }
+                            if let note = s.note, !note.isEmpty {
+                                Text(note).font(.caption2).foregroundStyle(.secondary)
+                            }
                             if index > 0 {
                                 let prior = sortedSnapshots[index - 1]
                                 let result = store.snapshotReturn(from: prior, to: s)
@@ -3466,6 +3530,7 @@ struct AssetsView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear).navigationTitle("资产")
             .navigationBarTitleDisplayMode(.inline)
@@ -3582,6 +3647,7 @@ struct CashFlowEditor: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("现金流记录")
             .keyboardDoneToolbar()
@@ -3623,6 +3689,7 @@ struct ETFIncomeCalendarView: View {
     @State private var selectedDate: String?
     @State private var loading = false
     @State private var failedCount = 0
+    @State private var staleCount = 0
     @State private var showRate = false
     @State private var tradingDates = Set<String>()
     @State private var coverageStart: String?
@@ -3688,12 +3755,16 @@ struct ETFIncomeCalendarView: View {
                             LabeledContent("复合收益率", value: monthlyRate.directionMark() + monthlyRate.pct(2))
                         } else { LabeledContent("复合收益率", value: "—") }
                     }
-                    if loading { ProgressView("正在读取 ETF 日 K…") }
+                    if loading { ProgressView("正在更新 ETF 日 K…") }
                     else if failedCount > 0 {
-                        Text("有 \(failedCount) 只标的未取得完整日 K。可用历史最多 640 个交易日。")
+                        Text("有 \(failedCount) 只标的未取得日 K。日历不会把缺失行情当成 0 收益；检查网络后点右上角刷新。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("按前复权日 K 收盘价及交易流水反推每日持仓；不拆分成交价差与手续费，也不写入账本。没有完整流水的手动初始持仓按当前份额估算。“休市”按周末及已取得日 K 的覆盖区间推断，覆盖区间外或缺少行情的日期显示横线。")
+                    if staleCount > 0 {
+                        Text("有 \(staleCount) 只标的未更新到最近已知交易日，当前收益可能缺少最近一天；显示的是本机缓存。")
+                            .font(.footnote).foregroundStyle(CardTone.warn)
+                    }
+                    Text("按最新前复权日 K 收盘价及交易流水反推每日持仓；不拆分成交价差与手续费，也不写入账本。没有完整流水的手动初始持仓按当前份额估算。“休市”按周末及已取得日 K 的覆盖区间推断，覆盖区间外或缺少行情的日期显示横线。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .toneCard(CardTone.pnl(monthlyProfit), isLight: isLight)
@@ -3748,10 +3819,20 @@ struct ETFIncomeCalendarView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("ETF 收益日历")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { await loadMonth() } } label: {
+                        if loading { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+                    }
+                    .disabled(loading)
+                    .accessibilityLabel("刷新 ETF 日收益")
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } }
+            }
             .task(id: monthKey) { await loadMonth() }
         }
     }
@@ -3762,6 +3843,11 @@ struct ETFIncomeCalendarView: View {
         tradingDates = []
         coverageStart = nil
         coverageEnd = nil
+        failedCount = 0
+        staleCount = 0
+        // 用上证日 K 刷新最近实际交易日，判断某只 ETF 的日 K 是否仍停在昨天之前。
+        await store.refreshTradingCalendar()
+        let latestKnownTradingDay = MarketCalendar.loadTradingDays().max()
         let active = store.data.holdings.filter { $0.kind == .etf }
         let activeCodes = Set(active.map(\.code))
         let trades = store.data.ledger.filter { entry in
@@ -3785,11 +3871,18 @@ struct ETFIncomeCalendarView: View {
 
         for code in candidateCodes {
             do {
-                let bars = try await store.fetchDailyBars(code: code, count: 640)
+                // Calendar data must be current: the default fetch path returns a local
+                // cache immediately, which can silently omit yesterday's completed bar.
+                let bars = try await store.fetchDailyBars(code: code, count: 640, force: true)
                 guard bars.count > 1 else { failures += 1; continue }
                 if let first = bars.first?.date, coverageStart.map({ first < $0 }) ?? true { coverageStart = first }
                 if let last = bars.last?.date, coverageEnd.map({ last > $0 }) ?? true { coverageEnd = last }
                 tradingDates.formUnion(bars.map(\.date).filter { $0 >= startDay && $0 <= endDay })
+                if let latestKnownTradingDay,
+                   latestKnownTradingDay >= startDay, latestKnownTradingDay <= endDay,
+                   (bars.last?.date ?? "") < latestKnownTradingDay {
+                    staleCount += 1
+                }
                 for index in 1..<bars.count {
                     let previous = bars[index - 1]
                     let today = bars[index]
@@ -3816,9 +3909,9 @@ struct ETFIncomeCalendarView: View {
         }
         days = output.values.sorted { $0.date < $1.date }
         failedCount = failures
-        if selectedDate.map({ !$0.hasPrefix(monthKey) }) ?? true {
-            selectedDate = days.last?.date
-        }
+        // Refresh/reopen should land on the latest day with a calculated result;
+        // otherwise a stale selection (e.g. Friday) can hide the newly loaded Monday detail.
+        selectedDate = days.last?.date
     }
 
     private func parseDay(_ value: String) -> Date? {
@@ -3943,12 +4036,14 @@ struct ToolsView: View {
                 }
             }
         .scrollContentBackground(.hidden)
+        .listStyle(.plain)
         .appListLayout()
         .listRowBackground(Color.clear)
         .buttonStyle(.plain)
         .background(.clear).navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
             .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
@@ -3995,27 +4090,22 @@ struct PortfolioScenarioView: View {
         let held = store.data.holdings.filter { $0.kind == .etf }
         let base = held.map { holding in
             (id: holding.id, code: holding.code, name: holding.name, price: holding.current,
-             dividend: annualDividend(for: holding.code, name: holding.name, price: holding.current,
-                                      fallback: holding.annualDividendPerShare), baseline: holding.quantity)
+             dividend: annualDividend(for: holding.code, fallback: holding.annualDividendPerShare), baseline: holding.quantity)
         }
         let heldCodes = Set(held.map(\.code))
         let extra = addedQuotes.values.filter { !heldCodes.contains($0.code) }.map { quote in
             (id: "etf-\(quote.code)", code: quote.code, name: quote.name, price: quote.price,
-             dividend: annualDividend(for: quote.code, name: quote.name, price: quote.price,
-                                      fallback: nil), baseline: 0.0)
+             dividend: annualDividend(for: quote.code, fallback: nil), baseline: 0.0)
         }
         return (base + extra).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    private func annualDividend(for code: String, name: String, price: Double, fallback: Double?) -> Double {
-        if let fallback, fallback > 0 { return fallback }
-        let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -365, to: .now) ?? .distantPast
-        let recent = store.data.etfDividendEvents.filter {
-            $0.code == code && (ISO8601DateFormatter().date(from: $0.date + "T00:00:00Z") ?? .distantPast) >= cutoff
-        }
-        let recorded = recent.reduce(0) { $0 + $1.amountPerShare }
-        if recorded > 0 { return recorded }
-        return price > 0 ? price * ETFDividendProjection.estimatedYieldPercent(code: code, name: name) / 100 : 0
+    private func annualDividend(for code: String, fallback: Double?) -> Double {
+        if let fallback, fallback.isFinite, fallback >= 0 { return fallback }
+        let cutoff = ETFDividendProjection.yearAgoCutoff()
+        return store.data.etfDividendEvents
+            .filter { $0.code == code && $0.date >= cutoff && $0.isEstimated != true }
+            .reduce(0) { $0 + $1.amountPerShare }
     }
 
     private func quantity(for id: String, fallback: Double) -> Double {
@@ -4157,6 +4247,7 @@ struct PortfolioScenarioView: View {
                 .toneCard(CardTone.accent, isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("换仓情景试算")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -4187,15 +4278,15 @@ struct DividendCalendarView: View {
     private var etfEvents: [(ETFDividendEvent, Holding?, Double)] {
         store.data.etfDividendEvents.filter { $0.date.hasPrefix(String(year)) }.map { event in
             let holding = store.data.holdings.first { $0.code == event.code && $0.kind == .etf }
-            let estimated = event.amountPerShare * (holding?.quantity ?? 0)
+            let estimated = event.isEstimated == true ? 0 : event.amountPerShare * (holding?.quantity ?? 0)
             return (event, holding, estimated)
         }.sorted { $0.0.date == $1.0.date ? $0.0.code < $1.0.code : $0.0.date < $1.0.date }
     }
-    private var annualEstimateRows: [(Holding, Double, ETFDividendProjection.Source)] {
-        return store.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.compactMap { holding in
+    private var annualEstimateRows: [(Holding, Double?, ETFDividendProjection.Source?)] {
+        return store.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.map { holding in
             guard let projection = ETFDividendProjection.annualPerShare(for: holding,
                                                                         events: store.data.etfDividendEvents),
-                  projection.amount > 0 else { return nil }
+                  projection.amount > 0 else { return (holding, nil, nil) }
             return (holding, projection.amount, projection.source)
         }
     }
@@ -4207,8 +4298,8 @@ struct DividendCalendarView: View {
             List {
                 Section {
                     Stepper("年份：\(year)", value: $year, in: 2000...2100)
-                    LabeledContent("ETF 事件金额估算", value: (etfEvents.reduce(0) { $0 + $1.2 }).cny())
-                    LabeledContent("当前持仓预计年股息", value: (annualEstimateRows.reduce(0) { $0 + $1.0.quantity * $1.1 }).cny())
+                    LabeledContent("已记录派息金额", value: (etfEvents.reduce(0) { $0 + $1.2 }).cny())
+                    LabeledContent("近12个月实际派息", value: (annualEstimateRows.reduce(0) { $0 + $1.0.quantity * ($1.1 ?? 0) }).cny())
                 } header: { Text("年度汇总") }
                     .plainCard(isLight: isLight)
                 Section("场内 ETF 历史事件") {
@@ -4217,32 +4308,40 @@ struct DividendCalendarView: View {
                         let (event, holding, estimated) = item.element
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(holding?.name ?? event.code) · \(event.date)")
-                            Text("每份 \((event.amountPerShare).num(4)) 元 · 按当前份额估算 \((estimated).cny())")
+                            Text(event.isEstimated == true
+                                 ? "复权价格推算每份 \(event.amountPerShare.num(4)) 元 · 不是已核实的现金派息"
+                                 : "每份 \(event.amountPerShare.num(4)) 元 · 按当前份额估算 \(estimated.cny())")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    Text("旧版分红事件由复权因子推算；金额按当前份额估算，不是当年实际到账，也不计入账本收益。")
+                    Text("旧版迁入记录按复权价格推算，只作历史参考，不计入实际派息；只有已记录的现金分红才计入股息金额。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
                 Section("当前持仓分红参考") {
-                    if annualEstimateRows.isEmpty { Text("没有有效的年分红参考，可在场内持仓编辑页填写每份年分红修正。") .foregroundStyle(.secondary) }
+                    if annualEstimateRows.isEmpty { Text("暂无场内 ETF 持仓。") .foregroundStyle(.secondary) }
                     ForEach(Array(annualEstimateRows.enumerated()), id: \.offset) { item in
                         let (holding, perShare, source) = item.element
                         VStack(alignment: .leading, spacing: 3) {
                             Text(holding.name)
-                            Text("每份 \((perShare).num(4)) 元 · 股息率 \((holding.current > 0 ? perShare / holding.current * 100 : 0).num(2))% · 预计年到账 \((perShare * holding.quantity).cny())")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text(source == .estimated ? "按 ETF 风格股息率试算，公告或实际分红到账后会自动以真实数据替换。" : "基于人工修正或近 12 个月实际分红记录。")
-                                .font(.caption2).foregroundStyle(source == .estimated ? Color.orange : Color.secondary)
+                            if let perShare, let source {
+                                Text("每份 \(perShare.num(4)) 元 · 股息率 \((holding.current > 0 ? perShare / holding.current * 100 : 0).num(2))% · 近12个月派息 \((perShare * holding.quantity).cny())")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(source == .manual ? "按人工修正值统计。" : "按近 12 个月已记录的实际分红统计。")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            } else {
+                                Text("不分红 · 近 12 个月没有已记录的现金派息。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    Text("优先采用手动修正和近 12 个月真实分红；没有记录时按 ETF 风格做保守试算。年金额按当前份额计算，不代表未来承诺。")
+                    Text("只统计人工修正或近 12 个月已记录的现金派息 × 当前份额；没有派息记录时显示“不分红”，不按指数或名称估算未来分红。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("分红日历")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -4318,6 +4417,7 @@ struct LedgerHealthView: View {
                 .plainCard(isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear)
             .navigationTitle("账本体检")
@@ -4472,6 +4572,7 @@ struct ETFOverlapView: View {
                 .toneCard(CardTone.warnIf(!duplicates.isEmpty), isLight: isLight)
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("ETF 持仓穿透")
@@ -4579,6 +4680,7 @@ struct FundDCAReplayView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("历史定投回放")
             .keyboardDoneToolbar()
@@ -4651,6 +4753,7 @@ struct AddCashSimulationView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("加仓试算")
             .keyboardDoneToolbar()
@@ -4750,6 +4853,7 @@ struct TradePlansView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("交易计划与复盘")
             .toolbar {
@@ -4832,6 +4936,7 @@ struct TradePlanEditor: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("新建交易计划")
             .keyboardDoneToolbar()
@@ -4921,6 +5026,7 @@ private struct TradePlanReviewEditor: View {
                 if !message.isEmpty { Text(message).foregroundStyle(.red) }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("交易复盘")
             .keyboardDoneToolbar()
@@ -5177,6 +5283,7 @@ struct AIAnalysisView: View {
             .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear)
             .themedSheetBackground()
@@ -5193,7 +5300,7 @@ struct AIAnalysisView: View {
                                 Text("这是上次成功分析的保存结果；重新分析成功后会更新。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
-                            .padding()
+                            .padding(12)
                         } else {
                             ContentUnavailableView("暂无已保存的分析", systemImage: "sparkles")
                         }
@@ -5418,6 +5525,7 @@ struct AllocationTargetEditor: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("设置目标仓位")
             .keyboardDoneToolbar()
@@ -5728,6 +5836,7 @@ struct DayGridView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("日内网格 / 复盘")
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -6003,6 +6112,7 @@ private struct StrategicGridPlannerView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .listRowBackground(Color.clear)
             .buttonStyle(.plain)
             .background(.clear)
@@ -6243,6 +6353,7 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .listRowBackground(Color.clear)
             .buttonStyle(.plain)
@@ -6758,6 +6869,7 @@ struct OperationHistoryView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("操作记录")
             .navigationBarTitleDisplayMode(.inline)
@@ -6806,6 +6918,7 @@ private struct ManualQuoteOverrideEditor: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .keyboardDoneToolbar()
             .navigationTitle("手动填价")

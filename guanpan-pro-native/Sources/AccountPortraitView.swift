@@ -260,6 +260,7 @@ struct AccountPortraitView: View {
             .navigationBarTitleDisplayMode(.inline)
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .appListLayout()
             .background(.clear)
             .themedSheetBackground()

@@ -47,13 +47,13 @@ struct IntradayCompanionView: View {
 
                 Section("当前判断") {
                     HStack {
-                        Text(decision.level.rawValue).font(.headline)
+                        Text(decision.title(for: side)).font(.headline)
                         Spacer()
                         Text("随行情刷新").font(.caption).foregroundStyle(.secondary)
                     }
                     .foregroundStyle(decisionColor)
                     ForEach(decision.reasons, id: \.self) { Text("• \($0)").font(.subheadline) }
-                    Text("“可执行”只表示当前计划没有触发仓位、现金和技术条件的明显冲突，不等于保证买对或卖对。")
+                    Text("买卖判断会先做现金、份额和仓位校验，再结合你的交易风格、风险偏好、持有周期、偏好/回避项与趋势信号。份额足够只代表账面可卖，不代表建议卖出；App 不会自动下单。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -116,14 +116,24 @@ struct IntradayCompanionView: View {
             .sorted { $0.timestamp < $1.timestamp }.suffix(120)
         let minuteText = points.map { "\($0.timestamp.formatted(date: .omitted, time: .shortened)) \($0.price.num(4))" }
             .joined(separator: "\n")
+        let profile = store.data.investmentProfile
+        let behavior = BehaviorProfile.build(data: store.data, dailyBars: store.dailyBars)
+        let preference = profile.preference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let includesDipPreference = preference.localizedCaseInsensitiveContains("抄底")
+            || preference.localizedCaseInsensitiveContains("回调")
+        let effectivePreference = preference.isEmpty ? "喜欢抄底、偏好回调后分批布局"
+            : (includesDipPreference ? preference : "\(preference)；同时喜欢抄底、偏好回调后分批布局")
+        let profileText = "交易风格：\(profile.style)，风险偏好：\(profile.risk)，持有周期：\(profile.horizon)，单标的仓位上限：\(profile.maxPositionPercent.num(1))%；用户偏好：\(effectivePreference)；投资目标：\(profile.goal.isEmpty ? "未填写" : profile.goal)；回避项：\(profile.avoid.isEmpty ? "未填写" : profile.avoid)。\n本机交易行为统计：\(behavior.promptText)"
         let prompt = """
         用户正在考虑对 \(holding.name)（\(holding.code)）\(side == .buy ? "买入" : "卖出") \(quantity) 份，参考价 \(currentPrice.num(4))，计划金额 \(amount.cny())。
-        本机当前判断：\(decision.level.rawValue)。依据：\(decision.summary)。
+        用户投资画像与行为：\(profileText)
+        本机当前判断：\(decision.title(for: side))。依据：\(decision.summary)。
         当前总资产 \(store.totalAsset.cny())，现金 \(store.data.cash.cny())，该标的现持有 \(holding.quantity.num(2)) 份、成本 \(holding.cost.num(4))。
         今日本机分时样本：
         \(minuteText.isEmpty ? "暂无" : minuteText)
 
-        请只输出四小段：当前结论、现在要等的确认信号、下午回暖情景、继续走弱情景。每段 1–3 句。
+        请结合画像给出意见：用户偏好抄底，应把回调视作观察机会，但不能把“跌得多”直接等同买点；需要区分低位、止跌/企稳、趋势风险和仓位限制。卖出时，份额足够只代表账面可卖，必须说明趋势/仓位/止盈计划等具体依据；若没有足够依据，应明确说“暂不建议卖出/继续观察”，不能迎合用户的卖出意图。不要臆造用户画像、技术数据或止盈目标。
+        请只输出四小段：当前结论、画像如何影响判断、现在要等的确认/失效信号、回暖与继续走弱两种条件情景。每段 1–3 句。
         不得声称能预测下午涨跌；只能写条件与失效信号。没有量能、新闻、盘口或实时数据就明确说没有。不要给无条件买卖指令，不自动交易。
         """
         do {

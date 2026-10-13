@@ -110,6 +110,7 @@ struct ReconciliationView: View {
                 totalPnLSection
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("账务对账")
             .keyboardDoneToolbar()
@@ -283,6 +284,7 @@ private struct CostOverrideEditor: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .background(.clear)
             .navigationTitle("成本校准")
             .keyboardDoneToolbar()
