@@ -1211,7 +1211,8 @@ final class PortfolioStore: ObservableObject {
         let text = decodeTencent(bytes)
         guard let quote = parseTencent(text)[symbol] else { return nil }
         // 优先直接取字段 78 的 IOPV（实时参考净值），拿不到再用「现价 / (1 + 折溢价率)」反推。
-        let directIOPV = tencentFieldValues(text, symbol: symbol).flatMap { values in
+        let fieldValues = tencentFieldValues(text, symbol: symbol)
+        let directIOPV: Double? = fieldValues.flatMap { values -> Double? in
             guard values.count > 78 else { return nil }
             return Double(values[78].trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -1596,9 +1597,10 @@ final class PortfolioStore: ObservableObject {
             let points = await fetchTencentMinutes(symbol: tencent)
             if !points.isEmpty { sources.append(points) }
         }
-        let tencentCount = Set(sources.flatMap { $0 }.map {
-            Int($0.timestamp.timeIntervalSince1970 / 60)
-        }).count
+        // 同样拆开写，避免与下面同一类表达式一起把类型检查拖到超时。
+        let tencentFlat = sources.flatMap { $0 }
+        let tencentMinutes = Set(tencentFlat.map { Int($0.timestamp.timeIntervalSince1970 / 60) })
+        let tencentCount = tencentMinutes.count
         // 腾讯已给出完整 A 股交易日时不再等待第二接口；只在有明显缺口时补数。
         // 非东财格式的海外指数代码也不请求东财，避免无效请求拖慢详情页。
         if tencentCount < 242,
@@ -1606,9 +1608,13 @@ final class PortfolioStore: ObservableObject {
             let em = await fetchEastmoneyMinutes(secid: quote.symbol)
             if !em.isEmpty { sources.append(em) }
         }
-        let targetDay = sources.flatMap { $0 }.map(\.day).max()
-        let count = Set(sources.flatMap { $0 }.filter { $0.day == targetDay }
-            .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
+        // 拆成几步写：一行里套 flatMap/filter/map/Set 会让类型检查超时
+        // （the compiler is unable to type-check this expression in reasonable time）。
+        let combined = sources.flatMap { $0 }
+        let targetDay = combined.map(\.day).max()
+        let targetBars = combined.filter { $0.day == targetDay }
+        let targetMinutes = Set(targetBars.map { Int($0.timestamp.timeIntervalSince1970 / 60) })
+        let count = targetMinutes.count
         if count < 242, let tencent,
            let bytes = try? await NASSyncService.marketProxyData(path: "minute",
                queryItems: [URLQueryItem(name: "code", value: tencent)]) {

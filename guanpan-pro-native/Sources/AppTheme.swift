@@ -102,9 +102,21 @@ extension View {
     ///
     /// 挂在弹窗内容的根视图上即可，层级不限；同一个弹窗重复挂也不会画错（同色叠加）。
     /// 漏挂的直接后果就是「弹窗透明、下层页面透上来」，所以**新增弹窗时必须带上它**。
-    func themedSheetBackground() -> some View {
-        let surface = AppTheme.palette(for: AppAppearance.resolved(appAppearance)).surface
-        return background { ThemedSheetBackground() }
+    func themedSheetBackground() -> some View { modifier(ThemedSheetBackgroundModifier()) }
+}
+
+/// `themedSheetBackground()` 的实现。
+///
+/// 必须写成 `ViewModifier` 而不是直接写在 `extension View` 的方法体里：
+/// 方法体里读不到 `@Environment(\.appAppearance)`（属性包装器只能挂在类型上），
+/// 直接引用 `appAppearance` 会报 `cannot find 'appAppearance' in scope`。
+private struct ThemedSheetBackgroundModifier: ViewModifier {
+    @Environment(\.appAppearance) private var appearance
+
+    func body(content: Content) -> some View {
+        let surface = AppTheme.palette(for: AppAppearance.resolved(appearance)).surface
+        return content
+            .background { ThemedSheetBackground() }
             .toolbarBackground(surface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
     }
