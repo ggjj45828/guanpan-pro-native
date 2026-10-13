@@ -139,18 +139,63 @@ extension PortfolioStore {
 
     /// Transparent rule-based sizing helper. It is deliberately not labelled AI:
     /// it estimates a spacing from saved intraday ranges and refuses sparse data.
+    ///
+    /// **振幅样本分两档（用户问「为什么生成规则建议必须三天」）**：
+    /// 判断「振幅大不大、走势震不震荡」本来就不需要三天分时 —— 日线的 (high−low)/前收
+    /// 就是当天真实的日内波幅，只是看不到盘中怎么走的。所以：
+    /// - 覆盖合格的分时 ≥3 天 → 用分时振幅中位数（口径最细，能看到日内路径）；
+    /// - 分时不够（0–2 天）但日线够多 → **降到日线振幅中位数兜底**，照样给参数，
+    ///   只在结论里标明来源和「看不到盘中路径」这一限制；
+    /// - 两者都拿不到才返回 nil（由 gridRecommendationBlocker 说明卡在哪）。
     func gridRecommendation(code: String, capital: Double, feePerOrder: Double) -> GridRecommendation? {
         guard capital.isFinite, capital > 0, capital <= 1_000_000_000_000,
               feePerOrder.isFinite, feePerOrder >= 0 else { return nil }
         let reliableDays = reliableIntradayDays(code: code)
-        guard reliableDays.count >= 3, let latestDay = reliableDays.last, let anchor = latestDay.last?.price,
-              anchor.isFinite, anchor > 0 else { return nil }
-        let ranges = reliableDays.compactMap { day -> Double? in
-            let prices = day.map(\.price).filter { $0.isFinite && $0 > 0 }
-            guard let low = prices.min(), let high = prices.max(), low > 0 else { return nil }
-            return (high - low) / ((high + low) / 2)
-        }.sorted()
-        guard let medianRange = ranges.dropFirst(max(0, (ranges.count - 1) / 2)).first, medianRange.isFinite, medianRange > 0 else { return nil }
+        let bars = dailyBars[code] ?? []
+
+        // ---- 振幅样本：分时优先，日线兜底 ----
+        var ranges: [Double] = []
+        var sampleDays = 0
+        var coverage = 0.0
+        var sourceNote = ""
+        if reliableDays.count >= 3 {
+            ranges = reliableDays.compactMap { day -> Double? in
+                let prices = day.map(\.price).filter { $0.isFinite && $0 > 0 }
+                guard let low = prices.min(), let high = prices.max(), low > 0 else { return nil }
+                return (high - low) / ((high + low) / 2)
+            }.sorted()
+            sampleDays = reliableDays.count
+            coverage = reliableDays.map { min(1, Double($0.count) / 240) }.reduce(0, +) / Double(reliableDays.count)
+            sourceNote = "基于最近 \(sampleDays) 个覆盖合格的交易日分时"
+        } else {
+            // 日线兜底：用近 21 根的 (high − low) / 前收。覆盖度按 0.6 折算 ——
+            // 看不到盘中路径，打分相应保守，不假装和分时数据一样可信。
+            let window = Array(bars.suffix(21))
+            guard window.count >= 11 else { return nil }
+            for index in 1..<window.count {
+                let previousClose = window[index - 1].close
+                guard previousClose > 0, window[index].high > 0, window[index].low > 0 else { continue }
+                ranges.append((window[index].high - window[index].low) / previousClose)
+            }
+            ranges.sort()
+            sampleDays = ranges.count
+            coverage = 0.6
+            sourceNote = "本机分时覆盖不足 3 天，改用最近 \(sampleDays) 个交易日的日线振幅估算（看不到盘中路径，仅供起步参考）"
+        }
+        guard !ranges.isEmpty else { return nil }
+        guard let medianRange = ranges.dropFirst(max(0, (ranges.count - 1) / 2)).first,
+              medianRange.isFinite, medianRange > 0 else { return nil }
+
+        // ---- 中枢价：分时最后一价优先，其次最后一根日线收盘 ----
+        let anchor: Double
+        if let intradayLast = reliableDays.last?.last?.price, intradayLast.isFinite, intradayLast > 0 {
+            anchor = intradayLast
+        } else if let close = bars.last?.close, close.isFinite, close > 0 {
+            anchor = close
+        } else {
+            return nil
+        }
+
         let feeFloor = 2 * feePerOrder / (anchor * 100) + 0.001 // fees plus a modest friction buffer
         let stepFraction = max(0.0005, min(0.01, max(medianRange * 0.25, feeFloor)))
         guard stepFraction <= medianRange * 0.8 else { return nil }
@@ -161,13 +206,12 @@ extension PortfolioStore {
         let maximumLevels = rawMaximumLevels >= 5 ? 5 : Int(rawMaximumLevels)
         guard maximumLevels >= 1 else { return nil }
         let levels = min(5, maximumLevels)
-        let averageCoverage = reliableDays.map { min(1, Double($0.count) / 240) }.reduce(0, +) / Double(reliableDays.count)
-        let dayFactor = min(1, Double(reliableDays.count) / 10)
+        let dayFactor = min(1, Double(sampleDays) / 10)
         let feeRatio = min(1, feeFloor / stepFraction)
-        let score = max(0, min(100, Int((averageCoverage * 55 + dayFactor * 30 + (1 - feeRatio) * 15).rounded())))
+        let score = max(0, min(100, Int((coverage * 55 + dayFactor * 30 + (1 - feeRatio) * 15).rounded())))
         return GridRecommendation(anchor: anchor, stepPercent: stepFraction * 100, levels: levels, score: score,
-            daysUsed: reliableDays.count, medianDailyRangePercent: medianRange * 100,
-            summary: "基于最近 \(reliableDays.count) 个覆盖合格的交易日；日内振幅中位数 \(String(format: "%.2f", medianRange * 100))%。分数只代表数据覆盖、样本量和费用空间，不预测收益。")
+            daysUsed: sampleDays, medianDailyRangePercent: medianRange * 100,
+            summary: "\(sourceNote)；日内振幅中位数 \(String(format: "%.2f", medianRange * 100))%。分数只代表数据覆盖、样本量和费用空间，不预测收益。")
     }
 
     /// 「覆盖合格」的交易日：当天 ≥168 个分钟点，且任意相邻两点间隔 ≤10 分钟。
@@ -188,20 +232,25 @@ extension PortfolioStore {
     func gridRecommendationBlocker(code: String, capital: Double, feePerOrder: Double,
                                    fallbackAnchor: Double?) -> String? {
         let reliableDays = reliableIntradayDays(code: code)
+        let bars = dailyBars[code] ?? []
         var blockers: [String] = []
 
-        if reliableDays.count < 3 {
+        // 分时不足 3 天**不再直接判死**：只要日线够多，gridRecommendation 会用日线振幅兜底
+        // （判断振幅与震荡性靠日线的 high/low 就够，不需要三天分时）。
+        // 只有「分时不够且日线也不够」才真的给不出参数。
+        if reliableDays.count < 3 && bars.count < 11 {
             let totalDays = Set(intradayBars.filter { $0.code == code }.map(\.day)).count
             let detail = totalDays > reliableDays.count
                 ? "本机共有 \(totalDays) 个有分时记录的交易日，但只有 \(reliableDays.count) 天覆盖合格"
                 : "本机只有 \(reliableDays.count) 个覆盖合格的交易日"
-            blockers.append("分时数据不足：\(detail)（需要至少 3 天；合格 = 当天 ≥168 个分钟点且无超过 10 分钟的缺口）。"
-                + "在交易时间把 App 保持前台可自动采集，或用「导入分时 CSV」补齐。")
+            blockers.append("数据不足：\(detail)；日线也只有 \(bars.count) 根。"
+                + "判断振幅和震荡并不需要三天分时 ——「≥3 天覆盖合格的分时」或「≥11 根日线」有其一即可。"
+                + "点上方「补日线」通常最快（一次能拿到几百天日线）；交易时间把 App 保持前台可自动采集分时，或用「导入分时 CSV」补齐。")
         }
 
         // 资金门槛按 4 手估算（锚定占 2 手 + 至少 1 档 2 手），与 gridRecommendation 的
         // rawMaximumLevels = floor((capital / lotCost - 2) / 2) ≥ 1 一致。
-        let anchor = reliableDays.last?.last?.price ?? fallbackAnchor
+        let anchor = reliableDays.last?.last?.price ?? bars.last?.close ?? fallbackAnchor
         if let anchor, anchor.isFinite, anchor > 0,
            capital.isFinite, capital > 0, feePerOrder.isFinite, feePerOrder >= 0 {
             let lotCost = anchor * 100 + feePerOrder
@@ -215,16 +264,16 @@ extension PortfolioStore {
         return blockers.isEmpty ? nil : blockers.joined(separator: "\n\n")
     }
 
-    /// 网格适合度排名：合并自选与全部持仓，**只用本地已缓存日线，不发起请求**。
-    /// 场外基金也会出现在列表里（明确标记「不适合」并说明原因），数据不足的排在最后。
+    /// 网格适合度排名：合并自选与 **ETF 持仓**，**只用本地已缓存日线，不发起请求**。
+    /// **列表里不含场外基金**（用户要求）——申赎费用高、到账慢，本来就做不了网格，
+    /// 把它排在榜上只会让人误以为「也能评一评」；为什么不能做，写在界面上的说明里。
     func gridSuitabilityRanking() -> [GridSuitability] {
         var seen: Set<String> = []
         var items: [(code: String, name: String, price: Double, onExchange: Bool)] = []
-        // 持仓类型是本机最可靠的品种来源：先放持仓，避免代码刚好同时出现在
-        // 自选报价里时，把场外基金误判成场内可交易品种。
-        for holding in data.holdings {
+        // 持仓类型是本机最可靠的品种来源：只取场内持仓（ETF）。
+        for holding in data.holdings where holding.kind == .etf {
             guard seen.insert(holding.code).inserted else { continue }
-            items.append((holding.code, holding.name, holding.current, holding.kind == .etf))
+            items.append((holding.code, holding.name, holding.current, true))
         }
         // Quote 只表示行情可查，不一定代表可网格交易；至少要求标准六位 ASCII 数字代码。
         for quote in data.quotes where GridSuitabilityEngine.isTradableCode(quote.code) {

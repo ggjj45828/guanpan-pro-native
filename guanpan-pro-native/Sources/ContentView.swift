@@ -4943,6 +4943,27 @@ struct FundDCAReplayView: View {
     }
 }
 
+/// 带说明的数字输入行：标题、输入框，以及「这个数字是做什么用的、怎么填」。
+///
+/// 中长期网格规划与新增资金加仓试算都用它 —— 这两个表单的字段名本身太短
+/// （「现金预留」「每格幅度」），不写清楚用户只能猜；说明直接贴在输入框下面，
+/// 不用展开帮助页，也不用回头问。
+struct NumberFieldWithHint: View {
+    let title: String
+    let hint: String
+    @Binding var text: String
+    let keyboard: UIKeyboardType
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextField(title, text: $text).keyboardType(keyboard)
+            Text(hint)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 struct AddCashSimulationView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
@@ -4961,9 +4982,15 @@ struct AddCashSimulationView: View {
         NavigationStack {
             Form {
                 Section("试算参数") {
-                    TextField("新增资金（元）", text: $cashText).keyboardType(.decimalPad)
-                    TextField("现金预留（%）", text: $reserveText).keyboardType(.decimalPad)
-                    TextField("每笔手续费（元）", text: $feeText).keyboardType(.decimalPad)
+                    NumberFieldWithHint(title: "新增资金（元）",
+                                        hint: "这次打算新投入的金额，只用于试算，不会改动账户余额或持仓。",
+                                        text: $cashText, keyboard: .decimalPad)
+                    NumberFieldWithHint(title: "现金预留（%）",
+                                        hint: "从新增资金里留出多少不动，应付下跌补仓和临时用钱。填 10 就是只投 90%；填 0 是全投，满仓时遇到急跌会比较被动。",
+                                        text: $reserveText, keyboard: .decimalPad)
+                    NumberFieldWithHint(title: "每笔手续费（元）",
+                                        hint: "按「一笔」交易的固定费用估算，先扣费用再分配金额；买 N 只就算 N 笔。",
+                                        text: $feeText, keyboard: .decimalPad)
                     Button("开始试算") { calculate() }
                     Text("ETF 使用 100 份整手。目标比例读取已设的持仓目标；未设置目标的标的按当前持仓占总资产比例分配。目标金额按总资产（含现金和基金）计算，场外基金不会被建议买卖。")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -5811,6 +5838,10 @@ struct DayGridView: View {
     /// 网格适合度排名（规则版评估，见 GridSuitability.swift）。
     @State private var suitability: [GridSuitability] = []
     @State private var isEvaluatingSuitability = false
+    /// 「哪个标的适合做网格」默认收起：这是品种筛选参考，不是每次进来都要看的东西。
+    @State private var suitabilityExpanded = false
+    /// 「什么样的标的适合做网格」判断标准教学，默认收起。
+    @State private var gridTutorialExpanded = false
 
     private var instruments: [GridInstrument] {
         let quotes = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
@@ -5923,50 +5954,60 @@ struct DayGridView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
-                Section("哪个标的适合做网格（规则版评估）") {
-                    Text("按公开网格交易方法用本机日线计算：日均成交额（流动性）、年化波动率 15%–30%、日均振幅 0.5%–2%、收盘贴近 MA20 的震荡性、场内品种、避开 60 日单边极端。这是品种筛选参考，不是 AI 预测，也不保证收益。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if isEvaluatingSuitability {
-                        HStack(spacing: 8) { ProgressView(); Text("正在补日线并评估…").font(.footnote) }
-                    } else {
-                        Button("评估/刷新") { refreshSuitability() }
-                        if suitability.contains(where: { $0.isOnExchange && $0.barCount < 60 }) {
-                            Button("为数据不足的标的补日线（最多 8 只）") { Task { await backfillSuitabilityData() } }
+                Section {
+                    DisclosureGroup(isExpanded: $suitabilityExpanded) {
+                        Text("按公开网格交易方法用本机日线计算：日均成交额（流动性）、年化波动率 15%–30%、日均振幅 0.5%–2%、收盘贴近 MA20 的震荡性、场内品种、避开 60 日单边极端。这是品种筛选参考，不是 AI 预测，也不保证收益。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        DisclosureGroup(isExpanded: $gridTutorialExpanded) {
+                            gridTutorialList
+                        } label: {
+                            Label("什么样的标的适合做网格（判断标准）", systemImage: "book").font(.subheadline)
                         }
-                    }
-                    if suitability.isEmpty, !isEvaluatingSuitability {
-                        Text("暂无可评估标的：先在自选或 ETF 持仓中添加场内品种。").font(.footnote).foregroundStyle(.secondary)
-                    }
-                    ForEach(suitability) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Text("\(item.name) · \(item.code)").font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Spacer()
-                                Text(item.grade.rawValue)
-                                    .scaledFont(10, weight: .bold)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .foregroundStyle(.white)
-                                    .background(suitabilityGradeColor(item.grade), in: Capsule())
-                                Text("\(item.score) 分").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        if isEvaluatingSuitability {
+                            HStack(spacing: 8) { ProgressView(); Text("正在补日线并评估…").font(.footnote) }
+                        } else {
+                            Button("评估/刷新") { refreshSuitability() }
+                            if suitability.contains(where: { $0.isOnExchange && $0.barCount < 60 }) {
+                                Button("为数据不足的标的补日线（最多 8 只）") { Task { await backfillSuitabilityData() } }
                             }
-                            Text(suitabilityMetricsText(item))
-                                .font(.caption).foregroundStyle(.secondary)
-                            ForEach(item.warnings, id: \.self) { line in
-                                Text("⚠ \(line)").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                            }
-                            ForEach(item.reasons, id: \.self) { line in
-                                Text("· \(line)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }
-                            HStack(spacing: 10) {
-                                Button("用它做网格") { selectSuitability(item) }
-                                    .disabled(item.grade == .avoid)
-                                if item.isOnExchange, item.barCount < 60 {
-                                    Button("补日线") { Task { await backfillSuitabilityData(for: item.code) } }
+                        }
+                        if suitability.isEmpty, !isEvaluatingSuitability {
+                            Text("暂无可评估标的：先在自选或 ETF 持仓里添加场内品种（ETF）。场外基金不参与评估——申购赎回费高、确认慢，一格差价不够填费用，做不了网格；想做网格请换成场内 ETF。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        ForEach(suitability) { item in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Text("\(item.name) · \(item.code)").font(.subheadline.weight(.semibold)).lineLimit(1)
+                                    Spacer()
+                                    Text(item.grade.rawValue)
+                                        .scaledFont(10, weight: .bold)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .foregroundStyle(.white)
+                                        .background(suitabilityGradeColor(item.grade), in: Capsule())
+                                    Text("\(item.score) 分").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                 }
+                                Text(suitabilityMetricsText(item))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                ForEach(item.warnings, id: \.self) { line in
+                                    Text("⚠ \(line)").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                }
+                                ForEach(item.reasons, id: \.self) { line in
+                                    Text("· \(line)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                }
+                                HStack(spacing: 10) {
+                                    Button("用它做网格") { selectSuitability(item) }
+                                        .disabled(item.grade == .avoid)
+                                    if item.isOnExchange, item.barCount < 60 {
+                                        Button("补日线") { Task { await backfillSuitabilityData(for: item.code) } }
+                                    }
+                                }
+                                .font(.caption)
                             }
-                            .font(.caption)
+                            .padding(.vertical, 2)
                         }
-                        .padding(.vertical, 2)
+                    } label: {
+                        Label("哪个标的适合做网格（规则版评估）", systemImage: "square.grid.3x3").font(.headline)
                     }
                 }
                 .plainCard(isLight: isLight)
@@ -6186,7 +6227,7 @@ struct DayGridView: View {
         // 生成不了时分开说清卡在哪：分时数据不够，还是计划资金不够（与主账户现金无关）。
         recommendationText = store.gridRecommendationBlocker(
             code: code, capital: capitalValue, feePerOrder: feeValue, fallbackAnchor: Double(anchor)
-        ) ?? "本机暂时没有至少 3 个覆盖合格的交易日，或计划资金/费用不足以支持至少一档。先采集或导入完整分时数据。"
+        ) ?? "暂时给不出参数：可能是数据不足（既没有 ≥3 天覆盖合格的分时，日线也不到 11 根），或计划资金/费用不足以支持至少一档。先点「补日线」，或采集/导入分时数据。"
     }
 
     // MARK: - 网格适合度评估（规则版，见 GridSuitability.swift）
@@ -6242,6 +6283,36 @@ struct DayGridView: View {
         case .avoid: return Color.secondary
         }
     }
+
+    /// 「什么样的标的适合做网格」判断标准。每条都对应 `GridSuitabilityEngine` 里的一个分项，
+    /// 看完能自己复算界面上那个分数是怎么来的（不是玄学打分）。
+    @ViewBuilder private var gridTutorialList: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(Self.gridTutorialItems.enumerated()), id: \.offset) { entry in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(entry.offset + 1). \(entry.element.title)")
+                        .font(.caption.weight(.semibold))
+                    Text(entry.element.detail)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text("一句话：场内 + 流动性够 + 波动适中 + 走势震荡，四条缺任何一条，网格都会变成「单边扛单」。")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 教学条目（标题 + 说明）。与 `GridSuitabilityEngine` 的评分分项一一对应。
+    private static let gridTutorialItems: [(title: String, detail: String)] = [
+        ("必须是场内品种", "场外基金申购费加赎回费一次要 0.1%–1.5%，确认还要 T+1～T+2，一格差价根本不够填费用。网格只做 ETF / 场内基金。"),
+        ("流动性要够：日均成交额 ≥ 1 亿", "挂单能立刻成交、滑点小。成交额太小的品种，买卖价差本身就是隐形成本。"),
+        ("波动率适中：年化 15%–30%", "太低（低于 15%）没有波动就没有差价可赚；太高（高于 30%）价格容易一路击穿网格下沿，钱还没补完就用光。"),
+        ("日均振幅 0.5%–2%", "网格的一格价差主要来自日内波动。低于 0.5% 扣完手续费几乎白做；高于 2% 要准备更宽的价格区间和更多资金。"),
+        ("震荡 > 单边", "收盘价长期在 MA20 附近来回最理想。单边上涨会早早卖飞，单边下跌会越补越套——这两个方向网格都不擅长。"),
+        ("避开刚创新高 / 新低", "最新价贴着 60 日最高价，容易一买就回落；贴着最低价，容易一路向下破网。"),
+        ("资金要够 4 手", "每手 100 份：锚定价 2 手 + 至少 1 档 2 手。买不满 4 手就没有机动空间，网格等于单笔押注。")
+    ]
 
     private func runReplay() {
         guard let plan = store.data.dayGridPlans.first(where: { $0.code == code }) else { message = "先保存该标的的网格计划。"; return }
@@ -6309,9 +6380,15 @@ private struct StrategicGridPlannerView: View {
                         LabeledContent("当前行情", value: selected.price > 0 ? selected.price.num(4) : "暂无")
                         LabeledContent("日线数据", value: "\(store.dailyBars[code]?.count ?? 0) 根")
                     }
-                    TextField("可用投入资金（元）", text: $capital).keyboardType(.decimalPad)
-                    TextField("目标每格幅度（%，留空自动估算）", text: $gapPercent).keyboardType(.decimalPad)
-                    TextField("现有持仓（份，用于检查卖档）", text: $ownedShares).keyboardType(.numberPad)
+                    NumberFieldWithHint(title: "可用投入资金（元）",
+                                        hint: "只用于规划买卖档位和每档预算，不会动用真实账户。金额越少，能排下的档位越少。",
+                                        text: $capital, keyboard: .decimalPad)
+                    NumberFieldWithHint(title: "目标每格幅度（%，留空自动估算）",
+                                        hint: "相邻两档的价差：填 1.5 表示价格每变动 1.5% 就挂一档。留空则按近 14 日 ATR 自动估算；手动填一般是刻意做得比实测波动更宽或更窄。",
+                                        text: $gapPercent, keyboard: .decimalPad)
+                    NumberFieldWithHint(title: "现有持仓（份）",
+                                        hint: "用来检查上方卖档有没有货可卖；填 0 就只生成买档。这里是「份」不是「手」，1 手 = 100 份，持有 3 手请填 300。",
+                                        text: $ownedShares, keyboard: .numberPad)
                     Button("生成中长期网格") { generate() }.disabled(code.isEmpty)
                     if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.orange) }
                 }
