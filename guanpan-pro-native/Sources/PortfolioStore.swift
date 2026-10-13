@@ -43,6 +43,7 @@ final class PortfolioStore: ObservableObject {
     private var lastAutomaticMarketSaveAt = Date.distantPast
     private var applyingNASData = false
     private var isUndoingSave = false
+    private var isEnsuringBackfillHistory = false
     /// 技术信号 memo。`MarketSignalCalculator.evaluate` 是 O(640) 的纯计算，
     /// 自选列表每一行渲染、按信号排序的比较器、首页「盘中机会」都会调用；
     /// 不缓存时每次滚动 / 刷新都反复重算，是列表滑动卡顿的主要来源之一。
@@ -208,22 +209,24 @@ final class PortfolioStore: ObservableObject {
     /// 界面必须把净值日写出来，否则又会被读成「今天的场外盈亏」。
     /// **口径**：只比「最新已公布净值 − 上一个已公布净值」，不掺任何日历日期 ——
     /// 美股基金周末休盘但净值照常公布，上一期是上一个净值日而不是昨天。
-    /// 只有最新净值今天首次采集/更新时才计入今天；重复使用旧净值返回 0。
+    /// 只把净值日期等于今天的变化计入今天。`fetchedAt` 仅记录数据何时到手机，
+    /// 不能把昨天的净值涨跌挪到今天；迟到净值应回补到它自己的净值日/历史快照。
     func fundDayPnL(of holding: Holding) -> Double {
-        guard holding.kind == .fund, holding.quantity > 0 else { return 0 }
-        let points = latestFundPoints(for: holding.code)
-        guard points.count >= 2 else { return 0 }
-        let latest = points[points.count - 1], previous = points[points.count - 2]
-        // 不把最近一个净值日的旧涨跌重复称作今天收益。海外基金净值日可为昨日，
-        // 但只要今天首次采集到，fetchedAt 就会归到今天并计入今天账户变化。
+        guard holding.kind == .fund, holding.quantity > 0,
+              let pair = currentFundDayPair(for: holding) else { return 0 }
+        return holding.quantity * (pair.current.nav - pair.previous.nav)
+    }
+
+    private func currentFundDayPair(for holding: Holding) -> (current: FundNAVPoint, previous: FundNAVPoint)? {
+        guard holding.kind == .fund, holding.quantity > 0 else { return nil }
         let today = MarketCalendar.isoDay(.now)
-        // 只按“本机首次确认/修正这条净值的日期”归属收益。
-        // 不能用净值日期兜底：旧版导入的净值可能没有 fetchedAt，日期恰好是今天时，
-        // 会在之后的日子里被错误地重复算成当天收益。刷新流程会给今天确认的新净值补上时间。
-        guard let fetchedAt = latest.fetchedAt,
-              MarketCalendar.isoDay(fetchedAt) == today else { return 0 }
-        guard latest.nav.isFinite, previous.nav.isFinite, previous.nav > 0 else { return 0 }
-        return holding.quantity * (latest.nav - previous.nav)
+        let points = latestFundPoints(for: holding.code)
+        // 必须是该基金最新的有效净值日恰好为今天。历史里即使留着今天的重复/导入点，
+        // 只要该基金当前最新披露仍停在昨天，就不能把旧日收益放进今日总盈亏。
+        guard points.last?.date == today, let index = points.indices.last, index > 0 else { return nil }
+        let point = points[index], previous = points[index - 1]
+        guard point.nav.isFinite, point.nav > 0, previous.nav.isFinite, previous.nav > 0 else { return nil }
+        return (point, previous)
     }
 
     /// 全部场外基金「最近一个净值日」的盈亏合计。
@@ -231,13 +234,9 @@ final class PortfolioStore: ObservableObject {
         data.holdings.filter { $0.kind == .fund }.reduce(0) { $0 + fundDayPnL(of: $1) }
     }
 
-    /// 场外基金当日盈亏是否可算：至少有一只基金存了两个净值点，且最新净值在今天首次采集/更新。
+    /// 场外基金当日盈亏是否可算：至少一只持仓基金有今天的有效净值和前一期净值。
     var hasFundDayPnL: Bool {
-        data.holdings.contains { holding in
-            holding.kind == .fund
-                && latestFundPoints(for: holding.code).count >= 2
-                && fundNAVWasUpdatedToday(holding)
-        }
+        data.holdings.contains { currentFundDayPair(for: $0) != nil }
     }
 
     /// 将旧备份/跨设备合并产生的重复净值日期压成一条，优先保留最近一次确认且数值有效的记录。
@@ -258,15 +257,12 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
-    private func fundNAVWasUpdatedToday(_ holding: Holding) -> Bool {
-        guard let latest = latestFundPoints(for: holding.code).last,
-              let fetchedAt = latest.fetchedAt else { return false }
-        return MarketCalendar.isoDay(fetchedAt) == MarketCalendar.isoDay(.now)
-    }
-
-    /// 场外今日幅度 = 场外当日盈亏 / 场外昨收市值（按上一净值折算）。
+    /// 场外今日幅度 = 今日已取得有效净值的基金盈亏 / 这些基金各自前一期净值市值。
     var fundDayNAVRate: Double? {
-        let base = marketValue(of: .fund) - fundDayPnL
+        let base = data.holdings.reduce(0.0) { total, holding in
+            guard let pair = currentFundDayPair(for: holding) else { return total }
+            return total + pair.previous.nav * holding.quantity
+        }
         guard base > 0, base.isFinite else { return nil }
         return fundDayPnL / base * 100
     }
@@ -430,7 +426,10 @@ final class PortfolioStore: ObservableObject {
         for raw in bars {
             var bar = normalizedIntradayBar(raw)
             let key = intradayMinuteKey(code: bar.code, at: bar.timestamp)
-            if let prior = byMinute[key], bar.volume == nil { bar.volume = prior.volume }
+            if let prior = byMinute[key] {
+                if bar.volume == nil { bar.volume = prior.volume }
+                if bar.iopv == nil { bar.iopv = prior.iopv }
+            }
             byMinute[key] = bar
         }
         return byMinute.values.sorted { $0.timestamp < $1.timestamp }
@@ -473,13 +472,14 @@ final class PortfolioStore: ObservableObject {
         let encoder = JSONEncoder()
         if let raw: Data = try? encoder.encode(rows) { try? raw.write(to: url, options: .atomic) }
     }
-    func fetchDailyBars(code rawCode: String, count: Int = 640, force: Bool = false) async throws -> [DailyBar] {
+    func fetchDailyBars(code rawCode: String, count: Int = 640, force: Bool = false,
+                        adjustment: String = "qfq") async throws -> [DailyBar] {
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
         // 个股 / ETF 是 6 位纯数字；指数是带市场前缀的腾讯代码（sh000001 / usIXIC）。
         // 交易日历要拿上证指数的日 K，所以这里不能再假设「代码一定全是数字」。
         let isPrefixed = !code.allSatisfy(\.isNumber)
         guard isPrefixed ? code.count >= 6 : code.count == 6 else { throw URLError(.badURL) }
-        if !force, let cached = dailyBars[code], !cached.isEmpty { return cached }
+        if adjustment == "qfq", !force, let cached = dailyBars[code], !cached.isEmpty { return cached }
         let symbol = isPrefixed ? code : tencentSymbol(code)
         // 行情走 iPhone 直连优先，NAS 仅作兜底（NAS 地址是给多设备同步用的，不应成为行情必经链路）
         let endpoints = [
@@ -490,58 +490,104 @@ final class PortfolioStore: ObservableObject {
         var lastError: Error = URLError(.cannotLoadFromNetwork)
         for endpoint in endpoints {
             guard var components = URLComponents(string: endpoint) else { continue }
-            components.queryItems = [URLQueryItem(name: "param", value: "\(symbol),day,,,\(min(max(count, 30), 640)),qfq")]
+            components.queryItems = [URLQueryItem(name: "param", value: "\(symbol),day,,,\(min(max(count, 30), 640)),\(adjustment)")]
             guard let url = components.url else { continue }
             do {
                 var request = URLRequest(url: url); request.timeoutInterval = 10
                 let (bytes, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                let result = parseDailyBars(bytes, code: code, symbol: symbol) ?? []
+                let result = parseDailyBars(bytes, code: code, symbol: symbol, adjusted: adjustment == "qfq") ?? []
                 guard !result.isEmpty else { throw URLError(.cannotParseResponse) }
-                dailyBars[code] = result
-                invalidateSignalCache(for: code)
-                saveDailyBars(); return result
+                if adjustment == "qfq" {
+                    dailyBars[code] = result
+                    invalidateSignalCache(for: code)
+                    saveDailyBars()
+                }
+                return result
             } catch { lastError = error }
         }
         // 直连全部失败后，最后才尝试 NAS 行情代理兜底
         if let proxyBytes = try? await NASSyncService.marketProxyData(path: "daily", queryItems: [
             URLQueryItem(name: "symbol", value: symbol),
-            URLQueryItem(name: "count", value: String(min(max(count, 30), 640)))
-        ]), let result = parseDailyBars(proxyBytes, code: code, symbol: symbol), !result.isEmpty {
-            dailyBars[code] = result
-            invalidateSignalCache(for: code)
-            saveDailyBars(); return result
+            URLQueryItem(name: "count", value: String(min(max(count, 30), 640))),
+            URLQueryItem(name: "fq", value: adjustment)
+        ]), let result = parseDailyBars(proxyBytes, code: code, symbol: symbol, adjusted: adjustment == "qfq"), !result.isEmpty {
+            if adjustment == "qfq" {
+                dailyBars[code] = result
+                invalidateSignalCache(for: code)
+                saveDailyBars()
+            }
+            return result
         }
-        if let cached = dailyBars[code], !cached.isEmpty { return cached }
+        if adjustment == "qfq", let cached = dailyBars[code], !cached.isEmpty { return cached }
         throw lastError
     }
 
-    /// 回补历史快照前，先把相关标的历史价格 / 净值补齐到最早交易日。
-    /// 这样漏开的日子也能用“那一天真实的收盘价 / 净值”重建，而不是因为本地没缓存就跳过。
-    /// 单只标的本地日 K 已达 640 个交易日上限（≈2.5 年）仍够不到最早交易日时不再重复拉取。
+    /// Generate the same clearly-labelled approximation used by the web client:
+    /// infer possible cash distributions from raw vs. forward-adjusted ETF K lines.
+    /// It only updates estimated events and never converts them into confirmed income.
+    func refreshETFDividendEstimates(force: Bool = false) {
+        let today = MarketCalendar.isoDay(.now)
+        let key = "guanpan.native.dividendEstimate.lastRun"
+        if !force, UserDefaults.standard.string(forKey: key) == today { return }
+        UserDefaults.standard.set(today, forKey: key)
+        let codes = Array(Set(data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.map(\.code)))
+            .filter { !ETFDividendProjection.knownNonDividendCodes.contains($0) }
+        guard !codes.isEmpty else { return }
+        Task {
+            var estimates: [String: [ETFDividendEvent]] = [:]
+            var completed = Set<String>()
+            for code in codes {
+                do {
+                    let adjusted = try await fetchDailyBars(code: code, count: 640, force: force)
+                    let raw = try await fetchDailyBars(code: code, count: 640, force: force, adjustment: "")
+                    completed.insert(code)
+                    let inferred = ETFDividendProjection.inferredEvents(code: code, adjusted: adjusted, raw: raw)
+                    if !inferred.isEmpty { estimates[code] = inferred }
+                } catch { continue }
+            }
+            let confirmed = data.etfDividendEvents.filter { $0.isEstimated != true }
+            let untouchedEstimates = data.etfDividendEvents.filter {
+                $0.isEstimated == true && !completed.contains($0.code)
+            }
+            let refreshed = estimates.values.flatMap { $0 }
+            var byKey: [String: ETFDividendEvent] = [:]
+            for event in untouchedEstimates + refreshed + confirmed {
+                let key = "\(event.code)|\(event.date)"
+                if event.isEstimated != true || byKey[key] == nil { byKey[key] = event }
+            }
+            data.etfDividendEvents = byKey.values.sorted { $0.date < $1.date }
+            save(label: nil)
+        }
+    }
+
+    /// App 恢复前台后同步 NAS、更新历史行情/净值，并补齐可核实的漏记快照。
     func ensureBackfillHistory() async {
-        let ledgerDays = data.ledger.map { dayString($0.date) }
-        let flowDays = data.cashFlows.map { dayString($0.date) }
-        let fundDays = data.fundTransactions.map(\.effectiveDate)
-        let allDays = (ledgerDays + flowDays + fundDays).filter { !$0.isEmpty }
-        let fallbackDate = Calendar.current.date(byAdding: .year, value: -2, to: .now) ?? .now
-        let earliestDay = allDays.min() ?? dayString(fallbackDate)
-        // 1) ETF / 证券：本地日 K 没覆盖到最早交易日时向前补齐（最多 640 个交易日）。
+        guard !isEnsuringBackfillHistory else { return }
+        isEnsuringBackfillHistory = true
+        defer { isEnsuringBackfillHistory = false }
+        // 1) ETF / 证券：每次恢复前台都拉取最新日 K（最多 640 个交易日）。
+        // 仅检查最早日期会漏掉 App 关闭期间的新交易日，导致快照重建缺少当日价格。
         let etfCodes = Set(data.holdings.filter { $0.kind == .etf }.map(\.code)
             + data.ledger.filter { ($0.kind ?? .etf) == .etf }.map(\.code))
         for code in etfCodes where code.count == 6 && code.allSatisfy(\.isNumber) {
-            let cached = dailyBars[code] ?? []
-            let reaches = cached.first.map { $0.date <= earliestDay } ?? false
-            let maxed = cached.count >= 640
-            if cached.isEmpty || (!reaches && !maxed) {
-                _ = try? await fetchDailyBars(code: code, count: 640, force: true)
-            }
+            _ = try? await fetchDailyBars(code: code, count: 640, force: true)
         }
-        // 2) 基金：若某只完全没有净值历史，触发一次全量净值刷新（含历史序列）。
+        // 2) 每次恢复前台都合并 NAS 独立采集的净值档案并刷新已公布序列。
+        // 只在本机“完全没有历史”时才拉取，会让已有但过期的净值永远不补新日期。
         let fundCodes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code)
             + data.fundTransactions.map(\.code))
-        let missingFund = fundCodes.contains { code in !data.fundNAVHistory.contains { $0.code == code } }
-        if missingFund { _ = await refreshFundNAVsAndWait() }
+        if !fundCodes.isEmpty { _ = await refreshFundNAVsAndWait() }
+
+        // 不依赖“本次有没有新增净值”来触发：App 关闭期间漏掉的 ETF 交易日，
+        // 也要用刚拉回的日 K 自动补快照。手动核实的快照仍由重建函数保留。
+        let reconciled = reconcileProvisionalSnapshotsAfterNAVUpdate()
+        let rebuilt = backfillVerifiableSnapshots(audit: false)
+        if reconciled > 0 {
+            save(label: rebuilt.added > 0 ? "自动重建漏记历史快照" : "按最新历史数据核对快照")
+        }
+        // 网络报价与净值加载完成后再更新今天的临时快照，避免只保存启动时的旧行情。
+        recordSnapshot()
     }
 
     /// 用上证指数日 K 反推交易日历：**有 K 线的日期就是交易日**。
@@ -563,23 +609,29 @@ final class PortfolioStore: ObservableObject {
         } catch { return false }
     }
 
-    private func parseDailyBars(_ bytes: Data, code: String, symbol: String) -> [DailyBar]? {
+    private func parseDailyBars(_ bytes: Data, code: String, symbol: String, adjusted: Bool = true) -> [DailyBar]? {
         guard let text = String(data: bytes, encoding: .utf8),
               let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end,
               let root = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any],
               let data = root["data"] as? [String: Any],
               let node = data[symbol] as? [String: Any],
-              let rows = (node["qfqday"] as? [[Any]]) ?? (node["day"] as? [[Any]]) else { return nil }
-        return rows.compactMap { row -> DailyBar? in
+              let rows = adjusted ? ((node["qfqday"] as? [[Any]]) ?? (node["day"] as? [[Any]]))
+                                  : ((node["day"] as? [[Any]]) ?? (node["qfqday"] as? [[Any]])) else { return nil }
+        let parsed = rows.compactMap { row -> DailyBar? in
             guard row.count >= 6, let date = row[0] as? String else { return nil }
             let values = row[1...5].compactMap { item -> Double? in
                 if let n = item as? NSNumber { return n.doubleValue }
                 if let s = item as? String { return Double(s) }
                 return nil
             }
-            guard values.count == 5, values[1] > 0 else { return nil }
+            guard values.count == 5, values.allSatisfy(\.isFinite), values[1] > 0,
+                  values[2] > 0, values[3] > 0, values[4] >= 0 else { return nil }
             return DailyBar(code: code, date: date, open: values[0], close: values[1], high: values[2], low: values[3], volume: values[4])
         }.sorted { $0.date < $1.date }
+        // Tencent's overlapping pages can repeat a boundary date. Charts use date as
+        // the Swift Charts identity, so collapse duplicates before exposing the series.
+        return Dictionary(parsed.map { ($0.date, $0) }, uniquingKeysWith: { _, newer in newer })
+            .values.sorted { $0.date < $1.date }
     }
     func saveIntradayBars() {
         guard let url = gridBarsURL() else { return }
@@ -615,8 +667,11 @@ final class PortfolioStore: ObservableObject {
         for raw in bars {
             var bar = Self.normalizedIntradayBar(raw)
             let key = Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)
-            if let prior = byMinute[key], bar.volume == nil { bar.volume = prior.volume }
-            if let prior = byMinute[key], prior.price == bar.price && prior.volume == bar.volume && prior.day == bar.day { continue }
+            if let prior = byMinute[key] {
+                if bar.volume == nil { bar.volume = prior.volume }
+                if bar.iopv == nil { bar.iopv = prior.iopv }
+            }
+            if let prior = byMinute[key], prior.price == bar.price && prior.volume == bar.volume && prior.iopv == bar.iopv && prior.day == bar.day { continue }
             byMinute[key] = bar
             changed.append(bar)
         }
@@ -2014,6 +2069,21 @@ final class PortfolioStore: ObservableObject {
             for code in codes {
                 do {
                     guard code.count == 6, code.allSatisfy(\.isNumber) else { failures.append(code); continue }
+                    // 先读取 NAS 在手机离线期间采到的净值和首次发现时间。
+                    // 日期仍按净值日入账；NAS 时间只用于判断数据何时可见和补历史快照。
+                    if let archived = try? await NASSyncService.fundNAVArchive(code: code), !archived.isEmpty {
+                        var archiveByDate = data.fundNAVHistory.filter { $0.code == code }
+                            .reduce(into: [String: FundNAVPoint]()) { $0[$1.date] = $1 }
+                        for point in archived {
+                            if let old = archiveByDate[point.date] {
+                                if point.fetchedAt != nil || abs(old.nav - point.nav) > 0.00000001 {
+                                    archiveByDate[point.date] = point
+                                }
+                            } else { archiveByDate[point.date] = point }
+                        }
+                        data.fundNAVHistory.removeAll { $0.code == code }
+                        data.fundNAVHistory.append(contentsOf: archiveByDate.values)
+                    }
                     guard let url = URL(string: "https://fund.eastmoney.com/pingzhongdata/\(code).js") else { throw URLError(.badURL) }
                     var request = URLRequest(url: url)
                     request.timeoutInterval = 20
@@ -2050,16 +2120,21 @@ final class PortfolioStore: ObservableObject {
                     let fetchStamp = Date.now
                     let newestStoredDate = byDate.keys.max()
                     let newestFetchedDate = points.last?.date
-                    for point in points {
+                    for (pointIndex, point) in points.enumerated() {
                         let previous = byDate[point.date]
                         let valueChanged = previous.map { abs($0.nav - point.nav) > 0.00000001 } ?? false
                         let isNewPublishedPoint = previous == nil
                             && (newestStoredDate.map { point.date > $0 } ?? (point.date == newestFetchedDate))
                         let isLegacyCurrentDayPoint = point.date == MarketCalendar.isoDay(fetchStamp)
                             && previous?.fetchedAt == nil
-                        let fetchedAt = (valueChanged || isNewPublishedPoint || isLegacyCurrentDayPoint)
-                            ? fetchStamp : previous?.fetchedAt
-                        merged[point.date] = FundNAVPoint(code: point.code, date: point.date, nav: point.nav, fetchedAt: fetchedAt)
+                        let fetchedAt = previous?.fetchedAt ?? ((valueChanged || isNewPublishedPoint || isLegacyCurrentDayPoint) ? fetchStamp : nil)
+                        let previousSourcePoint = pointIndex > 0 ? points[pointIndex - 1] : nil
+                        let observedDelta: Double?
+                        if let existingDelta = previous?.observedDelta { observedDelta = existingDelta }
+                        else if isNewPublishedPoint, let previousSourcePoint { observedDelta = point.nav - previousSourcePoint.nav }
+                        else { observedDelta = nil }
+                        merged[point.date] = FundNAVPoint(code: point.code, date: point.date, nav: point.nav,
+                                                          fetchedAt: fetchedAt, observedDelta: observedDelta)
                     }
                     data.fundNAVHistory.removeAll { $0.code == code }
                     data.fundNAVHistory.append(contentsOf: merged.values.sorted { $0.date < $1.date }.suffix(1800))
@@ -2078,11 +2153,15 @@ final class PortfolioStore: ObservableObject {
             }
             let dcaBooked = processAutomaticDCA()
             let reconciledSnapshots = fetched > 0 ? reconcileProvisionalSnapshotsAfterNAVUpdate() : 0
+            // 迟到净值可能对应一个此前没有快照的估值日；收到历史净值后自动补建可核实日期。
+            // backfill 会跳过已有记录，因此不会覆盖手动快照。
+            let backfilledSnapshots = fetched > 0 ? backfillVerifiableSnapshots(audit: false) : (added: 0, skipped: 0)
             let refreshedSnapshot = fetched > 0 ? refreshTodaySnapshotIfPresent() : false
             save()
             isRefreshingFunds = false
-            let snapshotNote = refreshedSnapshot || reconciledSnapshots > 0
-                ? "；已同步核对 \(reconciledSnapshots + (refreshedSnapshot ? 1 : 0)) 条快照" : ""
+            let snapshotCount = reconciledSnapshots + backfilledSnapshots.added + (refreshedSnapshot ? 1 : 0)
+            let snapshotNote = snapshotCount > 0
+                ? "；按净值日期核对/补建 \(snapshotCount) 条快照" : ""
             let routeNote = usedNASProxy ? " · 含 NAS 代理" : " · iPhone 直连"
             if dcaBooked > 0 { fundDCAStatus = "已按已公布净值补记定投 \(dcaBooked) 期；仅更新本机账本" }
             let resultNote = "本次净值新增/变化 \(changedNAVCodes.count) 只（持仓 \(changedHoldingNAVCodes.count)/\(holdingFundCodes.count)）；成功读取 \(fetched)/\(codes.count) 个代码"
@@ -2220,6 +2299,7 @@ final class PortfolioStore: ObservableObject {
     private func refreshTodaySnapshotIfPresent() -> Bool {
         let today = dayString(.now)
         guard let i = data.snapshots.firstIndex(where: { $0.date == today }) else { return false }
+        guard data.snapshots[i].quality != .manual else { return false }
         data.snapshots[i].total = totalAsset
         data.snapshots[i].cash = data.cash
         data.snapshots[i].recordedAt = .now
@@ -2367,7 +2447,7 @@ final class PortfolioStore: ObservableObject {
     func isTencentETFCode(_ raw: String) -> Bool {
         let code = raw.filter(\.isNumber)
         guard code.count == 6 else { return false }
-        return ["51", "56", "58", "159", "150", "16", "18"].contains { code.hasPrefix($0) }
+        return ["15", "16", "18", "50", "51", "52", "56", "58", "59"].contains { code.hasPrefix($0) }
     }
 
     /// 部分行情响应会给字段附加百分号或千位分隔符。
@@ -2852,6 +2932,7 @@ final class PortfolioStore: ObservableObject {
         // 休市日自动进入页面不应重复写入上一交易日估值；需要手工校正时走历史快照表单。
         guard !isMarketClosedToday else { return }
         let date = dayString(.now)
+        if data.snapshots.first(where: { $0.date == date })?.quality == .manual { return }
         let quality = snapshotQuality(for: date)
         let snap = PortfolioSnapshot(date: date, total: totalAsset, cash: data.cash, recordedAt: .now,
                                      quality: quality, note: quality == .provisional ? "仍有基金净值未结算" : nil)
@@ -2913,14 +2994,15 @@ final class PortfolioStore: ObservableObject {
         save(label: "调整参考现金")
     }
 
-    func fundDailyPerformance(month: String) -> [FundDailyPerformance] {
+    func fundDailyPerformance(period: String? = nil) -> [FundDailyPerformance] {
         let codes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code)
             + data.fundTransactions.map(\.code))
-        var byDay: [String: (profit: Double, base: Double, codes: Set<String>)] = [:]
+        var byDay: [String: (profit: Double, base: Double, codes: Set<String>, lines: [String: FundDailyContribution])] = [:]
         for code in codes {
             var navByDay: [String: Double] = [:]
-            data.fundNAVHistory.filter { $0.code == code && $0.nav.isFinite && $0.nav > 0 }
-                .forEach { navByDay[$0.date] = $0.nav }
+            // Use the same de-duplicated, valid history as the live NAV card. Older backups
+            // may contain multiple values for one valuation date; raw array order is not authority.
+            latestFundPoints(for: code).forEach { navByDay[$0.date] = $0.nav }
             let dates = navByDay.keys.sorted()
             guard dates.count > 1 else { continue }
             let trades = data.fundTransactions.filter { $0.code == code && $0.status == .confirmed }
@@ -2945,7 +3027,7 @@ final class PortfolioStore: ObservableObject {
                     }
                     tradeIndex += 1
                 }
-                guard date.hasPrefix(month), let previousNAV = navByDay[previousDate],
+                guard period.map({ date.hasPrefix($0) }) ?? true, let previousNAV = navByDay[previousDate],
                       let currentNAV = navByDay[date] else { continue }
                 var dayTrades: [FundTransaction] = []
                 while eventIndex < events.count && events[eventIndex].date <= date {
@@ -2961,15 +3043,49 @@ final class PortfolioStore: ObservableObject {
                 let base = previousNAV * shares
                 let change = (currentNAV - previousNAV) * shares + distributions - fees
                 guard base.isFinite, change.isFinite else { continue }
-                var row = byDay[date] ?? (0, 0, [])
+                var row = byDay[date] ?? (0, 0, [], [:])
                 row.profit += change; row.base += base; row.codes.insert(code)
+                let holdingName = data.holdings.first(where: { $0.kind == .fund && $0.code == code })?.name
+                    ?? trades.first?.name ?? code
+                var line = row.lines[code] ?? FundDailyContribution(code: code, name: holdingName, profit: 0, baseValue: 0)
+                line.profit += change; line.baseValue += base
+                row.lines[code] = line
                 byDay[date] = row
             }
         }
         return byDay.keys.sorted().compactMap { date in
             guard let row = byDay[date] else { return nil }
-            return FundDailyPerformance(date: date, profit: row.profit, baseValue: row.base, fundCount: row.codes.count)
+            return FundDailyPerformance(date: date, profit: row.profit, baseValue: row.base,
+                fundCount: row.codes.count, contributions: row.lines.values.sorted { $0.profit > $1.profit })
         }
+    }
+
+    func fundDailyPerformance(month: String) -> [FundDailyPerformance] {
+        fundDailyPerformance(period: month)
+    }
+
+    /// Explain holdings that cannot yet appear in the fund return calendar, instead of
+    /// making a missing row look like a zero return. In particular, a manual holding
+    /// needs a confirmed purchase/backfill date to know how many shares existed then.
+    func fundDailyCalendarExcluded(period: String? = nil) -> [(code: String, reason: String)] {
+        let codes = Set(data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }.map(\.code)
+            + data.fundTransactions.map(\.code))
+        return codes.sorted().compactMap { code in
+            let points = latestFundPoints(for: code)
+            let inPeriod = period.map { prefix in points.filter { $0.date.hasPrefix(prefix) } } ?? points
+            let hasPair = inPeriod.count > 0 && points.contains { $0.date < inPeriod[0].date }
+            let holdingExists = data.holdings.contains { $0.kind == .fund && $0.code == code && $0.quantity > 0 }
+            let hasBuyBaseline = data.fundTransactions.contains {
+                $0.code == code && $0.status == .confirmed && $0.side == .buy
+            }
+            if !hasPair { return (code, "缺少覆盖该月的两期已公布净值") }
+            if holdingExists && !hasBuyBaseline { return (code, "缺少历史申购/起始份额，无法确认当日持有份额") }
+            return nil
+        }
+    }
+
+    func fundDailyCalendarExcluded(month: String) -> [(code: String, reason: String)] {
+        fundDailyCalendarExcluded(period: month)
     }
 
     func inferredBackfillShares(for holding: Holding) -> Double {

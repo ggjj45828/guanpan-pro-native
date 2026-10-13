@@ -243,26 +243,40 @@ struct IntradayCompanionDecision {
         } ? .settled : .provisional
     }
 
-    /// 新基金净值到账后，回头处理被旧净值标成临时的历史快照。
-    /// 能由完整流水和真实历史价格重算时更新资产；无法核实则只更新“净值已到”状态，
-    /// 并说明总额沿用原值，用户可用手动快照录入真实金额。
+    /// 新基金净值到账后，按净值估值日重算所有自动历史快照。
+    /// 延迟到达的 9 日净值必须回写 9 日快照，即使该快照此前已被标为“完整”。
+    /// 手动核实快照始终保留；缺少流水/历史价格时不伪造总额，并标明未能重算。
     @discardableResult func reconcileProvisionalSnapshotsAfterNAVUpdate() -> Int {
         let today = companionDay()
         var changed = 0
-        for index in data.snapshots.indices where data.snapshots[index].quality == .provisional {
+        for index in data.snapshots.indices where data.snapshots[index].quality != .manual {
             let day = data.snapshots[index].date
-            guard day < today, snapshotQuality(for: day) == .settled else { continue }
+            guard day < today else { continue }
+            let oldTotal = data.snapshots[index].total
+            let oldCash = data.snapshots[index].cash
+            let oldQuality = data.snapshots[index].quality
+            let oldNote = data.snapshots[index].note
             if let state = reconstructedState(on: day),
                let total = historicalPortfolioTotal(on: day, state: state) {
                 data.snapshots[index].total = total
                 data.snapshots[index].cash = state.cash
-                data.snapshots[index].quality = .settled
-                data.snapshots[index].note = nil
+                // 保留“重建”来源标签；其他自动快照按当日净值覆盖完整度更新。
+                if oldQuality != .reconstructed {
+                    data.snapshots[index].quality = snapshotQuality(for: day)
+                }
+                data.snapshots[index].note = data.snapshots[index].quality == .provisional
+                    ? "仍有基金净值未公布；当前总资产按截至当日最近净值估算，迟到净值到达后会回补。"
+                    : (oldQuality == .reconstructed ? oldNote : nil)
             } else {
-                data.snapshots[index].quality = .settled
-                data.snapshots[index].note = "基金净值已公布；总资产沿用原记录，因缺少可核实的完整流水/历史价格未重算，可手动修正。"
+                data.snapshots[index].quality = snapshotQuality(for: day)
+                data.snapshots[index].note = "已按净值日期检查；缺少可核实的完整流水或历史价格，未覆盖原总资产。可手动录入该日真实总资产。"
             }
-            changed += 1
+            if abs(data.snapshots[index].total - oldTotal) > 0.005
+                || abs(data.snapshots[index].cash - oldCash) > 0.005
+                || data.snapshots[index].quality != oldQuality
+                || data.snapshots[index].note != oldNote {
+                changed += 1
+            }
         }
         if changed > 0 { data.snapshots.sort { $0.date < $1.date } }
         return changed
@@ -318,7 +332,7 @@ struct IntradayCompanionDecision {
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         return calendar.dateComponents([.day], from: a, to: b).day
     }
-    @discardableResult func backfillVerifiableSnapshots() -> (added: Int, skipped: Int) {
+    @discardableResult func backfillVerifiableSnapshots(audit: Bool = true) -> (added: Int, skipped: Int) {
         let today = companionDay(), existing = Set(data.snapshots.map(\.date))
         var days = Set(dailyBars.values.flatMap { $0.map(\.date) }); days.formUnion(data.fundNAVHistory.map(\.date))
         // 绝不能把“行情缓存最早的一天”当成账户起点。此前这会在账户尚未建立、
@@ -354,7 +368,10 @@ struct IntradayCompanionDecision {
                                         quality: .reconstructed,
                                         note: "按真实历史价格、持仓流水与现金流水反向重建；场外基金采用截至当日最近已公布净值")); added += 1
         }
-        if added > 0 { data.snapshots.sort { $0.date < $1.date }; save(label: "补全可核实历史快照") }
+        if added > 0 {
+            data.snapshots.sort { $0.date < $1.date }
+            save(label: audit ? "补全可核实历史快照" : nil)
+        }
         return (added, skipped)
     }
 

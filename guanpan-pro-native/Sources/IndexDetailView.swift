@@ -83,7 +83,9 @@ struct IndexDetailView: View {
                         .scaledFont(10).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(12)
+                // 指数详情页信息较少，收窄页面边距，把更多横向空间留给走势。
+                .padding(.horizontal, 6)
+                .padding(.vertical, 10)
             }
             .navigationTitle(index.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -151,6 +153,7 @@ struct IndexDetailView: View {
                 intradayAxis
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var intradayPlot: some View {
@@ -161,14 +164,16 @@ struct IndexDetailView: View {
         let lo = base - span, hi = base + span
         let volumes = minutes.map { $0.volume ?? 0 }
         let maxVolume = max(volumes.max() ?? 1, 1)
+        let priceHeight: CGFloat = 310
+        let volumeHeight: CGFloat = 112
 
         return HStack(alignment: .top, spacing: 6) {
-            // 左侧刻度：上/昨收/下
+            // 左侧刻度与价格主图等高；小柱明确标成成交量，避免和 MACD 混淆。
             VStack(alignment: .trailing) {
                 Text(hi.num(2)); Spacer(); Text(base.num(2)); Spacer(); Text(lo.num(2))
             }
             .scaledFont(9).foregroundStyle(.secondary).monospacedDigit()
-            .frame(width: 54, height: 168)
+            .frame(width: 50, height: priceHeight)
 
             VStack(spacing: 3) {
                 GeometryReader { geo in
@@ -188,28 +193,51 @@ struct IndexDetailView: View {
                             .stroke(intradayPriceLineColor, style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
                     }
                 }
-                .frame(height: 168)
+                .frame(height: priceHeight)
 
-                // 成交量柱
+                HStack(spacing: 5) {
+                    Text("分时成交量").fontWeight(.semibold)
+                    Text("柱越高成交越多 · 红绿按昨收涨跌").foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .scaledFont(9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 3)
+
+                // 与价格主图共用固定交易时段横轴；加高副图并加宽柱体，方便辨认。
                 GeometryReader { geo in
                     let size = geo.size
                     let slotWidth = size.width / CGFloat(isMainlandIndex ? 240 : max(volumes.count, 1))
                     ZStack(alignment: .bottomLeading) {
                         ForEach(Array(volumes.enumerated()), id: \.offset) { item in
-                            let height = size.height * CGFloat(item.element / maxVolume)
+                            let height = item.element > 0
+                                ? max(1.5, size.height * CGFloat(item.element / maxVolume)) : 0
                             let ratio = intradayXRatio(minutes[item.offset].timestamp)
                             let risesFromPreviousClose = minutes[item.offset].price >= base
-                            Rectangle()
-                                .fill((risesFromPreviousClose ? PnLColor.up : PnLColor.down).opacity(0.48))
-                                .frame(width: max(0.6, slotWidth * 0.72), height: max(0.5, height))
-                                .position(x: size.width * ratio,
-                                          y: size.height - max(0.5, height) / 2)
+                            if height > 0 {
+                                let barWidth = min(size.width, max(1, slotWidth * 0.9))
+                                Rectangle()
+                                    .fill((risesFromPreviousClose ? PnLColor.up : PnLColor.down).opacity(0.68))
+                                    .frame(width: barWidth, height: height)
+                                    .position(x: min(size.width - barWidth / 2,
+                                                     max(barWidth / 2, size.width * ratio)),
+                                              y: size.height - height / 2)
+                            }
                         }
                     }
                 }
-                .frame(height: 40)
+                .frame(height: volumeHeight)
+                .overlay(alignment: .center) {
+                    if !volumes.contains(where: { $0 > 0 }) {
+                        Text("行情源未提供成交量")
+                            .scaledFont(9).foregroundStyle(.tertiary)
+                    }
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .cardSurface()
     }
 
     private var intradayAxis: some View {
@@ -235,7 +263,7 @@ struct IndexDetailView: View {
             return HStack {
                 Text("09:30")
                 Spacer()
-                Text("11:30 / 13:00")
+                Text("午休跳过")
                 Spacer()
                 Text("15:00")
             }

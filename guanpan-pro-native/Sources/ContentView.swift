@@ -79,8 +79,10 @@ struct ContentView: View {
             store.refreshIndexQuotes()
             store.maybeRefreshFundNAVsAfterMarketClose()
             Task {
+                await store.synchronizeNASSafely()
                 await store.syncNASMarketArchive()
                 await store.archiveTrackedIntraday()
+                await store.ensureBackfillHistory()
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -91,6 +93,7 @@ struct ContentView: View {
                 store.maybeRefreshFundNAVsAfterMarketClose()
                 store.recordSnapshot()   // 打开 App 自动记当天快照，免得手动忘
                 Task {
+                    await store.synchronizeNASSafely()
                     await store.syncNASMarketArchive()
                     await store.archiveTrackedIntraday()
                     await store.ensureBackfillHistory()
@@ -327,7 +330,7 @@ struct DashboardView: View {
             return projection.amount > 0 ? projection.amount / q.price * 100 : nil
         }
         let cutoff = ETFDividendProjection.yearAgoCutoff()
-        let annual = store.data.etfDividendEvents
+        let annual = ETFDividendProjection.mergedEvents(store.data.etfDividendEvents)
             .filter { $0.code == q.code && $0.date >= cutoff && $0.isEstimated != true }
             .reduce(0) { $0 + $1.amountPerShare }
         return annual > 0 ? annual / q.price * 100 : nil
@@ -760,7 +763,7 @@ struct DashboardView: View {
                 MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
                            toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
             ])
-            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 今天新采集的场外基金净值变化（\(fundNAVDateNote)）。海外净值可能代表前一交易日，但按实际公布/采集日计入；旧净值不重复计入今天。")
+            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 净值日期为今天的场外基金变化（\(fundNAVDateNote)）。晚一天公布的美股基金净值归到它对应的净值日，不挪到公布日；补到的历史净值用于回算历史快照。")
                 .scaledFont(10).foregroundStyle(.secondary)
         }
         .cardSurface(tone: CardTone.pnl(store.totalPnL))
@@ -785,9 +788,9 @@ struct DashboardView: View {
             }
             return store.isMarketOpenNow ? "今日盈亏" : "今日收盘盈亏"
         }
-        // 境外基金净值日晚一交易日公布，显示采集日与净值代表日，避免误以为旧收益。
+        // 场外实际收益只在净值估值日入账；采集日不能把前几天的变化挪成今天收益。
         if store.hasFundDayPnL, let day = store.latestFundNAVDate.map({ shortDay($0) }) {
-            return "净值今日更新 · 净值日 \(day)"
+            return "基金净值日 \(day)"
         }
         return "当日盈亏"
     }
@@ -804,8 +807,11 @@ struct DashboardView: View {
     /// 开市日白天今日净值还没公布时，场外盈亏不参与合计，这里要写明在等晚间更新。
     private var fundNAVDateNote: String {
         guard let date = store.latestFundNAVDate else { return "无净值" }
-        guard store.hasFundDayPnL else { return "净值 \(shortDay(date)) · 今日未更新" }
-        return "净值日 \(shortDay(date)) · 今天新更新"
+        let today = MarketCalendar.isoDay(.now)
+        guard date == today, store.hasFundDayPnL else {
+            return "最新净值日 \(shortDay(date)) · 今日净值未公布，不计入今日"
+        }
+        return "净值日 \(shortDay(date)) · 今日已公布"
     }
 
     // MARK: - 自选行渲染
@@ -1366,6 +1372,8 @@ struct HoldingsView: View {
 
     /// 年股息只采用人工修正或近 12 个月已记录的分红事件；缺少记录不等于确认不分红。
     private func annualDividendProjection(for holding: Holding) -> (amount: Double, source: ETFDividendProjection.Source)? {
+        if ETFDividendProjection.knownNonDividendCodes.contains(holding.code), holding.annualDividendPerShare == nil { return nil }
+        if holding.annualDividendPerShare == 0 { return nil }
         ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)
     }
 
@@ -1394,8 +1402,12 @@ struct HoldingsView: View {
     }
 
     private func dividendStatus(for holding: Holding) -> String {
-        if annualDividendProjection(for: holding) != nil { return "有记录" }
-        if holding.annualDividendPerShare == 0 || holding.code == "159352" { return "不分红" }
+        if ETFDividendProjection.knownNonDividendCodes.contains(holding.code) { return "不分红" }
+        if annualDividendProjection(for: holding) != nil { return "有试算" }
+        if ETFDividendProjection.mergedEvents(store.data.etfDividendEvents).contains(where: {
+            $0.code == holding.code && $0.isEstimated != true
+        }) { return "历史派息 · 暂无年化规律" }
+        if holding.annualDividendPerShare == 0 { return "不分红" }
         return "待核实"
     }
 
@@ -1412,37 +1424,26 @@ struct HoldingsView: View {
             }
     }
 
-    /// 每只基金的最新/上一期净值，**一次遍历**算好。
-    /// 原来每个持仓行都把整个 fundNAVHistory 过滤+排序两遍（当日收益一处、脚注一处），
-    /// 行数×历史长度是持仓页滚动卡顿的来源之一；现在整个页面渲染只扫一遍。
+    /// 每只基金的最新/上一期净值，先按估值日期去重，再一次遍历算好。
+    /// 旧备份可能有重复日期；不能依赖数组顺序决定哪个净值参与日收益。
     private var fundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] {
-        var latest: [String: FundNAVPoint] = [:]
-        var previous: [String: FundNAVPoint] = [:]
-        for point in store.data.fundNAVHistory {
-            if let current = latest[point.code] {
-                if point.date > current.date {
-                    // 新老大替换：旧「最新」降级为「上一期」（与旧的上期再比一次，防乱序数据）
-                    if let old = previous[point.code] {
-                        if current.date > old.date { previous[point.code] = current }
-                    } else {
-                        previous[point.code] = current
-                    }
-                    latest[point.code] = point
-                } else if point.date < current.date {
-                    // 更早的数据：可能是上期
-                    if let old = previous[point.code] {
-                        if point.date > old.date { previous[point.code] = point }
-                    } else {
-                        previous[point.code] = point
-                    }
-                }
-                // 同日重复：保留先出现的一条（与旧实现 max(by:) 的平局行为一致）
-            } else {
-                latest[point.code] = point
-            }
-        }
         var result: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
-        for (code, point) in latest { result[code] = (point, previous[code]) }
+        let groups = Dictionary(grouping: store.data.fundNAVHistory.filter {
+            $0.nav.isFinite && $0.nav > 0
+        }, by: \.code)
+        for (code, rows) in groups {
+            let byDate = Dictionary(rows.map { ($0.date, $0) }, uniquingKeysWith: { old, new in
+                switch (old.fetchedAt, new.fetchedAt) {
+                case let (a?, b?): return a >= b ? old : new
+                case (_?, nil): return old
+                case (nil, _?): return new
+                case (nil, nil): return new
+                }
+            })
+            let sorted = byDate.values.sorted { $0.date < $1.date }
+            guard let latest = sorted.last else { continue }
+            result[code] = (latest, sorted.count > 1 ? sorted[sorted.count - 2] : nil)
+        }
         return result
     }
 
@@ -1451,6 +1452,7 @@ struct HoldingsView: View {
                                 using pairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)])
         -> (amount: Double, percent: Double)? {
         guard let pair = pairs[holding.code], let previous = pair.previous,
+              pair.latest.date == MarketCalendar.isoDay(.now),
               previous.nav > 0, pair.latest.nav.isFinite, previous.nav.isFinite else { return nil }
         return ((pair.latest.nav - previous.nav) * holding.quantity,
                 (pair.latest.nav / previous.nav - 1) * 100)
@@ -1500,7 +1502,10 @@ struct HoldingsView: View {
             } message: {
                 Text("此操作会删除该只已移出基金的流水和净值历史，不会删除当前持仓；操作无法直接撤回，请先确认备份。")
             }
-            .onAppear { if kind == .fund { store.maybeRefreshFundNAVsAfterMarketClose() } }
+            .onAppear {
+                if kind == .fund { store.maybeRefreshFundNAVsAfterMarketClose() }
+                if kind == .etf { store.refreshETFDividendEstimates() }
+            }
     }
 
     /// 列表主体单独成表达式：与末尾十余个 sheet / alert 修饰符分开做类型检查，
@@ -1613,9 +1618,8 @@ struct HoldingsView: View {
             let dayValue = kind == .fund ? store.fundDayPnL : store.intradayPnL
             let hasDayValue = kind == .fund ? store.hasFundDayPnL : store.hasIntradayPnL
             let dayTitle = kind == .fund ? "净值日盈亏" : "今日盈亏"
-            // 开市日白天还没取到新净值：场外盈亏不算，也不并进总资产的当日盈亏，
-            // 等晚间净值更新后再出现。美股 / QDII 净值日晚一个交易日公布，
-            // 只把今天实际采集的新净值算作今日收益；海外基金的净值日可能晚一天。
+            // 只有净值日期为今天才计入今天收益；迟到净值回到它自己的估值日，
+            // 不因今天才采集而挪入今天，也不重复计入今天。
             let dayDateNote = kind == .fund
                 ? (store.hasFundDayPnL
                     ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
@@ -1654,8 +1658,8 @@ struct HoldingsView: View {
                     let dividendYield = value > 0 && hasETFDividendData ? dividendIncome / value * 100 : nil
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("年股息收入（近12个月实际派息）").scaledFont(10).foregroundStyle(.secondary)
-                            Text(hasETFDividendData ? dividendIncome.cny() : (holdings.filter { $0.kind == .etf && $0.quantity > 0 }.allSatisfy { dividendStatus(for: $0) == "不分红" } ? "不分红" : "待核实"))
+                            Text("近12个月已核实派息").scaledFont(10).foregroundStyle(.secondary)
+                            Text(hasETFDividendData ? dividendIncome.cny() : (holdings.filter { $0.kind == .etf && $0.quantity > 0 }.allSatisfy { dividendStatus(for: $0) == "不分红" } ? "不分红" : "暂无已核实派息"))
                                 .scaledFont(17, weight: .bold, design: .rounded)
                                 .foregroundStyle(dividendIncome > 0 ? Color(red: 0.07, green: 0.68, blue: 0.48) : .secondary)
                         }
@@ -2586,52 +2590,123 @@ struct FundDividendEditor: View {
 struct FundIncomeCalendarView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    @State private var scale = 0
     @State private var monthOffset = 0
+    @State private var yearOffset = 0
+    @State private var selectedKey: String?
 
-    private var monthDate: Date { Calendar(identifier: .gregorian).date(byAdding: .month, value: monthOffset, to: .now) ?? .now }
+    private var calendar: Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current; return c }
+    private var monthDate: Date { calendar.date(byAdding: .month, value: monthOffset, to: .now) ?? .now }
     private var monthKey: String {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM"
         return formatter.string(from: monthDate)
     }
-    private var days: [FundDailyPerformance] { store.fundDailyPerformance(month: monthKey) }
-    private var total: Double { days.reduce(0) { $0 + $1.profit } }
+    private var displayedYear: Int { Calendar.current.component(.year, from: .now) + yearOffset }
+    private var yearKey: String { String(displayedYear) }
+    private var periodKey: String { scale == 0 ? monthKey : (scale == 1 ? yearKey : "") }
+    private var days: [FundDailyPerformance] { store.fundDailyPerformance(period: periodKey.isEmpty ? nil : periodKey) }
+    private var excluded: [(code: String, reason: String)] { store.fundDailyCalendarExcluded(period: periodKey.isEmpty ? nil : periodKey) }
+    private var total: Double { selectedDays.reduce(0) { $0 + $1.profit } }
+    private var selectedDays: [FundDailyPerformance] {
+        guard let key = selectedKey else { return [] }
+        return days.filter { scale == 0 ? $0.date == key : $0.date.hasPrefix(key) }
+    }
+    private var selectedLines: [FundDailyContribution] {
+        var map: [String: FundDailyContribution] = [:]
+        for day in selectedDays { for line in day.contributions {
+            var item = map[line.code] ?? FundDailyContribution(code: line.code, name: line.name, profit: 0, baseValue: 0)
+            item.profit += line.profit; item.baseValue += line.baseValue; map[line.code] = item
+        } }
+        return map.values.sorted { $0.profit > $1.profit }
+    }
+    private var visibleMonthDays: [FundDailyPerformance] { days.filter { $0.date.hasPrefix(monthKey) } }
+    private var gridDates: [String?] {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
+        guard let first = f.date(from: monthKey + "-01"), let count = calendar.range(of: .day, in: .month, for: first)?.count else { return [] }
+        let leading = (calendar.component(.weekday, from: first) + 5) % 7
+        var result: [String?] = Array(repeating: nil, count: leading)
+        for offset in 0..<count { if let date = calendar.date(byAdding: .day, value: offset, to: first) { result.append(f.string(from: date)) } }
+        while result.count % 7 != 0 { result.append(nil) }; return result
+    }
+    private var availableYears: [String] {
+        let stored = Set(days.map { String($0.date.prefix(4)) })
+        return (displayedYear - 4...displayedYear).reversed().map { String($0) }.filter { stored.contains($0) }
+    }
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
+                    Picker("周期", selection: $scale) {
+                        Text("按日").tag(0); Text("按月").tag(1); Text("按年").tag(2)
+                    }.pickerStyle(.segmented).onChange(of: scale) { _, _ in selectedKey = nil }
                     HStack {
-                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.accessibilityLabel("上个月")
-                        Spacer(); Text(monthKey).font(.headline)
-                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }.accessibilityLabel("下个月")
+                        Button { if scale == 0 { monthOffset -= 1 } else { yearOffset -= 1 } } label: { Image(systemName: "chevron.left") }
+                        Spacer(); Text(scale == 0 ? monthKey : yearKey).font(.headline)
+                        Spacer(); Button { if scale == 0 { monthOffset += 1 } else { yearOffset += 1 } } label: { Image(systemName: "chevron.right") }
                     }
-                    LabeledContent("本月已记录日收益合计", value: "\((total).directionMark()) \((total).cny())")
+                    LabeledContent(scale == 0 ? "本月收益" : (scale == 1 ? "本年收益" : "所选年份收益"), value: "\((days.reduce(0) { $0 + $1.profit }).directionMark()) \((days.reduce(0) { $0 + $1.profit }).cny())")
                         .foregroundStyle(PnLColor.of(total))
-                    Text("共 \(days.count) 个有数据的净值日。这里只展示已公布净值覆盖且有已确认申购/补录份额依据的基金。")
+                    Text("收益按基金净值日期归属；晚到净值会回补原日期，不计入采集日。点选日期、月份或年份查看单只基金明细。")
                         .font(.footnote).foregroundStyle(.secondary)
-                }
-                .toneCard(CardTone.pnl(total), isLight: isLight)
-                Section("每日收益") {
-                    if days.isEmpty {
-                        ContentUnavailableView("暂无可核算收益", systemImage: "calendar", description: Text("需要先导入基金买卖流水，并获取覆盖对应日期的已公布净值历史。手动录入但没有买入日期的持仓不会被猜测成历史收益。"))
-                    }
-                    ForEach(days.reversed()) { day in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(day.date)
-                                Spacer()
-                                Text("\((day.profit).directionMark()) \((day.profit).cny())")
+                    if scale == 0 {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 5) {
+                            ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { Text($0).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity) }
+                            ForEach(Array(gridDates.enumerated()), id: \.offset) { entry in
+                                if let date = entry.element {
+                                    let day = visibleMonthDays.first { $0.date == date }
+                                    Button { selectedKey = date } label: {
+                                        VStack(spacing: 3) { Text(String(date.suffix(2))); if let day { Text(day.profit.cny()).font(.system(size: 8)).lineLimit(1).minimumScaleFactor(0.6) } else { Text(" ").font(.system(size: 8)) } }
+                                            .frame(maxWidth: .infinity, minHeight: 42)
+                                            .background(selectedKey == date ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                                            .foregroundStyle(day.map { PnLColor.of($0.profit) } ?? Color.secondary)
+                                    }.buttonStyle(.plain)
+                                } else { Color.clear.frame(height: 42) }
                             }
-                            .foregroundStyle(PnLColor.of(day.profit))
-                            Text("净值基数 \((day.baseValue).cny()) · \(day.fundCount) 只基金")
+                        }
+                    } else if scale == 1 {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
+                            ForEach(1...12, id: \.self) { month in
+                                let key = String(format: "%04d-%02d", displayedYear, month)
+                                let value = days.filter { $0.date.hasPrefix(key) }.reduce(0) { $0 + $1.profit }
+                                Button { selectedKey = key } label: { VStack(spacing: 5) { Text("\(month)月"); Text(value.cny()).font(.caption).lineLimit(1).minimumScaleFactor(0.7) }.frame(maxWidth: .infinity, minHeight: 54).background(selectedKey == key ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8)).foregroundStyle(PnLColor.of(value)) }.buttonStyle(.plain)
+                            }
+                        }
+                    } else {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
+                            ForEach(availableYears, id: \.self) { key in
+                                let value = days.filter { $0.date.hasPrefix(key) }.reduce(0) { $0 + $1.profit }
+                                Button { selectedKey = key } label: { VStack(spacing: 5) { Text(key); Text(value.cny()).font(.caption) }.frame(maxWidth: .infinity, minHeight: 54).background(selectedKey == key ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8)).foregroundStyle(PnLColor.of(value)) }.buttonStyle(.plain)
+                            }
+                        }
+                        if availableYears.isEmpty {
+                            Text("所选年份附近暂无可核算的净值收益。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let key = selectedKey {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack { Text(scale == 0 ? key : (scale == 1 ? "\(key) 月度明细" : "\(key) 年度明细")).font(.headline); Spacer(); Text(total.directionMark() + total.cny()).foregroundStyle(PnLColor.of(total)) }
+                            if selectedLines.isEmpty { Text("该周期暂无可核算的基金收益明细").font(.footnote).foregroundStyle(.secondary) }
+                            ForEach(selectedLines) { line in
+                                HStack { VStack(alignment: .leading, spacing: 2) { Text(line.name); Text(line.code + (scale == 0 ? " · 净值日" : " · 区间累计")).font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing, spacing: 2) { Text(line.profit.directionMark() + line.profit.cny()).foregroundStyle(PnLColor.of(line.profit)); Text(line.baseValue > 0 ? (line.profit / line.baseValue * 100).pct(2) : "—").font(.caption).foregroundStyle(.secondary) } }
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                    if !excluded.isEmpty {
+                        DisclosureGroup("暂未计入 \(excluded.count) 只基金") {
+                            ForEach(excluded, id: \.code) { item in
+                                LabeledContent(item.code, value: item.reason)
+                            }
+                            Text("补齐净值历史，或在基金持仓里补录可核实的历史起始份额后，日历会按净值日期重新计算。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-                .plainCard(isLight: isLight)
-                Text("日收益按前一净值日已确认份额计算；当日买入不计入当日净值变化，当日赎回份额仍计入；分红金额和申赎费用按流水日计入。手动持仓若缺少历史买入流水，会被排除，因此历史可能不完整。")
+                .toneCard(CardTone.pnl(total), isLight: isLight)
+                Text("日收益按前一净值日已确认份额计算；当日买入不计入当日净值变化，当日赎回份额仍计入；分红金额和申赎费用按流水日计入。手动持仓若缺少历史买入流水，会在上方列出并说明原因。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
@@ -3366,7 +3441,7 @@ struct AssetsView: View {
                         }
                     }
                     if !snapshotBackfillMessage.isEmpty { Text(snapshotBackfillMessage).font(.footnote).foregroundStyle(.secondary) }
-                    Text("打开 App 只自动记录当天快照；历史重建需你手动发起。它只用有完整流水、现金与真实历史价格的日期，仍建议逐条核对。净值未全部公布时标为临时。")
+                    Text("净值更新后会按净值日期自动修正可核实的历史快照，并补建缺失日期；手动核实的快照不会被覆盖。重建只使用完整流水、现金与真实历史价格，无法核实的日期会保留原值并提示。")
                         .font(.footnote).foregroundStyle(.secondary)
                     DisclosureGroup(isExpanded: $snapshotDetailsExpanded) {
                     if !store.snapshotMonths.isEmpty {
@@ -3742,6 +3817,8 @@ struct ETFIncomeCalendarView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @State private var monthOffset = 0
+    @State private var scale = 0
+    @State private var yearOffset = 0
     @State private var days: [ETFIncomeDay] = []
     @State private var selectedDate: String?
     @State private var loading = false
@@ -3761,10 +3838,32 @@ struct ETFIncomeCalendarView: View {
         calendar.date(byAdding: .month, value: monthOffset, to: .now) ?? .now
     }
     private var monthKey: String { formatted(monthDate, format: "yyyy-MM") }
-    private var startDay: String { monthKey + "-01" }
+    private var displayedYear: Int { calendar.component(.year, from: .now) + yearOffset }
+    private var yearKey: String { String(displayedYear) }
+    private var startDay: String {
+        if scale == 0 { return monthKey + "-01" }
+        if scale == 1 { return yearKey + "-01-01" }
+        return String(displayedYear - 2) + "-01-01"
+    }
     private var endDay: String {
-        let next = calendar.date(byAdding: .month, value: 1, to: monthDate) ?? monthDate
-        return formatted(calendar.date(byAdding: .day, value: -1, to: next) ?? next, format: "yyyy-MM-dd")
+        if scale == 0 {
+            let next = calendar.date(byAdding: .month, value: 1, to: monthDate) ?? monthDate
+            return formatted(calendar.date(byAdding: .day, value: -1, to: next) ?? next, format: "yyyy-MM-dd")
+        }
+        return yearKey + "-12-31"
+    }
+    private var taskKey: String { "\(scale)-\(scale == 0 ? monthKey : yearKey)" }
+    private var selectedPeriodDays: [ETFIncomeDay] {
+        guard let selectedDate else { return [] }
+        return days.filter { scale == 0 ? $0.date == selectedDate : $0.date.hasPrefix(selectedDate) }
+    }
+    private var selectedPeriodLines: [ETFIncomeLine] {
+        var grouped: [String: ETFIncomeLine] = [:]
+        for day in selectedPeriodDays { for line in day.lines {
+            var item = grouped[line.code] ?? ETFIncomeLine(code: line.code, name: line.name, profit: 0, base: 0, hasTradeHistory: line.hasTradeHistory)
+            item.profit += line.profit; item.base += line.base; grouped[line.code] = item
+        } }
+        return grouped.values.sorted { $0.profit > $1.profit }
     }
     private var dayByDate: [String: ETFIncomeDay] {
         days.reduce(into: [String: ETFIncomeDay]()) { $0[$1.date] = $1 }
@@ -3788,16 +3887,20 @@ struct ETFIncomeCalendarView: View {
         guard !daily.isEmpty else { return nil }
         return (daily.reduce(1.0) { $0 * (1 + $1.profit / $1.base) } - 1) * 100
     }
+    private var selectedPeriodProfit: Double { selectedPeriodDays.reduce(0) { $0 + $1.profit } }
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
+                    Picker("周期", selection: $scale) {
+                        Text("按日").tag(0); Text("按月").tag(1); Text("按年").tag(2)
+                    }.pickerStyle(.segmented).onChange(of: scale) { _, _ in selectedDate = nil }
                     HStack {
-                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.accessibilityLabel("上个月")
-                        Spacer(); Text(monthKey).font(.headline)
-                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }.accessibilityLabel("下个月")
+                        Button { if scale == 0 { monthOffset -= 1 } else { yearOffset -= 1 } } label: { Image(systemName: "chevron.left") }
+                        Spacer(); Text(scale == 0 ? monthKey : yearKey).font(.headline)
+                        Spacer(); Button { if scale == 0 { monthOffset += 1 } else { yearOffset += 1 } } label: { Image(systemName: "chevron.right") }
                     }
                     Picker("显示", selection: $showRate) {
                         Text("金额").tag(false); Text("收益率").tag(true)
@@ -3806,7 +3909,7 @@ struct ETFIncomeCalendarView: View {
                         Text("本月没有足够的日 K 或持仓数据可核算。")
                             .font(.footnote).foregroundStyle(.secondary)
                     } else if !days.isEmpty {
-                        LabeledContent("月累计收益", value: "\((monthlyProfit).directionMark()) \((monthlyProfit).cny())")
+                        LabeledContent(scale == 0 ? "月累计收益" : (scale == 1 ? "年累计收益" : "近三年收益"), value: "\((monthlyProfit).directionMark()) \((monthlyProfit).cny())")
                             .foregroundStyle(PnLColor.of(monthlyProfit))
                         if let monthlyRate {
                             LabeledContent("复合收益率", value: monthlyRate.directionMark() + monthlyRate.pct(2))
@@ -3826,6 +3929,7 @@ struct ETFIncomeCalendarView: View {
                 }
                 .toneCard(CardTone.pnl(monthlyProfit), isLight: isLight)
                 Section("交易日") {
+                    if scale == 0 {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 7), spacing: 4) {
                         ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { Text($0).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity) }
                         ForEach(Array(gridDates.enumerated()), id: \.offset) { item in
@@ -3873,6 +3977,25 @@ struct ETFIncomeCalendarView: View {
                         Text(statusText(for: date) == "休市" ? "\(date) · 休市" : "\(date) 没有足够的行情或持仓数据。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    } else if scale == 1 {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
+                            ForEach(1...12, id: \.self) { month in
+                                let key = String(format: "%04d-%02d", displayedYear, month)
+                                let value = days.filter { $0.date.hasPrefix(key) }.reduce(0) { $0 + $1.profit }
+                                Button { selectedDate = key } label: { VStack(spacing: 5) { Text("\(month)月"); Text(value.cny()).font(.caption).lineLimit(1).minimumScaleFactor(0.7) }.frame(maxWidth: .infinity, minHeight: 54).background(selectedDate == key ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8)).foregroundStyle(PnLColor.of(value)) }.buttonStyle(.plain)
+                            }
+                        }
+                        if let key = selectedDate { periodDetail(key: key, title: "\(key) 月度明细") }
+                    } else {
+                        let years = Array(Set(days.map { String($0.date.prefix(4)) })).sorted(by: >)
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
+                            ForEach(years, id: \.self) { key in
+                                let value = days.filter { $0.date.hasPrefix(key) }.reduce(0) { $0 + $1.profit }
+                                Button { selectedDate = key } label: { VStack(spacing: 5) { Text(key); Text(value.cny()).font(.caption) }.frame(maxWidth: .infinity, minHeight: 54).background(selectedDate == key ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8)).foregroundStyle(PnLColor.of(value)) }.buttonStyle(.plain)
+                            }
+                        }
+                        if let key = selectedDate { periodDetail(key: key, title: "\(key) 年度明细") }
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -3890,7 +4013,7 @@ struct ETFIncomeCalendarView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } }
             }
-            .task(id: monthKey) { await loadMonth() }
+            .task(id: taskKey) { await loadMonth() }
         }
     }
 
@@ -3968,7 +4091,40 @@ struct ETFIncomeCalendarView: View {
         failedCount = failures
         // Refresh/reopen should land on the latest day with a calculated result;
         // otherwise a stale selection (e.g. Friday) can hide the newly loaded Monday detail.
-        selectedDate = days.last?.date
+        selectedDate = scale == 0 ? days.last?.date : (scale == 1 ? monthKey : yearKey)
+    }
+
+    @ViewBuilder private func periodDetail(key: String, title: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title).font(.headline)
+                Spacer()
+                Text(selectedPeriodProfit.directionMark() + selectedPeriodProfit.cny())
+                    .font(.headline.monospacedDigit()).foregroundStyle(PnLColor.of(selectedPeriodProfit))
+            }
+            if selectedPeriodLines.isEmpty {
+                Text("该周期暂无可核算的 ETF 收益明细。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ForEach(selectedPeriodLines) { line in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(line.name).lineLimit(1)
+                            Text("\(line.code) · \(line.hasTradeHistory ? "按交易流水还原" : "按当前份额估算")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(line.profit.directionMark() + line.profit.cny())
+                                .foregroundStyle(PnLColor.of(line.profit))
+                            Text(line.base > 0 ? (line.profit / line.base * 100).pct(2) : "—")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func parseDay(_ value: String) -> Date? {
@@ -4160,7 +4316,7 @@ struct PortfolioScenarioView: View {
     private func annualDividend(for code: String, fallback: Double?) -> Double {
         if let fallback, fallback.isFinite, fallback >= 0 { return fallback }
         let cutoff = ETFDividendProjection.yearAgoCutoff()
-        return store.data.etfDividendEvents
+        return ETFDividendProjection.mergedEvents(store.data.etfDividendEvents)
             .filter { $0.code == code && $0.date >= cutoff && $0.isEstimated != true }
             .reduce(0) { $0 + $1.amountPerShare }
     }
@@ -4333,7 +4489,7 @@ struct DividendCalendarView: View {
     @State private var year = Calendar(identifier: .gregorian).component(.year, from: .now)
 
     private var etfEvents: [(ETFDividendEvent, Holding?, Double)] {
-        store.data.etfDividendEvents.filter { $0.date.hasPrefix(String(year)) }.map { event in
+        ETFDividendProjection.mergedEvents(store.data.etfDividendEvents).filter { $0.date.hasPrefix(String(year)) }.map { event in
             let holding = store.data.holdings.first { $0.code == event.code && $0.kind == .etf }
             let estimated = event.isEstimated == true ? 0 : event.amountPerShare * (holding?.quantity ?? 0)
             return (event, holding, estimated)
@@ -4398,11 +4554,20 @@ struct DividendCalendarView: View {
                             if let perShare, let source {
                                 Text("每份 \(perShare.num(4)) 元 · 股息率 \((holding.current > 0 ? perShare / holding.current * 100 : 0).num(2))% · 未来12个月试算 \((perShare * holding.quantity).cny())")
                                     .font(.caption).foregroundStyle(.secondary)
-                                Text(source == .manual ? "按人工核实值试算。" : "按近12个月已核实现金派息外推，不代表承诺。")
+                                Text(source == .manual ? "按人工核实值试算。" : source == .historicalAverage
+                                     ? "按近三年实际派息年份平均试算；派息频率可能变化，金额不保证。"
+                                     : source == .inferred
+                                     ? "按复权价格变化估算，不能确认现金派息，金额仅供参考。"
+                                     : "按近12个月已核实现金派息外推，不代表承诺。")
                                     .font(.caption2).foregroundStyle(.secondary)
                             } else {
-                                Text(holding.annualDividendPerShare == 0 || holding.code == "159352"
-                                     ? "不分红 · 已确认该标的无派息记录。"
+                                let hasRecordedHistory = ETFDividendProjection.mergedEvents(store.data.etfDividendEvents).contains {
+                                    $0.code == holding.code && $0.isEstimated != true
+                                }
+                                Text(ETFDividendProjection.knownNonDividendCodes.contains(holding.code) || holding.annualDividendPerShare == 0
+                                     ? "不分红 · 当前没有已确认的现金派息记录。"
+                                     : hasRecordedHistory
+                                     ? "有历史现金派息，但次数不足以估算稳定年股息；保留派息记录，不做年化预测。"
                                      : "待核实 · 尚无已迁入的派息记录，不能据此判断不分红。")
                                     .font(.caption).foregroundStyle(.secondary)
                             }

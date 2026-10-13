@@ -48,13 +48,14 @@ struct IntradayArchiveView: View {
     private struct Coverage {
         let latestDay: String?
         let latestCount: Int
+        let latestIOPVCount: Int
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 按屏幕宽度和实际点数计算柱宽：少量数据不会变成细线，全天 242 点也不会互相盖住。
     private func minuteBarWidth(_ count: Int) -> CGFloat {
-        let plotWidth = max(200, UIScreen.main.bounds.width - 112)
-        return min(8, max(1.2, plotWidth / CGFloat(max(count, 1)) * 0.72))
+        let plotWidth = max(220, UIScreen.main.bounds.width - 72)
+        return min(10, max(1.8, plotWidth / CGFloat(max(count, 1)) * 0.82))
     }
     private var priceLineColor: Color {
         switch store.data.intradayLineColorMode {
@@ -79,14 +80,22 @@ struct IntradayArchiveView: View {
     /// 一次遍历完成全部标的覆盖统计，避免列表每一行都重新扫描整份多年分钟档案。
     private var coverageByCode: [String: Coverage] {
         var minutes: [String: [String: Set<Int>]] = [:]
+        var iopvMinutes: [String: [String: Set<Int>]] = [:]
         for bar in store.intradayBars {
             let key = normalizedCode(bar.code)
-            minutes[key, default: [:]][bar.day, default: []].insert(Int(bar.timestamp.timeIntervalSince1970 / 60))
+            let minute = Int(bar.timestamp.timeIntervalSince1970 / 60)
+            minutes[key, default: [:]][bar.day, default: []].insert(minute)
+            if let iopv = bar.iopv, iopv.isFinite, iopv > 0 {
+                iopvMinutes[key, default: [:]][bar.day, default: []].insert(minute)
+            }
         }
-        return minutes.mapValues { days in
+        var result: [String: Coverage] = [:]
+        for (code, days) in minutes {
             let latest = days.keys.max()
-            return Coverage(latestDay: latest, latestCount: latest.flatMap { days[$0]?.count } ?? 0)
+            result[code] = Coverage(latestDay: latest, latestCount: latest.flatMap { days[$0]?.count } ?? 0,
+                                    latestIOPVCount: latest.flatMap { iopvMinutes[code]?[$0]?.count } ?? 0)
         }
+        return result
     }
 
     private var days: [String] {
@@ -108,22 +117,55 @@ struct IntradayArchiveView: View {
         return code
     }
 
+    private var compressLunchBreak: Bool {
+        let code = normalizedCode(selectedCode)
+        return code.count == 6 && code.allSatisfy(\.isNumber)
+    }
+
+    /// A 股坐标把 11:30–13:00 午休压成一分钟视觉接缝，线段不会横跨空白时段。
+    private func chartTime(_ time: Date) -> Date {
+        guard compressLunchBreak else { return time }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let parts = calendar.dateComponents([.hour, .minute], from: time)
+        let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        return minute >= 13 * 60 ? time.addingTimeInterval(-89 * 60) : time
+    }
+
+    private var chartAxisTicks: [(time: Date, label: String)] {
+        guard compressLunchBreak else { return [] }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return ["09:30", "10:30", "11:30", "14:00", "15:00"].compactMap { label in
+            guard let date = formatter.date(from: "\(selectedDay) \(label)") else { return nil }
+            return (chartTime(date), label)
+        }
+    }
+
+    private func chartAxisLabel(_ time: Date) -> String {
+        chartAxisTicks.min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) })?.label
+            ?? time.formatted(date: .omitted, time: .shortened)
+    }
+
     private var chartTimeDomain: ClosedRange<Date>? {
-        guard let first = bars.first else { return nil }
+        guard let first = bars.first, let last = bars.last else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         guard let start = formatter.date(from: "\(first.day) 09:30"),
               let end = formatter.date(from: "\(first.day) 15:00") else { return nil }
-        return start...end
+        if compressLunchBreak { return chartTime(start)...chartTime(end) }
+        return first.timestamp...last.timestamp
     }
 
     private var timeDomain: ClosedRange<Date> {
         if let domain = chartTimeDomain { return domain }
         let lo = bars.first?.timestamp ?? Date()
         let hi = bars.last?.timestamp ?? lo
-        return lo...hi
+        return chartTime(lo)...chartTime(hi)
     }
 
     private var average: [AveragePoint] {
@@ -139,6 +181,10 @@ struct IntradayArchiveView: View {
             let value = totalVolume > 0 ? weightedSum / totalVolume : simpleSum / Double(index + 1)
             return AveragePoint(time: bar.timestamp, value: value)
         }
+    }
+
+    private var iopvBars: [IntradayBar] {
+        bars.filter { ($0.iopv ?? 0).isFinite && ($0.iopv ?? 0) > 0 }
     }
 
     private var macd: [MACDPoint] {
@@ -164,10 +210,10 @@ struct IntradayArchiveView: View {
 
     private var selectedBar: IntradayBar? {
         guard let selectedTime else { return nil }
-        return bars.min { abs($0.timestamp.timeIntervalSince(selectedTime)) < abs($1.timestamp.timeIntervalSince(selectedTime)) }
+        return bars.min { abs(chartTime($0.timestamp).timeIntervalSince(selectedTime)) < abs(chartTime($1.timestamp).timeIntervalSince(selectedTime)) }
     }
     private var priceDomain: ClosedRange<Double> {
-        let v = (bars.map(\.price) + average.map(\.value)).filter { $0 > 0 }
+        let v = (bars.map(\.price) + average.map(\.value) + iopvBars.compactMap(\.iopv)).filter { $0 > 0 }
         guard let lo = v.min(), let hi = v.max() else { return 0...1 }
         let ref = max(abs(lo), abs(hi), 0.0001), spread = max(hi - lo, ref * 0.002), p = max(spread * 0.09, ref * 0.0006)
         return (lo-p)...(hi+p)
@@ -245,7 +291,7 @@ struct IntradayArchiveView: View {
         } else {
             let coverageMap = coverageByCode
             ForEach(instruments) { instrument in
-                let coverage = coverageMap[normalizedCode(instrument.code)] ?? Coverage(latestDay: nil, latestCount: 0)
+                let coverage = coverageMap[normalizedCode(instrument.code)] ?? Coverage(latestDay: nil, latestCount: 0, latestIOPVCount: 0)
                 let latestDay = coverage.latestDay
                 let count = coverage.latestCount
                 Button {
@@ -264,6 +310,10 @@ struct IntradayArchiveView: View {
                                 .foregroundStyle(coverageColor(code: instrument.code, day: latestDay, count: count))
                             Text(coverageText(code: instrument.code, day: latestDay, count: count))
                                 .font(.caption).foregroundStyle(.secondary)
+                            if store.isTencentETFCode(instrument.code) {
+                                Text(coverage.latestIOPVCount > 0 ? "IOPV \(coverage.latestIOPVCount) 点" : "IOPV 未采集")
+                                    .font(.caption2).foregroundStyle(coverage.latestIOPVCount > 0 ? Color.purple : Color.secondary)
+                            }
                         }
                     }
                 }
@@ -305,10 +355,15 @@ struct IntradayArchiveView: View {
                 HStack(spacing: 14) {
                     Label("价格", systemImage: "minus").foregroundStyle(priceLineColor)
                     Label("均价", systemImage: "minus").foregroundStyle(.orange)
+                    if !iopvBars.isEmpty { Label("IOPV", systemImage: "minus").foregroundStyle(.purple) }
                     Text("点图看分钟值 · B买入 / S卖出")
                         .foregroundStyle(.secondary)
                 }
                 .font(.caption)
+                if store.isTencentETFCode(selectedCode), iopvBars.isEmpty {
+                    Text("这一天没有保存到真实 IOPV。NAS 升级后开始逐分钟留存；更早的交易日无法从分钟价量反推出历史 IOPV。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
 
                 Picker("副图", selection: $subchart) {
                     ForEach(Subchart.allCases) { Text($0.rawValue).tag($0) }
@@ -340,21 +395,26 @@ struct IntradayArchiveView: View {
     @ViewBuilder private var priceChart: some View {
         Chart {
             ForEach(bars) { point in
-                AreaMark(x: .value("时间", point.timestamp), yStart: .value("基线", priceDomain.lowerBound), yEnd: .value("价格", point.price), series: .value("主图序列", "价格"))
+                AreaMark(x: .value("时间", chartTime(point.timestamp)), yStart: .value("基线", priceDomain.lowerBound), yEnd: .value("价格", point.price), series: .value("主图序列", "价格"))
                     .foregroundStyle(priceLineColor.opacity(0.08))
                     .interpolationMethod(.linear)
-                LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price), series: .value("主图序列", "价格"))
+                LineMark(x: .value("时间", chartTime(point.timestamp)), y: .value("价格", point.price), series: .value("主图序列", "价格"))
                     .foregroundStyle(priceLineColor)
-                    .lineStyle(StrokeStyle(lineWidth: 0.95, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
                     .interpolationMethod(.linear)
             }
             ForEach(average) { point in
-                LineMark(x: .value("时间", point.time), y: .value("均价", point.value), series: .value("主图序列", "均价"))
+                LineMark(x: .value("时间", chartTime(point.time)), y: .value("均价", point.value), series: .value("主图序列", "均价"))
                     .foregroundStyle(Color.orange)
-                    .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
+            }
+            ForEach(iopvBars) { point in
+                LineMark(x: .value("时间", chartTime(point.timestamp)), y: .value("IOPV", point.iopv ?? 0), series: .value("主图序列", "IOPV"))
+                    .foregroundStyle(Color.purple)
+                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
             }
             ForEach(tradePoints) { trade in
-                PointMark(x: .value("交易时间", trade.time), y: .value("成交价", trade.price))
+                PointMark(x: .value("交易时间", chartTime(trade.time)), y: .value("成交价", trade.price))
                     .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
                     .symbolSize(60)
                     .annotation(position: trade.side == .buy ? .top : .bottom) {
@@ -364,7 +424,7 @@ struct IntradayArchiveView: View {
                     }
             }
             if let selectedBar {
-                RuleMark(x: .value("选中", selectedBar.timestamp))
+                RuleMark(x: .value("选中", chartTime(selectedBar.timestamp)))
                     .foregroundStyle(Color.secondary)
                     .annotation(position: .top, alignment: .leading) {
                         Text(selectedBarLabel)
@@ -374,10 +434,20 @@ struct IntradayArchiveView: View {
                     }
             }
         }
-        .frame(height: 260)
+        .frame(height: 300)
         .chartYScale(domain: priceDomain)
         .chartXScale(domain: timeDomain)
-        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) } }
+        .chartXAxis {
+            if compressLunchBreak {
+                AxisMarks(values: chartAxisTicks.map { $0.time }) { value in
+                    AxisValueLabel {
+                        if let time = value.as(Date.self) { Text(chartAxisLabel(time)) }
+                    }
+                }
+            } else {
+                AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) }
+            }
+        }
         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
         .chartXSelection(value: $selectedTime)
     }
@@ -387,13 +457,13 @@ struct IntradayArchiveView: View {
             ForEach(bars.indices, id: \.self) { index in
                 let point = bars[index]
                 if let volume = point.volume, volume > 0 {
-                BarMark(x: .value("时间", point.timestamp), y: .value("成交量", volume), width: .fixed(minuteBarWidth(bars.count)))
+                BarMark(x: .value("时间", chartTime(point.timestamp)), y: .value("成交量", volume), width: .fixed(minuteBarWidth(bars.count)))
                         .foregroundStyle(volumeColor(at: index).opacity(0.78))
                         .cornerRadius(1)
                 }
             }
         }
-        .frame(height: 110)
+        .frame(height: 165)
         .chartXScale(domain: timeDomain)
         .chartXAxis(.hidden)
         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
@@ -405,21 +475,21 @@ struct IntradayArchiveView: View {
                 .foregroundStyle(Color.secondary.opacity(0.45))
                 .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
             ForEach(macd) { point in
-                hollowIntradayMACDColumn(time: point.time, value: point.histogram, interval: 60,
+                hollowIntradayMACDColumn(time: chartTime(point.time), value: point.histogram, interval: 60,
                     color: point.histogram >= 0 ? .red : .green)
             }
             ForEach(macd) { point in
-                LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
+                LineMark(x: .value("时间", chartTime(point.time)), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
                     .foregroundStyle(priceLineColor)
-                    .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
             }
             ForEach(macd) { point in
-                LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
+                LineMark(x: .value("时间", chartTime(point.time)), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
                     .foregroundStyle(Color.orange)
-                    .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
             }
         }
-        .frame(height: 110)
+        .frame(height: 165)
         .chartYScale(domain: macdDomain)
         .chartXScale(domain: timeDomain)
         .chartXAxis(.hidden)

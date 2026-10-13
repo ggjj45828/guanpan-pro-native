@@ -192,7 +192,35 @@ struct ETFDividendEvent: Codable, Identifiable {
 
 /// ETF 年股息只采用人工录入或近 12 个月已记录的现金分红，不按指数风格猜测。
 enum ETFDividendProjection {
-    enum Source: Equatable { case manual, recorded, projected }
+    enum Source: Equatable { case manual, recorded, projected, historicalAverage, inferred, none }
+
+    /// 广发纳指 ETF (159941) 的公开分红档案目前没有现金派息记录；不把“指数成分股分红”
+    /// 当作 ETF 给持有人的现金分红。南方 A500 (159352) 曾于 2025-07-14 实际派息，不能归为不分红。
+    static let knownNonDividendCodes: Set<String> = ["159941"]
+
+    /// 已核对公开分红档案的事件，用于旧设备/未导入网页分红缓存时先显示可追溯的历史基准。
+    /// 金额均为每份；这些历史事件不是未来承诺。其余事件继续由本机数据或用户记录提供。
+    static let verifiedEvents: [ETFDividendEvent] = [
+        ETFDividendEvent(code: "515180", date: "2025-10-21", amountPerShare: 0.061),
+        ETFDividendEvent(code: "563020", date: "2025-12-10", amountPerShare: 0.012),
+        ETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: 0.012),
+        ETFDividendEvent(code: "563020", date: "2026-09-11", amountPerShare: 0.012),
+        ETFDividendEvent(code: "159545", date: "2025-11-12", amountPerShare: 0.010),
+        ETFDividendEvent(code: "159545", date: "2026-02-11", amountPerShare: 0.015),
+        ETFDividendEvent(code: "159352", date: "2025-07-14", amountPerShare: 0.011)
+    ]
+
+    static func mergedEvents(_ events: [ETFDividendEvent]) -> [ETFDividendEvent] {
+        var values: [String: ETFDividendEvent] = [:]
+        // Built-in verified rows are only fallbacks. Prefer a user's imported/confirmed row
+        // for the same code and date so synchronization or a corrected announcement wins.
+        for event in verifiedEvents + events {
+            let key = "\(event.code)|\(event.date)"
+            if let old = values[key], old.isEstimated != true && event.isEstimated == true { continue }
+            values[key] = event
+        }
+        return values.values.sorted { $0.date == $1.date ? $0.code < $1.code : $0.date < $1.date }
+    }
 
     /// 共享的上海时区日期格式化器。DateFormatter 建一次约毫秒级，
     /// 而年股息试算在自选列表里是「每行每次渲染」都会走的路径，必须复用。
@@ -226,7 +254,7 @@ enum ETFDividendProjection {
         if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
             return (manual, .manual)
         }
-        return recordedAnnualPerShare(for: holding, events: events, now: now)
+        return projectedAnnualPerShare(for: holding, events: events, now: now)
     }
 
     /// 已核实的近 12 个月现金派息；不包含人工预测值，也不包含复权价格推算事件。
@@ -235,7 +263,7 @@ enum ETFDividendProjection {
         let cutoff = yearAgoCutoff(now: now)
         let today = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "Asia/Shanghai") ?? .current, from: now)
         let todayKey = String(format: "%04d-%02d-%02d", today.year ?? 0, today.month ?? 0, today.day ?? 0)
-        let recorded = events
+        let recorded = mergedEvents(events)
             .filter { $0.code == holding.code && $0.date >= cutoff && $0.date <= todayKey && $0.isEstimated != true }
             .reduce(0) { $0 + $1.amountPerShare }
         if recorded > 0 { return (recorded, .recorded) }
@@ -249,10 +277,69 @@ enum ETFDividendProjection {
         if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
             return (manual, .manual)
         }
-        guard let actual = recordedAnnualPerShare(for: holding, events: events, now: now), actual.amount > 0 else {
-            return nil
+        if knownNonDividendCodes.contains(holding.code) { return (0, .none) }
+        if let actual = recordedAnnualPerShare(for: holding, events: events, now: now), actual.amount > 0 {
+            return (actual.amount, .projected)
         }
-        return (actual.amount, .projected)
+        // 若最近 12 个月没有派息，但近三年存在已核实的分红，按“有派息的年份”平均，
+        // 保留低频派息 ETF 的可用试算；一年仅派一次的标的不会因为刚过周年日瞬间归零。
+        let cutoff3y: String = {
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = dayFormatter.timeZone
+            let date = calendar.date(byAdding: .year, value: -3, to: now) ?? .distantPast
+            return dayFormatter.string(from: date)
+        }()
+        let recent = mergedEvents(events).filter {
+            $0.code == holding.code && $0.isEstimated != true && $0.date >= cutoff3y
+                && $0.date <= dayFormatter.string(from: now)
+        }
+        if !recent.isEmpty {
+            let totalsByYear = Dictionary(grouping: recent, by: { String($0.date.prefix(4)) })
+                .mapValues { $0.reduce(0) { $0 + $1.amountPerShare } }
+            // 单次历史派息只进入历史事件，不足以证明形成年度现金流；至少有两个派息年度
+            // 才给年化试算，避免把 159352 的一次性派息包装成稳定年股息。
+            if totalsByYear.count >= 2 {
+                let amount = totalsByYear.values.reduce(0, +) / Double(totalsByYear.count)
+                if amount.isFinite, amount > 0 { return (amount, .historicalAverage) }
+            }
+        }
+        let cutoff = yearAgoCutoff(now: now)
+        let today = dayFormatter.string(from: now)
+        let inferred = mergedEvents(events).filter {
+            $0.code == holding.code && $0.date >= cutoff && $0.date <= today && $0.isEstimated == true
+        }.reduce(0) { $0 + $1.amountPerShare }
+        return inferred > 0 ? (inferred, .inferred) : nil
+    }
+
+    /// Match the web estimator: compare raw close / forward-adjusted close factors,
+    /// detect downward factor steps, and combine events within eight calendar days.
+    /// This is a quote-derived estimate, never proof of a cash distribution.
+    static func inferredEvents(code: String, adjusted: [DailyBar], raw: [DailyBar]) -> [ETFDividendEvent] {
+        guard adjusted.count >= 60, raw.count >= 60 else { return [] }
+        let rawClose = Dictionary(raw.map { ($0.date, $0.close) }, uniquingKeysWith: { _, newer in newer })
+        var factorByDay: [(day: String, factor: Double, adjustedClose: Double)] = []
+        for bar in adjusted {
+            guard let rawValue = rawClose[bar.date], rawValue > 0, bar.close > 0 else { continue }
+            factorByDay.append((bar.date, rawValue / bar.close, bar.close))
+        }
+        guard factorByDay.count >= 2 else { return [] }
+        var candidates: [(String, Double)] = []
+        for index in 1..<factorByDay.count {
+            let before = factorByDay[index - 1], after = factorByDay[index]
+            let move = after.factor / before.factor - 1
+            let amount = (before.factor - after.factor) * after.adjustedClose
+            if move < -0.0025 && amount >= 0.003 && amount.isFinite {
+                candidates.append((after.day, amount))
+            }
+        }
+        guard !candidates.isEmpty else { return [] }
+        var merged: [(String, Double)] = []
+        for candidate in candidates {
+            if let last = merged.last, let a = dayFormatter.date(from: last.0),
+               let b = dayFormatter.date(from: candidate.0), b.timeIntervalSince(a) <= 8 * 86_400 {
+                merged[merged.count - 1] = (candidate.0, last.1 + candidate.1)
+            } else { merged.append(candidate) }
+        }
+        return merged.map { ETFDividendEvent(code: code, date: $0.0, amountPerShare: $0.1, isEstimated: true) }
     }
 }
 
@@ -371,6 +458,9 @@ struct FundNAVPoint: Codable, Identifiable {
     /// 旧存档 / 导入数据没有这个字段时为 nil；只有成功刷新时确认的新净值才会补记采集时间，
     /// 避免旧净值仅因日期匹配而被重复算入今天。
     var fetchedAt: Date? = nil
+    /// NAV movement per share against the prior valuation point; receipt time is provenance,
+    /// while `date` is the economic day to which this movement belongs.
+    var observedDelta: Double? = nil
 }
 
 struct FundTransaction: Codable, Identifiable {
@@ -481,6 +571,15 @@ struct FundDailyPerformance: Identifiable {
     var profit: Double
     var baseValue: Double
     var fundCount: Int
+    var contributions: [FundDailyContribution] = []
+}
+
+struct FundDailyContribution: Identifiable {
+    var id: String { code }
+    var code: String
+    var name: String
+    var profit: Double
+    var baseValue: Double
 }
 
 /// Locally captured or imported one-minute observations. These are market data,
@@ -492,6 +591,8 @@ struct IntradayBar: Codable, Identifiable, Sendable {
     var price: Double
     var volume: Double?
     var day: String
+    /// ETF 实时参考净值（IOPV）；缺数据时保持 nil，不用估算伪造历史曲线。
+    var iopv: Double? = nil
 }
 
 /// Tencent daily adjusted K-line observation. Historical market data only.

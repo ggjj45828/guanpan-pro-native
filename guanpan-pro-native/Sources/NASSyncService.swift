@@ -39,6 +39,11 @@ private struct NASMarketArchivePage: Decodable {
     var hasMore: Bool
 }
 
+private struct NASFundNAVArchiveResponse: Decodable {
+    var ok: Bool?
+    var points: [FundNAVPoint]?
+}
+
 enum NASSyncService {
     static let urlKey = "guanpan.native.nas.url"
     static let tokenKey = "guanpan.native.nas.token"
@@ -108,7 +113,7 @@ enum NASSyncService {
                 URLQueryItem(name: "code", value: query["symbol"] ?? ""),
                 URLQueryItem(name: "period", value: "day"),
                 URLQueryItem(name: "n", value: query["count"] ?? "640"),
-                URLQueryItem(name: "fq", value: "qfq")
+                URLQueryItem(name: "fq", value: query["fq"] ?? "qfq")
             ]
         case "minute":
             integratedPath = "/api/minute"
@@ -192,6 +197,29 @@ enum NASSyncService {
             UserDefaults.standard.set(newest, forKey: "guanpan.native.nas.marketArchive.lastTimestamp")
         }
         return result
+    }
+
+    /// NAS 在手机离线期间定时采集的基金净值；带首次发现时间，供历史快照补账。
+    static func fundNAVArchive(code: String) async throws -> [FundNAVPoint] {
+        guard let base = UserDefaults.standard.string(forKey: urlKey),
+              !base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        let root = base.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard var components = URLComponents(string: root) else { throw NASSyncError.invalidAddress }
+        components.path = "/" + ([components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                                    "api/fundnav/archive"].filter { !$0.isEmpty }.joined(separator: "/"))
+        components.queryItems = [URLQueryItem(name: "code", value: code)]
+        guard let url = components.url else { throw NASSyncError.invalidAddress }
+        var request = URLRequest(url: url); request.timeoutInterval = 25
+        if let token = NASCredentialStore.load(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (bytes, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw NASSyncError.invalidResponse }
+        if http.statusCode == 404 { return [] } // 旧版 NAS 尚未部署净值归档
+        guard (200..<300).contains(http.statusCode) else { throw NASSyncError.server("读取 NAS 基金净值档案失败（HTTP \(http.statusCode)）") }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return (try decoder.decode(NASFundNAVArchiveResponse.self, from: bytes)).points ?? []
     }
 
     static func legacyBackup(base: String, token: String) async throws -> (revision: Int, data: Data?) {
