@@ -1374,7 +1374,9 @@ struct HoldingsView: View {
     private func annualDividendProjection(for holding: Holding) -> (amount: Double, source: ETFDividendProjection.Source)? {
         if ETFDividendProjection.knownNonDividendCodes.contains(holding.code), holding.annualDividendPerShare == nil { return nil }
         if holding.annualDividendPerShare == 0 { return nil }
-        ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)
+        // 多语句函数体没有隐式 return，少写 `return` 会报
+        // "missing return in instance method expected to return ..."。
+        return ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)
     }
 
     private func annualDividendPerShare(for holding: Holding) -> Double? {
