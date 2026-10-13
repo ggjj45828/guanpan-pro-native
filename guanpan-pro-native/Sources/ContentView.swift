@@ -1364,9 +1364,9 @@ struct HoldingsView: View {
         }
     }
 
-    /// 年股息只采用人工修正或近 12 个月已记录的分红事件；没有派息记录时显示“不分红”。
+    /// 年股息只采用人工修正或近 12 个月已记录的分红事件；缺少记录不等于确认不分红。
     private func annualDividendProjection(for holding: Holding) -> (amount: Double, source: ETFDividendProjection.Source)? {
-        ETFDividendProjection.annualPerShare(for: holding, events: store.data.etfDividendEvents)
+        ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)
     }
 
     private func annualDividendPerShare(for holding: Holding) -> Double? {
@@ -1375,12 +1375,28 @@ struct HoldingsView: View {
 
     private var etfAnnualDividendIncome: Double {
         holdings.filter { $0.kind == .etf && $0.quantity > 0 }.reduce(0) { total, holding in
-            total + holding.quantity * (annualDividendPerShare(for: holding) ?? 0)
+            total + holding.quantity * (ETFDividendProjection.recordedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)?.amount ?? 0)
+        }
+    }
+
+    private var etfProjectedDividendIncome: Double {
+        holdings.filter { $0.kind == .etf && $0.quantity > 0 }.reduce(0) { total, holding in
+            total + holding.quantity * (annualDividendProjection(for: holding)?.amount ?? 0)
         }
     }
 
     private var hasETFDividendData: Bool {
         etfAnnualDividendIncome > 0
+    }
+
+    private var hasETFProjectedDividendData: Bool {
+        etfProjectedDividendIncome > 0
+    }
+
+    private func dividendStatus(for holding: Holding) -> String {
+        if annualDividendProjection(for: holding) != nil { return "有记录" }
+        if holding.annualDividendPerShare == 0 || holding.code == "159352" { return "不分红" }
+        return "待核实"
     }
 
     /// 网页版年股息区会列出主要贡献标的。这里沿用同一口径并只显示前三只，
@@ -1639,16 +1655,33 @@ struct HoldingsView: View {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("年股息收入（近12个月实际派息）").scaledFont(10).foregroundStyle(.secondary)
-                            Text(hasETFDividendData ? dividendIncome.cny() : "不分红")
+                            Text(hasETFDividendData ? dividendIncome.cny() : (holdings.filter { $0.kind == .etf && $0.quantity > 0 }.allSatisfy { dividendStatus(for: $0) == "不分红" } ? "不分红" : "待核实"))
                                 .scaledFont(17, weight: .bold, design: .rounded)
                                 .foregroundStyle(dividendIncome > 0 ? Color(red: 0.07, green: 0.68, blue: 0.48) : .secondary)
                         }
                         Spacer(minLength: 12)
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("组合股息率").scaledFont(10).foregroundStyle(.secondary)
-                            Text(dividendYield?.pct(2) ?? "不分红")
+                            Text(dividendYield?.pct(2) ?? "待核实")
                                 .scaledFont(15, weight: .bold, design: .rounded)
                                 .foregroundStyle(dividendYield == nil ? Color.secondary : Color.orange)
+                        }
+                    }
+                    let projectedIncome = etfProjectedDividendIncome
+                    let projectedYield = value > 0 && hasETFProjectedDividendData ? projectedIncome / value * 100 : nil
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("预计未来12个月（按近12个月派息试算）").scaledFont(10).foregroundStyle(.secondary)
+                            Text(hasETFProjectedDividendData ? projectedIncome.cny() : (holdings.filter { $0.kind == .etf && $0.quantity > 0 }.allSatisfy { dividendStatus(for: $0) == "不分红" } ? "不分红" : "待核实"))
+                                .scaledFont(15, weight: .semibold, design: .rounded)
+                                .foregroundStyle(projectedIncome > 0 ? Color(red: 0.07, green: 0.68, blue: 0.48) : .secondary)
+                        }
+                        Spacer(minLength: 12)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("预计组合股息率").scaledFont(10).foregroundStyle(.secondary)
+                            Text(projectedYield?.pct(2) ?? "待核实")
+                                .scaledFont(14, weight: .semibold, design: .rounded)
+                                .foregroundStyle(projectedYield == nil ? Color.secondary : Color.orange)
                         }
                     }
                     if !etfDividendContributors.isEmpty {
@@ -1669,7 +1702,7 @@ struct HoldingsView: View {
                             }
                         }
                     }
-                    Text("仅统计人工修正或近 12 个月已记录的现金分红 × 当前份额；没有派息记录时显示“不分红”，不按指数或名称猜测。")
+                    Text("近12个月一栏只计已核实的实际派息；预计值按历史派息节奏试算，不代表承诺。无记录标为“待核实”；明确不分红的标的会单独标注，不按指数或名称猜测。")
                         .scaledFont(9).foregroundStyle(.secondary)
                 }
                 Text(kind == .fund
@@ -1773,7 +1806,7 @@ struct HoldingsView: View {
                     if let dividendYield {
                         holdingMetricChip("股息 \(dividendYield.pct(2))", color: Color(red: 0.07, green: 0.68, blue: 0.48))
                     } else {
-                        holdingMetricChip("不分红", color: .secondary)
+                        holdingMetricChip(dividendStatus(for: h), color: dividendStatus(for: h) == "不分红" ? .secondary : .orange)
                     }
                     if hasDay { holdingMetricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
                 }
@@ -3223,10 +3256,10 @@ struct AssetsView: View {
     @State private var snapshotBackfillMessage = ""
     @State private var snapshotDetailsExpanded = false
     @State private var snapshotDeleteTarget: PortfolioSnapshot?
-    @State private var manualSnapshotExpanded = false
+    @State private var showManualSnapshotEditor = false
     @State private var manualSnapshotDate = ""
     @State private var manualSnapshotTotal = ""
-    @State private var manualSnapshotCash = ""
+    @State private var snapshotEditorError = ""
     @State private var showClearReconstructedSnapshots = false
 
     private var snapshotChartData: [PortfolioSnapshot] {
@@ -3306,37 +3339,7 @@ struct AssetsView: View {
                     .listRowBackground(Color.clear)
                 } header: { Text("账户总览") }
                 Section("历史快照") {
-                    Button(manualSnapshotExpanded ? "收起手动录入" : "手动录入/修正某日真实值") {
-                        if !manualSnapshotExpanded {
-                            if manualSnapshotDate.isEmpty {
-                                let formatter = DateFormatter()
-                                formatter.locale = Locale(identifier: "en_US_POSIX")
-                                formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-                                formatter.dateFormat = "yyyy-MM-dd"
-                                manualSnapshotDate = formatter.string(from: .now)
-                            }
-                            if manualSnapshotCash.isEmpty { manualSnapshotCash = store.data.cash.num(2) }
-                        }
-                        manualSnapshotExpanded.toggle()
-                    }
-                    if manualSnapshotExpanded {
-                        TextField("日期 YYYY-MM-DD", text: $manualSnapshotDate)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        TextField("当日真实总资产", text: $manualSnapshotTotal).keyboardType(.decimalPad)
-                        TextField("当日现金", text: $manualSnapshotCash).keyboardType(.decimalPad)
-                        Button("保存这天的真实快照") {
-                            do {
-                                try store.recordManualSnapshot(date: manualSnapshotDate,
-                                    total: Double(manualSnapshotTotal) ?? .nan,
-                                    cash: Double(manualSnapshotCash) ?? .nan)
-                                snapshotBackfillMessage = "已保存并标记为手动核实：\(manualSnapshotDate)"
-                                manualSnapshotExpanded = false
-                            } catch { snapshotBackfillMessage = "未保存：\(error.localizedDescription)" }
-                        }
-                        .disabled(manualSnapshotDate.isEmpty || manualSnapshotTotal.isEmpty || manualSnapshotCash.isEmpty)
-                        Text("手动值会覆盖该日期快照，并用于后续区间盈亏；可在下方删除后重录。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
+                    Button("手动录入/修正某日真实值") { beginManualSnapshotEdit() }
                     // 休市日不给记录入口：这天的总资产和上一交易日几乎一样
                     // （场外净值不更新、场内是上一交易日的收盘价），记了只会让
                     // 收益曲线多出一段平线，还会把「区间收益」的分母算歪。
@@ -3449,9 +3452,9 @@ struct AssetsView: View {
                                 Button("修正") {
                                     manualSnapshotDate = s.date
                                     manualSnapshotTotal = s.total.num(2)
-                                    manualSnapshotCash = s.cash.num(2)
-                                    manualSnapshotExpanded = true
-                                    snapshotDetailsExpanded = false
+                                    snapshotEditorError = ""
+                                    // 独立表单避免 List/DisclosureGroup 在编辑时重建并自动折叠。
+                                    showManualSnapshotEditor = true
                                 }
                                 .font(.caption)
                             }
@@ -3541,6 +3544,47 @@ struct AssetsView: View {
                     if selectedLedgerMonth.isEmpty { selectedLedgerMonth = store.ledgerMonths.first ?? "" }
                 }
                 .sheet(isPresented: $showCashFlow) { CashFlowEditor() .themedSheetBackground() }
+                .sheet(isPresented: $showManualSnapshotEditor) {
+                    NavigationStack {
+                        Form {
+                            TextField("日期 YYYY-MM-DD", text: $manualSnapshotDate)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            TextField("当日真实总资产", text: $manualSnapshotTotal).keyboardType(.decimalPad)
+                            Text("只需录入总资产。现金会沿用该日已有快照；新建日期会参考最近一条历史快照。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            if !snapshotEditorError.isEmpty {
+                                Text(snapshotEditorError).font(.footnote).foregroundStyle(.red)
+                            }
+                            if !manualSnapshotDate.isEmpty,
+                               let total = Double(manualSnapshotTotal), total.isFinite, total >= 0 {
+                                Text("将保存总资产 \(total.cny())，并用于后续区间收益计算。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        .navigationTitle("修正历史快照")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("取消") { showManualSnapshotEditor = false }
+                            }
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("保存") {
+                                    do {
+                                        try store.recordManualSnapshot(date: manualSnapshotDate,
+                                            total: Double(manualSnapshotTotal) ?? .nan)
+                                        snapshotBackfillMessage = "已保存并标记为手动核实：\(manualSnapshotDate)"
+                                        snapshotEditorError = ""
+                                        showManualSnapshotEditor = false
+                                    } catch {
+                                        snapshotEditorError = "保存失败：\(error.localizedDescription)"
+                                    }
+                                }
+                                .disabled(manualSnapshotDate.isEmpty || Double(manualSnapshotTotal)?.isFinite != true || (Double(manualSnapshotTotal) ?? -1) < 0)
+                            }
+                        }
+                    }
+                    .themedSheetBackground()
+                }
                 .confirmationDialog("删除快照？", isPresented: Binding(get: { snapshotDeleteTarget != nil }, set: { if !$0 { snapshotDeleteTarget = nil } }), titleVisibility: .visible) {
                     Button("删除 \(snapshotDeleteTarget?.date ?? "") 的快照", role: .destructive) {
                         if let snapshotDeleteTarget { store.removeSnapshot(date: snapshotDeleteTarget.date) }
@@ -3560,6 +3604,19 @@ struct AssetsView: View {
                     Text("只清除“历史重建”标记的快照；你手动记录、已结算或临时快照都会保留。")
                 }
         }
+    }
+
+    private func beginManualSnapshotEdit() {
+        if manualSnapshotDate.isEmpty {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+            formatter.dateFormat = "yyyy-MM-dd"
+            manualSnapshotDate = formatter.string(from: .now)
+        }
+        if manualSnapshotTotal.isEmpty { manualSnapshotTotal = store.totalAsset.num(2) }
+        snapshotEditorError = ""
+        showManualSnapshotEditor = true
     }
 
     @MainActor private func manuallyRefreshAssets() async {
@@ -4284,8 +4341,8 @@ struct DividendCalendarView: View {
     }
     private var annualEstimateRows: [(Holding, Double?, ETFDividendProjection.Source?)] {
         return store.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.map { holding in
-            guard let projection = ETFDividendProjection.annualPerShare(for: holding,
-                                                                        events: store.data.etfDividendEvents),
+            guard let projection = ETFDividendProjection.projectedAnnualPerShare(for: holding,
+                                                                                 events: store.data.etfDividendEvents),
                   projection.amount > 0 else { return (holding, nil, nil) }
             return (holding, projection.amount, projection.source)
         }
@@ -4299,7 +4356,7 @@ struct DividendCalendarView: View {
                 Section {
                     Stepper("年份：\(year)", value: $year, in: 2000...2100)
                     LabeledContent("已记录派息金额", value: (etfEvents.reduce(0) { $0 + $1.2 }).cny())
-                    LabeledContent("近12个月实际派息", value: (annualEstimateRows.reduce(0) { $0 + $1.0.quantity * ($1.1 ?? 0) }).cny())
+                    LabeledContent("近12个月已核实派息", value: etfAnnualDividendIncome.cny())
                 } header: { Text("年度汇总") }
                     .plainCard(isLight: isLight)
                 Section("场内 ETF 历史事件") {
@@ -4325,17 +4382,19 @@ struct DividendCalendarView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(holding.name)
                             if let perShare, let source {
-                                Text("每份 \(perShare.num(4)) 元 · 股息率 \((holding.current > 0 ? perShare / holding.current * 100 : 0).num(2))% · 近12个月派息 \((perShare * holding.quantity).cny())")
+                                Text("每份 \(perShare.num(4)) 元 · 股息率 \((holding.current > 0 ? perShare / holding.current * 100 : 0).num(2))% · 未来12个月试算 \((perShare * holding.quantity).cny())")
                                     .font(.caption).foregroundStyle(.secondary)
-                                Text(source == .manual ? "按人工修正值统计。" : "按近 12 个月已记录的实际分红统计。")
+                                Text(source == .manual ? "按人工核实值试算。" : "按近12个月已核实现金派息外推，不代表承诺。")
                                     .font(.caption2).foregroundStyle(.secondary)
                             } else {
-                                Text("不分红 · 近 12 个月没有已记录的现金派息。")
+                                Text(holding.annualDividendPerShare == 0 || holding.code == "159352"
+                                     ? "不分红 · 已确认该标的无派息记录。"
+                                     : "待核实 · 尚无已迁入的派息记录，不能据此判断不分红。")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
-                    Text("只统计人工修正或近 12 个月已记录的现金派息 × 当前份额；没有派息记录时显示“不分红”，不按指数或名称估算未来分红。")
+                    Text("实际派息只统计近12个月已核实现金分红；未来试算按人工核实值或历史派息节奏计算。缺少事件数据会标为“待核实”，不会误判为不分红，也不按指数或名称猜测。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -6527,10 +6586,10 @@ struct SettingsView: View {
         }
         Section("图表显示") {
             Picker("分时价格线", selection: Binding(get: { store.data.intradayLineColorMode }, set: { store.data.intradayLineColorMode = $0; store.save(label: "修改账本或设置") })) {
-                Text("自动强调色").tag(IntradayLineColorMode.automatic)
+                Text("跟随主题（单色）").tag(IntradayLineColorMode.automatic)
                 Text("白色").tag(IntradayLineColorMode.white)
                 Text("黑色").tag(IntradayLineColorMode.black)
-                Text("涨红跌绿").tag(IntradayLineColorMode.upDown)
+                Text("主题单色（兼容旧设置）").tag(IntradayLineColorMode.upDown)
             }
         }
     }

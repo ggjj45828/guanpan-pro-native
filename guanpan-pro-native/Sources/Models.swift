@@ -192,7 +192,7 @@ struct ETFDividendEvent: Codable, Identifiable {
 
 /// ETF 年股息只采用人工录入或近 12 个月已记录的现金分红，不按指数风格猜测。
 enum ETFDividendProjection {
-    enum Source: Equatable { case manual, recorded }
+    enum Source: Equatable { case manual, recorded, projected }
 
     /// 共享的上海时区日期格式化器。DateFormatter 建一次约毫秒级，
     /// 而年股息试算在自选列表里是「每行每次渲染」都会走的路径，必须复用。
@@ -226,12 +226,33 @@ enum ETFDividendProjection {
         if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
             return (manual, .manual)
         }
+        return recordedAnnualPerShare(for: holding, events: events, now: now)
+    }
+
+    /// 已核实的近 12 个月现金派息；不包含人工预测值，也不包含复权价格推算事件。
+    static func recordedAnnualPerShare(for holding: Holding, events: [ETFDividendEvent], now: Date = .now)
+        -> (amount: Double, source: Source)? {
         let cutoff = yearAgoCutoff(now: now)
+        let today = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "Asia/Shanghai") ?? .current, from: now)
+        let todayKey = String(format: "%04d-%02d-%02d", today.year ?? 0, today.month ?? 0, today.day ?? 0)
         let recorded = events
-            .filter { $0.code == holding.code && $0.date >= cutoff && $0.isEstimated != true }
+            .filter { $0.code == holding.code && $0.date >= cutoff && $0.date <= todayKey && $0.isEstimated != true }
             .reduce(0) { $0 + $1.amountPerShare }
         if recorded > 0 { return (recorded, .recorded) }
         return nil
+    }
+
+    /// 未来 12 个月的保守试算：优先使用人工核实值；否则沿用近 12 个月
+    /// 已核实现金派息总额。它只是历史节奏外推，不把指数股息率当成 ETF 派息。
+    static func projectedAnnualPerShare(for holding: Holding, events: [ETFDividendEvent], now: Date = .now)
+        -> (amount: Double, source: Source)? {
+        if let manual = holding.annualDividendPerShare, manual.isFinite, manual >= 0 {
+            return (manual, .manual)
+        }
+        guard let actual = recordedAnnualPerShare(for: holding, events: events, now: now), actual.amount > 0 else {
+            return nil
+        }
+        return (actual.amount, .projected)
     }
 }
 
@@ -347,7 +368,8 @@ struct FundNAVPoint: Codable, Identifiable {
     /// **为什么需要它**：场内基金当晚发布当天净值，净值日 = 当天；美股 / QDII 等境外市场
     /// 基金净值日天然晚一个交易日（美股周六日、节假日休盘，但净值随后照样公布），
     /// 净值日 ≠ 当天。所以「今天有没有更新过」只能看采集时间，不能看净值日期是不是今天。
-    /// 旧存档 / 导入数据没有这个字段时为 nil，相关判断退化回按净值日期比。
+    /// 旧存档 / 导入数据没有这个字段时为 nil；只有成功刷新时确认的新净值才会补记采集时间，
+    /// 避免旧净值仅因日期匹配而被重复算入今天。
     var fetchedAt: Date? = nil
 }
 

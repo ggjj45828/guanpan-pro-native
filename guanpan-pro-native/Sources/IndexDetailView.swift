@@ -30,6 +30,20 @@ struct IndexDetailView: View {
     private var tone: Color { PnLColor.of(index.changePct) }
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var gridColor: Color { Color.primary.opacity(isLight ? 0.10 : 0.16) }
+    private var intradayPriceLineColor: Color {
+        switch store.data.intradayLineColorMode {
+        case .white: return .white
+        case .black: return .black
+        case .automatic, .upDown: return scheme == .dark ? .white : .black
+        }
+    }
+    private var isMainlandIndex: Bool {
+        guard let symbol = MarketIndexStore.catalog.first(where: { $0.secid == index.symbol })?.tencent?.lowercased() else { return false }
+        return symbol.hasPrefix("sh") || symbol.hasPrefix("sz")
+    }
+    private var isUSIndex: Bool {
+        MarketIndexStore.catalog.first(where: { $0.secid == index.symbol })?.tencent?.lowercased().hasPrefix("us") == true
+    }
 
     /// 昨收。指数当前价与涨跌幅都在手里，反推即可 —— 和 `dayPnL(of:)` 用的是同一套算法。
     private var previousClose: Double {
@@ -170,8 +184,8 @@ struct IndexDetailView: View {
                         }
                         .stroke(gridColor, style: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
 
-                        linePath(closes, size: size, lo: lo, hi: hi)
-                            .stroke(tone, style: StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                        intradayLinePath(size: size, lo: lo, hi: hi)
+                            .stroke(intradayPriceLineColor, style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
                     }
                 }
                 .frame(height: 168)
@@ -179,18 +193,17 @@ struct IndexDetailView: View {
                 // 成交量柱
                 GeometryReader { geo in
                     let size = geo.size
-                    let step = size.width / CGFloat(max(volumes.count, 1))
+                    let slotWidth = size.width / CGFloat(isMainlandIndex ? 240 : max(volumes.count, 1))
                     ZStack(alignment: .bottomLeading) {
                         ForEach(Array(volumes.enumerated()), id: \.offset) { item in
                             let height = size.height * CGFloat(item.element / maxVolume)
-                            let rising = item.offset == 0
-                                ? minutes[item.offset].price >= base
-                                : minutes[item.offset].price >= minutes[item.offset - 1].price
+                            let ratio = intradayXRatio(minutes[item.offset].timestamp)
+                            let risesFromPreviousClose = minutes[item.offset].price >= base
                             Rectangle()
-                                .fill((rising ? Color.red : Color.green).opacity(0.55))
-                                .frame(width: max(0.6, step * 0.72), height: max(0.5, height))
-                                .offset(x: step * CGFloat(item.offset) + step * 0.14,
-                                        y: size.height - max(0.5, height))
+                                .fill((risesFromPreviousClose ? PnLColor.up : PnLColor.down).opacity(0.48))
+                                .frame(width: max(0.6, slotWidth * 0.72), height: max(0.5, height))
+                                .position(x: size.width * ratio,
+                                          y: size.height - max(0.5, height) / 2)
                         }
                     }
                 }
@@ -203,9 +216,32 @@ struct IndexDetailView: View {
         // 横轴标签按真实分时数据的首/中/尾时间生成，不再给港股、美股硬套 A 股 09:30–15:00。
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        fmt.timeZone = isUSIndex ? (TimeZone(identifier: "America/New_York") ?? .current)
+                                 : (TimeZone(identifier: "Asia/Shanghai") ?? .current)
         fmt.dateFormat = "HH:mm"
         let times = minutes.map(\.timestamp)
+        if isUSIndex {
+            return HStack {
+                Text("09:30")
+                Spacer()
+                Text("12:45")
+                Spacer()
+                Text("16:00")
+            }
+            .scaledFont(9).foregroundStyle(.secondary)
+            .padding(.leading, 60)
+        }
+        if isMainlandIndex {
+            return HStack {
+                Text("09:30")
+                Spacer()
+                Text("11:30 / 13:00")
+                Spacer()
+                Text("15:00")
+            }
+            .scaledFont(9).foregroundStyle(.secondary)
+            .padding(.leading, 60)
+        }
         let start = times.first.map { fmt.string(from: $0) } ?? "--:--"
         let end = times.last.map { fmt.string(from: $0) } ?? "--:--"
         let mid: String = {
@@ -399,6 +435,43 @@ struct IndexDetailView: View {
     }
 
     // MARK: - 绘制辅助
+
+    /// 大陆指数横轴固定为完整交易时段；午休压缩到 11:30 / 13:00 的同一位置。
+    /// 即使接口只返回上午 20 个点，也只画到对应时间，不把它拉伸成全天走势。
+    private func intradayXRatio(_ timestamp: Date) -> CGFloat {
+        if isMainlandIndex {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+            let parts = calendar.dateComponents([.hour, .minute], from: timestamp)
+            let clockMinute = (parts.hour ?? 9) * 60 + (parts.minute ?? 30)
+            let sessionMinute: Int
+            if clockMinute <= 690 { sessionMinute = clockMinute - 570 }
+            else if clockMinute < 780 { sessionMinute = 120 }
+            else { sessionMinute = 120 + clockMinute - 780 }
+            return CGFloat(min(240, max(0, sessionMinute))) / 240
+        }
+        if isUSIndex {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+            let parts = calendar.dateComponents([.hour, .minute], from: timestamp)
+            let minute = (parts.hour ?? 9) * 60 + (parts.minute ?? 30) - 570
+            return CGFloat(min(390, max(0, minute))) / 390
+        }
+        guard let first = minutes.first?.timestamp, let last = minutes.last?.timestamp,
+              last > first else { return 0.5 }
+        return CGFloat(min(1, max(0, timestamp.timeIntervalSince(first) / last.timeIntervalSince(first))))
+    }
+
+    private func intradayLinePath(size: CGSize, lo: Double, hi: Double) -> Path {
+        var path = Path()
+        guard minutes.count > 1 else { return path }
+        for (offset, bar) in minutes.enumerated() {
+            let point = CGPoint(x: size.width * intradayXRatio(bar.timestamp),
+                                y: yFor(bar.price, size: size, lo: lo, hi: hi))
+            if offset == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        return path
+    }
 
     private func yFor(_ value: Double, size: CGSize, lo: Double, hi: Double) -> CGFloat {
         guard hi > lo else { return size.height / 2 }

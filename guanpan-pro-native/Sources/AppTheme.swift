@@ -108,8 +108,8 @@ extension View {
 /// `themedSheetBackground()` 的实现。
 ///
 /// 必须写成 `ViewModifier` 而不是直接写在 `extension View` 的方法体里：
-/// 方法体里读不到 `@Environment(\.appAppearance)`（属性包装器只能挂在类型上），
-/// 直接引用 `appAppearance` 会报 `cannot find 'appAppearance' in scope`。
+/// `@Environment` 这类属性包装器只能挂在类型上，方法体里直接引用 `appAppearance`
+/// 会报 `cannot find 'appAppearance' in scope`，整个工程编译不过。
 private struct ThemedSheetBackgroundModifier: ViewModifier {
     @Environment(\.appAppearance) private var appearance
 

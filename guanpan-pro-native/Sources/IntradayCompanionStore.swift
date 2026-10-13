@@ -285,16 +285,23 @@ struct IntradayCompanionDecision {
         return total.isFinite && total >= 0 ? total : nil
     }
 
-    func recordManualSnapshot(date: String, total: Double, cash: Double) throws {
+    func recordManualSnapshot(date: String, total: Double, cash: Double? = nil) throws {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd"
         guard let parsed = formatter.date(from: date), formatter.string(from: parsed) == date,
-              date <= companionDay(), total.isFinite, total >= 0,
-              cash.isFinite, cash >= 0, cash <= total else { throw StoreError.invalidManualSnapshot }
-        let point = PortfolioSnapshot(date: date, total: total, cash: cash, recordedAt: nil,
-                                      quality: .manual, note: "手动录入并核实的真实值")
+              date <= companionDay(), total.isFinite, total >= 0 else {
+            throw StoreError.invalidManualSnapshot
+        }
+        // 总资产手动校正不应强迫用户拆分现金。已有日期保留该日现金；
+        // 新建日期优先沿用最近一条不晚于该日的快照现金，没有历史基准才用当前参考现金。
+        let existing = data.snapshots.first { $0.date == date }
+        let priorCash = data.snapshots.filter { $0.date <= date }.max { $0.date < $1.date }?.cash
+        let resolvedCash = cash ?? existing?.cash ?? priorCash ?? data.cash
+        guard resolvedCash.isFinite, resolvedCash >= 0 else { throw StoreError.invalidManualSnapshot }
+        let point = PortfolioSnapshot(date: date, total: total, cash: min(resolvedCash, total), recordedAt: nil,
+                                      quality: .manual, note: "手动录入并核实的真实总资产；现金沿用快照")
         if let index = data.snapshots.firstIndex(where: { $0.date == date }) { data.snapshots[index] = point }
         else { data.snapshots.append(point) }
         data.snapshots.sort { $0.date < $1.date }

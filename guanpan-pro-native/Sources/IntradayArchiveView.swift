@@ -61,9 +61,8 @@ struct IntradayArchiveView: View {
         case .automatic: return isLight ? .black : .white
         case .white: return .white
         case .black: return .black
-        case .upDown:
-            guard let first = bars.first, let last = bars.last else { return .primary }
-            return last.price >= first.price ? .red : .green
+        // 旧版涨跌着色偏好只兼容读取；历史价格线统一跟随主题单色。
+        case .upDown: return isLight ? .black : .white
         }
     }
 
@@ -320,7 +319,7 @@ struct IntradayArchiveView: View {
                     volumeChart
                 } else {
                     HStack(spacing: 12) {
-                        Label("DIF", systemImage: "minus").foregroundStyle(.blue)
+                        Label("DIF", systemImage: "minus").foregroundStyle(priceLineColor)
                         Label("DEA", systemImage: "minus").foregroundStyle(.orange)
                         Text("柱：红正 / 绿负").foregroundStyle(.secondary)
                     }
@@ -346,13 +345,13 @@ struct IntradayArchiveView: View {
                     .interpolationMethod(.linear)
                 LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price), series: .value("主图序列", "价格"))
                     .foregroundStyle(priceLineColor)
-                    .lineStyle(StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 0.95, lineCap: .round, lineJoin: .round))
                     .interpolationMethod(.linear)
             }
             ForEach(average) { point in
                 LineMark(x: .value("时间", point.time), y: .value("均价", point.value), series: .value("主图序列", "均价"))
                     .foregroundStyle(Color.orange)
-                    .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
             }
             ForEach(tradePoints) { trade in
                 PointMark(x: .value("交易时间", trade.time), y: .value("成交价", trade.price))
@@ -401,19 +400,24 @@ struct IntradayArchiveView: View {
     }
 
     @ViewBuilder private var macdChart: some View {
-        Chart(macd) { point in
-            BarMark(x: .value("时间", point.time), y: .value("MACD", point.histogram), width: .fixed(minuteBarWidth(macd.count)))
-                .foregroundStyle(point.histogram >= 0 ? Color.red.opacity(0.76) : Color.green.opacity(0.76))
-                .cornerRadius(1)
+        Chart {
             RuleMark(y: .value("零轴", 0))
                 .foregroundStyle(Color.secondary.opacity(0.45))
                 .lineStyle(StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
-            LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
-                .foregroundStyle(Color.blue)
-                .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
-            LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
-                .foregroundStyle(Color.orange)
-                .lineStyle(StrokeStyle(lineWidth: 0.75, lineCap: .round, lineJoin: .round))
+            ForEach(macd) { point in
+                hollowIntradayMACDColumn(time: point.time, value: point.histogram, interval: 60,
+                    color: point.histogram >= 0 ? .red : .green)
+            }
+            ForEach(macd) { point in
+                LineMark(x: .value("时间", point.time), y: .value("DIF", point.dif), series: .value("MACD序列", "DIF"))
+                    .foregroundStyle(priceLineColor)
+                    .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+            }
+            ForEach(macd) { point in
+                LineMark(x: .value("时间", point.time), y: .value("DEA", point.dea), series: .value("MACD序列", "DEA"))
+                    .foregroundStyle(Color.orange)
+                    .lineStyle(StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+            }
         }
         .frame(height: 110)
         .chartYScale(domain: macdDomain)

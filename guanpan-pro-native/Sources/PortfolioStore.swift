@@ -12,6 +12,7 @@ final class PortfolioStore: ObservableObject {
     /// 腾讯 ETF 报价中可核实的实时折溢价率（百分数单位）。仅用于当前界面，
     /// 不写入账本；接口没给或品种不是 ETF 时保持 nil，绝不拿昨收/净值猜。
     @Published private(set) var marketPremiums: [String: Double] = [:]
+    @Published private(set) var marketIOPVs: [String: Double] = [:]
     @Published var fundNAVStatus = "尚未更新基金净值"
     @Published var fundHoldingsStatus = "基金重仓尚未更新"
     @Published var isRefreshingFundHoldings = false
@@ -210,17 +211,17 @@ final class PortfolioStore: ObservableObject {
     /// 只有最新净值今天首次采集/更新时才计入今天；重复使用旧净值返回 0。
     func fundDayPnL(of holding: Holding) -> Double {
         guard holding.kind == .fund, holding.quantity > 0 else { return 0 }
-        let points = data.fundNAVHistory.filter { $0.code == holding.code }.sorted { $0.date < $1.date }
+        let points = latestFundPoints(for: holding.code)
         guard points.count >= 2 else { return 0 }
         let latest = points[points.count - 1], previous = points[points.count - 2]
         // 不把最近一个净值日的旧涨跌重复称作今天收益。海外基金净值日可为昨日，
         // 但只要今天首次采集到，fetchedAt 就会归到今天并计入今天账户变化。
         let today = MarketCalendar.isoDay(.now)
-        if let fetchedAt = latest.fetchedAt {
-            guard MarketCalendar.isoDay(fetchedAt) == today else { return 0 }
-        } else {
-            guard latest.date == today else { return 0 }
-        }
+        // 只按“本机首次确认/修正这条净值的日期”归属收益。
+        // 不能用净值日期兜底：旧版导入的净值可能没有 fetchedAt，日期恰好是今天时，
+        // 会在之后的日子里被错误地重复算成当天收益。刷新流程会给今天确认的新净值补上时间。
+        guard let fetchedAt = latest.fetchedAt,
+              MarketCalendar.isoDay(fetchedAt) == today else { return 0 }
         guard latest.nav.isFinite, previous.nav.isFinite, previous.nav > 0 else { return 0 }
         return holding.quantity * (latest.nav - previous.nav)
     }
@@ -234,16 +235,33 @@ final class PortfolioStore: ObservableObject {
     var hasFundDayPnL: Bool {
         data.holdings.contains { holding in
             holding.kind == .fund
-                && data.fundNAVHistory.filter { $0.code == holding.code }.count >= 2
+                && latestFundPoints(for: holding.code).count >= 2
                 && fundNAVWasUpdatedToday(holding)
         }
     }
 
+    /// 将旧备份/跨设备合并产生的重复净值日期压成一条，优先保留最近一次确认且数值有效的记录。
+    private func latestFundPoints(for code: String) -> [FundNAVPoint] {
+        let rows = data.fundNAVHistory.filter {
+            $0.code == code && $0.nav.isFinite && $0.nav > 0
+        }
+        let grouped = Dictionary(grouping: rows, by: \.date)
+        return grouped.keys.sorted().compactMap { date in
+            grouped[date]?.max { lhs, rhs in
+                switch (lhs.fetchedAt, rhs.fetchedAt) {
+                case let (l?, r?): return l < r
+                case (nil, _?): return true
+                case (_?, nil): return false
+                case (nil, nil): return false
+                }
+            }
+        }
+    }
+
     private func fundNAVWasUpdatedToday(_ holding: Holding) -> Bool {
-        guard let latest = data.fundNAVHistory.filter({ $0.code == holding.code })
-            .max(by: { $0.date < $1.date }) else { return false }
-        if let fetchedAt = latest.fetchedAt { return MarketCalendar.isoDay(fetchedAt) == MarketCalendar.isoDay(.now) }
-        return latest.date == MarketCalendar.isoDay(.now)
+        guard let latest = latestFundPoints(for: holding.code).last,
+              let fetchedAt = latest.fetchedAt else { return false }
+        return MarketCalendar.isoDay(fetchedAt) == MarketCalendar.isoDay(.now)
     }
 
     /// 场外今日幅度 = 场外当日盈亏 / 场外昨收市值（按上一净值折算）。
@@ -686,8 +704,10 @@ final class PortfolioStore: ObservableObject {
         let symbol = tencentSymbol(code)
         var parsed: [IntradayBar] = []
         var lastError: Error = URLError(.cannotLoadFromNetwork)
-        for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
-            guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=min_archive_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else { continue }
+        let isUS = symbol.lowercased().hasPrefix("us")
+        let path = isUS ? "usMinute" : "minute"
+        for host in (isUS ? ["web.ifzq.gtimg.cn"] : ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"]) {
+            guard let url = URL(string: "https://\(host)/appstock/app/\(path)/query?_var=min_archive_\(Int(Date().timeIntervalSince1970))&code=\(symbol)") else { continue }
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 12
@@ -705,7 +725,7 @@ final class PortfolioStore: ObservableObject {
         // 腾讯盘中有时只返回最近一小段分钟点。与其把少量数据当作整日归档，
         // 再尝试东财 trends2；它能返回当天截至当前时刻的分钟序列。休市时以完整
         // 交易日作为目标，盘中则按已走过的交易分钟计算最低覆盖目标。
-        let targetCount = expectedIntradayPointCount(now: .now, dataDay: parsed.last?.day)
+        let targetCount = expectedIntradayPointCount(now: .now, dataDay: parsed.last?.day, code: symbol)
         var eastmoney: [IntradayBar] = []
         // 只要有缺点就尝试第二行情源。原来的 90% 门槛会把 214/242 误当作够用，
         // 收盘后留下缺口，用户看到的就不是完整日线。
@@ -768,7 +788,8 @@ final class PortfolioStore: ObservableObject {
         return "\(market).\(digits)"
     }
 
-    private func expectedIntradayPointCount(now: Date, dataDay: String?) -> Int {
+    private func expectedIntradayPointCount(now: Date, dataDay: String?, code: String? = nil) -> Int {
+        if code?.lowercased().hasPrefix("us") == true { return 390 }
         let today = Self.shanghaiDay(now)
         guard dataDay == today, Self.isRegularTradingSession(now) else { return 242 }
         var calendar = Calendar(identifier: .gregorian)
@@ -801,7 +822,7 @@ final class PortfolioStore: ObservableObject {
                 let latestDay = local.map(\.day).max()
                 let count = Set(local.filter { $0.day == latestDay }
                     .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
-                return count < expectedIntradayPointCount(now: .now, dataDay: latestDay)
+                return count < expectedIntradayPointCount(now: .now, dataDay: latestDay, code: code)
             }
             let retryInterval: TimeInterval = incomplete ? 5 * 60 : 30 * 60
             guard Date().timeIntervalSince(lastRun) >= retryInterval else { return (0, 0) }
@@ -847,7 +868,7 @@ final class PortfolioStore: ObservableObject {
             let day = local.map(\.day).max()
             let count = Set(local.filter { $0.day == day }
                 .map { Int($0.timestamp.timeIntervalSince1970 / 60) }).count
-            return count < expectedIntradayPointCount(now: .now, dataDay: day)
+            return count < expectedIntradayPointCount(now: .now, dataDay: day, code: code)
         }.count
         let coverage = latestDay.map { "\($0) · 本次行情取回 \(pointCount) 点 · 本机已保存并去重" }
             ?? "行情源没有返回新分钟点"
@@ -1185,9 +1206,9 @@ final class PortfolioStore: ObservableObject {
             defaults.set(fingerprint, forKey: NASSyncService.fingerprintKey)
         }
     }
-    /// 从腾讯实时 ETF 报价读取其有效折溢价率，并按现价反推实时参考净值。
+    /// 优先读取腾讯 ETF 报价字段 78 的净值参考，缺失时才用字段 77 溢价率反推。
     /// 不用场外基金净值或昨收数据冒充 IOPV。
-    func lookupETFRealtimeIOPV(code rawCode: String) async throws -> (value: Double, premiumPercent: Double, updatedAt: Date?)? {
+    func lookupETFRealtimeIOPV(code rawCode: String) async throws -> (value: Double, premiumPercent: Double?, updatedAt: Date?)? {
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard code.count == 6, code.allSatisfy(\.isNumber) else { return nil }
         let symbol = tencentSymbol(code)
@@ -1196,7 +1217,7 @@ final class PortfolioStore: ObservableObject {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
-        let bytes: Data
+        var bytes: Data
         do {
             let (direct, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
@@ -1208,40 +1229,26 @@ final class PortfolioStore: ObservableObject {
                 throw error
             }
         }
-        let text = decodeTencent(bytes)
-        guard let quote = parseTencent(text)[symbol] else { return nil }
-        // 优先直接取字段 78 的 IOPV（实时参考净值），拿不到再用「现价 / (1 + 折溢价率)」反推。
-        let fieldValues = tencentFieldValues(text, symbol: symbol)
-        let directIOPV: Double? = fieldValues.flatMap { values -> Double? in
-            guard values.count > 78 else { return nil }
-            return Double(values[78].trimmingCharacters(in: .whitespacesAndNewlines))
+        var quote = parseTencent(decodeTencent(bytes))[symbol]
+        // 直连有时只回基础行情（HTTP 200），但没有 ETF 扩展字段。
+        // 此时也要尝试 NAS 的同一腾讯行情代理，不能只在网络报错时兜底。
+        if quote?.iopv == nil && quote?.premiumPct == nil,
+           let proxied = try? await NASSyncService.marketProxyData(
+                path: "quote", queryItems: [URLQueryItem(name: "codes", value: symbol)]),
+           let proxyQuote = parseTencent(decodeTencent(proxied))[symbol] {
+            quote = proxyQuote
         }
-        let resolvedIOPV: Double?
-        if let directIOPV, directIOPV.isFinite, directIOPV > 0 {
-            resolvedIOPV = directIOPV
-        } else if let premium = quote.premiumPct, premium.isFinite, (1 + premium / 100) > 0 {
-            let derived = quote.price / (1 + premium / 100)
-            resolvedIOPV = derived.isFinite && derived > 0 ? derived : nil
+        guard let quote else { return nil }
+        let value: Double
+        if let rawNAV = quote.iopv, rawNAV.isFinite, rawNAV > 0 {
+            value = rawNAV
+        } else if let premium = quote.premiumPct, (1 + premium / 100) > 0 {
+            value = quote.price / (1 + premium / 100)
         } else {
-            resolvedIOPV = nil
+            return nil
         }
-        guard let value = resolvedIOPV else { return nil }
-        let premium = quote.premiumPct ?? ((quote.price / value - 1) * 100)
-        return (value, premium, quote.timestamp)
-    }
-
-    /// 从腾讯行情响应里按 symbol 取出 ~ 分隔的字段数组。字段 77 = 折溢价率，78 = IOPV。
-    private func tencentFieldValues(_ text: String, symbol: String) -> [String]? {
-        let pattern = "v_" + NSRegularExpression.escapedPattern(for: symbol) + "=\"([^\"]*)\""
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let ns = text as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        for match in regex.matches(in: text, range: range) where match.numberOfRanges == 2 {
-            let body = ns.substring(with: match.range(at: 1))
-            let fields = body.split(separator: "~", omittingEmptySubsequences: false).map(String.init)
-            if fields.count > 78 { return fields }
-        }
-        return nil
+        guard value.isFinite, value > 0 else { return nil }
+        return (value, quote.premiumPct, quote.timestamp)
     }
 
     func lookupETFQuote(code rawCode: String) async throws -> Quote? {
@@ -1597,25 +1604,27 @@ final class PortfolioStore: ObservableObject {
             let points = await fetchTencentMinutes(symbol: tencent)
             if !points.isEmpty { sources.append(points) }
         }
-        // 同样拆开写，避免与下面同一类表达式一起把类型检查拖到超时。
-        let tencentFlat = sources.flatMap { $0 }
-        let tencentMinutes = Set(tencentFlat.map { Int($0.timestamp.timeIntervalSince1970 / 60) })
-        let tencentCount = tencentMinutes.count
+        // 拆成几步写：`flatMap`/`map`/`Set` 串在一行会让 Swift 的类型检查超时
+        // （报 "unable to type-check this expression in reasonable time"），
+        // 中间量显式标注类型即可。
+        let tencentBars: [IntradayBar] = sources.flatMap { $0 }
+        let tencentMinutes: [Int] = tencentBars.map { Int($0.timestamp.timeIntervalSince1970 / 60) }
+        let tencentCount = Set(tencentMinutes).count
+        let targetCount = tencent?.lowercased().hasPrefix("us") == true ? 390 : 242
         // 腾讯已给出完整 A 股交易日时不再等待第二接口；只在有明显缺口时补数。
         // 非东财格式的海外指数代码也不请求东财，避免无效请求拖慢详情页。
-        if tencentCount < 242,
+        if tencentCount < targetCount,
            quote.symbol.range(of: "^[01]\\.\\d{6}$", options: .regularExpression) != nil {
             let em = await fetchEastmoneyMinutes(secid: quote.symbol)
             if !em.isEmpty { sources.append(em) }
         }
-        // 拆成几步写：一行里套 flatMap/filter/map/Set 会让类型检查超时
-        // （the compiler is unable to type-check this expression in reasonable time）。
-        let combined = sources.flatMap { $0 }
-        let targetDay = combined.map(\.day).max()
-        let targetBars = combined.filter { $0.day == targetDay }
-        let targetMinutes = Set(targetBars.map { Int($0.timestamp.timeIntervalSince1970 / 60) })
-        let count = targetMinutes.count
-        if count < 242, let tencent,
+        // 同上：拆开写，避免一行的链式计算把类型检查拖到超时。
+        let mergedBars: [IntradayBar] = sources.flatMap { $0 }
+        let targetDay = mergedBars.map(\.day).max()
+        let targetBars = mergedBars.filter { $0.day == targetDay }
+        let targetMinutes: [Int] = targetBars.map { Int($0.timestamp.timeIntervalSince1970 / 60) }
+        let count = Set(targetMinutes).count
+        if count < targetCount, let tencent,
            let bytes = try? await NASSyncService.marketProxyData(path: "minute",
                queryItems: [URLQueryItem(name: "code", value: tencent)]) {
             let proxied = parseTencentMinuteData(bytes, symbol: tencent)
@@ -1638,9 +1647,11 @@ final class PortfolioStore: ObservableObject {
     /// 腾讯分时（与 `MarketChartView` 同一条接口，抽到 store 里给指数详情页复用）。
     /// 主机按稳定性排序：`web.ifzq.gtimg.cn` 走 CDN、比裸 `ifzq` 更稳，任一成功即返回。
     func fetchTencentMinutes(symbol: String) async -> [IntradayBar] {
-        for host in ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"] {
+        let isUS = symbol.lowercased().hasPrefix("us")
+        let path = isUS ? "usMinute" : "minute"
+        for host in (isUS ? ["web.ifzq.gtimg.cn"] : ["web.ifzq.gtimg.cn", "ifzq.gtimg.cn"]) {
             let variable = "min_data_\(Int(Date().timeIntervalSince1970 * 1000))"
-            guard let url = URL(string: "https://\(host)/appstock/app/minute/query?_var=\(variable)&code=\(symbol)&_t=\(Int(Date().timeIntervalSince1970))") else { continue }
+            guard let url = URL(string: "https://\(host)/appstock/app/\(path)/query?_var=\(variable)&code=\(symbol)&_t=\(Int(Date().timeIntervalSince1970))") else { continue }
             var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
             request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
@@ -1672,7 +1683,10 @@ final class PortfolioStore: ObservableObject {
         let day = Self.normalizedDay(rawDay)
         guard day.count == 10 else { return [] }
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.timeZone = symbol.lowercased().hasPrefix("us")
+            ? (TimeZone(identifier: "America/New_York") ?? TimeZone(secondsFromGMT: -5 * 3600)!)
+            : (TimeZone(identifier: "Asia/Shanghai") ?? .current)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
         var parsed: [IntradayBar] = []
         var previousVolume = 0.0
         for row in rows {
@@ -1754,7 +1768,28 @@ final class PortfolioStore: ObservableObject {
                 } else { throw error }
             }
             let text = decodeTencent(bytes)
-            let values = parseTencent(text)
+            var values = parseTencent(text)
+            let etfCodes = Set(data.holdings.filter { $0.kind == .etf }.map(\.code)
+                + data.quotes.map(\.code)).filter { isTencentETFCode($0) }
+            let incompleteETFCodes = etfCodes.filter { code in
+                guard let quote = values[tencentSymbol(code)] else { return true }
+                return quote.premiumPct == nil || quote.iopv == nil
+            }
+            if !incompleteETFCodes.isEmpty,
+               let proxied = try? await NASSyncService.marketProxyData(
+                    path: "quote", queryItems: [URLQueryItem(name: "codes", value: incompleteETFCodes.map(tencentSymbol).joined(separator: ","))]) {
+                let proxyValues = parseTencent(decodeTencent(proxied))
+                for code in incompleteETFCodes {
+                    let symbol = tencentSymbol(code)
+                    guard let proxy = proxyValues[symbol] else { continue }
+                    if let direct = values[symbol] {
+                        values[symbol] = (direct.name, direct.price, direct.changePct, direct.timestamp,
+                                          direct.premiumPct ?? proxy.premiumPct, direct.iopv ?? proxy.iopv)
+                    } else {
+                        values[symbol] = proxy
+                    }
+                }
+            }
             guard !values.isEmpty else {
                 sourceStatus = "接口未返回可识别报价"
                 Task { await NativeNotifications.sendSourceHealthOnce(category: "market", body: "行情接口没有返回可识别报价。请检查数据源状态或 NAS 网络连接。") }
@@ -1781,11 +1816,14 @@ final class PortfolioStore: ObservableObject {
             // 刷新该多慢就多慢（用户明确说过慢一点没关系），但界面不再抖。
             var changes = marketChanges
             var premiums = marketPremiums
+            var iopvs = marketIOPVs
             for code in symbols {
                 if let quote = values[tencentSymbol(code)] {
                     changes[code] = quote.changePct
                     if let premium = quote.premiumPct { premiums[code] = premium }
                     else { premiums.removeValue(forKey: code) }
+                    if let iopv = quote.iopv, iopv.isFinite, iopv > 0 { iopvs[code] = iopv }
+                    else { iopvs.removeValue(forKey: code) }
                 }
             }
             var updated = data
@@ -1808,6 +1846,7 @@ final class PortfolioStore: ObservableObject {
             data = updated
             marketChanges = changes
             marketPremiums = premiums
+            marketIOPVs = iopvs
             if Self.isRegularTradingSession(Date()) {
                 checkQuoteAlerts(using: values)
                 if captureIntraday && data.intradayCaptureEnabled {
@@ -1909,7 +1948,7 @@ final class PortfolioStore: ObservableObject {
         save(label: "重新启用价格提醒")
     }
 
-    private func checkQuoteAlerts(using quotes: [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?)]) {
+    private func checkQuoteAlerts(using quotes: [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?, iopv: Double?)]) {
         var changed = false
         for index in data.quoteAlerts.indices where data.quoteAlerts[index].enabled {
             let alert = data.quoteAlerts[index]
@@ -2016,7 +2055,10 @@ final class PortfolioStore: ObservableObject {
                         let valueChanged = previous.map { abs($0.nav - point.nav) > 0.00000001 } ?? false
                         let isNewPublishedPoint = previous == nil
                             && (newestStoredDate.map { point.date > $0 } ?? (point.date == newestFetchedDate))
-                        let fetchedAt = (valueChanged || isNewPublishedPoint) ? fetchStamp : previous?.fetchedAt
+                        let isLegacyCurrentDayPoint = point.date == MarketCalendar.isoDay(fetchStamp)
+                            && previous?.fetchedAt == nil
+                        let fetchedAt = (valueChanged || isNewPublishedPoint || isLegacyCurrentDayPoint)
+                            ? fetchStamp : previous?.fetchedAt
                         merged[point.date] = FundNAVPoint(code: point.code, date: point.date, nav: point.nav, fetchedAt: fetchedAt)
                     }
                     data.fundNAVHistory.removeAll { $0.code == code }
@@ -2255,8 +2297,11 @@ final class PortfolioStore: ObservableObject {
     }
 
     private func tencentSymbol(_ raw: String) -> String {
-        let c = raw.trimmingCharacters(in: .whitespaces).lowercased()
-        if c.hasPrefix("sh") || c.hasPrefix("sz") || c.hasPrefix("bj") || c.hasPrefix("hk") || c.hasPrefix("us") { return c }
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        let c = trimmed.lowercased()
+        // 腾讯美股代码大小写敏感（usNDX / usINX）；其他市场代码统一小写。
+        if c.hasPrefix("us") { return "us" + String(trimmed.dropFirst(2)) }
+        if c.hasPrefix("sh") || c.hasPrefix("sz") || c.hasPrefix("bj") || c.hasPrefix("hk") { return c }
         if c.count == 5, c.allSatisfy(\.isNumber) { return "hk" + c }
         if c.hasPrefix("6") || c.hasPrefix("9") || c.hasPrefix("5") || c.hasPrefix("11") || c.hasPrefix("50") || c.hasPrefix("51") || c.hasPrefix("56") || c.hasPrefix("58") { return "sh" + c }
         if c.hasPrefix("0") || c.hasPrefix("1") || c.hasPrefix("2") || c.hasPrefix("3") { return "sz" + c }
@@ -2281,38 +2326,56 @@ final class PortfolioStore: ObservableObject {
             ?? String(data: bytes, encoding: .isoLatin1) ?? ""
     }
 
-    private func parseTencent(_ text: String) -> [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?)] {
-        var result: [String: (String, Double, Double, Date?, Double?)] = [:]
+    private func parseTencent(_ text: String) -> [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?, iopv: Double?)] {
+        var result: [String: (String, Double, Double, Date?, Double?, Double?)] = [:]
         let pattern = #"v_([a-zA-Z0-9]+)="([^"]*)""#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return result }
         let ns = text as NSString
         for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) where match.numberOfRanges == 3 {
-            let symbol = ns.substring(with: match.range(at: 1)).lowercased()
+            let rawSymbol = ns.substring(with: match.range(at: 1))
+            let symbol = rawSymbol.lowercased().hasPrefix("us")
+                ? "us" + String(rawSymbol.dropFirst(2))
+                : rawSymbol.lowercased()
             let fields = ns.substring(with: match.range(at: 2)).split(separator: "~", omittingEmptySubsequences: false)
             guard fields.count > 32, let price = Double(fields[3]), price > 0 else { continue }
             let name = String(fields[1])
             let pct = Double(fields[32]) ?? 0
             let timestamp = fields.count > 30 ? parseTencentTimestamp(String(fields[30])) : nil
             let securityType = fields.count > 61 ? String(fields[61]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased() : ""
-            // 腾讯 qt 字段 77 = 折溢价率（百分数），字段 78 = IOPV（基金份额参考净值），
-            // 实测两者满足 77 == 现价 / 78 − 1（纳指ETF广发 13.41% / 1.5386、国泰 14.87% / 2.0562、
-            // 景顺纳指科技 31.17% / 2.3869、沪深300ETF -0.01% / 4.3016、科创50 0.01%、黄金ETF 0.04%）。
-            // 字段 63 既不是溢价率也不是涨跌幅（沪深300 显示 -2.60 而真实溢价 -0.01），
-            // 之前误取它导致纳指ETF 溢价率少算三倍多。字段 77 缺失时用现价 / IOPV 反算兜底。
-            let rawPremium = fields.count > 77 ? Double(fields[77]) : nil
-            let iopv = fields.count > 78 ? Double(fields[78]) : nil
+            let isETF = securityType == "ETF" || isTencentETFCode(symbol)
+            // 腾讯 ETF 实时报价的数组下标 77 是折溢价率；下标 78 是基金净值。
+            // 注意这里按 ~ 分割后的 0-based 下标读取，不能用第 63 项（该项是其他指标）。
+            let rawPremium = fields.count > 77 ? parseTencentNumericField(String(fields[77])) : nil
+            let rawIOPV = fields.count > 78 ? parseTencentNumericField(String(fields[78])) : nil
             let premium: Double? = {
-                guard securityType == "ETF" else { return nil }
-                if let rawPremium, rawPremium.isFinite, (-50...50).contains(rawPremium) { return rawPremium }
-                if let iopv, iopv.isFinite, iopv > 0, price > 0 {
-                    let computed = (price / iopv - 1) * 100
-                    return computed.isFinite && (-50...50).contains(computed) ? computed : nil
-                }
+                guard isETF else { return nil }
+                // 溢价率没有 +50% 的理论上限（跨境 QDII ETF 可能长期处于高溢价）。
+                // 只排除不可能的 <= -100% 折价和非有限值，避免把真实高溢价当成缺失。
+                if let rawPremium, rawPremium.isFinite, rawPremium > -100 { return rawPremium }
                 return nil
             }()
-            result[symbol] = (name, price, pct / 100, timestamp, premium)
+            let iopv: Double? = {
+                guard isETF, let rawIOPV, rawIOPV.isFinite, rawIOPV > 0 else { return nil }
+                return rawIOPV
+            }()
+            result[symbol] = (name, price, pct / 100, timestamp, premium, iopv)
         }
         return result
+    }
+
+    /// 腾讯部分行情源会省略证券类型字段；与网页版按代码前缀识别 ETF 的方式保持一致。
+    func isTencentETFCode(_ raw: String) -> Bool {
+        let code = raw.filter(\.isNumber)
+        guard code.count == 6 else { return false }
+        return ["51", "56", "58", "159", "150", "16", "18"].contains { code.hasPrefix($0) }
+    }
+
+    /// 部分行情响应会给字段附加百分号或千位分隔符。
+    func parseTencentNumericField(_ raw: String) -> Double? {
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "%", with: "")
+        return Double(cleaned)
     }
 
     private func parseTencentTimestamp(_ raw: String) -> Date? {
@@ -3026,7 +3089,7 @@ enum StoreError: LocalizedError {
         case .invalidDividend: return "分红金额、净值或基金持仓无效。"
         case .invalidAlert: return "提醒代码或目标价格无效。"
         case .invalidManualPrice: return "手填价格或昨收无效。"
-        case .invalidManualSnapshot: return "日期格式应为 YYYY-MM-DD；总资产和现金须为有效金额，现金不能超过总资产。"
+        case .invalidManualSnapshot: return "请输入有效日期（YYYY-MM-DD）和不小于 0 的总资产金额。"
         case .invalidFundFeePolicy: return "费率档位无效：请设置从 0 天开始的费率档，天数不能重复，费率须在 0% 到 100% 之间。"
         case .invalidFundFeeCorrection: return "这笔赎回不存在、已经核对，或实际费用超出赎回总额。"
         case .invalidAllocationTarget: return "目标仓位需在 0% 到 100% 之间。"
