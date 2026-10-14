@@ -6171,6 +6171,69 @@ private struct GridInstrument: Identifiable {
     var id: String { code }
 }
 
+/// 「日内计划参数 → 最近 N 个交易日验证」的结果卡。
+///
+/// 单独成**文件级** `struct`（而不是内联进 `DayGridView` 的 `@ViewBuilder`）：
+/// `@ViewBuilder` 计算属性会被**内联进父视图类型**，而 `DayGridView` 的 body 里
+/// 已经有 Form / Section / DisclosureGroup / LazyVGrid 好几层，再加一段内联
+/// 会把类型名推得更深 —— 本项目闪退的根因就是视图类型嵌套过深。
+private struct GridPlanRangeVerificationCard: View {
+    let report: GridRangeReport
+    /// 用户自己填的那一档（由调用方从 `report.candidates` 里按百分比挑出来，一定存在）。
+    let mine: GridRangeCandidate
+    let isLight: Bool
+    /// 采用同期最优档位（回填到上面的「每档间距」输入框）。
+    let onAdoptBest: () -> Void
+
+    private var digits: Int { report.tick < 0.005 ? 3 : 2 }
+    private var isMineBest: Bool { abs(report.best.stepPercent - mine.stepPercent) < 0.0001 }
+    private var gapPerDay: Double { report.best.averageAlpha - mine.averageAlpha }
+
+    /// 一句话结论：这套格距到底站不站得住。
+    private var verdict: String {
+        if mine.averageAlpha <= 0 {
+            return "这套格距在最近 \(mine.samples) 个交易日里平均没能跑赢「买入后不动」："
+                + "要么这段行情的波动撑不起这个格距，要么区间本身就是单边行情 —— 单边市里网格必然跑输持有。"
+        }
+        if isMineBest {
+            return "这套格距就是这段区间里跑得最好的一档，平均每天比持有不动多 \(mine.averageAlpha.cny())，"
+                + "\(mine.winDays)/\(mine.samples) 天跑赢。"
+        }
+        return "同期最优是 \(report.best.stepPercent.num(2))%，比你这套平均每天多 \(gapPerDay.cny())"
+            + "（\(report.best.winDays)/\(report.best.samples) 天跑赢）。"
+    }
+
+    var body: some View {
+        Section("最近 \(mine.samples) 个交易日验证 · \(report.from) → \(report.to)") {
+            Text("你的参数").scaledFont(12, weight: .semibold)
+            LabeledContent("格距", value: "\(mine.stepPercent.num(2))%")
+            LabeledContent("日均跑赢持有", value: "\(mine.averageAlpha.directionMark()) \(mine.averageAlpha.cny())")
+            LabeledContent("跑赢天数", value: "\(mine.winDays) / \(mine.samples) 天（\(mine.winRate.num(1))%）")
+            LabeledContent("最差一天", value: "\(mine.worstAlpha.directionMark()) \(mine.worstAlpha.cny())")
+            LabeledContent("最大单日回撤", value: "\(mine.worstDrawdown.num(2))%")
+            LabeledContent("平均每日成交", value: "\(mine.averageFills.num(1)) 笔")
+            if !isMineBest {
+                Divider()
+                Text("同期最优").scaledFont(12, weight: .semibold)
+                LabeledContent("格距", value: "\(report.best.stepPercent.num(2))%")
+                LabeledContent("日均跑赢持有", value: "\(report.best.averageAlpha.directionMark()) \(report.best.averageAlpha.cny())")
+                LabeledContent("跑赢天数", value: "\(report.best.winDays) / \(report.best.samples) 天（\(report.best.winRate.num(1))%）")
+                LabeledContent("照它挂单", value: "每格 \(report.best.lastStep.num(digits)) · \(report.best.lastQuantity.num(0)) 份")
+                Button("把格距改成 \(report.best.stepPercent.num(2))%") { onAdoptBest() }
+            }
+            if !report.skippedDays.isEmpty {
+                Text("有 \(report.skippedDays.count) 个交易日因分时点不足或资金不够被跳过，未计入统计。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Text(verdict).font(.footnote).foregroundStyle(.secondary)
+            Text("口径：每天按当日首价重新铺一次网格（长期网格的真实做法），含每笔费用与一跳不利滑点，"
+                + "不含排队、成交量、涨跌停与真实券商规则。这是事后回放统计，不是对明天的预测 —— 历史最优会有过拟合。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .plainCard(isLight: isLight)
+    }
+}
+
 struct DayGridView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
@@ -6194,6 +6257,14 @@ struct DayGridView: View {
     @State private var suitabilityExpanded = false
     /// 「什么样的标的适合做网格」判断标准教学，默认收起。
     @State private var gridTutorialExpanded = false
+    /// 「拿最近 20 个交易日验证这套参数」的结果（区间回放报告）。
+    ///
+    /// 加了这一块之后，日内计划就不再是「只能看一天」了：同一套格距会连同
+    /// 默认 9 档参照一起跑最近 N 个交易日，直接告诉你它在邻近档位里排第几。
+    @State private var rangeVerification: GridRangeReport?
+    /// 发起验证时用户填的格距（百分比）。报告里靠它把「你那档」挑出来。
+    @State private var verifyPercent: Double = 0
+    @State private var verifyMessage = ""
 
     private var instruments: [GridInstrument] {
         let quotes = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
@@ -6310,6 +6381,18 @@ struct DayGridView: View {
                     Button("保存/更新本地计划") { savePlan() }.disabled(code.isEmpty)
                     Text("每档按 100 份整数手模拟。计划仍可保存，调整资金或减少档数即可；计划预设不要求市场已开盘。")
                         .font(.footnote).foregroundStyle(.secondary)
+                    Divider()
+                    // 单日回放只能证明「这一天」；这里把同一套格距丢进最近 20 个交易日，
+                    // 连同默认 9 档参照一起跑，直接回答「我这套参数到底靠不靠谱」。
+                    Button("用最近 20 个交易日验证这套参数") { verifyRange() }
+                        .disabled(code.isEmpty)
+                    if !verifyMessage.isEmpty {
+                        Text(verifyMessage).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text("日内回放只考一天，最容易被「那天正好来回震荡」骗到。"
+                        + "验证会把这套格距放到最近 20 个有分时档案的交易日各跑一遍，"
+                        + "并把默认 9 档格距一起跑出来做参照，让你看到自己的档位排在什么位置。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
                 Section {
@@ -6369,6 +6452,12 @@ struct DayGridView: View {
                     }
                 }
                 .plainCard(isLight: isLight)
+                if let report = rangeVerification, let mine = verifiedCandidate(in: report) {
+                    GridPlanRangeVerificationCard(report: report, mine: mine, isLight: isLight) {
+                        step = String(format: "%g", report.best.stepPercent)
+                        verifyMessage = "格距已改成 \(report.best.stepPercent.num(2))%，再点一次「保存/更新本地计划」即生效。"
+                    }
+                }
                 Section("找最优参数") {
                     Text("这一页只管「计划与回放」：按你填的锚点、格距、档位把当天走势跑一遍。"
                         + "「复盘」（自动搜事后最优参数、长期可用参数、大模型建议）已经单独拎出来，"
@@ -6618,6 +6707,32 @@ struct DayGridView: View {
         ("避开刚创新高 / 新低", "最新价贴着 60 日最高价，容易一买就回落；贴着最低价，容易一路向下破网。"),
         ("资金要够 4 手", "每手 100 份：锚定价 2 手 + 至少 1 档 2 手。买不满 4 手就没有机动空间，网格等于单笔押注。")
     ]
+
+    /// 从验证报告里挑出「用户填的那一档」。
+    private func verifiedCandidate(in report: GridRangeReport) -> GridRangeCandidate? {
+        report.candidates.first { abs($0.stepPercent - verifyPercent) < 0.0001 }
+    }
+
+    /// 「用最近 20 个交易日验证这套参数」。
+    ///
+    /// 与复盘页一致：区间回放是**同步**算的 —— 逐日预处理只做一次、9 档候选复用同一天的数据，
+    /// 20 个交易日这个量级是毫秒级，不需要额外的异步状态（异步反而要多管一份 loading）。
+    private func verifyRange() {
+        let money = Double(capital.replacingOccurrences(of: ",", with: "")) ?? 0
+        guard let percent = Double(step), percent > 0, money > 0 else {
+            verifyMessage = "先填好「计划资金」和「每档间距（%）」再验证。"
+            return
+        }
+        verifyMessage = ""
+        rangeVerification = nil
+        verifyPercent = percent
+        switch store.verifyGridPlan(code: code, capital: money, stepPercent: percent) {
+        case .success(let report):
+            rangeVerification = report
+        case .failure(let error):
+            verifyMessage = error.localizedDescription
+        }
+    }
 
     private func runReplay() {
         guard let plan = store.data.dayGridPlans.first(where: { $0.code == code }) else { message = "先保存该标的的网格计划。"; return }

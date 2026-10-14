@@ -575,9 +575,47 @@ private struct GridRangeWinnerSection: View {
     let report: GridRangeReport
     let isLight: Bool
 
+    @EnvironmentObject private var store: PortfolioStore
+    @State private var savedPlanNote = ""
+
     private var digits: Int { report.tick < 0.005 ? 3 : 2 }
     private var alphaColor: Color { report.best.averageAlpha >= 0 ? .red : .green }
     private var lastDay: String { report.days.last ?? "最近交易日" }
+
+    /// 「反过来」的那一步：把胜出参数**直接落成一份日内网格计划**，
+    /// 免得用户切到「日内网格计划与回放」再照着数字手抄一遍。
+    ///
+    /// 几个数的来源：
+    /// · 锚点：最近一个交易日的收盘价（报告里能拿到的最新价）；
+    /// · 格距：用报告给的「最近交易日换算后的格距比例」，不是区间平均值 ——
+    ///   平均值对今天的下单没有意义；
+    /// · 档数：按「离区间上下沿各有几格」反推，再夹在 3…20 之间；
+    /// · 每笔费用：ETF 0.10 元，个股用 5 元（券商最低佣金是 5 元）。
+    ///   `tick` 是判定品种的依据（ETF 0.001 / 个股 0.01），与引擎同一口径。
+    private func saveAsDayPlan() {
+        guard let anchor = report.details.last?.lastPrice ?? report.details.last?.firstPrice else {
+            savedPlanNote = "这份报告没有逐日明细，无法推算锚点。"
+            return
+        }
+        let step = report.best.lastStep
+        guard anchor > 0, step > 0 else {
+            savedPlanNote = "胜出档位的绝对格距或锚点不是有效数字。"
+            return
+        }
+        let percent = max(0.05, min(10, report.best.lastStepPercent))
+        let span = min(anchor - report.rangeLow, report.rangeHigh - anchor)
+        let levels = max(1, min(20, max(3, Int(floor(max(0, span) / step)))))
+        let etf = report.tick < 0.005
+        do {
+            try store.saveGridPlan(code: report.code, name: report.name, capital: report.capital,
+                                   anchor: anchor, stepPercent: percent, levels: levels,
+                                   feePerOrder: etf ? 0.1 : 5)
+            savedPlanNote = "已存成日内网格计划：锚点 \(anchor.num(digits))、"
+                + "间距 \(percent.num(2))%、上下各 \(levels) 档。到「工具 → 计划 → 日内网格计划与回放」里可以载入或复盘。"
+        } catch {
+            savedPlanNote = "保存失败：\(error.localizedDescription)"
+        }
+    }
 
     var body: some View {
         Section("胜出参数 · 格距 \(report.best.stepPercent.num(2))%") {
@@ -596,6 +634,11 @@ private struct GridRangeWinnerSection: View {
             Text("区间里每天的价格不一样，绝对格距必须按当天价格重算，所以这里给的是「最近一个交易日」的换算值。"
                 + "换到别的价位，直接按「格距比例」乘当日价格、再取整到最小变动价位即可。")
                 .font(.footnote).foregroundStyle(.secondary)
+            Divider()
+            Button("按这套参数建日内计划") { saveAsDayPlan() }
+            if !savedPlanNote.isEmpty {
+                Text(savedPlanNote).font(.footnote).foregroundStyle(.secondary)
+            }
         }
         .plainCard(isLight: isLight)
     }

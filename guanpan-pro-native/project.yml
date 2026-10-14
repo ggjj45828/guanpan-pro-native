@@ -23,8 +23,8 @@ targets:
         CFBundleDisplayName: 观盘 Pro
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
-        CFBundleShortVersionString: "2.13.37"
-        CFBundleVersion: "41"
+        CFBundleShortVersionString: "2.13.38"
+        CFBundleVersion: "42"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。

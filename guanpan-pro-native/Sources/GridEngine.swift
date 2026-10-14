@@ -690,6 +690,36 @@ extension PortfolioStore {
         return .success(report)
     }
 
+    // MARK: - 把「日内计划里那一套参数」丢进最近 N 个交易日验证
+
+    /// 「日内试出来的参数 → 拿到近期区间里验一遍」。
+    ///
+    /// 为什么需要它：`replayGrid` 只考**一天**，而单日样本是过拟合风险最大的一档 ——
+    /// 一个格距在那天好看，很可能只是因为那天正好来回震荡。这里把同一套格距
+    /// 放进最近 N 个交易日各跑一遍，用「平均跑赢持有 / 跑赢天数 / 最差一天 / 最大回撤」
+    /// 判断它是真有优势，还是只是那一天运气好。
+    ///
+    /// 顺带把 `GridRangeDefaults.stepPercents` 那 9 档一起跑出来当参照，
+    /// 这样用户能直接看到「我这一档在邻近档位里排第几、有没有更划算的选择」，
+    /// 而不用自己去复盘页重填一遍参数。
+    ///
+    /// 返回报告里的 `candidates` **一定包含用户那一档**（`stepPercent` 就是传入值）；
+    /// `best` 是否等于它，本身就是结论。
+    func verifyGridPlan(code: String, capital: Double, stepPercent: Double,
+                        recentDays: Int = 20) -> Result<GridRangeReport, GridOptimizeError> {
+        let allDays = intradayDays(forCode: code).sorted()
+        guard allDays.count >= 3 else { return .failure(.notEnoughRangeDays(allDays.count)) }
+        // 只取最近 N 个有档案的交易日：越久远的行情对「现在该怎么挂单」参考价值越低。
+        let window = Array(allDays.suffix(max(3, recentDays)))
+        guard let from = window.first, let to = window.last else { return .failure(.noArchivedDay) }
+        // 用户那档可能不在默认 9 档里（比如 0.7%），先补进去再一起跑。
+        var percents = GridRangeDefaults.stepPercents
+        if !percents.contains(where: { abs($0 - stepPercent) < 0.0001 }) { percents.append(stepPercent) }
+        // t0 按品种判定：场内 ETF 支持当日回转，个股 T+1。
+        return optimizeGridRange(code: code, from: from, to: to, capital: capital,
+                                 t0: Self.isGridETF(code), stepPercents: percents)
+    }
+
     /// 一组候选的排序：先比「平均跑赢」，再比跑赢天数，最后比最差一天的回撤。
     ///
     /// 为什么是平均 alpha 而不是总 alpha：区间里交易日数对每组都一样，
