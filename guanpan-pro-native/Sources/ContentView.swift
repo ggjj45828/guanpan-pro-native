@@ -1629,6 +1629,9 @@ struct HoldingsView: View {
     /// 驱动“最新净值已更新”彩虹强调。窗口只到采集当天结束，所以每 60 秒推一次时钟，
     /// 跨过午夜（本地时间）后这一分钟之内就会自动恢复普通卡片。
     @State private var fundFreshnessClock = Date.now
+    /// 配合 `.task` 里的 60 秒循环：`.task` 在「App 一直在后台」时不保证重启，
+    /// 回到前台时补推一次时钟，避免昨晚更新的基金今天还亮着彩虹。
+    @Environment(\.scenePhase) private var scenePhase
     /// 「最近基金流水」默认收起：10 笔流水加上待核对的估算费能占掉大半屏，
     /// 把持仓卡和基金工具挤到下面。展开状态记在 AppStorage 里，下次打开保持用户选择。
     @AppStorage("guanpan.native.fundRecentTrades.expanded") private var fundRecentTradesExpanded = false
@@ -1964,6 +1967,14 @@ struct HoldingsView: View {
                     if MarketCalendar.isoDay(now) != MarketCalendar.isoDay(fundFreshnessClock) {
                         fundFreshnessClock = now
                     }
+                }
+            }
+            // App 在后台跨过午夜、再回到前台时 `.task` 不保证重启，时钟会停在昨天，
+            // 于是昨晚更新的净值今天还亮着彩虹。这里补一次，只在真的翻篇时才写状态。
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                if MarketCalendar.isoDay(fundFreshnessClock) != MarketCalendar.isoDay(.now) {
+                    fundFreshnessClock = .now
                 }
             }
         }
@@ -2381,14 +2392,13 @@ struct HoldingsView: View {
         // 做一次 `filter + max`，一屏十几行、滑动时每帧重算，是基金页卡顿的主因。
         guard holding.kind == .fund,
               let latest = store.latestFundNAVByCode[holding.code] else { return false }
-        let today = MarketCalendar.isoDay(now)
-        if let fetchedAt = latest.fetchedAt {
-            // 采集时刻必须落在今天：昨天的净值即使本机还留着，也不再算「刚刚更新」。
-            return now >= fetchedAt && MarketCalendar.isoDay(fetchedAt) == today
-        }
-        // 旧存档 / 导入数据没有采集时刻：退化为「净值日本身就是今天」
-        // （A 股基金当晚公布的就是当天净值），不拿昨天的净值日冒充今天更新。
-        return latest.date == today
+        // 判定与「今日已更新 X/Y 只持仓基金」那条提示**同源**，两处不会各说一套。
+        //
+        // 这里**只比日期、不比时刻**。曾经还有一条 `now >= fetchedAt`，而 `now` 是本页的
+        // 日期时钟（初值 = 页面创建那一刻，之后只在跨午夜时前进），`fetchedAt` 却是刷新
+        // 完成那一刻 —— 用户在页面里点刷新拿到的净值必然晚于它，于是**永远亮不起来**。
+        // 用户反馈的「有的基金明明更新了却没有彩虹外框」就是它（v2.13.40 修）。
+        return PortfolioStore.isFreshFundNAV(latest, today: MarketCalendar.isoDay(now))
     }
 
     private var fundFreshNAVGradient: LinearGradient {

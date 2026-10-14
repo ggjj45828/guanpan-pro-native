@@ -1439,6 +1439,35 @@ final class PortfolioStore: ObservableObject {
     private var cachedFundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
     private var cachedFundNAVPairsKey = ""
 
+    /// 「这份净值是不是**今天**采到本机的」——持仓页的彩虹外框与净值刷新提示共用同一个口径。
+    ///
+    /// 为什么必须共用：两处一个在 store、一个在 `HoldingsView`，各写一份判断迟早会分叉，
+    /// 用户就会看到「提示说今日已更新 3 只，界面上只有 2 个彩虹框」这种自相矛盾的说法。
+    ///
+    /// **只比日期、不比时刻**。曾经这里还要求 `now >= fetchedAt`，而 `now` 传进来的是页面那个
+    /// **只在跨午夜时前进**的日期时钟（初值 = 页面创建那一刻），通常早于今晚刷新才写进去的
+    /// `fetchedAt` —— 于是「进页面之后刷新拿到的净值」永远不亮框，用户反馈的
+    /// 「有的基金明明更新了却没有彩虹外框」就是它（v2.13.40 修）。
+    static func isFreshFundNAV(_ point: FundNAVPoint, today: String) -> Bool {
+        if let fetchedAt = point.fetchedAt { return MarketCalendar.isoDay(fetchedAt) == today }
+        // 旧存档 / 导入数据没有采集时刻：退化为「净值日本身就是今天」。
+        return point.date == today
+    }
+
+    /// 今日已拿到新净值的持仓基金数，以及分母（持仓基金总数）。
+    /// 提示文案用它与用户对账：页面上亮几个彩虹框，这里就该是几只。
+    func freshFundNAVTally(now: Date = .now) -> (updated: Int, total: Int) {
+        let codes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code))
+        guard !codes.isEmpty else { return (0, 0) }
+        let today = MarketCalendar.isoDay(now)
+        let latest = latestFundNAVByCode
+        let updated = codes.filter { code in
+            guard let point = latest[code] else { return false }
+            return Self.isFreshFundNAV(point, today: today)
+        }.count
+        return (updated, codes.count)
+    }
+
     /// 保存 AI 最近结果，不占用“撤销上一次账本修改”的位置。
     /// 结果仍进入原生备份与 NAS，多设备打开时可以继续查看。
     func saveAIAnalysisCache() {
@@ -3084,16 +3113,29 @@ final class PortfolioStore: ObservableObject {
                         .reduce(into: [String: FundNAVPoint]()) { result, point in
                             result[point.date] = point
                         }
-                    let navChanged = points.contains { point in
-                        guard let old = byDate[point.date] else { return true }
+                    // 「本次有没有拿到新净值」**不能**用「接口里有、本机没有的日期」来判断：
+                    // 接口返回的是**全量**历史（老基金三四千个点，实测 110022 有 3902 个），
+                    // 而本机按上限只保留最近 1800 个点，于是被截掉的那 900~2100 个**老日期
+                    // 每一轮**都「本机没有」，基金历史一长就次次被算成「变化」——
+                    // 这就是用户看到的「有时候 1 只、有时候又 2 只」的来源（v2.13.40 修）。
+                    // 可靠口径只有两条：① 接口的最新净值日比本机存的最新净值日更晚
+                    // （本机空白、首次采集时也算）；② 本机**已存**日期的数值被修正过。
+                    let newestStoredDate = byDate.keys.max()
+                    let newestFetchedDate = points.last?.date
+                    let navAdvanced: Bool = {
+                        guard let newestFetchedDate else { return false }
+                        guard let newestStoredDate else { return true }
+                        return newestFetchedDate > newestStoredDate
+                    }()
+                    let navCorrected = points.contains { point in
+                        guard let old = byDate[point.date] else { return false }
                         return abs(old.nav - point.nav) > 0.00000001
                     }
+                    let navChanged = navAdvanced || navCorrected
                     var merged = byDate
                     // 「今天有没有更新」看采集时间。但仅在净值日期推进或数值被修正时
                     // 更新时间，重复拉取同一份旧净值不能伪装成刚刚更新。
                     let fetchStamp = Date.now
-                    let newestStoredDate = byDate.keys.max()
-                    let newestFetchedDate = points.last?.date
                     for (pointIndex, point) in points.enumerated() {
                         let previous = byDate[point.date]
                         let valueChanged = previous.map { abs($0.nav - point.nav) > 0.00000001 } ?? false
@@ -3141,10 +3183,29 @@ final class PortfolioStore: ObservableObject {
                 ? "；补建 \(snapshotCount) 条缺失日期的快照" : ""
             let routeNote = usedNASProxy ? " · 含 NAS 代理" : " · iPhone 直连"
             if dcaBooked > 0 { fundDCAStatus = "已按已公布净值补记定投 \(dcaBooked) 期；仅更新本机账本" }
-            let resultNote = "本次净值新增/变化 \(changedNAVCodes.count) 只（持仓 \(changedHoldingNAVCodes.count)/\(holdingFundCodes.count)）；成功读取 \(fetched)/\(codes.count) 个代码"
-            fundNAVStatus = failures.isEmpty
-                ? "\(resultNote)（净值通常 T+1）\(routeNote)\(snapshotNote)"
-                : "\(resultNote)；失败 \(failures.count) 只：\(failures.prefix(3).joined(separator: "、"))\(routeNote)\(snapshotNote)"
+            // 提示站在用户视角说话：他想知道的是**今天有几只基金的新净值到手了**，
+            // 而不是「本次读到了几个代码」。以前写成「成功读取 8/8 个代码」，很容易被
+            // 读成「8 只都更新了」—— 读取成功和净值有没有公布是两件事（净值 T+1，
+            // 各基金公布时间还不同，QDII 更晚）。
+            // 主句与持仓页彩虹外框同一口径（`isFreshFundNAV`）：亮几个彩虹框就是几只；
+            // 剩下的没更新时补一句原因，省得再来猜「是不是闭市所以没有」。
+            // 主句与持仓页彩虹外框同一口径（`isFreshFundNAV`）：亮几个彩虹框就是几只。
+            // 这个数**只增不减**（今天更新过的基金到明天才清零），不会再出现
+            // 「刚才 1 只、再刷一下变 2 只」那种让人怀疑自己看错了的跳动。
+            let tally = freshFundNAVTally()
+            // 只有「本轮更新到的是非持仓代码（定投计划 / 历史流水里的基金）」时才值得补一句：
+            // 否则主句会显示「今日已更新 0/7」，用户会以为一只都没更新。
+            let nonHoldingFresh = changedNAVCodes.subtracting(changedHoldingNAVCodes).count
+            let freshNote = nonHoldingFresh > 0 ? " · 另有 \(nonHoldingFresh) 只非持仓基金也更新了" : ""
+            let headNote = tally.total > 0
+                ? "今日已更新 \(tally.updated)/\(tally.total) 只持仓基金\(freshNote)"
+                : "没有场外持仓基金（定投计划 / 历史流水仍会取净值）"
+            let t1Note = (tally.total > 0 && tally.updated < tally.total) || !failures.isEmpty
+                ? "（净值通常 T+1，晚间陆续公布）" : ""
+            let failNote = failures.isEmpty
+                ? ""
+                : " · \(failures.count)/\(codes.count) 只读取失败：\(failures.prefix(3).joined(separator: "、"))"
+            fundNAVStatus = "\(headNote)\(t1Note)\(failNote)\(routeNote)\(snapshotNote)"
             if !failures.isEmpty {
                 Task { await NativeNotifications.sendSourceHealthOnce(category: "fundnav", body: "有 \(failures.count) 只基金净值更新失败。请检查数据源状态；已公布净值也可能因 T+1 或海外时差尚未更新。") }
             }
