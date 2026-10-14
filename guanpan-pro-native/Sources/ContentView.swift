@@ -1484,12 +1484,16 @@ struct HoldingsView: View {
     }
 
     private func dividendStatus(for holding: Holding) -> String {
+        // 人工把「每份年分红修正」填 0 = 明确声明「这只不分红」，优先级最高。
+        // 必须排在「有历史派息」前面：159352（南方 A500）只在 2025-07-14 派过一次息，
+        // 用户确认它不分红时两处界面都得听人工值 —— 原来分红日历认、持仓页不认，
+        // 同一只标的会一边写「不分红」一边写「历史派息 · 暂无年化规律」。
+        if holding.annualDividendPerShare == 0 { return "不分红" }
         if ETFDividendProjection.knownNonDividendCodes.contains(holding.code) { return "不分红" }
         if annualDividendProjection(for: holding) != nil { return "有试算" }
         if ETFDividendProjection.mergedEvents(store.data.etfDividendEvents).contains(where: {
             $0.code == holding.code && $0.isEstimated != true
         }) { return "历史派息 · 暂无年化规律" }
-        if holding.annualDividendPerShare == 0 { return "不分红" }
         return "待核实"
     }
 

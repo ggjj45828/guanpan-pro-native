@@ -198,9 +198,17 @@ struct ETFDividendEvent: Codable, Identifiable {
 enum ETFDividendProjection {
     enum Source: Equatable { case manual, recorded, projected, historicalAverage, inferred, none }
 
-    /// 广发纳指 ETF (159941) 的公开分红档案目前没有现金派息记录；不把“指数成分股分红”
-    /// 当作 ETF 给持有人的现金分红。南方 A500 (159352) 曾于 2025-07-14 实际派息，不能归为不分红。
-    static let knownNonDividendCodes: Set<String> = ["159941"]
+    /// 不按「分红型标的」处理的代码：不再计算任何年股息/股息率，本机旧存的推算与
+    /// 已核实事件也会在 `refreshETFDividendEstimates` 里被清掉。
+    ///
+    /// - **159941 广发纳指 ETF**：公开分红档案没有现金派息记录；不把「指数成分股分红」
+    ///   当作 ETF 给持有人的现金分红。
+    /// - **159352 中证A500ETF南方**：基金合同只在「累计报酬率超过标的指数同期累计报酬率
+    ///   达到 1% 以上」时才**可**分配，属不定期分配，不是红利型标的。事实层面它只在
+    ///   2025-07-14 除息派过一次（每 10 份 0.11 元 = 0.011 元/份，合计 1.92 亿元，
+    ///   深交所 2025-07-09 分红公告）。用户 2026-10-14 明确要求按「不分红」显示，
+    ///   因此连那条历史事件也从 `verifiedEvents` 移除 —— **如需恢复，把下面那行加回去即可**。
+    static let knownNonDividendCodes: Set<String> = ["159941", "159352"]
 
     /// 已核对公开分红档案的事件，用于旧设备/未导入网页分红缓存时先显示可追溯的历史基准。
     /// 金额均为每份；这些历史事件不是未来承诺。其余事件继续由本机数据或用户记录提供。
@@ -210,8 +218,7 @@ enum ETFDividendProjection {
         ETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: 0.012),
         ETFDividendEvent(code: "563020", date: "2026-09-11", amountPerShare: 0.012),
         ETFDividendEvent(code: "159545", date: "2025-11-12", amountPerShare: 0.010),
-        ETFDividendEvent(code: "159545", date: "2026-02-11", amountPerShare: 0.015),
-        ETFDividendEvent(code: "159352", date: "2025-07-14", amountPerShare: 0.011)
+        ETFDividendEvent(code: "159545", date: "2026-02-11", amountPerShare: 0.015)
     ]
 
     /// `mergedEvents` 的缓存键与结果。
@@ -350,7 +357,7 @@ enum ETFDividendProjection {
             let totalsByYear = Dictionary(grouping: recent, by: { String($0.date.prefix(4)) })
                 .mapValues { $0.reduce(0) { $0 + $1.amountPerShare } }
             // 单次历史派息只进入历史事件，不足以证明形成年度现金流；至少有两个派息年度
-            // 才给年化试算，避免把 159352 的一次性派息包装成稳定年股息。
+            // 才给年化试算，避免把「历史只派过一次息」的标的包装成稳定年股息。
             if totalsByYear.count >= 2 {
                 let amount = totalsByYear.values.reduce(0, +) / Double(totalsByYear.count)
                 if amount.isFinite, amount > 0 { return (amount, .historicalAverage) }

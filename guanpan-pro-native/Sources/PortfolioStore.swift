@@ -766,11 +766,21 @@ final class PortfolioStore: ObservableObject {
     /// It only updates estimated events and never converts them into confirmed income.
     func refreshETFDividendEstimates(force: Bool = false) {
         let today = MarketCalendar.isoDay(.now)
-        // 键里带 v2：这次把「自选里的 ETF」也纳入自动推算，口径变了，
+        // 键里带 v3：这次把 159352 归入「不分红」并要清理本机旧存事件，口径变了，
         // 必须让老设备在升级后立刻重跑一次，否则要等到明天才生效。
-        let key = "guanpan.native.dividendEstimate.lastRun.v2"
+        let key = "guanpan.native.dividendEstimate.lastRun.v3"
         if !force, UserDefaults.standard.string(forKey: key) == today { return }
         UserDefaults.standard.set(today, forKey: key)
+        // 被明确列为「不分红」的标的：连本机旧存的推算/已核实事件一起清掉。
+        // 只把它们排除出拉取列表是不够的 —— 那些事件已经躺在 `etfDividendEvents` 里了，
+        // 不清的话升级后仍会出现在分红日历的历史事件列表里（用户要求彻底不显示）。
+        let purged = data.etfDividendEvents.filter {
+            !ETFDividendProjection.knownNonDividendCodes.contains($0.code)
+        }
+        if purged.count != data.etfDividendEvents.count {
+            data.etfDividendEvents = purged
+            save(label: nil)
+        }
         // 原来只算「持有的 ETF」。用户看股息率最多的地方其实是**自选列表**，
         // 自选里的 ETF 一直拿不到自动推算的分红事件，只能吃那张会过期的写死表。
         let held = data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.map(\.code)
@@ -790,9 +800,12 @@ final class PortfolioStore: ObservableObject {
                     if !inferred.isEmpty { estimates[code] = inferred }
                 } catch { continue }
             }
-            let confirmed = data.etfDividendEvents.filter { $0.isEstimated != true }
+            let confirmed = data.etfDividendEvents.filter {
+                $0.isEstimated != true && !ETFDividendProjection.knownNonDividendCodes.contains($0.code)
+            }
             let untouchedEstimates = data.etfDividendEvents.filter {
                 $0.isEstimated == true && !completed.contains($0.code)
+                    && !ETFDividendProjection.knownNonDividendCodes.contains($0.code)
             }
             let refreshed = estimates.values.flatMap { $0 }
             var byKey: [String: ETFDividendEvent] = [:]
