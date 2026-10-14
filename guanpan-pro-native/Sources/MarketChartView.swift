@@ -236,16 +236,26 @@ func intradayAxisLabel(_ time: Date, ticks: [(time: Date, label: String)]) -> St
         ?? time.formatted(date: .omitted, time: .shortened)
 }
 
-/// 分时主图纵轴的档位（同花顺口径）。
+/// 分时主图 / 30-60 分主图共用的纵轴上下限（同花顺口径）。
 ///
-/// 把「今日最大涨跌幅」向上取到常见的整数档（0.5% / 1% / 1.5% / 2% / 3% …），
-/// 上下限取同一个值、以昨收为中心对称铺开。这样价格线离昨收的钱数就是它的真实涨跌幅，
-/// 而不是被 Swift Charts 自适应放大成一条冲上冲下的折线。
-private func intradayPctStep(_ value: Double) -> Double {
-    let ladder: [Double] = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05,
-                            0.06, 0.08, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.75, 1.00]
-    for step in ladder where value <= step { return step }
-    return 1.00
+/// 规则只有两条（按用户 2026-10-14 的口径）：
+/// ① **昨收＝0 轴**；② 上下限**对称**，都等于「今日实际到达的最大涨跌幅」——
+///    今天最高价涨到 0.83%，轴就扩到 ±0.83%，**不取整、不额外留余量**，
+///    价格线的顶点正好贴到图的上边框（同花顺那种观感）。
+///
+/// 唯一例外：全天几乎不波动时兜底到 **±0.5%**。
+/// 否则纵轴会被压到接近 0，价格线在纵向被无限放大，看起来像剧烈波动
+/// —— 那是缩放假象，不是真实振幅。此处兜底值就是用户确认的 0.5%，
+/// 不是先前误写的 1%，也不是任何「档位表」。
+private func symmetricIntradayYDomain(low: Double, high: Double, previous: Double?) -> ClosedRange<Double>? {
+    guard let previous = previous, previous > 0, previous.isFinite,
+          low.isFinite, high.isFinite else { return nil }
+    let upMove = (high - previous) / previous
+    let downMove = (previous - low) / previous
+    let move = max(abs(upMove), abs(downMove))
+    guard move.isFinite else { return nil }
+    let bound = max(move, 0.005)
+    return (previous * (1 - bound))...(previous * (1 + bound))
 }
 
 /// 分时量柱涨跌配色。`prevClose` 是第一根柱的前收基准。
@@ -1273,41 +1283,43 @@ struct MarketChartView: View {
         let bound = (peak.isFinite && peak > 0 ? peak : 1) * 1.12
         return -bound...bound
     }
-    /// 30/60 分主图纵轴：按聚合后的收盘价自适应（原来交给 Swift Charts 自动拟合）。
+    /// 30/60 分主图纵轴：与分时档**同一口径**（昨收为 0 轴、上下对称扩到今日最大涨跌幅），
+    /// 切换档位时轴不会跳。拿不到昨收时才退回「跟着数据自适应 + 留余量」。
     private var minuteAggregatedPriceYDomain: ClosedRange<Double> {
         let closes = minuteBuckets.map(\.close).filter { $0.isFinite && $0 > 0 }
         guard let low = closes.min(), let high = closes.max() else { return 0...1 }
+        if let domain = symmetricIntradayYDomain(low: low, high: high, previous: intradayPrevClose) {
+            return domain
+        }
         let ref = max(abs(low), abs(high), 0.0001)
         let spread = max(high - low, ref * 0.002)
         let pad = max(spread * 0.09, ref * 0.0006)
         return (low - pad)...(high + pad)
     }
     private var intradayPriceYDomain: ClosedRange<Double> {
+        // 上下限只由「价格线 + 均价」决定。IOPV 的折溢价**不参与撑开纵轴**：
+        // 高溢价品种（如纳指ETF）的 IOPV 离现价很远，把它算进来会把整根轴拉开，
+        // 价格线反而被压成一条平线 —— 这正是用户反馈的「y 轴展开太多」。
         var values = selectedIntradayBars.map(\.price)
         if showIntradayAverage { values += intradayAvgPoints.map(\.price) }
-        if showIntradayIOPV { values += selectedDayIOPVPoints.map(\.value); if selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { values.append(v) } }
         values = values.filter { $0 > 0 && $0.isFinite }
         guard let low = values.min(), let high = values.max() else { return 0...1 }
-        // 同花顺口径：**以昨收为 0 轴**，上下限取同一个「今日最大涨跌幅」，
-        // 并向上取整到好看档位（最少 ±1%）。
-        // 旧实现在最低/最高价上各留 9% 余量、完全跟着数据走：波动只有 0.3% 的日子，
-        // 价格线也会被拉满整张图，看起来「涨得很凶」—— 用户反馈的正是这个。
-        // 取值域只用价格线与均价（IOPV 的折溢价不该参与撑开纵轴）。
-        if let previous = intradayPrevClose, previous > 0 {
-            var axisLow = low
-            var axisHigh = high
-            if showIntradayAverage {
-                let averagePrices = intradayAvgPoints.map(\.price).filter { $0 > 0 && $0.isFinite }
-                if let a = averagePrices.min() { axisLow = min(axisLow, a) }
-                if let b = averagePrices.max() { axisHigh = max(axisHigh, b) }
-            }
-            let upMove = (axisHigh - previous) / previous
-            let downMove = (previous - axisLow) / previous
-            let step = intradayPctStep(max(abs(upMove), abs(downMove)))
-            return (previous * (1 - step))...(previous * (1 + step))
+        if let domain = symmetricIntradayYDomain(low: low, high: high, previous: intradayPrevClose) {
+            return domain
         }
-        let ref = max(abs(low), abs(high), 0.0001), spread = max(high - low, ref * 0.002), pad = max(spread * 0.09, ref * 0.0006)
-        return (low - pad)...(high + pad)
+        // 拿不到昨收（首日上市、昨收缺失）时才退回「跟着数据走 + 留余量」，
+        // 这时把 IOPV 也算进来，免得线跑到图外。
+        var fallback = values
+        if showIntradayIOPV {
+            fallback += selectedDayIOPVPoints.map(\.value)
+            if selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { fallback.append(v) }
+        }
+        let finite = fallback.filter { $0 > 0 && $0.isFinite }
+        guard let fallbackLow = finite.min(), let fallbackHigh = finite.max() else { return 0...1 }
+        let ref = max(abs(fallbackLow), abs(fallbackHigh), 0.0001)
+        let spread = max(fallbackHigh - fallbackLow, ref * 0.002)
+        let pad = max(spread * 0.09, ref * 0.0006)
+        return (fallbackLow - pad)...(fallbackHigh + pad)
     }
     private var priceLevels: PriceLevelSummary? {
         let today = shanghaiDay(.now)
