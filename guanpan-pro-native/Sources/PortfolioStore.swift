@@ -1166,11 +1166,51 @@ final class PortfolioStore: ObservableObject {
             applyingNASData = true
             defer { applyingNASData = false }
             mergeIntradayBars(bars)
+            refillValuationFromArchive(bars)
             return bars.count
         } catch {
             setIntradayArchiveStatus("NAS 历史分时同步失败：\(error.localizedDescription)")
             return 0
         }
+    }
+
+    /// NAS 采集器已经把场内 ETF 的 IOPV 一并采进 `market_intraday`（盘中每分钟、闭市后每
+    /// 10 分钟补齐）；但手机里「自选 / 持仓卡」的「溢价 · IOPV」数字只由 `performQuoteRefresh`
+    /// 写 `marketIOPVs` / `marketPremiums`，手机行情拉不到（网络受限、深市 ETF 缺字段等）时这两个
+    /// 字典就是空的，卡片于是显示「本轮未取到」。这里把 NAS 档案里**最新交易日**的 IOPV 回填进
+    /// 这两个字典的空缺位，让「NAS 已采集」真正反映到卡片上，不必每次都靠手机前台去腾讯 / 新浪现拉。
+    /// 已有非空值的不覆盖（`performQuoteRefresh` 给的更准、更新）。
+    private func refillValuationFromArchive(_ bars: [IntradayBar]) {
+        let tracked = Set(data.quotes.map(\.code) + data.holdings.map(\.code))
+        guard !tracked.isEmpty else { return }
+        let latestDay = bars.map(\.day).max() ?? ""
+        guard !latestDay.isEmpty else { return }
+        var latestIOPV: [String: Double] = [:]
+        for bar in bars where bar.day == latestDay,
+                         let iopv = bar.iopv, iopv.isFinite, iopv > 0 {
+            let code = Self.intradayCodeKey(bar.code)
+            guard tracked.contains(code) else { continue }
+            latestIOPV[code] = iopv // 同日后面的点覆盖前面的，越新越准
+        }
+        guard !latestIOPV.isEmpty else { return }
+        var iopvs = marketIOPVs
+        var premiums = marketPremiums
+        var changed = false
+        for (code, iopv) in latestIOPV {
+            if iopvs[code] == nil {
+                iopvs[code] = iopv
+                changed = true
+                // 同时有现价就顺手补一个溢价率（现价 ÷ IOPV − 1），溢价数字也不再空着。
+                let price = data.quotes.first { $0.code == code }?.price
+                    ?? data.holdings.first { $0.code == code }?.current
+                if let price, price.isFinite, price > 0, premiums[code] == nil {
+                    premiums[code] = (price / iopv - 1) * 100
+                }
+            }
+        }
+        guard changed else { return }
+        assignIfChanged(\.marketIOPVs, iopvs)
+        assignIfChanged(\.marketPremiums, premiums)
     }
 
     /// 只在首次可用时从旧网页备份回填一次 gridhist，不迁移或覆盖账户数据；
