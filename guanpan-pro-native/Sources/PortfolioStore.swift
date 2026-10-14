@@ -2977,7 +2977,7 @@ final class PortfolioStore: ObservableObject {
         save(label: "重新启用价格提醒")
     }
 
-    private func checkQuoteAlerts(using quotes: [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?, iopv: Double?)]) {
+    private func checkQuoteAlerts(using quotes: [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?, iopv: Double?, navPrev: Double?)]) {
         var changed = false
         for index in data.quoteAlerts.indices where data.quoteAlerts[index].enabled {
             let alert = data.quoteAlerts[index]

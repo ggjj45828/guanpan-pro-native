@@ -405,7 +405,7 @@ enum LegacyMigration {
 
     private static func appendLegacyGrid(_ row: [String: Any], to data: inout PortfolioData) {
         guard let code = string(row["code"]), !code.isEmpty else { return }
-        let recordID = string(row["id"]) ?? "legacy-\(code)-\(data.legacyGridArchives.count)"
+        let recordID = string(row["id"]) ?? "legacy-\(code)-\(data.dayGridPlans.count)"
         let capital = number(row["budget"]) ?? 0
         let anchor = number(row["anchor"]) ?? 0
         let lower = number(row["lower"]) ?? 0
