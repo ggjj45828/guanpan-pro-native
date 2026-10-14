@@ -3554,6 +3554,7 @@ struct AssetsView: View {
     @State private var manualSnapshotTotal = ""
     @State private var snapshotEditorError = ""
     @State private var showClearReconstructedSnapshots = false
+    @State private var showClearAllSnapshots = false
 
     private var snapshotChartData: [PortfolioSnapshot] {
         Array(store.data.snapshots.sorted { $0.date < $1.date }.suffix(60))
@@ -3665,18 +3666,23 @@ struct AssetsView: View {
                         Task {
                             await store.ensureBackfillHistory()
                             let r = store.backfillVerifiableSnapshots()
-                            snapshotBackfillMessage = r.added > 0 ? "已补全 \(r.added) 个历史重建快照；\(r.skipped) 日因持仓、现金或价格不能核实而保留空白。" : "没有可安全补全的日期。"
+                            snapshotBackfillMessage = r.added > 0 ? "已重建 \(r.added) 条历史快照（推算值，标为「历史重建」）；\(r.skipped) 日因持仓、现金或价格不能核实而留空。" : "没有可安全重建的日期。"
                             if r.added > 0 { snapshotDetailsExpanded = true }
                         }
-                    } label: { Label("补全可核实的历史快照", systemImage: "calendar.badge.plus") }
+                    } label: { Label("按流水与净值重建历史快照", systemImage: "calendar.badge.plus") }
                     let reconstructedCount = store.data.snapshots.filter { $0.quality == .reconstructed }.count
                     if reconstructedCount > 0 {
                         Button(role: .destructive) { showClearReconstructedSnapshots = true } label: {
                             Label("清除历史重建快照（\(reconstructedCount) 条）", systemImage: "trash")
                         }
                     }
+                    // 「之前的记录都不准，想从今天重新开始」的出口。故意用 destructive + 二次确认：
+                    // 它删掉的不只是数字，还有「那天你实际看到的是多少」这件事，删了就找不回来。
+                    Button(role: .destructive) { showClearAllSnapshots = true } label: {
+                        Label("清空全部历史快照（保留今天）", systemImage: "trash.slash")
+                    }
                     if !snapshotBackfillMessage.isEmpty { Text(snapshotBackfillMessage).font(.footnote).foregroundStyle(.secondary) }
-                    Text("快照一经记录即定稿：净值更新后**不会**回头改写已有的历史快照，只会补建此前缺失的日期；手动核实的快照更不会被覆盖。补建只使用完整流水、现金与真实历史价格，无法核实的日期保持空白。")
+                    Text("快照一经记录即定稿：净值更新后**不会**回头改写已有的历史快照，只会补建此前缺失的日期。「重建」出来的是按持仓流水、现金流水与历史价格反推的参考曲线（蓝标「历史重建」），**不是那天真实的账面值**；两者在列表里分开标注。清空后想再要一条曲线，重建即可。")
                         .font(.footnote).foregroundStyle(.secondary)
                     DisclosureGroup(isExpanded: $snapshotDetailsExpanded) {
                     if !store.snapshotMonths.isEmpty {
@@ -3926,6 +3932,17 @@ struct AssetsView: View {
                     Button("取消", role: .cancel) { }
                 } message: {
                     Text("只清除“历史重建”标记的快照；你手动记录、已结算或临时快照都会保留。")
+                }
+                .confirmationDialog("清空全部历史快照？", isPresented: $showClearAllSnapshots, titleVisibility: .visible) {
+                    Button("清空全部历史快照", role: .destructive) {
+                        let count = store.clearAllSnapshots(keepToday: true)
+                        snapshotBackfillMessage = count > 0
+                            ? "已清空 \(count) 条历史快照，今天那条保留；以后从今天开始记。想再要曲线，点上面的「按流水与净值重建历史快照」。"
+                            : "除今天外没有可清空的快照。"
+                    }
+                    Button("取消", role: .cancel) { }
+                } message: {
+                    Text("会删掉除今天以外的**全部**快照，包括你手动录入的那些，且**不可恢复**。持仓、流水、净值、行情都不受影响。")
                 }
         }
     }

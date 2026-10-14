@@ -367,6 +367,23 @@ struct IntradayCompanionDecision {
         return removed
     }
 
+    /// 清空历史快照（默认保留今天那条），给「之前的记录都不准，想从今天重新开始」用。
+    ///
+    /// **这是唯一会整段删除历史快照的入口**，必须由用户显式点击并二次确认 ——
+    /// 删掉的不只是数字，还有「那天实际看到的是多少」这件事，而且**不可撤销**。
+    ///
+    /// 清空后想再要一条曲线，走现成的「补全可核实的历史快照」：它按持仓流水、
+    /// 现金流水与历史价格 / 净值反推，补出来的每一条都标 `.reconstructed`（蓝标），
+    /// 与「当天真的记过」的记录分得清清楚楚 —— 那是推算值，不是当时的账面值。
+    @discardableResult func clearAllSnapshots(keepToday: Bool = true) -> Int {
+        let today = companionDay()
+        let before = data.snapshots.count
+        data.snapshots.removeAll { !(keepToday && $0.date == today) }
+        let removed = before - data.snapshots.count
+        if removed > 0 { save(label: "清空历史快照") }
+        return removed
+    }
+
     private func reconstructedState(on day: String) -> (cash: Double, positions: [(code: String, kind: Holding.Kind, quantity: Double)])? {
         // 历史快照会永久影响收益曲线，不能把今天手工录入的持仓猜成过去已持有。
         // 先验证有效流水能完整解释当前份额，再按目标日正向重放；缺少期初基线时宁可留空。
