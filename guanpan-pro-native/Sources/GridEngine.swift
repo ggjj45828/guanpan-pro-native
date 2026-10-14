@@ -436,6 +436,209 @@ extension PortfolioStore {
             sellCount: sells, startCapital: plan.capital, endingValue: cash + shares * last.price,
             fees: fees, coverage: coverage)
     }
+
+    // MARK: - 复盘并寻找当日最优（移植自网页版 gridTradeReplayOptimize）
+    //
+    // 与上面 `replayGrid(plan:day:)` 的分工：
+    //   · `replayGrid` 是「我给参数，你告诉我结果」——考的是我自己拟的计划；
+    //   · 本函数是「我只给资金，你搜出当天事后最优的锚点 + 格距」——考的是这一天本身值不值得做网格。
+    // 参数、常量、判定顺序全部按网页版逐条对齐，不做「优化」。
+
+    /// 自动搜索当日事后最优网格参数。返回 `.failure` 时原因可直接展示给用户。
+    func optimizeGridReplay(code: String, day: String, capital: Double, t0: Bool)
+        -> Result<GridOptimizeReport, GridOptimizeError> {
+        let bars = intradayBars(code: code, day: day)
+        let prices = bars.map(\.price).filter { $0.isFinite && $0 > 0 }
+        // 有效分钟点不足 30 个：当天采样太稀，任何「最优」都是噪音。
+        guard prices.count >= 30, let first = prices.first, let last = prices.last else {
+            return .failure(.notEnoughPoints(prices.count))
+        }
+        let etf = Self.isGridETF(code)
+        let tick = etf ? 0.001 : 0.01
+        let decimals = etf ? 3 : 2
+        let dayLow = prices.min() ?? first
+        let dayHigh = prices.max() ?? first
+        let money = capital.isFinite && capital > 0 ? capital : 0
+
+        // 每一手股数：分母里的 4 = 「2 手初始建仓 + 2 手留给网格买入」，
+        // 所以 qty < 100 意味着资金连最基本的网格骨架都撑不起来。
+        let quantity = (money / (max(first, 0.0001) * 4 * 100)).rounded(.down) * 100
+        guard quantity >= 100 else { return .failure(.capitalTooSmall) }
+
+        // 中位跳动（相邻分钟价差绝对值的中位数）代表这个标的当天的「典型抖动」。
+        let moves = zip(prices, prices.dropFirst()).map { abs($1 - $0) }.filter { $0 > 0 }.sorted()
+        let medianMove = moves.isEmpty ? tick : moves[moves.count / 2]
+        let minStep = (max(tick, medianMove * 1.3) / tick).rounded(.up) * tick
+
+        // 三个锚点：首价 / 前 15 点均价 / 当日中位价 —— 分别代表「开盘就布」「等一刻钟看方向」「按全天中枢布」。
+        let sortedPrices = prices.sorted()
+        let head = prices.prefix(min(15, prices.count))
+        let headAverage = head.reduce(0, +) / Double(max(1, head.count))
+        var anchors: [Double] = []
+        var seenAnchors = Set<Double>()
+        for raw in [first, headAverage, sortedPrices[sortedPrices.count / 2]] {
+            let value = gridRound(raw, decimals: decimals)
+            // 锚点必须落在当天真实价格区间内，否则回放会以不存在的价位开局。
+            guard value >= dayLow, value <= dayHigh else { continue }
+            if seenAnchors.insert(value).inserted { anchors.append(value) }
+        }
+
+        // 步长的第二条下界：一格涨跌必须能覆盖「买+卖两次费用 + 两次一跳滑点」，
+        // 否则来回一趟净亏，格距再密也是白忙。1.15 是留出的安全边际。
+        let sampleQuantity = max(100, quantity)
+        let roundTripCost = (Self.legacyShadowFee(code: code, side: "buy", amount: first * sampleQuantity)
+            + Self.legacyShadowFee(code: code, side: "sell", amount: first * sampleQuantity)
+            + 2 * tick * sampleQuantity) / sampleQuantity
+        let minGridStep = max(minStep, roundTripCost * 1.15)
+        let stepMultipliers: [Double] = [1, 1.25, 1.5, 2, 2.5, 3, 4]
+        let steps = stepMultipliers.map { multiplier in
+            max(tick, (minGridStep * multiplier / tick).rounded(.up) * tick)
+        }
+
+        var candidates: [GridOptimizeCandidate] = []
+        var best: GridOptimizeCandidate?
+
+        for anchorSeed in anchors {
+            for step in steps {
+                var anchor = anchorSeed
+                let initialShares = quantity * 2
+                var shares = initialShares
+                // eligible 是 T+0 校验：A股当天买入的份额当天不能卖，`t0=false` 时买入不增加它。
+                var eligible = initialShares
+                var cash = money - initialShares * anchorSeed
+                var cost = anchorSeed
+                var buyCount = 0, sellCount = 0, fillCount = 0
+                var fees = 0.0, commissionCost = 0.0, slippageCost = 0.0
+                var peak = money
+                var maxDrawdown = 0.0
+
+                for price in prices {
+                    if price <= anchor - step - tick / 2, anchor - step >= dayLow - tick / 2 {
+                        // 向下穿越一档且该档没跌出当天低点 → 买一手（含费用 + 一跳不利滑点）。
+                        let target = gridRound(anchor - step, decimals: decimals)
+                        let fee = Self.legacyShadowFee(code: code, side: "buy", amount: target * quantity)
+                        let slippage = tick * quantity
+                        if cash >= target * quantity + fee + slippage {
+                            cost = (shares * cost + target * quantity + fee + slippage) / (shares + quantity)
+                            shares += quantity
+                            if t0 { eligible += quantity }
+                            cash -= target * quantity + fee + slippage
+                            fees += fee + slippage
+                            commissionCost += fee
+                            slippageCost += slippage
+                            buyCount += 1
+                            fillCount += 1
+                            anchor = target
+                        }
+                    } else if price >= anchor + step + tick / 2, anchor + step <= dayHigh + tick / 2, eligible >= quantity {
+                        // 向上穿越一档且没涨出当天高点、且有可卖份额 → 卖一手。
+                        let target = gridRound(anchor + step, decimals: decimals)
+                        let fee = Self.legacyShadowFee(code: code, side: "sell", amount: target * quantity)
+                        let slippage = tick * quantity
+                        shares -= quantity
+                        eligible -= quantity
+                        cash += target * quantity - fee - slippage
+                        fees += fee + slippage
+                        commissionCost += fee
+                        slippageCost += slippage
+                        sellCount += 1
+                        fillCount += 1
+                        anchor = target
+                    }
+                    let equity = cash + shares * price
+                    if equity > peak { peak = equity }
+                    if peak > 0 {
+                        let drawdown = (peak - equity) / peak * 100
+                        if drawdown > maxDrawdown { maxDrawdown = drawdown }
+                    }
+                }
+
+                let endingEquity = cash + shares * last
+                let profit = endingEquity - money
+                let holdProfit = initialShares * (last - anchorSeed)
+                let item = GridOptimizeCandidate(
+                    anchor: anchorSeed,
+                    finalAnchor: anchor,
+                    step: step,
+                    stepPercent: step / first * 100,
+                    quantity: quantity,
+                    buyCount: buyCount,
+                    sellCount: sellCount,
+                    fills: fillCount,
+                    fees: fees,
+                    commissionCost: commissionCost,
+                    slippageCost: slippageCost,
+                    profit: profit,
+                    holdProfit: holdProfit,
+                    alpha: profit - holdProfit,
+                    maxDrawdown: maxDrawdown,
+                    endingEquity: endingEquity
+                )
+                candidates.append(item)
+                if let current = best {
+                    // 先比 alpha；完全打平时取最大回撤更小的那组（同样多赚，波动更小）。
+                    if item.alpha > current.alpha
+                        || (item.alpha == current.alpha && item.maxDrawdown < current.maxDrawdown) {
+                        best = item
+                    }
+                } else {
+                    best = item
+                }
+            }
+        }
+
+        guard let winner = best else { return .failure(.noCandidate) }
+        let resolvedName = data.quotes.first { $0.code == code }?.name
+            ?? data.holdings.first { $0.code == code }?.name
+            ?? code
+        let report = GridOptimizeReport(
+            code: code,
+            name: resolvedName,
+            day: day,
+            capital: money,
+            t0: t0,
+            tick: tick,
+            dayLow: dayLow,
+            dayHigh: dayHigh,
+            firstPrice: first,
+            lastPrice: last,
+            points: prices.count,
+            best: winner,
+            candidates: candidates.sorted { $0.alpha > $1.alpha },
+            note: "ETF 佣金按每笔 0.10 元估算；个股按 max(5, 金额×0.0086%) + 卖出印花税 0.05%。"
+                + "总交易成本另含每次一跳不利滑点（滑点不是券商佣金）。"
+        )
+        return .success(report)
+    }
+
+    // MARK: - 策略经验累积
+
+    func gridExperience(forCode code: String) -> GridExperienceRecord? {
+        gridExperienceMap()[code]
+    }
+
+    /// 把一次「找最优」的结果并进该标的的经验累积（只统计，不参与选参）。
+    func recordGridExperience(_ report: GridOptimizeReport) {
+        var map = gridExperienceMap()
+        var record = map[report.code] ?? GridExperienceRecord()
+        record.samples += 1
+        if report.best.alpha > 0 { record.wins += 1 }
+        record.alphaSum += report.best.alpha
+        record.stepPercentSamples.append(report.best.stepPercent)
+        // 只留最近 200 次：经验是「近期这个标的的格距习惯」，不是永久账本。
+        if record.stepPercentSamples.count > 200 {
+            record.stepPercentSamples.removeFirst(record.stepPercentSamples.count - 200)
+        }
+        map[report.code] = record
+        guard let raw = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(raw, forKey: gridExperienceDefaultsKey)
+    }
+
+    private func gridExperienceMap() -> [String: GridExperienceRecord] {
+        guard let raw = UserDefaults.standard.data(forKey: gridExperienceDefaultsKey),
+              let map = try? JSONDecoder().decode([String: GridExperienceRecord].self, from: raw) else { return [:] }
+        return map
+    }
 }
 
 enum GridError: LocalizedError {
@@ -447,3 +650,32 @@ enum GridError: LocalizedError {
         }
     }
 }
+
+/// 「复盘并寻找当日最优」的可展示错误（对应网页版返回的 `error` 文案）。
+enum GridOptimizeError: LocalizedError {
+    case notEnoughPoints(Int)
+    case capitalTooSmall
+    case noCandidate
+
+    var errorDescription: String? {
+        switch self {
+        case .notEnoughPoints(let count):
+            return "有效分钟点只有 \(count) 个（少于 30 个），不能可靠回放。"
+        case .capitalTooSmall:
+            return "计划资金不足以覆盖至少两手初始份额和两手网格买入，请加大资金或换单价更低的标的。"
+        case .noCandidate:
+            return "没有可计算的网格参数。"
+        }
+    }
+}
+
+/// 按小数位取整（网页版 `roundFix`）：ETF 3 位、个股 2 位。
+/// 先放大再取整再缩回，避免 1.2340000000000002 这种浮点尾数漏出来。
+private func gridRound(_ value: Double, decimals: Int) -> Double {
+    guard value.isFinite else { return value }
+    let scale = pow(10.0, Double(decimals))
+    return (value * scale).rounded() / scale
+}
+
+/// 策略经验的 UserDefaults 键。**口径变了就改版本号**，否则老设备上不会重算。
+private let gridExperienceDefaultsKey = "guanpan.native.gridExperience.v1"

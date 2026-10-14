@@ -838,6 +838,86 @@ struct GridReplayResult: Identifiable {
     var profit: Double { endingValue - startCapital }
 }
 
+// MARK: - 复盘并寻找当日最优（移植自网页版 gridTradeReplayOptimize）
+
+/// 一组网格参数的模拟结果（网页版 item 的对应物）。
+///
+/// 关键字段是 `alpha`：**网格盈亏 − 同期「买了就不动」的盈亏**。
+/// 单边上涨的日子里，随便一组参数都能比本金赚得多 —— 只有减掉「躺着不动」那份，
+/// 剩下的才是网格真正多挣出来的钱，所以胜负按 alpha 判，而不是按 `profit`。
+struct GridOptimizeCandidate: Identifiable {
+    var id: UUID = UUID()
+    /// 起始锚点：首价 / 前 15 点均价 / 当日中位价，三选一。
+    var anchor: Double
+    /// 走完当天后锚点停在哪（动态网格会跟着成交价移动）。
+    var finalAnchor: Double
+    /// 格距（元）
+    var step: Double
+    /// 格距占首价的百分比
+    var stepPercent: Double
+    /// 每格股数 / 份数
+    var quantity: Double
+    var buyCount: Int
+    var sellCount: Int
+    var fills: Int
+    /// 费用合计（佣金 + 滑点）
+    var fees: Double
+    var commissionCost: Double
+    var slippageCost: Double
+    /// 期末权益 − 本金
+    var profit: Double
+    /// 初始份额「买了不动」的盈亏
+    var holdProfit: Double
+    /// 网格相对「买了不动」多挣的部分，用于排名
+    var alpha: Double
+    /// 按权益曲线算的最大回撤（%）
+    var maxDrawdown: Double
+    var endingEquity: Double
+}
+
+/// 一次「复盘并寻找当日最优」的完整报告。
+struct GridOptimizeReport: Identifiable {
+    var id: UUID = UUID()
+    var code: String
+    var name: String
+    var day: String
+    var capital: Double
+    var t0: Bool
+    /// 最小价位变动（ETF 0.001 / 个股 0.01）
+    var tick: Double
+    var dayLow: Double
+    var dayHigh: Double
+    var firstPrice: Double
+    var lastPrice: Double
+    /// 参与回放的有效分钟点数
+    var points: Int
+    var best: GridOptimizeCandidate
+    /// 全部候选（3 个锚点 × 7 个步长倍率，去重后可能少于 21 组）
+    var candidates: [GridOptimizeCandidate]
+    var note: String
+}
+
+/// 策略经验累积（网页版 `DB.gridExperience` 的对应物）。
+///
+/// 只做「这台设备上跑过的复盘」的统计，不参与选参本身 ——
+/// 它回答的是「这个标的过去几次事后最优的格距大概落在哪一档」。
+struct GridExperienceRecord: Codable {
+    var samples = 0
+    var wins = 0
+    var alphaSum = 0.0
+    var stepPercentSamples: [Double] = []
+
+    var averageAlpha: Double { samples > 0 ? alphaSum / Double(samples) : 0 }
+
+    var winRate: Double { samples > 0 ? Double(wins) / Double(samples) * 100 : 0 }
+
+    var medianStepPercent: Double {
+        guard !stepPercentSamples.isEmpty else { return 0 }
+        let sorted = stepPercentSamples.sorted()
+        return sorted[sorted.count / 2]
+    }
+}
+
 struct GridRecommendation {
     var anchor: Double
     var stepPercent: Double

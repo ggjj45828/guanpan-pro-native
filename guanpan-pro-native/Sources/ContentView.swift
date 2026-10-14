@@ -5907,6 +5907,8 @@ struct DayGridView: View {
     @State private var recommendationText = ""
     @State private var showImporter = false
     @State private var showStrategicGridPlanner = false
+    /// 「复盘并寻找当日最优」：只给资金，自动搜出当天事后最优的锚点与格距。
+    @State private var showGridOptimize = false
     /// 网格适合度排名（规则版评估，见 GridSuitability.swift）。
     @State private var suitability: [GridSuitability] = []
     @State private var isEvaluatingSuitability = false
@@ -6083,6 +6085,18 @@ struct DayGridView: View {
                     }
                 }
                 .plainCard(isLight: isLight)
+                Section("自动找最优参数（复盘当日）") {
+                    Button {
+                        showGridOptimize = true
+                    } label: {
+                        Label("复盘并寻找当日最优", systemImage: "wand.and.stars")
+                    }
+                    Text("只填标的、交易日和计划资金，自动搜出当天事后最优的锚点与格距"
+                        + "（3 个锚点 × 7 个步长倍率 = 21 组回放），按「跑赢持有不动」排序。"
+                        + "用的是当天完整分时，属于事后拟合，不是预测。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .plainCard(isLight: isLight)
                 Section("分时数据") {
                     Button("导入分时 CSV") { showImporter = true }
                     Text("CSV 支持 code,date,time,price,volume 或 code,timestamp,price；无 code 列时使用当前选择标的；timestamp/time 列需包含完整日期和时间（yyyy-MM-dd HH:mm[:ss]）。应用在前台且取得有效报价时才采集；已保存的分时历史不会按交易日数自动删除。")
@@ -6217,6 +6231,9 @@ struct DayGridView: View {
             }
             .sheet(isPresented: $showStrategicGridPlanner) {
                 StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
+            }
+            .sheet(isPresented: $showGridOptimize) {
+                GridOptimizeView().environmentObject(store).themedSheetBackground()
             }
         }
     }
