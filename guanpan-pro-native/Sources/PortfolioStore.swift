@@ -22,6 +22,8 @@ final class PortfolioStore: ObservableObject {
     /// 自动轮询的**重入保护**。故意不是 `@Published`：它每 15 秒翻两次，
     /// 发布出去就等于每 15 秒白重建两次视图树（见 `performQuoteRefresh`）。
     private var autoRefreshInFlight = false
+    /// 上一次写回网页账本时，原生账本的指纹。相同就跳过，避免每轮轮询都去写一遍。
+    private var lastWebLedgerWrittenFingerprint = ""
     @Published private(set) var intradayArchiveStatus = "尚未补全分时档案"
     @Published private(set) var isArchivingIntraday = false
     /// 首页顶部指数条。与账本数据无关，单独缓存，不参与备份 / NAS 同步。
@@ -36,6 +38,8 @@ final class PortfolioStore: ObservableObject {
     @Published var nasSyncStatus = "未配置 NAS 同步"
     @Published private(set) var operationAudit: [OperationAuditRecord] = []
     @Published private(set) var isSynchronizingNAS = false
+    /// 网页版账本写回的状态文案（独立于原生账本的 `nasSyncStatus`，两者是两份文档）。
+    @Published private(set) var webLedgerStatus = "尚未写回"
     private let key = "guanpan.pro.native.portfolio.v1"
     private let undoKey = "guanpan.pro.native.portfolio.undo.v1"
     private let auditKey = "guanpan.pro.native.portfolio.audit.v1"
@@ -1280,6 +1284,9 @@ final class PortfolioStore: ObservableObject {
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             guard !Task.isCancelled else { return }
             await synchronizeNASSafely()
+            // 原生账本同步完，再把账本按网页格式写回一份 —— 这样在 App 里买卖之后，
+            // 网页版打开也能看到同样的持仓与现金（以前两边是永久分叉的）。
+            await writeBackWebLedgerIfEnabled()
         }
     }
 
@@ -1415,6 +1422,117 @@ final class PortfolioStore: ObservableObject {
             recordNASSync(revision: result.revision, document: document)
             nasSyncStatus = "已上传到 NAS（版本 \(result.revision)）"
         } catch { nasSyncStatus = "上传失败：\(error.localizedDescription)" }
+        await writeBackWebLedgerIfEnabled()
+    }
+
+    // MARK: - 写回网页版账本（App 为准）
+    //
+    // 背景：App 与网页版在 NAS 上是**两份不同的文档** —— App 走 `/api/native/data`，
+    // 网页走 `/api/data`。迁移只发生一次（原生空间为空时才把网页账本迁进来），之后两边
+    // 永久分叉：在 App 里卖掉，网页版纹丝不动。这一段就是补上那条缺失的「App → 网页」。
+    //
+    // 安全约束（宁可这次不同步，也不能弄坏数据）：
+    // ① 本机没有用户数据（空账本）→ 直接跳过，绝不拿空文档覆盖网页那份；
+    // ② 读不到现有网页账本（HTTP 错误 / 返回体不是 JSON）→ 跳过并报错，不做「整份重建」；
+    // ③ 写回前先把现有那份原样备份到本机（只留最近一次），可一键还原；
+    // ④ 只替换账本字段，其余键（设置 / 分红参考 / 汇率 / 休市日 / 网格历史）原样保留。
+
+    var webLedgerWriteBackEnabled: Bool {
+        UserDefaults.standard.bool(forKey: NASSyncService.webLedgerKey)
+    }
+
+    /// 本机是否存有「上一次写回前」的网页账本备份。
+    var hasWebLedgerBackup: Bool {
+        UserDefaults.standard.data(forKey: NASSyncService.webLedgerBackupKey) != nil
+    }
+
+    var webLedgerBackupDate: Date? {
+        UserDefaults.standard.object(forKey: NASSyncService.webLedgerBackupDateKey) as? Date
+    }
+
+    func setWebLedgerWriteBack(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: NASSyncService.webLedgerKey)
+        if enabled {
+            Task { await writeBackWebLedger(reason: "开启后首次") }
+        } else {
+            assignIfChanged(\.webLedgerStatus, "已关闭自动写回")
+        }
+    }
+
+    /// 自动路径：只在原生账本**真的变了**的时候写回，避免每 60 秒的轮询也去写一遍。
+    func writeBackWebLedgerIfEnabled() async {
+        guard webLedgerWriteBackEnabled else { return }
+        let local = makeNASDocument()
+        guard let stamp = try? NASSyncService.fingerprint(local) else { return }
+        guard stamp != lastWebLedgerWrittenFingerprint else { return }
+        if await writeBackWebLedger(reason: "自动") {
+            lastWebLedgerWrittenFingerprint = stamp
+        }
+    }
+
+    /// 把本机原生账本写回 NAS 上的**网页格式**账本（`/api/data`）。
+    @discardableResult
+    func writeBackWebLedger(reason: String) async -> Bool {
+        let defaults = UserDefaults.standard
+        let url = defaults.string(forKey: NASSyncService.urlKey) ?? ""
+        guard !url.isEmpty else {
+            assignIfChanged(\.webLedgerStatus, "未配置 NAS 地址，无法写回")
+            return false
+        }
+        let local = makeNASDocument()
+        // ① 空账本保护
+        guard hasNASUserData(local) else {
+            assignIfChanged(\.webLedgerStatus, "本机账本为空，已跳过写回（不会去清空网页版）")
+            return false
+        }
+        let token = NASCredentialStore.load() ?? ""
+        do {
+            // ② 先读回现有那份：读不到就放弃，不做整份重建
+            let existing = try await NASSyncService.webLedger(base: url, token: token)
+            // ③ 写回前留一份原样备份
+            if let existing,
+               let raw = try? JSONSerialization.data(withJSONObject: existing, options: [.fragmentsAllowed]) {
+                defaults.set(raw, forKey: NASSyncService.webLedgerBackupKey)
+                defaults.set(Date(), forKey: NASSyncService.webLedgerBackupDateKey)
+            }
+            // ④ 只替换账本字段
+            let document = WebLedgerWriter.document(from: data, merging: existing)
+            let revision = try await NASSyncService.putWebLedger(base: url, token: token, payload: document)
+            let etfCount = data.holdings.filter { $0.kind == .etf }.count
+            let fundCount = data.holdings.filter { $0.kind == .fund }.count
+            let stamp = Date.now.formatted(date: .omitted, time: .shortened)
+            let action = existing == nil ? "已新建网页账本" : "已写回网页账本"
+            assignIfChanged(\.webLedgerStatus,
+                "\(action)（\(reason)）· 场内 \(etfCount) 只 · 场外 \(fundCount) 只 · "
+                + "流水 \(data.ledger.count) 笔 · 版本 \(revision) · \(stamp)")
+            return true
+        } catch {
+            assignIfChanged(\.webLedgerStatus, "写回失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 误覆盖时的后悔药：把「上一次写回之前」的那份网页账本原样写回去。
+    @discardableResult
+    func restorePreviousWebLedger() async -> Bool {
+        let defaults = UserDefaults.standard
+        let url = defaults.string(forKey: NASSyncService.urlKey) ?? ""
+        guard !url.isEmpty,
+              let raw = defaults.data(forKey: NASSyncService.webLedgerBackupKey),
+              let payload = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] else {
+            assignIfChanged(\.webLedgerStatus, "没有可还原的网页账本备份")
+            return false
+        }
+        do {
+            let revision = try await NASSyncService.putWebLedger(
+                base: url, token: NASCredentialStore.load() ?? "", payload: payload)
+            let stamp = Date.now.formatted(date: .omitted, time: .shortened)
+            assignIfChanged(\.webLedgerStatus, "已还原写回前的网页账本 · 版本 \(revision) · \(stamp)")
+            return true
+        } catch {
+            assignIfChanged(\.webLedgerStatus, "还原失败：\(error.localizedDescription)")
+            return false
+        }
     }
 
     /// 应用从 NAS 下载的文档。

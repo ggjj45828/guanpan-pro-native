@@ -50,6 +50,11 @@ enum NASSyncService {
     static let automaticKey = "guanpan.native.nas.automatic"
     static let revisionKey = "guanpan.native.nas.revision"
     static let fingerprintKey = "guanpan.native.nas.fingerprint"
+    /// 「同时写回网页版账本」开关（设备本地设置，不随账本同步）。
+    static let webLedgerKey = "guanpan.native.nas.webledger"
+    /// 写回前那一版网页账本的原样备份（只留最近一次，可一键还原）。
+    static let webLedgerBackupKey = "guanpan.native.nas.webledger.backup"
+    static let webLedgerBackupDateKey = "guanpan.native.nas.webledger.backup.date"
 
     static func fingerprint(_ document: NativeSyncDocument) throws -> String {
         struct Content: Encodable {
@@ -244,6 +249,54 @@ enum NASSyncService {
         let payload = rootObject["data"] as? [String: Any]
         let encoded = try payload.map { try JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
         return (rootObject["revision"] as? Int ?? 0, encoded)
+    }
+
+    /// 读取 NAS 上「网页版账本」的原始 JSON（`/api/data` 的 `data` 字段）。
+    ///
+    /// 写回前**必须**先拿到它：写回只替换账本相关字段，其余键（设置 / 分红参考 / 汇率 /
+    /// 自定义休市日 / 网格历史…）一律沿用这份现值，绝不整份覆盖。
+    ///
+    /// - Returns: 有网页账本时返回它的内容；服务器明确回答「没有数据」时返回 `nil`。
+    /// - Throws: 读不到时（HTTP 错误、返回体不是 JSON）抛出 —— 调用方必须**放弃写回**。
+    ///   宁可这次不同步，也不能拿一份空文档把网页那份数据清掉。
+    static func webLedger(base: String, token: String) async throws -> [String: Any]? {
+        let (_, data) = try await legacyBackup(base: base, token: token)
+        guard let data else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// 把整份网页账本写回 `/api/data`（网页版协议：`{tok, data}`）。
+    /// 返回 NAS 报告的新版本号；服务器不给就返回 0。
+    @discardableResult
+    static func putWebLedger(base: String, token: String, payload: [String: Any]) async throws -> Int {
+        let url = try webLedgerURL(base: base)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // 两种鉴权都带上：新服务认 Bearer，旧服务认 body 里的 tok。
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let body: [String: Any] = ["tok": token, "data": payload]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
+        let (bytes, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw NASSyncError.invalidResponse }
+        let object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+        if let error = object?["err"] as? String, !error.isEmpty { throw NASSyncError.server(error) }
+        guard (200...299).contains(http.statusCode) else {
+            throw NASSyncError.server("写回网页账本失败（HTTP \(http.statusCode)）")
+        }
+        return (object?["revision"] as? Int) ?? 0
+    }
+
+    private static func webLedgerURL(base: String) throws -> URL {
+        let root = base.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let baseURL = URL(string: root),
+              ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""),
+              baseURL.host != nil else { throw NASSyncError.invalidAddress }
+        return baseURL.appendingPathComponent("api").appendingPathComponent("data")
     }
 
     static func request(base: String, token: String, method: String, path: String = "/api/native/data", body: Data? = nil) async throws -> NASSyncResponse {
