@@ -132,7 +132,10 @@ struct IndexDetailView: View {
         guard let date = index.updatedAt else { return "行情源未提供时间戳" }
         let day = shortDay(date)
         let today = shortDay(Date())
-        if day != today { return "休市 · \(day) 收盘" }
+        if day != today {
+            // 交易日开盘前，行情同样停在上一个交易日 —— 那不是休市，只是还没开盘。
+            return store.isMarketClosedToday ? "休市 · \(day) 收盘" : "\(day) 收盘 · 待开盘"
+        }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
@@ -555,7 +558,14 @@ struct IndexDetailView: View {
 
         if !minuteBars.isEmpty, let day = minuteBars.last?.day {
             let isToday = day == shortDayDate(Date())
-            status = isToday ? "分时 \(minuteBars.count) 个点 · 实时" : "分时 \(minuteBars.count) 个点 · 休市，显示 \(day) 的分时"
+            if isToday {
+                status = "分时 \(minuteBars.count) 个点 · 实时"
+            } else if store.isMarketClosedToday {
+                status = "分时 \(minuteBars.count) 个点 · 休市，显示 \(day) 的分时"
+            } else {
+                // 交易日开盘前拿到的是上一交易日的完整分时，这是正常的，别写成「休市」。
+                status = "分时 \(minuteBars.count) 个点 · 尚未开盘，显示 \(day) 的分时"
+            }
         } else if !dailyBars.isEmpty {
             status = "日 K \(dailyBars.count) 根，最新 \(dailyBars.last?.date ?? "--")"
         } else {

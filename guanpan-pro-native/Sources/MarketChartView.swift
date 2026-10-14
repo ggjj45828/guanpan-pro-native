@@ -2720,7 +2720,9 @@ struct MarketChartView: View {
             }
             store.mergeIntradayBars(parsed)
             selectedIntradayDay = day
-            minuteStatus = day == today ? "更新于 \(Date.now.formatted(date: .omitted, time: .shortened))" : "休市 · 最近交易日 \(day)"
+            minuteStatus = day == today
+                ? "更新于 \(Date.now.formatted(date: .omitted, time: .shortened))"
+                : (store.isMarketClosedToday ? "休市 · 最近交易日 \(day)" : "尚未开盘 · 最近交易日 \(day)")
         } catch {
             minuteStatus = selectedIntradayBars.isEmpty
                 ? "分时获取失败：\(error.localizedDescription)"

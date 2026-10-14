@@ -213,16 +213,23 @@ final class PortfolioStore: ObservableObject {
 
     /// 今天是否休市。
     ///
-    /// 三层判断，逐级降级 —— 任何一层缺数据都不至于把交易日误判成休市：
+    /// 四层判断，逐级降级 —— 任何一层缺数据都不至于把交易日误判成休市：
     /// ①周末：最可靠；
     /// ②上证指数日 K 反推的交易日历：覆盖得到就听它（跨年、临时休市都自动跟上）；
-    /// ③场内行情时间戳：开市日行情带今天的日期，休市日会停在上一交易日。
+    /// ③内置 2026 休市表：日历还没拉到时（新装机 / 离线）的兜底；
+    /// ④场内行情时间戳：**只在今天已经开过盘之后**才允许下结论。
+    ///
+    /// 第 ④ 层的「今天已经开过盘」这个条件是必需的，别省。
+    /// 交易日 09:30 之前行情源给的必然是**上一交易日**的收盘价（日 K 里也还没有
+    /// 今天这根，所以第 ② 层判不出结论），这时候拿「行情不是今天的」去推
+    /// 「今天休市」，就会把正常交易日锁成休市 —— 用户看到的是
+    /// 「今天休市，不用记录快照」，而首页那条记录快照的入口正是被这个判断关掉的。
     var isMarketClosedToday: Bool {
         if MarketCalendar.isWeekend(.now) { return true }
         let today = MarketCalendar.isoDay(.now)
         if MarketCalendar.covers(today) { return !MarketCalendar.loadTradingDays().contains(today) }
         if MarketCalendar.mainlandClosures2026.contains(today) { return true }
-        if hasIntradayPnL, !isIntradayQuoteToday { return true }
+        if hasIntradayPnL, !isIntradayQuoteToday, MarketCalendar.hasOpenedToday(.now) { return true }
         return false
     }
 
@@ -737,7 +744,7 @@ final class PortfolioStore: ObservableObject {
             save(label: rebuilt.added > 0 ? "自动重建漏记历史快照" : "按最新历史数据核对快照")
         }
         // 网络报价与净值加载完成后再更新今天的临时快照，避免只保存启动时的旧行情。
-        recordSnapshot()
+        recordSnapshot(automatic: true)
     }
 
     /// 用上证指数日 K 反推交易日历：**有 K 线的日期就是交易日**。
@@ -3507,9 +3514,14 @@ final class PortfolioStore: ObservableObject {
         return !data.fundTransactions[(index + 1)...].contains(where: { $0.code == transaction.code })
     }
 
-    func recordSnapshot() {
+    /// - Parameter automatic: 自动路径（打开 App、前台恢复、净值刷新后）传 true。
+    ///   交易日**开盘前**不自动写：那一刻行情还停在上一个交易日，写进去的其实是
+    ///   上一交易日的估值，只会让收益曲线多出一段平线。手动点按钮时不拦 ——
+    ///   那是用户明确要记这一次。
+    func recordSnapshot(automatic: Bool = false) {
         // 休市日自动进入页面不应重复写入上一交易日估值；需要手工校正时走历史快照表单。
         guard !isMarketClosedToday else { return }
+        if automatic, !MarketCalendar.hasOpenedToday(.now) { return }
         let date = dayString(.now)
         if data.snapshots.first(where: { $0.date == date })?.quality == .manual { return }
         let quality = snapshotQuality(for: date)

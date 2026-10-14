@@ -95,7 +95,7 @@ struct ContentView: View {
                 store.refreshQuotes()
                 store.refreshIndexQuotes()
                 store.maybeRefreshFundNAVsAfterMarketClose()
-                store.recordSnapshot()   // 打开 App 自动记当天快照，免得手动忘
+                store.recordSnapshot(automatic: true)   // 打开 App 自动记当天快照，免得手动忘（开盘前不写）
                 Task {
                     await store.synchronizeNASSafely()
                     await store.syncNASMarketArchive()
@@ -800,7 +800,14 @@ struct DashboardView: View {
         guard store.hasDayPnLGross else { return "当日盈亏" }
         if store.hasIntradayPnL, let day = store.intradayQuoteDate.map({ shortDay($0) }) {
             if !store.isIntradayQuoteToday {
-                return store.hasFundDayPnL ? "行情休市 \(day) · 净值今日更新" : "休市 · \(day) 盈亏"
+                // 「行情停在上一个交易日」有两种原因，措辞必须分开：
+                // 真休市（周末 / 节假日），和**交易日开盘前**。后者写「休市」是错的 ——
+                // 早上打开 App 会看到「休市 · 10-13 盈亏」，像是在说今天不开盘。
+                let closed = store.isMarketClosedToday
+                if store.hasFundDayPnL {
+                    return closed ? "行情休市 \(day) · 净值今日更新" : "\(day) 收盘 · 净值今日更新"
+                }
+                return closed ? "休市 · \(day) 盈亏" : "\(day) 收盘盈亏"
             }
             return store.isMarketOpenNow ? "今日盈亏" : "今日收盘盈亏"
         }
@@ -815,7 +822,10 @@ struct DashboardView: View {
     /// 必须写死状态，否则周末看到的数字会被当成当天的。
     private var intradayDateNote: String {
         guard store.hasIntradayPnL, let date = store.intradayQuoteDate else { return "无行情" }
-        if !store.isIntradayQuoteToday { return "休市 · \(shortDay(date)) 收盘" }
+        if !store.isIntradayQuoteToday {
+            // 同上：交易日开盘前行情必然停在上一个交易日，那不是休市，是「待开盘」。
+            return store.isMarketClosedToday ? "休市 · \(shortDay(date)) 收盘" : "\(shortDay(date)) 收盘 · 待开盘"
+        }
         return store.isMarketOpenNow ? "实时" : "\(shortDay(date)) 收盘"
     }
 
@@ -3493,6 +3503,9 @@ struct AssetsView: View {
                     // 休市日不给记录入口：这天的总资产和上一交易日几乎一样
                     // （场外净值不更新、场内是上一交易日的收盘价），记了只会让
                     // 收益曲线多出一段平线，还会把「区间收益」的分母算歪。
+                    // 反过来说，交易日**开盘前**必须照常给入口 —— 那时候行情也停在
+                    // 上一交易日，`isMarketClosedToday` 里那句「已开盘」的判断就是
+                    // 专门为这个窗口留的，别删。
                     if store.isMarketClosedToday {
                         Label("今天休市，不用记录快照", systemImage: "moon.zzz")
                             .font(.footnote).foregroundStyle(.secondary)

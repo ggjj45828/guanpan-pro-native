@@ -42,6 +42,18 @@ enum MarketCalendar {
         return weekday == 1 || weekday == 7
     }
 
+    /// 今天（上海时间）是否已经过了 A 股开盘时刻 09:30。
+    ///
+    /// 用来把「休市」和「还没开盘」分开。交易日 09:30 之前，行情源给的必然是
+    /// **上一交易日**的收盘价，光看「行情不是今天的」会把这个正常交易日
+    /// 判成休市 —— 用户早上打开 App 看到的就是「今天休市，不用记录快照」。
+    static func hasOpenedToday(_ date: Date) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        return ((parts.hour ?? 0) * 60 + (parts.minute ?? 0)) >= 570
+    }
+
     // MARK: - 自动交易日历
 
     /// 由上证指数日 K 反推的交易日集合（"yyyy-MM-dd"）。
