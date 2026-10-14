@@ -34,7 +34,7 @@ struct IntradayCompanionView: View {
                     .pickerStyle(.segmented)
                     TextField("份额", text: $quantity).keyboardType(.decimalPad)
                     LabeledContent("参考现价", value: currentPrice.num(3))
-                    LabeledContent("计划金额", value: amount.cny())
+                    LabeledContent("意图金额（参考）", value: amount.cny())
                     Button("保存并开启盘中提醒") { saveIntent() }
                     if store.data.intradayCompanionIntents.contains(where: { $0.code == holding.code }) {
                         Button("关闭这只标的的盘中陪伴", role: .destructive) {
@@ -53,7 +53,7 @@ struct IntradayCompanionView: View {
                     }
                     .foregroundStyle(decisionColor)
                     ForEach(decision.reasons, id: \.self) { Text("• \($0)").font(.subheadline) }
-                    Text("买卖判断会先做现金、份额和仓位校验，再结合你的交易风格、风险偏好、持有周期、偏好/回避项与趋势信号。份额足够只代表账面可卖，不代表建议卖出；App 不会自动下单。")
+                    Text("这里记录的是交易意图，不会占用或校验你的参考现金，也不会自动下单。系统按意图份额和现价估算金额，并结合画像、趋势、持仓及仓位上限给出分析；仓位数据只作风险提示。卖出份额超过账面持仓时会提示核对。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -124,10 +124,10 @@ struct IntradayCompanionView: View {
             : (includesDipPreference ? preference : "\(preference)；同时喜欢抄底、偏好回调后分批布局")
         let profileText = "交易风格：\(profile.style)，风险偏好：\(profile.risk)，持有周期：\(profile.horizon)，单标的仓位上限：\(profile.maxPositionPercent.num(1))%；用户偏好：\(effectivePreference)；投资目标：\(profile.goal.isEmpty ? "未填写" : profile.goal)；回避项：\(profile.avoid.isEmpty ? "未填写" : profile.avoid)。\n本机交易行为统计：\(behavior.promptText)"
         let prompt = """
-        用户正在考虑对 \(holding.name)（\(holding.code)）\(side == .buy ? "买入" : "卖出") \(quantity) 份，参考价 \(currentPrice.num(4))，计划金额 \(amount.cny())。
+        用户正在考虑对 \(holding.name)（\(holding.code)）\(side == .buy ? "买入" : "卖出") \(quantity) 份，参考价 \(currentPrice.num(4))，意图金额约 \(amount.cny())。这只是情景分析，不是下单；不得用账户现金余额否定或拦截该意图。
         用户投资画像与行为：\(profileText)
         本机当前判断：\(decision.title(for: side))。依据：\(decision.summary)。
-        当前总资产 \(store.totalAsset.cny())，现金 \(store.data.cash.cny())，该标的现持有 \(holding.quantity.num(2)) 份、成本 \(holding.cost.num(4))。
+        当前总资产 \(store.totalAsset.cny())，该标的现持有 \(holding.quantity.num(2)) 份、成本 \(holding.cost.num(4))。不要把交易意图金额与参考现金作可执行性校验；仓位变化只作为风险背景。
         今日本机分时样本：
         \(minuteText.isEmpty ? "暂无" : minuteText)
 

@@ -1689,8 +1689,11 @@ struct HoldingsView: View {
                     ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
                     : (store.latestFundNAVDate.map { "净值 \(shortDay($0)) · 今日未取到" } ?? "无净值"))
                 : "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
-            // 网页版的资产汇总卡是彩色区块（.sum）；这里按浮盈亏红绿上色，不再是一片灰白
-            let cardTone: Color? = pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil
+            // 基金页的资产概览固定用紫色模块色，与下方基金持仓卡片拉开视觉层级；
+            // ETF/证券页仍按浮盈亏红绿提示。数字本身继续按真实盈亏着色。
+            let cardTone: Color? = kind == .fund
+                ? CardTone.accent
+                : (pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {

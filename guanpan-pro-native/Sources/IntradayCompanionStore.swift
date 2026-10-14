@@ -48,7 +48,6 @@ struct IntradayCompanionDecision {
         }
         if side == .sell, quantity > (holding?.quantity ?? 0) { return .init(level: .invalid, reasons: ["卖出份额超过当前持仓"]) }
         let amount = quantity * price
-        if side == .buy, amount > data.cash + 0.01 { return .init(level: .invalid, reasons: ["计划金额高于参考现金"]) }
         let currentHoldingValue = (holding?.quantity ?? 0) * price
         let after = max(0, currentHoldingValue + (side == .buy ? amount : -amount))
         let weight = after / max(totalAsset, 0.01) * 100
@@ -76,7 +75,7 @@ struct IntradayCompanionDecision {
             ? "喜欢抄底，偏好回调后分批布局（按你刚刚说明）"
             : (alreadyIncludesDip ? declaredPreference : "\(declaredPreference)；同时喜欢抄底、偏好回调后分批布局")
         var reasons = ["画像：\(styleName) · \(riskName) · 持有周期 \(profile.horizon) · 偏好：\(dipPreference)",
-                       "成交后仓位约 \(weight.num(1))%；单仓上限 \(limit.num(1))%"]
+                       "若按此意图成交，单标的仓位约 \(weight.num(1))%；参考上限 \(limit.num(1))%（仅作风险提示）"]
         var strength = 0
         var sellRiskSignals = 0
         var dipSetup = false

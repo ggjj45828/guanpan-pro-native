@@ -11,6 +11,10 @@ struct IntradayArchiveView: View {
     @State private var selectedDay = ""
     @State private var subchart: Subchart = .volume
     @State private var selectedTime: Date?
+    /// 主图线条开关。和持仓分时页共用同一份偏好（`IntradayVisibility` 存在 UserDefaults 里），
+    /// 所以在哪一页切换，另一页跟着变。价格线是基准，不提供关闭。
+    @State private var showAverageLine = IntradayVisibility.showAverage
+    @State private var showIOPVLine = IntradayVisibility.showIOPV
 
     private enum Subchart: String, CaseIterable, Identifiable {
         case volume = "分时量"
@@ -209,10 +213,12 @@ struct IntradayArchiveView: View {
         return bars.min { abs(chartTime($0.timestamp).timeIntervalSince(selectedTime)) < abs(chartTime($1.timestamp).timeIntervalSince(selectedTime)) }
     }
     private var priceDomain: ClosedRange<Double> {
-        let v = (bars.map(\.price) + average.map(\.value) + iopvBars.compactMap(\.iopv)).filter { $0 > 0 }
-        guard let lo = v.min(), let hi = v.max() else { return 0...1 }
-        let ref = max(abs(lo), abs(hi), 0.0001), spread = max(hi - lo, ref * 0.002), p = max(spread * 0.09, ref * 0.0006)
-        return (lo-p)...(hi+p)
+        // 上下限由**当前显示的三条线**共同决定（价格 / 均价 / IOPV），与持仓分时页同一口径。
+        // 档案页没有「昨收」输入（历史某天的前收不在本机），所以不参与定轴。
+        var values = bars.map(\.price)
+        if showAverageLine { values += average.map(\.value) }
+        if showIOPVLine { values += iopvBars.compactMap(\.iopv) }
+        return intradaySharedYDomain(values)
     }
     private var macdDomain: ClosedRange<Double> { let p = max(macd.flatMap { [abs($0.dif),abs($0.dea),abs($0.histogram)] }.max() ?? 0, 0.000001) * 1.12; return -p...p }
 
@@ -251,6 +257,9 @@ struct IntradayArchiveView: View {
             .onAppear {
                 if selectedCode.isEmpty { selectedCode = instruments.first?.code ?? "" }
                 subchart = store.data.intradaySubchartMode == "macd" ? .macd : .volume
+                // 偏好可能刚在持仓分时页改过，进来时对齐一次。
+                showAverageLine = IntradayVisibility.showAverage
+                showIOPVLine = IntradayVisibility.showIOPV
                 selectLatestDay()
             }
             .onChange(of: subchart) { _, value in
@@ -348,11 +357,20 @@ struct IntradayArchiveView: View {
 
                 priceChart
 
-                HStack(spacing: 14) {
-                    Label("价格", systemImage: "minus").foregroundStyle(priceLineColor)
-                    Label("均价", systemImage: "minus").foregroundStyle(.orange)
-                    if !iopvBars.isEmpty { Label("IOPV", systemImage: "minus").foregroundStyle(.purple) }
+                HStack(spacing: 8) {
+                    archiveLegendChip(title: "价格", color: priceLineColor, isOn: true, available: true, action: nil)
+                    archiveLegendChip(title: "均价", color: .orange, isOn: showAverageLine, available: !average.isEmpty) {
+                        showAverageLine.toggle()
+                        IntradayVisibility.write(average: showAverageLine)
+                    }
+                    if store.isTencentETFCode(selectedCode) {
+                        archiveLegendChip(title: "IOPV", color: .purple, isOn: showIOPVLine, available: !iopvBars.isEmpty) {
+                            showIOPVLine.toggle()
+                            IntradayVisibility.write(iopv: showIOPVLine)
+                        }
+                    }
                     Text("点图看分钟值 · B买入 / S卖出")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .font(.caption)
@@ -388,64 +406,58 @@ struct IntradayArchiveView: View {
         return "\(bar.timestamp.formatted(date: .omitted, time: .shortened))  \(bar.price.num(4))"
     }
 
-    @ViewBuilder private var priceChart: some View {
-        Chart {
-            ForEach(bars) { point in
-                AreaMark(x: .value("时间", chartTime(point.timestamp)), yStart: .value("基线", priceDomain.lowerBound), yEnd: .value("价格", point.price), series: .value("主图序列", "价格"))
-                    .foregroundStyle(priceLineColor.opacity(0.08))
-                    .interpolationMethod(.linear)
-                LineMark(x: .value("时间", chartTime(point.timestamp)), y: .value("价格", point.price), series: .value("主图序列", "价格"))
-                    .foregroundStyle(priceLineColor)
-                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.linear)
-            }
-            ForEach(average) { point in
-                LineMark(x: .value("时间", chartTime(point.time)), y: .value("均价", point.value), series: .value("主图序列", "均价"))
-                    .foregroundStyle(Color.orange)
-                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
-            }
-            ForEach(iopvBars) { point in
-                LineMark(x: .value("时间", chartTime(point.timestamp)), y: .value("IOPV", point.iopv ?? 0), series: .value("主图序列", "IOPV"))
-                    .foregroundStyle(Color.purple)
-                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
-            }
-            ForEach(tradePoints) { trade in
-                PointMark(x: .value("交易时间", chartTime(trade.time)), y: .value("成交价", trade.price))
-                    .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
-                    .symbolSize(60)
-                    .annotation(position: trade.side == .buy ? .top : .bottom) {
-                        Text(trade.side == .buy ? "B" : "S")
-                            .font(.caption2.bold())
-                            .foregroundStyle(trade.side == .buy ? Color.red : Color.green)
-                    }
-            }
-            if let selectedBar {
-                RuleMark(x: .value("选中", chartTime(selectedBar.timestamp)))
-                    .foregroundStyle(Color.secondary)
-                    .annotation(position: .top, alignment: .leading) {
-                        Text(selectedBarLabel)
-                            .font(.caption.monospacedDigit())
-                            .padding(6)
-                            .background(isLight ? Color.white : Color.black, in: RoundedRectangle(cornerRadius: 7))
-                    }
-            }
+    /// 主图图例。可点的那些同时也是**线条开关** —— 用户要求档案页的分时图也能决定显示哪几条线。
+    /// 没有那条线的数据（例如非 ETF 没有 IOPV）时置灰不可点。
+    @ViewBuilder
+    private func archiveLegendChip(title: String, color: Color, isOn: Bool,
+                                   available: Bool, action: (() -> Void)? = nil) -> some View {
+        let chip = HStack(spacing: 4) {
+            Capsule()
+                .fill(color)
+                .frame(width: 12, height: 2)
+                .opacity(isOn ? 1 : 0.3)
+            Text(title).font(.caption)
+                .foregroundStyle(isOn ? color : Color.secondary)
         }
-        .frame(height: 300)
-        .chartYScale(domain: priceDomain)
-        .chartXScale(domain: timeDomain)
-        .chartXAxis {
-            if compressLunchBreak {
-                AxisMarks(values: chartAxisTicks.map { $0.time }) { value in
-                    AxisValueLabel {
-                        if let time = value.as(Date.self) { Text(chartAxisLabel(time)) }
-                    }
-                }
-            } else {
-                AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: .dateTime.hour().minute()) }
-            }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background((isOn ? color : Color.secondary).opacity(isOn ? 0.12 : 0.06), in: Capsule())
+        .opacity(available ? 1 : 0.4)
+        if let action {
+            Button(action: action) { chip }
+                .buttonStyle(.plain)
+                .disabled(!available)
+        } else {
+            chip
         }
-        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12)); AxisValueLabel().font(.caption2).foregroundStyle(.secondary) } }
-        .chartXSelection(value: $selectedTime)
+    }
+
+    private var priceChart: some View {
+        IntradayMainChart(
+            lines: bars.map { IntradayLine(time: $0.timestamp, price: $0.price) },
+            average: average.map { IntradayLine(time: $0.time, price: $0.value) },
+            iopv: iopvBars.compactMap { bar in
+                guard let value = bar.iopv, value.isFinite, value > 0 else { return nil }
+                return IntradayLine(time: bar.timestamp, price: value)
+            },
+            iopvFallback: nil,
+            previousClose: nil,
+            showAverage: showAverageLine,
+            showIOPV: showIOPVLine,
+            showPreviousClose: false,
+            lineColor: priceLineColor,
+            xDomain: timeDomain,
+            yDomain: priceDomain,
+            ticks: chartAxisTicks,
+            compressLunch: compressLunchBreak,
+            height: 300,
+            lineWidth: 1.15,
+            selection: $selectedTime,
+            selectionLabel: selectedBarLabel.isEmpty ? nil : selectedBarLabel,
+            tradeMarkers: tradePoints.map {
+                IntradayChartTradeMarker(id: $0.id, time: $0.time, price: $0.price, isBuy: $0.side == .buy)
+            }
+        )
     }
 
     @ViewBuilder private var volumeChart: some View {

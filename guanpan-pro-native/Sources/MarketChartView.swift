@@ -20,6 +20,47 @@ private struct MinuteBucket: Identifiable {
     var id: Date { start }
 }
 
+/// Align 30/60-minute bars to each market's actual session open. Flooring Unix
+/// timestamps puts Shanghai 60-minute bars on the hour (09:00, 10:00…), even
+/// though the session opens at 09:30; the first bar then gets clipped by the
+/// 09:30 chart domain and every later point appears half an hour early.
+private func intradayBucketStart(_ time: Date, code: String, widthMinutes: Int) -> Date {
+    guard time.timeIntervalSince1970.isFinite else { return time }
+    guard widthMinutes > 1 else {
+        return Date(timeIntervalSince1970: floor(time.timeIntervalSince1970 / 60) * 60)
+    }
+    let normalized = code.lowercased()
+    let isUS = normalized.hasPrefix("us")
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: isUS ? "America/New_York" : "Asia/Shanghai") ?? .current
+    let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: time)
+    guard let year = parts.year, let month = parts.month, let day = parts.day,
+          let hour = parts.hour, let minute = parts.minute else { return time }
+    let minuteOfDay = hour * 60 + minute
+    let open = 9 * 60 + 30
+    let close = isUS ? 16 * 60 : 15 * 60
+    let afternoonOpen = 13 * 60
+    let afternoonClose = 15 * 60
+    let startMinute: Int
+    if isUS {
+        guard minuteOfDay >= open, minuteOfDay <= close else { return time }
+        let elapsed = min(minuteOfDay - open, close - open - 1)
+        startMinute = open + (elapsed / widthMinutes) * widthMinutes
+    } else if minuteOfDay >= open && minuteOfDay < 11 * 60 + 30 {
+        startMinute = open + ((minuteOfDay - open) / widthMinutes) * widthMinutes
+    } else if minuteOfDay >= afternoonOpen && minuteOfDay <= afternoonClose {
+        let elapsed = min(minuteOfDay - afternoonOpen, afternoonClose - afternoonOpen - 1)
+        startMinute = afternoonOpen + (elapsed / widthMinutes) * widthMinutes
+    } else {
+        // Preserve unexpected/imported timestamps instead of silently dropping them.
+        return Date(timeIntervalSince1970: floor(time.timeIntervalSince1970 / (Double(widthMinutes) * 60)) * Double(widthMinutes) * 60)
+    }
+    var components = DateComponents()
+    components.year = year; components.month = month; components.day = day
+    components.hour = startMinute / 60; components.minute = startMinute % 60
+    return calendar.date(from: components) ?? time
+}
+
 private struct IntradayVolumeMAPoint: Identifiable {
     let time: Date
     let value: Double
@@ -46,7 +87,7 @@ private enum IntradaySubchart: String, CaseIterable, Identifiable {
 }
 
 /// 分时叠加层的显示偏好。只影响图表外观，不属于账本数据。
-private enum IntradayVisibility {
+enum IntradayVisibility {
     private static let averageKey = "guanpan.intraday.show.average"
     private static let iopvKey = "guanpan.intraday.show.iopv"
     private static let previousCloseKey = "guanpan.intraday.show.previous-close"
@@ -207,10 +248,46 @@ enum DailySubChart: String, CaseIterable, Identifiable {
 // 拆成独立类型后，父视图里只出现一个类型名（嵌套 1 层），深度立刻回到安全范围。
 
 /// 分时折线的一个点（主图价格 / 均价 / IOPV 共用同一形状）。
-private struct IntradayLine: Identifiable {
+struct IntradayLine: Identifiable {
     let time: Date
     let price: Double
     var id: Date { time }
+}
+
+struct IntradayChartTradeMarker: Identifiable {
+    let id: UUID
+    let time: Date
+    let price: Double
+    let isBuy: Bool
+}
+
+/// 价格、均价和 IOPV 的共用动态范围，供持仓分时与历史档案调用。
+func intradaySharedYDomain(_ source: [Double]) -> ClosedRange<Double> {
+    let values = source.filter { $0.isFinite && $0 > 0 }
+    guard let low = values.min(), let high = values.max() else { return 0...1 }
+    let reference = max(abs(low), abs(high), 0.0001)
+    let spread = max(high - low, reference * 0.002)
+    let padding = max(spread * 0.05, reference * 0.0006)
+    return (low - padding)...(high + padding)
+}
+
+/// 把一串点按「时间连续」切成若干段：相邻两点间隔超过 `maxGap` 秒就断开。
+///
+/// 专治 IOPV 这种**稀疏采样**序列：样本是前台逐分钟攒出来的，中间可能断几十分钟
+/// （App 退后台、午休、刚安装还没攒够）。直接连线会把相隔很远的两个点画成一条
+/// 横跨半张图的斜线 —— 看起来就是「线坏了」。断开重起一段，视觉上就诚实了。
+func intradaySegmentedLines(_ points: [IntradayLine], maxGap: TimeInterval = 300) -> [[IntradayLine]] {
+    var result: [[IntradayLine]] = []
+    var current: [IntradayLine] = []
+    for point in points.sorted(by: { $0.time < $1.time }) where point.price.isFinite && point.price > 0 {
+        if let last = current.last, point.time.timeIntervalSince(last.time) > maxGap {
+            result.append(current)
+            current = []
+        }
+        current.append(point)
+    }
+    if !current.isEmpty { result.append(current) }
+    return result
 }
 
 /// 分时均价点（原先是 `MarketChartView` 的嵌套类型，抽图后要跨类型使用）。
@@ -294,10 +371,12 @@ func compactAmountText(_ value: Double) -> String {
 }
 
 /// 分时主图：价格线 + 可选均价 / IOPV / 昨收。
-private struct IntradayMainChart: View {
+struct IntradayMainChart: View {
     let lines: [IntradayLine]
     let average: [IntradayLine]
     let iopv: [IntradayLine]
+    /// 历史遗留参数：曾经在「一个 IOPV 样本都没有」时用它补一条当前值参考线。
+    /// 用户明确否掉（没数据就不该画线），现在**只保留在签名里**，不参与任何绘制。
     let iopvFallback: Double?
     let previousClose: Double?
     let showAverage: Bool
@@ -310,8 +389,51 @@ private struct IntradayMainChart: View {
     let compressLunch: Bool
     let height: CGFloat
     let lineWidth: CGFloat
+    var selection: Binding<Date?>? = nil
+    var selectionLabel: String? = nil
+    var tradeMarkers: [IntradayChartTradeMarker] = []
 
     @Environment(\.colorScheme) private var colorScheme
+
+    /// IOPV 采样里「连成线」的那些段（每段至少 2 个点，段内相邻点间隔 ≤ 5 分钟）。
+    private var iopvSegments: [[IntradayLine]] {
+        guard showIOPV, iopv.count >= 2 else { return [] }
+        return intradaySegmentedLines(iopv).filter { $0.count >= 2 }
+    }
+
+    /// IOPV 采样里的落单点（前后 5 分钟内没有第二个采样）。画不出线，但可以点出来。
+    private var iopvIsolatedPoints: [IntradayLine] {
+        guard showIOPV, !iopv.isEmpty else { return [] }
+        return intradaySegmentedLines(iopv).filter { $0.count == 1 }.compactMap(\.first)
+    }
+
+    init(lines: [IntradayLine], average: [IntradayLine], iopv: [IntradayLine],
+         iopvFallback: Double?, previousClose: Double?, showAverage: Bool,
+         showIOPV: Bool, showPreviousClose: Bool, lineColor: Color,
+         xDomain: ClosedRange<Date>, yDomain: ClosedRange<Double>,
+         ticks: [(time: Date, label: String)], compressLunch: Bool,
+         height: CGFloat, lineWidth: CGFloat,
+         selection: Binding<Date?>? = nil, selectionLabel: String? = nil,
+         tradeMarkers: [IntradayChartTradeMarker] = []) {
+        self.lines = lines
+        self.average = average
+        self.iopv = iopv
+        self.iopvFallback = iopvFallback
+        self.previousClose = previousClose
+        self.showAverage = showAverage
+        self.showIOPV = showIOPV
+        self.showPreviousClose = showPreviousClose
+        self.lineColor = lineColor
+        self.xDomain = xDomain
+        self.yDomain = yDomain
+        self.ticks = ticks
+        self.compressLunch = compressLunch
+        self.height = height
+        self.lineWidth = lineWidth
+        self.selection = selection
+        self.selectionLabel = selectionLabel
+        self.tradeMarkers = tradeMarkers
+    }
 
     private func t(_ time: Date) -> Date { intradayCompressedTime(time, compressLunch: compressLunch) }
 
@@ -329,6 +451,9 @@ private struct IntradayMainChart: View {
     var body: some View {
         Chart {
             ForEach(lines) { p in
+                AreaMark(x: .value("时间", t(p.time)), yStart: .value("区间下沿", yDomain.lowerBound), yEnd: .value("价格", p.price), series: .value("主图序列", "价格填充"))
+                    .foregroundStyle(lineColor.opacity(0.08))
+                    .interpolationMethod(.linear)
                 LineMark(x: .value("时间", t(p.time)), y: .value("价格", p.price), series: .value("主图序列", "价格"))
                     .foregroundStyle(lineColor)
                     .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
@@ -342,31 +467,51 @@ private struct IntradayMainChart: View {
                 }
             }
             if showIOPV {
-                ForEach(iopv) { p in
-                    LineMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price), series: .value("主图序列", "IOPV"))
-                        .foregroundStyle(Color.purple)
-                        .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
-                }
-                // 只有 1 个点时 `LineMark` 画不出任何东西 —— 用户看到的就是「IOPV 根本没线」。
-                // 而 IOPV **没有历史分时接口**（腾讯 / 东财的分时都只给价量，IOPV 只在快照的
-                // 第 78 字段里给一个当前值），所以本机的 IOPV 曲线是「逐分钟实测攒出来的」：
-                // 今天开了多久就攒了多少点。点数不足 2 个时，退化成一条当前值的水平参考线，
-                // 并单独画一个圆点，让人知道是「线还在攒」而不是功能坏了。
-                if iopv.count == 1 {
-                    ForEach(iopv) { p in
-                        PointMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price))
+                // IOPV **没有历史分时接口**（腾讯 / 东财的分钟线只给价量，IOPV 只在快照字段里给
+                // 一个当前值），所以本机这条线是「前台逐分钟实测攒出来的」，样本天生稀疏：
+                // 中间可能断几十分钟（App 退到后台、午休、刚装上还没攒）。
+                //
+                // 因此**不能**直接把点连起来：
+                //   · 09:35 一个点、14:30 一个点 —— `LineMark` 会把它们连成一条横跨半张图的斜线，
+                //     看起来像数据坏了（用户反馈的「没有数据的时候是斜线」）。
+                //   · 只有 1 个点时 `LineMark` 什么都画不出来，之前退化成一条「当前值参考线」，
+                //     用户明确否掉（「直线」「补虚假的」）。
+                // 现在的规则：同一段内相邻样本间隔超过 5 分钟就断开；每段 ≥2 点才连线，
+                // 落单的点只画一个小圆点；**一个样本都没有时什么都不画**。
+                ForEach(Array(iopvSegments.enumerated()), id: \.offset) { index, segment in
+                    ForEach(segment) { p in
+                        LineMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price),
+                                 series: .value("主图序列", "IOPV-\(index)"))
                             .foregroundStyle(Color.purple)
-                            .symbolSize(26)
+                            .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
                     }
                 }
-                if iopv.count < 2, let value = iopvFallback ?? iopv.last?.price {
-                    RuleMark(y: .value("IOPV", value)).foregroundStyle(.purple)
-                        .lineStyle(StrokeStyle(lineWidth: 0.95, dash: [4, 3]))
+                ForEach(iopvIsolatedPoints) { p in
+                    PointMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price))
+                        .foregroundStyle(Color.purple).symbolSize(18)
                 }
             }
             if showPreviousClose, let value = previousClose {
                 RuleMark(y: .value("昨收", value)).foregroundStyle(previousCloseLineColor)
                     .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+            }
+            ForEach(tradeMarkers) { trade in
+                PointMark(x: .value("交易时间", t(trade.time)), y: .value("成交价", trade.price))
+                    .foregroundStyle(trade.isBuy ? Color.red : Color.green)
+                    .symbolSize(60)
+                    .annotation(position: trade.isBuy ? .top : .bottom) {
+                        Text(trade.isBuy ? "B" : "S").font(.caption2.bold())
+                            .foregroundStyle(trade.isBuy ? Color.red : Color.green)
+                    }
+            }
+            if let selectedTime = selection?.wrappedValue, let selectionLabel {
+                RuleMark(x: .value("选中", t(selectedTime)))
+                    .foregroundStyle(Color.secondary)
+                    .annotation(position: .top, alignment: .leading) {
+                        Text(selectionLabel).font(.caption.monospacedDigit()).padding(6)
+                            .background(colorScheme == .light ? Color.white : Color.black,
+                                        in: RoundedRectangle(cornerRadius: 7))
+                    }
             }
             // 现在价：一条浅黄淡虚线横轴。分时图上「我此刻在哪个价位」是最常被找的一根线，
             // 光有折线的末尾点不够显眼（尤其缩略看的时候）。放在最后画，保证压在其他线之上。
@@ -388,7 +533,7 @@ private struct IntradayMainChart: View {
                     }
                 }
             } else {
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisMarks(values: .automatic(desiredCount: 5)) { _ in
                     AxisValueLabel(format: .dateTime.hour().minute()).font(.system(size: 9))
                 }
             }
@@ -399,6 +544,7 @@ private struct IntradayMainChart: View {
                 AxisValueLabel().font(.system(size: 8)).foregroundStyle(.secondary)
             }
         }
+        .chartXSelection(value: selection ?? .constant(nil))
     }
 }
 
@@ -1136,24 +1282,19 @@ struct MarketChartView: View {
     }
 
     private var minuteBuckets: [MinuteBucket] {
-        let width: TimeInterval
+        let widthMinutes: Int
         switch selectedChartPeriod {
-        case .intraday: width = 60
-        case .minute30: width = 30 * 60
-        default: width = 60 * 60
+        case .intraday: widthMinutes = 1
+        case .minute30: widthMinutes = 30
+        default: widthMinutes = 60
         }
-        let grouped = Dictionary(grouping: selectedIntradayBars) { bar -> Int in
-            let seconds = bar.timestamp.timeIntervalSince1970
-            guard seconds.isFinite else { return 0 }
-            // 先夹到安全范围再转 Int：这里的 `Int(_:)` 以前直接吃原始时间戳，
-            // 备份或 NAS 档案里出现一个坏时间戳就会在打开分时图的瞬间闪退。
-            let clamped = min(max(seconds, -6.0e11), 6.0e11)
-            return Int(clamped / width)
+        let grouped = Dictionary(grouping: selectedIntradayBars) { bar in
+            intradayBucketStart(bar.timestamp, code: holding.code, widthMinutes: widthMinutes)
         }
-        return grouped.compactMap { key, rows in
+        return grouped.compactMap { start, rows in
             guard let last = rows.max(by: { $0.timestamp < $1.timestamp }) else { return nil }
             let volumeRows = rows.compactMap(\.volume)
-            return MinuteBucket(start: Date(timeIntervalSince1970: Double(key) * width), close: last.price,
+            return MinuteBucket(start: start, close: last.price,
                                 volume: volumeRows.isEmpty ? nil : volumeRows.reduce(0, +))
         }.sorted { $0.start < $1.start }
     }
@@ -1301,29 +1442,31 @@ struct MarketChartView: View {
         return (low - pad)...(high + pad)
     }
     private var intradayPriceYDomain: ClosedRange<Double> {
-        // 上下限只由「价格线 + 均价」决定。IOPV 的折溢价**不参与撑开纵轴**：
-        // 高溢价品种（如纳指ETF）的 IOPV 离现价很远，把它算进来会把整根轴拉开，
-        // 价格线反而被压成一条平线 —— 这正是用户反馈的「y 轴展开太多」。
-        var values = selectedIntradayBars.map(\.price)
-        if showIntradayAverage { values += intradayAvgPoints.map(\.price) }
-        values = values.filter { $0 > 0 && $0.isFinite }
-        guard let low = values.min(), let high = values.max() else { return 0...1 }
-        if let domain = symmetricIntradayYDomain(low: low, high: high, previous: intradayPrevClose) {
-            return domain
-        }
-        // 拿不到昨收（首日上市、昨收缺失）时才退回「跟着数据走 + 留余量」，
-        // 这时把 IOPV 也算进来，免得线跑到图外。
-        var fallback = values
+        // 纵轴上下限要同时框住**价格、均价、IOPV 三条线**（用户要求：以前只按价格线定轴，
+        // 现在三条线都得落在上下限里面）。
+        //
+        // 主口径不变：以昨收为 0 轴、按今日价格的最大涨跌幅对称铺开（和 30/60 分档同源）。
+        // IOPV 打开后，高溢价品种（如纳指 ETF）的紫线可能落在这个对称区间之外，
+        // 所以只在**不够的那一侧单侧补足**，能不动另一侧就不动 ——
+        // 这样 IOPV 关闭时的纵轴与旧版完全一致，不会因为纳入 IOPV 就把价格线压成一条平线。
+        var visible = selectedIntradayBars.map(\.price)
+        if showIntradayAverage { visible += intradayAvgPoints.map(\.price) }
+        var all = visible
         if showIntradayIOPV {
-            fallback += selectedDayIOPVPoints.map(\.value)
-            if selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { fallback.append(v) }
+            all += selectedDayIOPVPoints.map(\.value)
+            // 一个历史点都没有、但快照给了当前值时，把它也留进范围，免得线一出现就贴着边。
+            if selectedDayIOPVPoints.isEmpty, let currentIOPV = selectedDayIOPV { all.append(currentIOPV) }
         }
-        let finite = fallback.filter { $0 > 0 && $0.isFinite }
-        guard let fallbackLow = finite.min(), let fallbackHigh = finite.max() else { return 0...1 }
-        let ref = max(abs(fallbackLow), abs(fallbackHigh), 0.0001)
-        let spread = max(fallbackHigh - fallbackLow, ref * 0.002)
-        let pad = max(spread * 0.09, ref * 0.0006)
-        return (fallbackLow - pad)...(fallbackHigh + pad)
+        let finiteAll = all.filter { $0 > 0 && $0.isFinite }
+        guard let low = finiteAll.min(), let high = finiteAll.max() else { return 0...1 }
+        // 三线共同范围 + 5% 边距，作为「无论如何都不能裁掉线」的保底区间。
+        let tight = intradaySharedYDomain(finiteAll)
+        let finiteVisible = visible.filter { $0 > 0 && $0.isFinite }
+        if let vLow = finiteVisible.min(), let vHigh = finiteVisible.max(),
+           let symmetric = symmetricIntradayYDomain(low: vLow, high: vHigh, previous: intradayPrevClose) {
+            return min(symmetric.lowerBound, tight.lowerBound)...max(symmetric.upperBound, tight.upperBound)
+        }
+        return tight
     }
     private var priceLevels: PriceLevelSummary? {
         let today = shanghaiDay(.now)
@@ -1573,16 +1716,17 @@ struct MarketChartView: View {
                         .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                         // IOPV 曲线是**实测攒出来的**：行情源的分时接口只给价量，
                         // IOPV 只在快照里给一个当前值，没有任何「历史 IOPV」可拉。
-                        // 所以这件事必须说出来，否则用户会以为曲线坏了。
+                        // 采样天生稀疏，所以中间断开的地方就是「那段没采到」——
+                        // 不再连线、也不再补一条当前值参考线（用户明确否掉）。
                         if store.isTencentETFCode(holding.code), selectedDayIOPV != nil {
                             if selectedDayIOPVPoints.count >= 2 {
-                                Text("IOPV 曲线：本机实测 \(selectedDayIOPVPoints.count) 个分钟点（行情源不提供历史 IOPV，只能前台逐分钟攒）")
+                                Text("IOPV 曲线：本机实测 \(selectedDayIOPVPoints.count) 个分钟点。行情源不提供历史 IOPV，只能前台逐分钟攒；断开处就是那段没采到，不连线。")
                                     .font(.caption2).foregroundStyle(.secondary)
                             } else if selectedDayIOPVPoints.count == 1 {
-                                Text("IOPV 曲线刚攒到 1 个点，先画一条当前值参考线。行情源不提供历史 IOPV，前台每刷新一分钟就多一个点。")
+                                Text("IOPV 只攒到 1 个点，图上画成一个小点（不够连成线）。前台每刷新一分钟就多一个点。")
                                     .font(.caption2).foregroundStyle(.secondary)
                             } else {
-                                Text("这一天还没有采到 IOPV 点，先画一条当前值参考线。历史日期的 IOPV 无法回溯补齐。")
+                                Text("这一天还没有采到 IOPV 点，图上不画 IOPV 线。历史日期的 IOPV 无法回溯补齐。")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
