@@ -1,6 +1,108 @@
 import SwiftUI
 import Charts
 
+/// 把代码统一到「去掉 sh / sz / bj 前缀、小写」的写法。
+/// 文件级：档案页的行渲染与抽出的子视图都要用，跨类型时私有成员不可见。
+func archiveNormalizedCode(_ value: String) -> String {
+    let code = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    for prefix in ["sh", "sz", "bj"] where code.hasPrefix(prefix) { return String(code.dropFirst(2)) }
+    return code
+}
+
+/// 档案页 Picker 用的标的（文件级：页面级嵌套类型在抽出的子视图里不可见）。
+private struct IntradayArchiveInstrument: Identifiable {
+    let code: String
+    let name: String
+    var id: String { code }
+}
+
+/// 档案页里三份「按全量数据算」的结果，按输入指纹做一层单槽缓存。
+///
+/// **为什么需要**：`instruments`（建名字表 + 排序）、`coverageByCode`（每个标的取最新交易日
+/// → O(标的 × 交易日)）、`tradePoints`（每条流水都要在 242 个分钟点里找最近一分钟
+/// → O(流水 × 242)）原来都是页面级的计算属性，**只要本页 `body` 重跑就整套重算**。
+/// 而这一页的 body 会被两类事件反复触发：拖动主图选择线（每秒几十次）、
+/// store 每 10~15 秒发布一次行情。用户 2026-10-14 反馈的「分时档案一卡一卡」就是它。
+/// 现在把三者收进一个按指纹缓存的结果里，指纹不变就是 O(1)。
+@MainActor
+private enum IntradayArchiveMemo {
+    struct Payload {
+        var instruments: [IntradayArchiveInstrument] = []
+        var coverage: [String: (day: String?, count: Int, iopvCount: Int)] = [:]
+        var trades: [IntradayChartTradeMarker] = []
+    }
+
+    private static var key = ""
+    private static var cached = Payload()
+
+    static func value(_ version: String, build: () -> Payload) -> Payload {
+        if version == key { return cached }
+        let made = build()
+        key = version
+        cached = made
+        return made
+    }
+}
+
+/// 档案页主图 + 选择线。**必须独立成类型**：
+/// 选择态（长按 / 拖动看分钟值）原来挂在 `IntradayArchiveView` 上，拖动时每秒会触发
+/// 几十次**页面级** `body` 重算 —— 均价、MACD、流水标记、覆盖统计全跟着重跑，
+/// 这正是「分时档案一卡一卡」里最直白的一块。把选择态收进这个子视图后，
+/// 拖动只重画图表本身，父视图一次都不重算。
+private struct ArchivePriceChart: View {
+    let bars: [IntradayBar]
+    let lines: [IntradayLine]
+    let average: [IntradayLine]
+    let iopv: [IntradayLine]
+    let tradeMarkers: [IntradayChartTradeMarker]
+    let lineColor: Color
+    let xDomain: ClosedRange<Date>
+    let yDomain: ClosedRange<Double>
+    let ticks: [(time: Date, label: String)]
+    let compressLunch: Bool
+    let showAverage: Bool
+    let showIOPV: Bool
+    @State private var selectedTime: Date?
+
+    private func chartTime(_ time: Date) -> Date {
+        intradayCompressedTime(time, compressLunch: compressLunch)
+    }
+
+    /// 选中点最近的分钟值。只在**本视图**重算 —— 父视图不读 `selectedTime`。
+    private var selectionLabel: String {
+        guard let selectedTime else { return "" }
+        let nearest = bars.min {
+            abs(chartTime($0.timestamp).timeIntervalSince(selectedTime))
+                < abs(chartTime($1.timestamp).timeIntervalSince(selectedTime))
+        }
+        guard let bar = nearest else { return "" }
+        return "\(bar.timestamp.formatted(date: .omitted, time: .shortened))  \(bar.price.num(4))"
+    }
+
+    var body: some View {
+        IntradayMainChart(
+            lines: lines,
+            average: average,
+            iopv: iopv,
+            estimatedIOPV: [],
+            previousClose: nil,
+            showAverage: showAverage,
+            showIOPV: showIOPV,
+            showPreviousClose: false,
+            lineColor: lineColor,
+            xDomain: xDomain,
+            yDomain: yDomain,
+            ticks: ticks,
+            compressLunch: compressLunch,
+            height: 300,
+            lineWidth: 1.15,
+            selection: $selectedTime,
+            selectionLabel: selectionLabel.isEmpty ? nil : selectionLabel,
+            tradeMarkers: tradeMarkers
+        )
+    }
+}
+
 /// 分时采集、每日归档和历史复盘的统一入口。
 /// 只展示真实落盘数据；没有采到的分钟不会插值伪造。
 struct IntradayArchiveView: View {
@@ -10,7 +112,6 @@ struct IntradayArchiveView: View {
     @State private var selectedCode = ""
     @State private var selectedDay = ""
     @State private var subchart: Subchart = .volume
-    @State private var selectedTime: Date?
     /// 主图线条开关。和持仓分时页共用同一份偏好（`IntradayVisibility` 存在 UserDefaults 里），
     /// 所以在哪一页切换，另一页跟着变。价格线是基准，不提供关闭。
     @State private var showAverageLine = IntradayVisibility.showAverage
@@ -20,12 +121,6 @@ struct IntradayArchiveView: View {
         case volume = "分时量"
         case macd = "分时 MACD"
         var id: String { rawValue }
-    }
-
-    private struct Instrument: Identifiable {
-        let code: String
-        let name: String
-        var id: String { code }
     }
 
     private struct AveragePoint: Identifiable {
@@ -40,19 +135,6 @@ struct IntradayArchiveView: View {
         let dea: Double
         let histogram: Double
         var id: Date { time }
-    }
-
-    private struct TradePoint: Identifiable {
-        let id: UUID
-        let time: Date
-        let price: Double
-        let side: LedgerEntry.Side
-    }
-
-    private struct Coverage {
-        let latestDay: String?
-        let latestCount: Int
-        let latestIOPVCount: Int
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
@@ -71,14 +153,59 @@ struct IntradayArchiveView: View {
         }
     }
 
-    private var instruments: [Instrument] {
-        var names: [String: String] = [:]
-        for quote in store.data.quotes { names[quote.code] = quote.name.isEmpty ? quote.code : quote.name }
-        for holding in store.data.holdings where holding.kind == .etf {
-            names[holding.code] = holding.name.isEmpty ? holding.code : holding.name
+    /// 三份「按全量数据算」的结果（标的表 / 覆盖统计 / 流水标记）统一走一层带指纹的缓存。
+    ///
+    /// 指纹只覆盖真正会影响它们的输入：档案条数、覆盖统计条数、流水条数、自选与持仓条数、
+    /// 当前选中的标的与交易日。这些没变就直接返回上次的结果（O(1)）。
+    private var archivePayload: IntradayArchiveMemo.Payload {
+        let version = "\(store.intradayBars.count)|\(store.intradayCoverageByCode.count)"
+            + "|\(store.data.ledger.count)|\(store.data.quotes.count)|\(store.data.holdings.count)"
+            + "|\(selectedCode)|\(selectedDay)|\(resolvedCode)"
+        return IntradayArchiveMemo.value(version) {
+            var names: [String: String] = [:]
+            for quote in store.data.quotes { names[quote.code] = quote.name.isEmpty ? quote.code : quote.name }
+            for holding in store.data.holdings where holding.kind == .etf {
+                names[holding.code] = holding.name.isEmpty ? holding.code : holding.name
+            }
+            let instruments = names.map { IntradayArchiveInstrument(code: $0.key, name: $0.value) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+            var coverage: [String: (day: String?, count: Int, iopvCount: Int)] = [:]
+            for (code, days) in store.intradayCoverageByCode {
+                guard let latest = days.keys.max(), let entry = days[latest] else { continue }
+                coverage[code] = (latest, entry.points, entry.iopvPoints)
+            }
+
+            let markers = Self.tradeMarkers(bars: store.intradayBars(code: resolvedCode, day: selectedDay),
+                                            code: selectedCode, day: selectedDay,
+                                            ledger: store.data.ledger)
+            return IntradayArchiveMemo.Payload(instruments: instruments, coverage: coverage, trades: markers)
         }
-        return names.map { Instrument(code: $0.key, name: $0.value) }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    private var instruments: [IntradayArchiveInstrument] { archivePayload.instruments }
+    private var coverageByCode: [String: (day: String?, count: Int, iopvCount: Int)] { archivePayload.coverage }
+    /// 当日流水在分时图上的标记（B / S）。
+    private var tradePoints: [IntradayChartTradeMarker] { archivePayload.trades }
+
+    /// 每条流水在当日分时里找最近的一分钟。**只在这份缓存被重建时跑一次**，
+    /// 不再像以前那样挂在页面计算属性上、拖一下主图就重算一遍（O(流水 × 242)）。
+    private static func tradeMarkers(bars: [IntradayBar], code: String, day: String,
+                                     ledger: [LedgerEntry]) -> [IntradayChartTradeMarker] {
+        guard !bars.isEmpty else { return [] }
+        let target = archiveNormalizedCode(code)
+        var result: [IntradayChartTradeMarker] = []
+        for trade in ledger where archiveNormalizedCode(trade.code) == target
+            && shanghaiDay(trade.date) == day {
+            guard let nearest = bars.min(by: {
+                abs($0.timestamp.timeIntervalSince(trade.date)) < abs($1.timestamp.timeIntervalSince(trade.date))
+            }) else { continue }
+            result.append(IntradayChartTradeMarker(
+                id: trade.id,
+                time: nearest.timestamp,
+                price: trade.price > 0 ? trade.price : nearest.price,
+                isBuy: trade.side == .buy))
+        }
+        return result
     }
 
     /// 覆盖统计。从 store 的「code|day」索引直接读，只做 O(标的 × 交易日) 次字典操作。
@@ -86,21 +213,13 @@ struct IntradayArchiveView: View {
     /// 旧实现每帧遍历整份分钟档案，并为每个「标的 + 交易日」新建一个 Set 去重 ——
     /// 档案攒到几十万个点以后，光这一项就够把这一页拖到滑不动。分时点在入库时
     /// 已经按「代码 + 自然分钟」去过重，所以这里直接取条数即可，不必再建 Set。
-    private var coverageByCode: [String: Coverage] {
-        var result: [String: Coverage] = [:]
-        for (code, days) in store.intradayCoverageByCode {
-            guard let latest = days.keys.max(), let entry = days[latest] else { continue }
-            result[code] = Coverage(latestDay: latest, latestCount: entry.points,
-                                    latestIOPVCount: entry.iopvPoints)
-        }
-        return result
-    }
+    /// 现在由 `archivePayload` 带指纹缓存（见那里的说明）。
 
     /// 把用户选中的代码解析成档案里实际存的那个写法
     /// （档案可能存的是 `sh510300`，而选择器里是 `510300`）。
     private var resolvedCode: String {
-        let target = normalizedCode(selectedCode)
-        return store.intradayCodes.first { normalizedCode($0) == target } ?? selectedCode
+        let target = archiveNormalizedCode(selectedCode)
+        return store.intradayCodes.first { archiveNormalizedCode($0) == target } ?? selectedCode
     }
 
     private var days: [String] {
@@ -111,11 +230,7 @@ struct IntradayArchiveView: View {
         store.intradayBars(code: resolvedCode, day: selectedDay)
     }
 
-    private func normalizedCode(_ value: String) -> String {
-        let code = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        for prefix in ["sh", "sz", "bj"] where code.hasPrefix(prefix) { return String(code.dropFirst(2)) }
-        return code
-    }
+    private func normalizedCode(_ value: String) -> String { archiveNormalizedCode(value) }
 
     private var compressLunchBreak: Bool {
         let code = normalizedCode(selectedCode)
@@ -134,10 +249,9 @@ struct IntradayArchiveView: View {
 
     private var chartAxisTicks: [(time: Date, label: String)] {
         guard compressLunchBreak else { return [] }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        // 原来每次都现造 `DateFormatter`，而 `chartAxisLabel` 在 `AxisMarks` 闭包里
+        // 逐刻度调它 —— 拖动选择线时一秒能走几十次。走全局缓存后只剩一次字符串转换。
+        let formatter = FormatCache.shanghai("yyyy-MM-dd HH:mm")
         return ["09:30", "10:30", "11:30", "14:00", "15:00"].compactMap { label in
             guard let date = formatter.date(from: "\(selectedDay) \(label)") else { return nil }
             return (chartTime(date), label)
@@ -151,10 +265,7 @@ struct IntradayArchiveView: View {
 
     private var chartTimeDomain: ClosedRange<Date>? {
         guard let first = bars.first, let last = bars.last else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let formatter = FormatCache.shanghai("yyyy-MM-dd HH:mm")
         guard let start = formatter.date(from: "\(first.day) 09:30"),
               let end = formatter.date(from: "\(first.day) 15:00") else { return nil }
         if compressLunchBreak { return chartTime(start)...chartTime(end) }
@@ -199,19 +310,6 @@ struct IntradayArchiveView: View {
         }
     }
 
-    private var tradePoints: [TradePoint] {
-        guard !bars.isEmpty else { return [] }
-        return store.data.ledger.filter { normalizedCode($0.code) == normalizedCode(selectedCode) && shanghaiDay($0.date) == selectedDay }.compactMap { trade in
-            let nearest = bars.min { abs($0.timestamp.timeIntervalSince(trade.date)) < abs($1.timestamp.timeIntervalSince(trade.date)) }
-            guard let nearest else { return nil }
-            return TradePoint(id: trade.id, time: nearest.timestamp, price: trade.price > 0 ? trade.price : nearest.price, side: trade.side)
-        }
-    }
-
-    private var selectedBar: IntradayBar? {
-        guard let selectedTime else { return nil }
-        return bars.min { abs(chartTime($0.timestamp).timeIntervalSince(selectedTime)) < abs(chartTime($1.timestamp).timeIntervalSince(selectedTime)) }
-    }
     private var priceDomain: ClosedRange<Double> {
         // 上下限由**当前显示的三条线**共同决定（价格 / 均价 / IOPV），与持仓分时页同一口径。
         // 档案页没有「昨收」输入（历史某天的前收不在本机），所以不参与定轴。
@@ -296,9 +394,9 @@ struct IntradayArchiveView: View {
         } else {
             let coverageMap = coverageByCode
             ForEach(instruments) { instrument in
-                let coverage = coverageMap[normalizedCode(instrument.code)] ?? Coverage(latestDay: nil, latestCount: 0, latestIOPVCount: 0)
-                let latestDay = coverage.latestDay
-                let count = coverage.latestCount
+                let entry = coverageMap[archiveNormalizedCode(instrument.code)] ?? (day: nil, count: 0, iopvCount: 0)
+                let latestDay = entry.day
+                let count = entry.count
                 Button {
                     selectedCode = instrument.code
                     selectedDay = latestDay ?? ""
@@ -343,7 +441,6 @@ struct IntradayArchiveView: View {
                 Picker("交易日", selection: $selectedDay) {
                     ForEach(days, id: \.self) { Text($0).tag($0) }
                 }
-                .onChange(of: selectedDay) { _, _ in selectedTime = nil }
 
                 if let first = bars.first, let last = bars.last {
                     HStack {
@@ -401,11 +498,6 @@ struct IntradayArchiveView: View {
         }
     }
 
-    private var selectedBarLabel: String {
-        guard let bar = selectedBar else { return "" }
-        return "\(bar.timestamp.formatted(date: .omitted, time: .shortened))  \(bar.price.num(4))"
-    }
-
     /// 主图图例。可点的那些同时也是**线条开关** —— 用户要求档案页的分时图也能决定显示哪几条线。
     /// 没有那条线的数据（例如非 ETF 没有 IOPV）时置灰不可点。
     @ViewBuilder
@@ -432,32 +524,28 @@ struct IntradayArchiveView: View {
         }
     }
 
+    /// 只组装参数；**选择态与绘图实体都在 `ArchivePriceChart` 里**（见那里的说明：
+    /// 把选择态留在本视图会让每一次拖动都重算整页的重活）。
     private var priceChart: some View {
-        IntradayMainChart(
+        ArchivePriceChart(
+            bars: bars,
             lines: bars.map { IntradayLine(time: $0.timestamp, price: $0.price) },
             average: average.map { IntradayLine(time: $0.time, price: $0.value) },
             iopv: iopvBars.compactMap { bar in
                 guard let value = bar.iopv, value.isFinite, value > 0 else { return nil }
                 return IntradayLine(time: bar.timestamp, price: value)
             },
-            estimatedIOPV: [],
-            previousClose: nil,
-            showAverage: showAverageLine,
-            showIOPV: showIOPVLine,
-            showPreviousClose: false,
+            tradeMarkers: tradePoints,
             lineColor: priceLineColor,
             xDomain: timeDomain,
             yDomain: priceDomain,
             ticks: chartAxisTicks,
             compressLunch: compressLunchBreak,
-            height: 300,
-            lineWidth: 1.15,
-            selection: $selectedTime,
-            selectionLabel: selectedBarLabel.isEmpty ? nil : selectedBarLabel,
-            tradeMarkers: tradePoints.map {
-                IntradayChartTradeMarker(id: $0.id, time: $0.time, price: $0.price, isBuy: $0.side == .buy)
-            }
+            showAverage: showAverageLine,
+            showIOPV: showIOPVLine
         )
+        // 换交易日 = 换一张图：整体重建，选择线随之复位。
+        .id("\(resolvedCode)|\(selectedDay)")
     }
 
     @ViewBuilder private var volumeChart: some View {
@@ -539,7 +627,6 @@ struct IntradayArchiveView: View {
 
     private func selectLatestDay() {
         selectedDay = days.first ?? ""
-        selectedTime = nil
     }
 
     private func volumeColor(at index: Int) -> Color {
@@ -585,10 +672,6 @@ struct IntradayArchiveView: View {
     }
 
     private func shanghaiDay(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 }

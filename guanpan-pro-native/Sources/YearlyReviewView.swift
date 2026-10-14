@@ -153,19 +153,15 @@ enum LedgerPeriodAggregator {
         return result
     }
 
+    /// 上海时区 `yyyy-MM-dd`。走 `MarketCalendar` 里那个**建一次**的格式化器 ——
+    /// 本函数在 `data.ledger.filter` 的闭包里是逐条调用（同一条还会调两次），
+    /// 原来每次调用都新建 `DateFormatter`，一年几百条流水就是上千次构造。
     static func dayString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 
     static func nextMonthStart(_ month: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = FormatCache.shanghai("yyyy-MM-dd")
         guard let date = formatter.date(from: "\(month)-01"),
               let next = Calendar(identifier: .gregorian).date(byAdding: .month, value: 1, to: date)
         else { return "9999-12-31" }
@@ -173,11 +169,7 @@ enum LedgerPeriodAggregator {
     }
 
     static func currentYear() -> Int {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy"
-        return Int(formatter.string(from: .now)) ?? 2026
+        Int(FormatCache.shanghai("yyyy").string(from: .now)) ?? 2026
     }
 }
 

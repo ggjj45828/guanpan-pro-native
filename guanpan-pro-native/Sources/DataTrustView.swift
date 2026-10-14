@@ -99,7 +99,12 @@ struct DataTrustView: View {
                         .disabled(isManuallyRefreshingFunds)
                     Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
                     ForEach(activeFunds) { fund in
-                        let point = store.data.fundNAVHistory.filter { $0.code == fund.code }.max { $0.date < $1.date }
+                        // 走 store 里带 memo 的「代码 → 最新净值点」。
+                        // 原来这里是 `store.data.fundNAVHistory.filter { ... }.max { ... }`，
+                        // 挂在持仓循环里就是 **O(持仓 × 几万条净值)**：一屏十几只基金、
+                        // 净值历史动辄三四千点一只，每次 body 重算都要扫几十万条，
+                        // 而本页 store 每 10~15 秒发布一次行情 —— 弹窗一卡一卡的主要来源。
+                        let point = store.latestFundNAVByCode[fund.code]
                         VStack(alignment: .leading, spacing: 3) {
                             HStack { Text(fund.name); Spacer(); Text(point?.date ?? "没有本地净值") }
                             Text(point.map { "最近公布净值 \(($0.nav).num(4))" } ?? "没有可用的历史净值")
@@ -180,8 +185,7 @@ struct DataTrustView: View {
     }
 
     private func formatted(_ date: Date) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
+        // 走全局缓存：这个函数在「数据源体检」的逐条明细里是逐条调用的。
+        FormatCache.shanghai("yyyy-MM-dd").string(from: date)
     }
 }

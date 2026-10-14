@@ -31,8 +31,19 @@ struct ReturnSourceView: View {
         var warnings: [String] = []
     }
 
+    /// 本机时区的 `yyyy-MM-dd` 格式化器，走全局缓存。
+    ///
+    /// 原来这是个**计算属性**：每访问一次就新建一个 `DateFormatter`（几十微秒起），
+    /// 而它在 `store.data.ledger.filter { ... dateFormatter.string(...) }` 里是**逐条**调用 ——
+    /// 几百条流水就是几百次构造，页面每次重算都要重来一遍。
     private var dateFormatter: DateFormatter {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .current; f.dateFormat = "yyyy-MM-dd"; return f
+        FormatCache.day("yyyy-MM-dd|local") {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = .current
+            f.dateFormat = "yyyy-MM-dd"
+            return f
+        }
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }

@@ -1609,6 +1609,346 @@ private struct HoldingSheetContent: View {
     }
 }
 
+// MARK: - 持仓行的取值口径（文件级自由函数）
+
+/// 持仓行的类别色：场外紫、场内蓝绿。
+///
+/// 原来写在 `HoldingsView` 里。行抽成独立类型后**私有成员跨类型不可见**，
+/// 所以这些「两边都要用」的口径统一挪到文件级，避免在行里再抄一份、两边慢慢走偏。
+func holdingKindAccent(_ kind: Holding.Kind) -> Color {
+    kind == .fund ? CardTone.accent : CardTone.ok
+}
+
+/// ETF 每份年股息及其来源。
+///
+/// 人工填 0 = 明确声明「不分红」，优先级最高；其次人工填的金额；
+/// 再走「近 12 个月每份分红」（含前复权价差推算），最后才是历史节奏外推。
+func holdingDividendProjection(for holding: Holding, events: [ETFDividendEvent])
+    -> (amount: Double, source: ETFDividendProjection.Source)? {
+    if ETFDividendProjection.knownNonDividendCodes.contains(holding.code), holding.annualDividendPerShare == nil { return nil }
+    if holding.annualDividendPerShare == 0 { return nil }
+    if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 { return (manual, .manual) }
+    let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: events)
+    if twelve.amount > 0 { return (twelve.amount, twelve.includesEstimate ? .inferred : .recorded) }
+    return ETFDividendProjection.projectedAnnualPerShare(for: holding, events: events)
+}
+
+/// 持仓卡上「股息」那一格没有股息率时显示什么。
+func holdingDividendStatus(for holding: Holding, events: [ETFDividendEvent]) -> String {
+    if holding.annualDividendPerShare == 0 { return "不分红" }
+    if ETFDividendProjection.knownNonDividendCodes.contains(holding.code) { return "不分红" }
+    if holdingDividendProjection(for: holding, events: events) != nil { return "有试算" }
+    if ETFDividendProjection.mergedEvents(events).contains(where: {
+        $0.code == holding.code && $0.isEstimated != true
+    }) { return "历史派息 · 暂无年化规律" }
+    return "待核实"
+}
+
+/// 股息率的口径说明。把「这个数怎么来的」写在卡片上，用户不用猜为什么偏低。
+func holdingDividendYieldNote(for holding: Holding, events: [ETFDividendEvent]) -> String? {
+    if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 {
+        return "股息率 = 你手填的每份年分红 \(manual.num(4)) 元 ÷ 现价，不随本机记录变化。"
+    }
+    let source = holdingDividendProjection(for: holding, events: events)?.source
+    let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: events)
+    let basis: String
+    if twelve.amount > 0, twelve.estimatedCount > 0 {
+        // 有自动推算的成分时必须写明白，否则用户会以为这个数是「官方公告」。
+        basis = "近 12 个月共 \(twelve.count) 次派息、合计 \(twelve.amount.num(4)) 元/份"
+            + "（其中 \(twelve.estimatedCount) 次是按前复权与不复权收盘价差自动推算的）"
+    } else if source == .recorded || source == .projected {
+        basis = "近 12 个月已核实派息 \(twelve.count) 次、合计 \(twelve.amount.num(4)) 元/份"
+    } else if source == .historicalAverage {
+        basis = "近 12 个月没有已核实派息，按近三年有派息年度的平均值试算"
+    } else if source == .inferred {
+        basis = "按前复权与不复权收盘价差推算的派息合计（未经公告核实）"
+    } else {
+        basis = "本机已记录的分红事件合计"
+    }
+    return "股息率 = \(basis) ÷ 现价。这个分子是**按代码自动算**的（写死的历史表只作兜底），"
+        + "可在「编辑持仓 → 每份年分红修正」直接填年化金额覆盖。"
+}
+
+/// 场外基金**最近一期已公布净值**带来的收益（元 / %）。
+///
+/// 只要求「最新两期净值都有效、且最新一期不晚于今天」：美股 / QDII 净值日晚一个交易日
+/// 才公布，若按「净值日 == 今天」筛，这类基金在卡片上的当日涨幅 / 收益就恒为两条横线。
+func holdingFundPeriodMetric(for holding: Holding,
+                             using pairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)])
+    -> FundPeriodMetric? {
+    guard let pair = pairs[holding.code], let previous = pair.previous,
+          previous.nav > 0, pair.latest.nav.isFinite, previous.nav.isFinite,
+          pair.latest.date <= MarketCalendar.isoDay(.now) else { return nil }
+    let today = MarketCalendar.isoDay(.now)
+    return FundPeriodMetric(
+        date: pair.latest.date,
+        isToday: pair.latest.date == today,
+        amount: (pair.latest.nav - previous.nav) * holding.quantity,
+        percent: (pair.latest.nav / previous.nav - 1) * 100)
+}
+
+/// 这张卡要不要亮「刚更新净值」的彩虹框。
+///
+/// 判定与「今日已更新 X/Y 只持仓基金」那条提示**同源**（都走 `isFreshFundNAV`），
+/// **只比日期、不比时刻** —— 曾写 `now >= fetchedAt`，而 `now` 是页面日期时钟、
+/// `fetchedAt` 是刷新完成那一刻，用户在页面里点刷新拿到的净值必然晚于它，于是永远不亮。
+func holdingIsFreshNAV(_ holding: Holding, latest: FundNAVPoint?, now: Date) -> Bool {
+    guard holding.kind == .fund, let point = latest else { return false }
+    return PortfolioStore.isFreshFundNAV(point, today: MarketCalendar.isoDay(now))
+}
+
+/// 持仓行上的操作意图。行本身不持有任何 `@State`，动作一律回抛给列表层处理 ——
+/// 这是它能成为**纯渲染的独立 struct** 的前提。
+private enum HoldingRowAction {
+    case edit(Holding)
+    case trade(Holding)
+    case fundHistory(Holding)
+    case alert(Holding)
+    case fundDCA(Holding)
+    case fundTools(Holding)
+    case showChart(Holding)
+    case addWatch(Holding)
+    case remove(Holding)
+}
+
+/// 单条持仓卡（**文件级独立类型**，HoldingsView / 全屏图表之外的所有持仓列表共用）。
+///
+/// **为什么不能是 `HoldingsView` 里的 `@ViewBuilder private func`**：
+/// `@ViewBuilder` 成员会被**内联进父视图类型** —— 一张卡里的 `VStack` + 两处 `overlay`
+/// + 两组 `swipeActions` + `contextMenu` 的嵌套层数，全算在 `HoldingsView.body` 的类型上；
+/// 父 body 只要重算（行情每 10~15 秒发布一次），这棵子树就整棵跟着重建。
+/// 抽成独立 struct 后父类型里只剩一层 `HoldingRowCard`，重算边界落回卡自己身上。
+///
+/// 顺带把**每行一个的 `confirmationDialog` 收走了**：原来 20 行持仓就是 20 个
+/// presentation 修饰符挂在同一个 List 上，现在由列表层统一弹一个（见 `holdingRowList`）。
+private struct HoldingRowCard: View {
+    @EnvironmentObject var store: PortfolioStore
+    let kind: Holding.Kind
+    let holding: Holding
+    let navPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)]
+    let latestNAVDate: String?
+    let dilutedRealized: [String: Double]
+    /// 页面级的「日期时钟」，只在跨午夜时前进 —— 用它判彩虹框，不要用 `Date.now`。
+    let now: Date
+    let onAction: (HoldingRowAction) -> Void
+
+    private var kindAccent: Color { holdingKindAccent(kind) }
+
+    /// 行首的类别徽标。常显，不随彩虹高亮变化 ——
+    /// 刚更新净值时彩虹描边会盖住左侧色条，兜底的识别手段必须留在文字里。
+    @ViewBuilder private var kindBadge: some View {
+        Text(kind == .fund ? "场外" : "场内")
+            .scaledFont(9, weight: .bold)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .foregroundStyle(kindAccent)
+            .background(Capsule().fill(kindAccent.opacity(0.15)))
+            .overlay(Capsule().strokeBorder(kindAccent.opacity(0.30), lineWidth: 0.6))
+            .accessibilityLabel(kind == .fund ? "场外基金" : "场内 ETF 或证券")
+    }
+
+    /// 彩虹描边 / 彩虹色条共用的渐变。
+    private var freshNAVGradient: LinearGradient {
+        LinearGradient(colors: [
+            Color(red: 0.98, green: 0.30, blue: 0.42),
+            Color(red: 1.00, green: 0.63, blue: 0.18),
+            Color(red: 0.20, green: 0.76, blue: 0.48),
+            Color(red: 0.20, green: 0.62, blue: 0.98),
+            Color(red: 0.62, green: 0.40, blue: 0.96)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    /// 持仓行内的小统计：紧凑但不小于 10pt，一行放三个且保持可读。
+    private func stat(_ title: String, _ value: String, _ tone: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).scaledFont(10).foregroundStyle(.secondary)
+            Text(value)
+                .scaledFont(12, weight: .semibold, design: .rounded)
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                .foregroundStyle(tone.map { $0 >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+                                                    : Color(red: 0.07, green: 0.77, blue: 0.55) } ?? Color.primary)
+                // 读屏念「当日 上涨 ¥12.34」，把颜色代表的涨跌转成文字
+                .accessibilityLabel(tone.map { "\(title) \(spokenDirection($0)) \(value)" } ?? "\(title) \(value)")
+        }
+    }
+
+    private func metricChip(_ text: String, color: Color) -> some View {
+        Text(text)
+            .scaledFont(10, weight: .semibold)
+            .lineLimit(1).minimumScaleFactor(0.8)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .foregroundStyle(color)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(color.opacity(0.11)))
+    }
+
+    private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Label(title, systemImage: icon).font(.caption.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 34) }
+            .buttonStyle(.bordered).tint(store.effectiveAccentColor)
+    }
+
+    var body: some View {
+        // 列布局对齐养基宝：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），
+        // 市值在名称行右侧，占总资产挪到底部信息行 —— 4 列太挤，3 列是它的可读上限。
+        // 缺当日行情时显示 --，不把「没数据」画成 0。
+        let fundDay = kind == .fund ? holdingFundPeriodMetric(for: holding, using: navPairs) : nil
+        let dayValue = fundDay?.amount ?? store.dayPnL(of: holding)
+        let hasDay = kind == .fund ? fundDay != nil : store.marketChanges[holding.code] != nil
+        let dayPercent: Double? = kind == .fund ? fundDay?.percent : store.marketChanges[holding.code].map { $0 * 100 }
+        // 场外这一期还没走到今天（美股 / QDII 晚一天公布）时，把净值日写进格标题，
+        // 让「上一期的变化」自己说明是哪一天，而不是冒充今天的收益。
+        let fundPeriodCaption = fundDay.map { $0.isToday ? "当日" : shortDay($0.date) }
+        // 摊薄口径的已实现盈亏用页面级预计算值（原来每次调用都全量过滤流水）。
+        let realizedSum = (dilutedRealized["\(holding.code)|nil"] ?? 0) + (dilutedRealized["\(holding.code)|\(holding.kind.rawValue)"] ?? 0)
+        let unitCost = store.displayedCost(for: holding, dilutedRealizedSum: realizedSum)
+        let costBasis = holding.quantity * unitCost
+        let holdingPnL = holding.quantity * (holding.current - unitCost)
+        let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
+        let annualProjection = kind == .etf ? holdingDividendProjection(for: holding, events: store.data.etfDividendEvents) : nil
+        let annualDividend = annualProjection?.amount
+        let dividendYield = annualDividend.flatMap { holding.current > 0 ? $0 / holding.current * 100 : nil }
+        let premium = kind == .etf ? store.marketPremiums[holding.code] : nil
+        let highlightFreshNAV = holdingIsFreshNAV(holding, latest: store.latestFundNAVByCode[holding.code], now: now)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                kindBadge
+                Text(holding.name).font(.headline).lineLimit(1)
+                Spacer(minLength: 6)
+                Text((holding.marketValue).cny()).font(.headline)
+            }
+            HStack(spacing: 9) {
+                stat("\(fundPeriodCaption ?? "当日")涨幅", dayPercent.map { "\($0.directionMark()) \($0.pct(2))" } ?? "--", dayPercent)
+                stat("\(fundPeriodCaption ?? "当日")收益", hasDay ? "\(dayValue.directionMark()) \(dayValue.cny())" : "--", hasDay ? dayValue : nil)
+                stat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
+                Spacer(minLength: 0)
+            }
+            Text("\(holding.code) · \((holding.quantity).compactNum(4)) 份 · 成本 \((unitCost).num((kind == .fund ? 4 : 3))) · 现价 \((holding.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: holding)).pct(1))")
+                .font(.caption).foregroundStyle(.secondary)
+            if kind == .etf {
+                // 每行一个 `LazyVGrid(.adaptive)` 是滚动时的固定开销：adaptive 网格每次布局
+                // 都要按可用宽度反推列数、再逐个摆放。这里最多 3 个 chip，一行 HStack 就够
+                // （窄屏放不下时压缩字号，不会挤成两行）。
+                // `dividendStatus` 只算一次 —— 原来在「显示什么」和「什么颜色」里各算一遍。
+                let dividendStatusText = holdingDividendStatus(for: holding, events: store.data.etfDividendEvents)
+                HStack(spacing: 7) {
+                    if let premium {
+                        metricChip("溢价 \(premium.pct(2))", color: abs(premium) >= 1 ? .orange : .purple)
+                    }
+                    if let dividendYield {
+                        metricChip("股息 \(dividendYield.pct(2))", color: Color(red: 0.07, green: 0.68, blue: 0.48))
+                    } else {
+                        metricChip(dividendStatusText, color: dividendStatusText == "不分红" ? .secondary : .orange)
+                    }
+                    if hasDay { metricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
+                    Spacer(minLength: 0)
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                // 把股息率的口径写在卡片上：偏低的常见原因是「月月分红的品种本机只记到几次」，
+                // 而不是算错。用户能据此自己判断要不要去「编辑持仓」覆盖。
+                if dividendYield != nil, let note = holdingDividendYieldNote(for: holding, events: store.data.etfDividendEvents) {
+                    Text(note)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if kind == .fund, let pair = navPairs[holding.code] {
+                let latest = pair.latest
+                if let previous = pair.previous {
+                    // 金额与百分比已经进了上面两格；只有「这一期不是今天」时才需要补充说明，
+                    // 否则会让人以为「今天是横线 = 漏更新了」。
+                    if latest.date != MarketCalendar.isoDay(.now) {
+                        let change = (latest.nav - previous.nav) * holding.quantity
+                        Text("上面两格是净值日 \(latest.date) 这一期 · 按当前份额折算 \((change).cny())；今日净值一般要等到晚上公布（美股 / QDII 方向晚一个交易日）")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("最新净值日期：\(latest.date) · 只有一期净值，还看不出变化")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                // 没亮彩虹的常见原因：这只基金的最新净值日还落后于本组其它基金
+                // （QDII 里美股、全球配置的公布节奏不同，T+1 / T+2 都可能）。
+                if let newest = latestNAVDate, latest.date < newest {
+                    Text("净值日 \(shortDay(latest.date)) · 本组已更新到 \(shortDay(newest))，这只的新净值还没公布；公布当晚卡片才会亮起")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            // 小屏/大字号下将操作按钮自动换行，避免“基金工具 / 定投 / 编辑”等入口被挤出屏幕。
+            HStack(spacing: 10) {
+                actionButton("买入 / 卖出", icon: "arrow.left.arrow.right") { onAction(.trade(holding)) }
+                if kind == .fund { actionButton("净值", icon: "chart.line.uptrend.xyaxis") { onAction(.fundHistory(holding)) } }
+                else { actionButton("日 K", icon: "chart.xyaxis.line") { onAction(.showChart(holding)) } }
+            }
+        }
+        .padding(12)
+        .cardPanelBackground(cornerRadius: 16,
+            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
+            tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
+        .overlay {
+            if highlightFreshNAV {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(freshNAVGradient, lineWidth: 2.2)
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .leading) {
+            // 左侧竖色条：场内蓝绿 / 场外紫。和行首徽标一起，把「这一行属于哪个模块」
+            // 变成不用读页标题就知道的事（用户反馈两页的持仓行长得一模一样）。
+            // 彩虹高亮期间让位给彩虹条 —— 那时「刚更新」比「是场外」更该被看见，
+            // 类别识别由常显的徽标兜底。
+            if highlightFreshNAV {
+                Capsule()
+                    .fill(freshNAVGradient)
+                    .frame(width: 4)
+                    .padding(.vertical, 12)
+                    .padding(.leading, 2)
+                    .allowsHitTesting(false)
+            } else {
+                Capsule()
+                    .fill(kindAccent.opacity(0.75))
+                    .frame(width: 3)
+                    .padding(.vertical, 16)
+                    .padding(.leading, 3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .contentShape(Rectangle())
+        // 左滑只露出工具，禁止全滑直删：持仓是高价值数据，手指多划一点不该直接删除。
+        // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
+        // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("删除", role: .destructive) { onAction(.remove(holding)) }
+            Button("编辑") { Haptics.tap(); onAction(.edit(holding)) }.tint(.blue)
+            Button("交易") { Haptics.tap(); onAction(.trade(holding)) }.tint(.orange)
+            if kind == .fund {
+                Button("工具") { onAction(.fundTools(holding)) }.tint(.indigo)
+                Button("定投") { onAction(.fundDCA(holding)) }.tint(.teal)
+            } else {
+                Button("日K") { onAction(.showChart(holding)) }.tint(.indigo)
+                Button("提醒") { onAction(.alert(holding)) }.tint(.teal)
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button("加自选") {
+                Haptics.tap()
+                onAction(.addWatch(holding))
+            }.tint(.mint)
+        }
+        // 长按兜底：万一设备上 swipeActions 仍被系统手势挡住，也能走到删除 / 编辑。
+        .contextMenu {
+            Button { onAction(.edit(holding)) } label: { Label("编辑持仓", systemImage: "pencil") }
+            Button { onAction(.trade(holding)) } label: { Label("买入 / 卖出", systemImage: "arrow.left.arrow.right") }
+            if kind == .fund {
+                Button { onAction(.fundHistory(holding)) } label: { Label("历史净值", systemImage: "chart.line.uptrend.xyaxis") }
+                Button { onAction(.fundTools(holding)) } label: { Label("基金工具", systemImage: "wrench.and.screwdriver") }
+                Button { onAction(.fundDCA(holding)) } label: { Label("定投", systemImage: "calendar.badge.plus") }
+            } else { Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") } }
+            Button(role: .destructive) {
+                Haptics.heavy()
+                onAction(.remove(holding))
+            } label: { Label("删除持仓", systemImage: "trash") }
+        }
+    }
+}
+
 struct HoldingsView: View {
     @EnvironmentObject var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
@@ -1641,22 +1981,8 @@ struct HoldingsView: View {
     /// 原来这里写「ETF / 证券持仓」，与底部的标签对不上，也和右边的「场外基金」不成对。
     private var title: String { kind == .fund ? "场外基金" : "证券" }
 
-    /// 场内 / 场外的类别色。场外沿用「基金资产概览」卡的强调紫，场内沿用状态蓝绿。
-    /// 用户反馈「场外基金卡片与持仓卡片长一样」——两页的持仓行本来就是同一个渲染函数，
-    /// 只靠标题区分不够，得让**每一行自己**说得清自己是哪一类。
-    private var kindAccent: Color { kind == .fund ? CardTone.accent : CardTone.ok }
-
-    /// 行首的类别徽标。常显，不随彩虹高亮变化 ——
-    /// 刚更新净值时彩虹描边会盖住左侧色条，兜底的识别手段必须留在文字里。
-    @ViewBuilder private var holdingKindBadge: some View {
-        Text(kind == .fund ? "场外" : "场内")
-            .scaledFont(9, weight: .bold)
-            .padding(.horizontal, 5).padding(.vertical, 2)
-            .foregroundStyle(kindAccent)
-            .background(Capsule().fill(kindAccent.opacity(0.15)))
-            .overlay(Capsule().strokeBorder(kindAccent.opacity(0.30), lineWidth: 0.6))
-            .accessibilityLabel(kind == .fund ? "场外基金" : "场内 ETF 或证券")
-    }
+    /// 类别色与行首徽标、统计格、chips 的渲染都搬到了文件级的 `HoldingRowCard` ——
+    /// `@ViewBuilder` 成员会被内联进本视图的类型，留在这里等于把宿主类型又撑大回去。
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1691,20 +2017,10 @@ struct HoldingsView: View {
 
 
     /// 年股息只采用人工修正或近 12 个月已记录的分红事件；缺少记录不等于确认不分红。
+    /// 口径实现已移到文件级 `holdingDividendProjection`（持仓行与概览卡共用同一份，
+    /// 行抽成独立类型后私有成员跨类型不可见，再抄一份迟早走偏）。
     private func annualDividendProjection(for holding: Holding) -> (amount: Double, source: ETFDividendProjection.Source)? {
-        if ETFDividendProjection.knownNonDividendCodes.contains(holding.code), holding.annualDividendPerShare == nil { return nil }
-        if holding.annualDividendPerShare == 0 { return nil }
-        // 多语句函数体没有隐式 return，少写 `return` 会报
-        // "missing return in instance method expected to return ..."。
-        if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 { return (manual, .manual) }
-        // 优先用「近 12 个月每份分红」，且把前复权价差推算出的派息也算进来。
-        // 只认写死的那张表会把股息率算低（159545 实测 1.9% vs 3.0%），
-        // 而且那张表只要漏一次派息，「已核实」和「预计」就会显示成同一个数。
-        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: store.data.etfDividendEvents)
-        if twelve.amount > 0 {
-            return (twelve.amount, twelve.includesEstimate ? .inferred : .recorded)
-        }
-        return ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)
+        holdingDividendProjection(for: holding, events: store.data.etfDividendEvents)
     }
 
     private func annualDividendPerShare(for holding: Holding) -> Double? {
@@ -1738,18 +2054,11 @@ struct HoldingsView: View {
         etfProjectedDividendIncome > 0
     }
 
+    /// 人工把「每份年分红修正」填 0 = 明确声明「这只不分红」，优先级最高，必须排在
+    /// 「有历史派息」前面：159352（南方 A500）只在 2025-07-14 派过一次息，用户确认它
+    /// 不分红时两处界面都得听人工值。口径实现见文件级 `holdingDividendStatus`。
     private func dividendStatus(for holding: Holding) -> String {
-        // 人工把「每份年分红修正」填 0 = 明确声明「这只不分红」，优先级最高。
-        // 必须排在「有历史派息」前面：159352（南方 A500）只在 2025-07-14 派过一次息，
-        // 用户确认它不分红时两处界面都得听人工值 —— 原来分红日历认、持仓页不认，
-        // 同一只标的会一边写「不分红」一边写「历史派息 · 暂无年化规律」。
-        if holding.annualDividendPerShare == 0 { return "不分红" }
-        if ETFDividendProjection.knownNonDividendCodes.contains(holding.code) { return "不分红" }
-        if annualDividendProjection(for: holding) != nil { return "有试算" }
-        if ETFDividendProjection.mergedEvents(store.data.etfDividendEvents).contains(where: {
-            $0.code == holding.code && $0.isEstimated != true
-        }) { return "历史派息 · 暂无年化规律" }
-        return "待核实"
+        holdingDividendStatus(for: holding, events: store.data.etfDividendEvents)
     }
 
     /// 股息率的口径说明：把「这个数是怎么算出来的」直接写出来。
@@ -1759,27 +2068,7 @@ struct HoldingsView: View {
     /// 本机没记全（月月分红的 ETF 尤其容易只记到几次）就会明显偏低。
     /// 与其让用户猜，不如把次数、合计金额和覆盖入口都写在卡片上。
     private func dividendYieldNote(for holding: Holding) -> String? {
-        if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 {
-            return "股息率 = 你手填的每份年分红 \(manual.num(4)) 元 ÷ 现价，不随本机记录变化。"
-        }
-        let source = annualDividendProjection(for: holding)?.source
-        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: store.data.etfDividendEvents)
-        let basis: String
-        if twelve.amount > 0, twelve.estimatedCount > 0 {
-            // 有自动推算的成分时必须写明白，否则用户会以为这个数是「官方公告」。
-            basis = "近 12 个月共 \(twelve.count) 次派息、合计 \(twelve.amount.num(4)) 元/份"
-                + "（其中 \(twelve.estimatedCount) 次是按前复权与不复权收盘价差自动推算的）"
-        } else if source == .recorded || source == .projected {
-            basis = "近 12 个月已核实派息 \(twelve.count) 次、合计 \(twelve.amount.num(4)) 元/份"
-        } else if source == .historicalAverage {
-            basis = "近 12 个月没有已核实派息，按近三年有派息年度的平均值试算"
-        } else if source == .inferred {
-            basis = "按前复权与不复权收盘价差推算的派息合计（未经公告核实）"
-        } else {
-            basis = "本机已记录的分红事件合计"
-        }
-        return "股息率 = \(basis) ÷ 现价。这个分子是**按代码自动算**的（写死的历史表只作兜底），"
-            + "可在「编辑持仓 → 每份年分红修正」直接填年化金额覆盖。"
+        holdingDividendYieldNote(for: holding, events: store.data.etfDividendEvents)
     }
 
     /// 网页版年股息区会列出主要贡献标的。这里沿用同一口径并只显示前三只，
@@ -1821,15 +2110,7 @@ struct HoldingsView: View {
     private func fundDayMetrics(for holding: Holding,
                                 using pairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)])
         -> FundPeriodMetric? {
-        guard let pair = pairs[holding.code], let previous = pair.previous,
-              previous.nav > 0, pair.latest.nav.isFinite, previous.nav.isFinite,
-              pair.latest.date <= MarketCalendar.isoDay(.now) else { return nil }
-        let today = MarketCalendar.isoDay(.now)
-        return FundPeriodMetric(
-            date: pair.latest.date,
-            isToday: pair.latest.date == today,
-            amount: (pair.latest.nav - previous.nav) * holding.quantity,
-            percent: (pair.latest.nav / previous.nav - 1) * 100)
+        holdingFundPeriodMetric(for: holding, using: pairs)
     }
 
     /// 本页场外基金「最近一期已公布净值」的合计盈亏，额度与口径日期一起返回。
@@ -1857,15 +2138,6 @@ struct HoldingsView: View {
         let base = store.marketValue(of: .fund) - amount
         return FundPeriodMetric(date: date, isToday: allToday, amount: amount,
                                 percent: base > 0 ? amount / base * 100 : 0)
-    }
-
-    @ViewBuilder private func holdingMetricChip(_ text: String, color: Color) -> some View {
-        Text(text)
-            .scaledFont(10, weight: .semibold)
-            .lineLimit(1).minimumScaleFactor(0.8)
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .foregroundStyle(color)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(color.opacity(0.11)))
     }
 
     var body: some View {
@@ -2004,21 +2276,7 @@ struct HoldingsView: View {
         }
     }
 
-    /// 本模块（ETF/证券 或 场外基金）自己的汇总：市值 / 浮盈 / 收益率。
-    /// 与账户页的「总资产」互不混算——两个模块各看各的，避免把合计当成单模块数字。
-    /// 持仓行内的小统计：紧凑但不小于 10pt，一行放三个且保持可读。
-    private func holdingStat(_ title: String, _ value: String, _ tone: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).scaledFont(10).foregroundStyle(.secondary)
-            Text(value)
-                .scaledFont(12, weight: .semibold, design: .rounded)
-                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
-                .foregroundStyle(tone.map { $0 >= 0 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-                                                    : Color(red: 0.07, green: 0.77, blue: 0.55) } ?? Color.primary)
-                // 读屏念「当日 上涨 ¥12.34」，把颜色代表的涨跌转成文字
-                .accessibilityLabel(tone.map { "\(title) \(spokenDirection($0)) \(value)" } ?? "\(title) \(value)")
-        }
-    }
+    /// 持仓行内的小统计（`stat`）已随行一起搬进文件级 `HoldingRowCard`。
 
     @ViewBuilder private var moduleSummarySection: some View {
         Section(kind == .fund ? "基金资产概览" : "ETF / 证券资产概览") {
@@ -2195,221 +2453,50 @@ struct HoldingsView: View {
                 .foregroundStyle(.secondary)
         }
         ForEach(rows) { h in
-            holdingRow(h, navPairs: navPairs, latestNAVDate: latestNAVDate, dilutedRealized: dilutedRealized)
+            HoldingRowCard(kind: kind,
+                           holding: h,
+                           navPairs: navPairs,
+                           latestNAVDate: latestNAVDate,
+                           dilutedRealized: dilutedRealized,
+                           now: fundFreshnessClock,
+                           onAction: handleHoldingRowAction)
                 .listRowBackground(Color.clear)
         }
-    }
-
-    @ViewBuilder private func holdingRow(_ h: Holding,
-                                         navPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)],
-                                         latestNAVDate: String?,
-                                         dilutedRealized: [String: Double]) -> some View {
-        // 列布局对齐养基宝：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），
-        // 市值在名称行右侧，占总资产挪到底部信息行 —— 4 列太挤，3 列是它的可读上限。
-        // 缺当日行情时显示 --，不把「没数据」画成 0。
-        let fundDay = kind == .fund ? fundDayMetrics(for: h, using: navPairs) : nil
-        let dayValue = fundDay?.amount ?? store.dayPnL(of: h)
-        let hasDay = kind == .fund ? fundDay != nil : store.marketChanges[h.code] != nil
-        let dayPercent: Double? = kind == .fund ? fundDay?.percent : store.marketChanges[h.code].map { $0 * 100 }
-        // 场外这一期还没走到今天（美股 / QDII 晚一天公布）时，把净值日写进格标题，
-        // 让「上一期的变化」自己说明是哪一天，而不是冒充今天的收益。
-        // 场内永远是「当日」：行情时间戳由 `store.isIntradayQuoteToday` 走当日/收盘分档。
-        let fundPeriodCaption = fundDay.map { $0.isToday ? "当日" : shortDay($0.date) }
-        // 摊薄口径的已实现盈亏用页面级预计算值（原来每次调用都全量过滤流水）。
-        let realizedSum = (dilutedRealized["\(h.code)|nil"] ?? 0) + (dilutedRealized["\(h.code)|\(h.kind.rawValue)"] ?? 0)
-        let unitCost = store.displayedCost(for: h, dilutedRealizedSum: realizedSum)
-        let costBasis = h.quantity * unitCost
-        let holdingPnL = h.quantity * (h.current - unitCost)
-        let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
-        let annualProjection = kind == .etf ? annualDividendProjection(for: h) : nil
-        let annualDividend = annualProjection?.amount
-        let dividendYield = annualDividend.flatMap { h.current > 0 ? $0 / h.current * 100 : nil }
-        let premium = kind == .etf ? store.marketPremiums[h.code] : nil
-        let highlightFreshNAV = shouldHighlightFreshFundNAV(h, now: fundFreshnessClock)
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                holdingKindBadge
-                Text(h.name).font(.headline).lineLimit(1)
-                Spacer(minLength: 6)
-                Text((h.marketValue).cny()).font(.headline)
+        // **删除确认挂在列表这一层，不再每行一个**：原来 20 行持仓就是 20 个
+        // `confirmationDialog` presentation 修饰符叠在同一个 List 上，每行还要现造一个
+        // `Binding` —— 和 sheet 叠层是同一类开销。同一时刻本来就只可能确认一条，
+        // 收成一个、由 `removeTarget` 驱动。
+        .confirmationDialog("删除「\(removeTarget?.name ?? "")」？",
+                            isPresented: Binding(get: { removeTarget != nil },
+                                                 set: { if !$0 { removeTarget = nil } }),
+                            titleVisibility: .visible) {
+            Button("删除持仓", role: .destructive) {
+                if let target = removeTarget { store.removeHolding(target) }
+                removeTarget = nil
             }
-            HStack(spacing: 9) {
-                holdingStat("\(fundPeriodCaption ?? "当日")涨幅", dayPercent.map { "\($0.directionMark()) \($0.pct(2))" } ?? "--", dayPercent)
-                holdingStat("\(fundPeriodCaption ?? "当日")收益", hasDay ? "\(dayValue.directionMark()) \(dayValue.cny())" : "--", hasDay ? dayValue : nil)
-                holdingStat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
-                Spacer(minLength: 0)
-            }
-            Text("\(h.code) · \((h.quantity).compactNum(4)) 份 · 成本 \((unitCost).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: h)).pct(1))")
-                .font(.caption).foregroundStyle(.secondary)
-            if kind == .etf {
-                // 每行一个 `LazyVGrid(.adaptive)` 是滚动时的固定开销：adaptive 网格每次布局
-                // 都要按可用宽度反推列数、再逐个摆放。这里最多 3 个 chip，一行 HStack 就够
-                // （窄屏放不下时压缩字号，不会挤成两行）。
-                // `dividendStatus` 只算一次 —— 原来在「显示什么」和「什么颜色」里各算一遍。
-                let dividendStatusText = dividendStatus(for: h)
-                HStack(spacing: 7) {
-                    if let premium {
-                        holdingMetricChip("溢价 \(premium.pct(2))", color: abs(premium) >= 1 ? .orange : .purple)
-                    }
-                    if let dividendYield {
-                        holdingMetricChip("股息 \(dividendYield.pct(2))", color: Color(red: 0.07, green: 0.68, blue: 0.48))
-                    } else {
-                        holdingMetricChip(dividendStatusText, color: dividendStatusText == "不分红" ? .secondary : .orange)
-                    }
-                    if hasDay { holdingMetricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
-                    Spacer(minLength: 0)
-                }
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                // 把股息率的口径写在卡片上：偏低的常见原因是「月月分红的品种本机只记到几次」，
-                // 而不是算错。用户能据此自己判断要不要去「编辑持仓」覆盖。
-                if dividendYield != nil, let note = dividendYieldNote(for: h) {
-                    Text(note)
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            if kind == .fund, let pair = navPairs[h.code] {
-                let latest = pair.latest
-                if let previous = pair.previous {
-                    // 金额与百分比已经进了上面两格；只有「这一期不是今天」时才需要补充说明，
-                    // 否则会让人以为「今天是横线 = 漏更新了」。
-                    if latest.date != MarketCalendar.isoDay(.now) {
-                        let change = (latest.nav - previous.nav) * h.quantity
-                        Text("上面两格是净值日 \(latest.date) 这一期 · 按当前份额折算 \((change).cny())；今日净值一般要等到晚上公布（美股 / QDII 方向晚一个交易日）")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("最新净值日期：\(latest.date) · 只有一期净值，还看不出变化")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                // 没亮彩虹的常见原因：这只基金的最新净值日还落后于本组其它基金
-                // （QDII 里美股、全球配置的公布节奏不同，T+1 / T+2 都可能）。
-                if let newest = latestNAVDate, latest.date < newest {
-                    Text("净值日 \(shortDay(latest.date)) · 本组已更新到 \(shortDay(newest))，这只的新净值还没公布；公布当晚卡片才会亮起")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            // 小屏/大字号下将操作按钮自动换行，避免“基金工具 / 定投 / 编辑”等入口被挤出屏幕。
-            HStack(spacing: 10) {
-                holdingActionButton("买入 / 卖出", icon: "arrow.left.arrow.right") { activeSheet = .trade(h) }
-                if kind == .fund { holdingActionButton("净值", icon: "chart.line.uptrend.xyaxis") { activeSheet = .fundHistory(h) } }
-                else { holdingActionButton("日 K", icon: "chart.xyaxis.line") { marketChartTarget = h } }
-            }
-        }
-        .padding(12)
-        .cardPanelBackground(cornerRadius: 16,
-            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
-            tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
-        .overlay {
-            if highlightFreshNAV {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(fundFreshNAVGradient, lineWidth: 2.2)
-                    .allowsHitTesting(false)
-            }
-        }
-        .overlay(alignment: .leading) {
-            // 左侧竖色条：场内蓝绿 / 场外紫。和行首徽标一起，把「这一行属于哪个模块」
-            // 变成不用读页标题就知道的事（用户反馈两页的持仓行长得一模一样）。
-            // 彩虹高亮期间让位给彩虹条 —— 那时「刚更新」比「是场外」更该被看见，
-            // 类别识别由常显的徽标兜底。
-            if highlightFreshNAV {
-                Capsule()
-                    .fill(fundFreshNAVGradient)
-                    .frame(width: 4)
-                    .padding(.vertical, 12)
-                    .padding(.leading, 2)
-                    .allowsHitTesting(false)
-            } else {
-                Capsule()
-                    .fill(kindAccent.opacity(0.75))
-                    .frame(width: 3)
-                    .padding(.vertical, 16)
-                    .padding(.leading, 3)
-                    .allowsHitTesting(false)
-            }
-        }
-        .contentShape(Rectangle())
-        // 左滑只露出工具，禁止全滑直删：持仓是高价值数据，手指多划一点不该直接删除。
-        // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
-        // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("删除", role: .destructive) { removeTarget = h }
-            Button("编辑") { Haptics.tap(); activeSheet = .edit(h) }.tint(.blue)
-            Button("交易") { Haptics.tap(); activeSheet = .trade(h) }.tint(.orange)
-            if kind == .fund {
-                Button("工具") { fundToolTarget = h }.tint(.indigo)
-                Button("定投") { activeSheet = .fundDCA(h) }.tint(.teal)
-            } else {
-                Button("日K") { marketChartTarget = h }.tint(.indigo)
-                Button("提醒") { activeSheet = .alert(h) }.tint(.teal)
-            }
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            Button("加自选") {
-                Haptics.tap()
-                if !store.data.quotes.contains(where: { $0.code == h.code }) {
-                    store.addWatch(code: h.code, name: h.name)
-                }
-            }.tint(.mint)
-        }
-        // 长按兜底：万一设备上 swipeActions 仍被系统手势挡住，也能走到删除 / 编辑。
-        .contextMenu {
-            Button { activeSheet = .edit(h) } label: { Label("编辑持仓", systemImage: "pencil") }
-            Button { activeSheet = .trade(h) } label: { Label("买入 / 卖出", systemImage: "arrow.left.arrow.right") }
-            if kind == .fund {
-                Button { activeSheet = .fundHistory(h) } label: { Label("历史净值", systemImage: "chart.line.uptrend.xyaxis") }
-                Button { fundToolTarget = h } label: { Label("基金工具", systemImage: "wrench.and.screwdriver") }
-                Button { activeSheet = .fundDCA(h) } label: { Label("定投", systemImage: "calendar.badge.plus") }
-            } else { Button { marketChartTarget = h } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") } }
-            Button(role: .destructive) {
-                Haptics.heavy()
-                removeTarget = h
-            } label: { Label("删除持仓", systemImage: "trash") }
-        }
-        .confirmationDialog("删除「\(h.name)」？", isPresented: Binding(get: { removeTarget?.id == h.id }, set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
-            Button("删除持仓", role: .destructive) { store.removeHolding(h); removeTarget = nil }
             Button("取消", role: .cancel) { removeTarget = nil }
-        } message: { Text("持仓会被移除，相关交易流水保留。删除后可用设置里的撤销操作找回最近一次。") }
-    }
-    private func holdingActionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).font(.caption.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 34) }
-            .buttonStyle(.bordered).tint(store.effectiveAccentColor)
+        } message: {
+            Text("持仓会被移除，相关交易流水保留。删除后可用设置里的撤销操作找回最近一次。")
+        }
     }
 
-    /// 从「拿到这份最新净值」起保持彩虹强调，**只保留到当天结束**。
-    /// 因而周五晚更新只亮周五当晚，周六周日已是普通卡片；下一个交易日晚上公布新净值时再亮。
-    ///
-    /// **锚点是采集时间而不是净值日期**：美股 / QDII 基金净值日晚一个交易日发布
-    /// （美股周六日、节假日休盘但净值照常公布），周一晚取到周五美股收盘的净值，
-    /// 它同样是「刚刚更新」，卡片框要和 A 股基金一样亮起 —— 只看净值日期会因
-    /// 「周五 ≠ 周一」而漏掉。
-    ///
-    /// 旧实现把窗口拉到「之后首个交易日 09:30」，于是周五晚更新的基金整个周末都在发彩虹，
-    /// 用户反馈「第二天都休市了怎么还是彩虹框」—— 彩虹是「今晚净值刚更新」的即时提示，
-    /// 不是「本机存着这份净值」的状态标记，所以窗口收回到采集当天。
-    private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
-        // 走 store 缓存的 `code → 最新净值点`：这里原来是每行对全量 `fundNAVHistory`
-        // 做一次 `filter + max`，一屏十几行、滑动时每帧重算，是基金页卡顿的主因。
-        guard holding.kind == .fund,
-              let latest = store.latestFundNAVByCode[holding.code] else { return false }
-        // 判定与「今日已更新 X/Y 只持仓基金」那条提示**同源**，两处不会各说一套。
-        //
-        // 这里**只比日期、不比时刻**。曾经还有一条 `now >= fetchedAt`，而 `now` 是本页的
-        // 日期时钟（初值 = 页面创建那一刻，之后只在跨午夜时前进），`fetchedAt` 却是刷新
-        // 完成那一刻 —— 用户在页面里点刷新拿到的净值必然晚于它，于是**永远亮不起来**。
-        // 用户反馈的「有的基金明明更新了却没有彩虹外框」就是它（v2.13.40 修）。
-        return PortfolioStore.isFreshFundNAV(latest, today: MarketCalendar.isoDay(now))
-    }
-
-    private var fundFreshNAVGradient: LinearGradient {
-        LinearGradient(colors: [
-            Color(red: 0.98, green: 0.30, blue: 0.42),
-            Color(red: 1.00, green: 0.63, blue: 0.18),
-            Color(red: 0.20, green: 0.76, blue: 0.48),
-            Color(red: 0.20, green: 0.62, blue: 0.98),
-            Color(red: 0.62, green: 0.40, blue: 0.96)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    /// 行只负责渲染，动作用**意图**回抛到这里统一处理 —— 列表层掌握全部 `@State`，
+    /// 行里因此一个 `@State` 都没有，才能真正做成纯渲染的独立 struct。
+    private func handleHoldingRowAction(_ action: HoldingRowAction) {
+        switch action {
+        case .edit(let holding): activeSheet = .edit(holding)
+        case .trade(let holding): activeSheet = .trade(holding)
+        case .fundHistory(let holding): activeSheet = .fundHistory(holding)
+        case .alert(let holding): activeSheet = .alert(holding)
+        case .fundDCA(let holding): activeSheet = .fundDCA(holding)
+        case .fundTools(let holding): fundToolTarget = holding
+        case .showChart(let holding): marketChartTarget = holding
+        case .addWatch(let holding):
+            if !store.data.quotes.contains(where: { $0.code == holding.code }) {
+                store.addWatch(code: holding.code, name: holding.name)
+            }
+        case .remove(let holding): removeTarget = holding
+        }
     }
 
     @ViewBuilder private var fundToolsSection: some View {
@@ -3051,9 +3138,7 @@ struct FundIncomeCalendarView: View {
     private var calendar: Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current; return c }
     private var monthDate: Date { calendar.date(byAdding: .month, value: monthOffset, to: .now) ?? .now }
     private var monthKey: String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM"
-        return formatter.string(from: monthDate)
+        FormatCache.shanghai("yyyy-MM").string(from: monthDate)
     }
     private var displayedYear: Int { Calendar.current.component(.year, from: .now) + yearOffset }
     private var yearKey: String { String(displayedYear) }
@@ -3075,7 +3160,7 @@ struct FundIncomeCalendarView: View {
     }
     private var visibleMonthDays: [FundDailyPerformance] { days.filter { $0.date.hasPrefix(monthKey) } }
     private var gridDates: [String?] {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
+        let f = FormatCache.shanghai("yyyy-MM-dd")
         guard let first = f.date(from: monthKey + "-01"), let count = calendar.range(of: .day, in: .month, for: first)?.count else { return [] }
         let leading = (calendar.component(.weekday, from: first) + 5) % 7
         var result: [String?] = Array(repeating: nil, count: leading)
@@ -3337,7 +3422,7 @@ struct FundNAVHistoryView: View {
     private var chartPoints: [FundNAVPoint] {
         guard rangeDays > 0 else { return points }
         let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -rangeDays, to: .now) ?? .distantPast
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
+        let f = FormatCache.shanghai("yyyy-MM-dd")
         let key = f.string(from: cutoff)
         let filtered = points.filter { $0.date >= key }
         return filtered.isEmpty ? Array(points.suffix(30)) : filtered
@@ -3708,11 +3793,7 @@ struct TradeEditor: View {
         feeEstimateText = "批次估算 \((estimate.total).cny())：\(detail)。请与实际扣费核对后再入账。"
     }
 
-    private func dayKey(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
+    private func dayKey(_ date: Date) -> String { MarketCalendar.isoDay(date) }
 
     private func clearFundFeeEstimate() {
         estimatedRedemptionLots = nil
@@ -4184,11 +4265,7 @@ struct AssetsView: View {
 
     private func beginManualSnapshotEdit() {
         if manualSnapshotDate.isEmpty {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-            formatter.dateFormat = "yyyy-MM-dd"
-            manualSnapshotDate = formatter.string(from: .now)
+            manualSnapshotDate = FormatCache.shanghai("yyyy-MM-dd").string(from: .now)
         }
         if manualSnapshotTotal.isEmpty { manualSnapshotTotal = store.totalAsset.num(2) }
         snapshotEditorError = ""
@@ -4629,9 +4706,7 @@ struct ETFIncomeCalendarView: View {
     }
 
     private func parseDay(_ value: String) -> Date? {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: value)
+        FormatCache.shanghai("yyyy-MM-dd").date(from: value)
     }
     private func statusText(for date: String) -> String {
         guard let parsed = parseDay(date) else { return "—" }
@@ -4641,9 +4716,7 @@ struct ETFIncomeCalendarView: View {
         return "—"
     }
     private func formatted(_ date: Date, format: String) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = format
-        return formatter.string(from: date)
+        FormatCache.shanghai(format).string(from: date)
     }
 }
 
@@ -5439,15 +5512,9 @@ struct FundDCAReplayView: View {
     }
 
     private func parse(_ text: String) -> Date? {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: text)
+        FormatCache.shanghai("yyyy-MM-dd").date(from: text)
     }
-    private func dayKey(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
+    private func dayKey(_ date: Date) -> String { MarketCalendar.isoDay(date) }
 }
 
 /// 带字段名、示例值和说明的数字输入行。
@@ -5788,9 +5855,7 @@ struct TradePlanEditor: View {
             actualPrice: nil, actualAmount: nil, review: ""))
         dismiss()
     }
-    private func dateKey(_ date: Date) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date)
-    }
+    private func dateKey(_ date: Date) -> String { MarketCalendar.isoDay(date) }
 }
 
 private struct TradePlanReviewEditor: View {
@@ -7642,8 +7707,7 @@ struct SettingsView: View {
     }
 
     private func saveMarketHolidays() {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = FormatCache.shanghai("yyyy-MM-dd")
         var valid = Set<String>(), invalid = 0
         for line in marketHolidayText.split(whereSeparator: \.isNewline) {
             let day = line.trimmingCharacters(in: .whitespacesAndNewlines)

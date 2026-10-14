@@ -188,11 +188,24 @@ struct HistoricalReplayView: View {
 
         // 拆成 filter / map / sorted 三步并显式标注类型，避免链式表达式类型检查超时。
         let activePositions = positions.values.filter { $0.quantity > 1e-8 }
+        // **一次遍历**求出「每个基金代码在所选日之前的最新净值」。
+        //
+        // 原来是在持仓循环里对 `store.data.fundNAVHistory` 逐只 `filter + max`，
+        // 也就是 O(持仓 × 净值总条数)：几十只持仓 × 三四千点/只 ≈ 十几万次字符串比较，
+        // 而本页 store 每 10~15 秒发布一次行情就会整页重算 —— 回放弹窗卡顿的直接来源。
+        let fundNAVAsOf: [String: (nav: Double, date: String)] = {
+            var best: [String: (nav: Double, date: String)] = [:]
+            for point in store.data.fundNAVHistory where point.date <= target {
+                guard point.nav.isFinite, point.nav > 0 else { continue }
+                if let current = best[point.code], current.date >= point.date { continue }
+                best[point.code] = (point.nav, point.date)
+            }
+            return best
+        }()
         let mappedPositions: [Position] = activePositions.map { p -> Position in
             let pricePoint: (Double, String)?
             if p.kind == .fund {
-                let candidates = store.data.fundNAVHistory.filter { $0.code == p.code && $0.date <= target }
-                pricePoint = candidates.max { $0.date < $1.date }.map { ($0.nav, $0.date) }
+                pricePoint = fundNAVAsOf[p.code].map { ($0.nav, $0.date) }
             } else {
                 let candidates = (store.dailyBars[p.code] ?? []).filter { $0.date <= target }
                 pricePoint = candidates.max { $0.date < $1.date }.map { ($0.close, $0.date) }
@@ -206,13 +219,18 @@ struct HistoricalReplayView: View {
         let fundToDate = store.data.fundTransactions.filter { $0.effectiveDate <= target && $0.status == .confirmed }
         let snapshot = store.data.snapshots.filter { $0.date <= target }.max { $0.date < $1.date }
         var warnings: [String] = []
-        if store.data.holdings.contains(where: { holding in
-            holding.quantity > 0 && !store.data.ledger.contains(where: { $0.code == holding.code && $0.kind != .fund && $0.side == .buy })
-        }) {
+        // 先把「有没有买入起点流水」压成集合再做判断。
+        // 原来写的是 `holdings.contains(where: { ... ledger.contains(where: { ... }) })`，
+        // 也就是 O(持仓 × 流水)；同一段里还有两处全量 `ledger.filter`，一起收成一次遍历。
+        let ledgerBuyCodes = Set(store.data.ledger.filter {
+            $0.kind != .fund && $0.side == .buy
+        }.map(\.code))
+        let fundBuyCodes = Set(store.data.fundTransactions.filter { $0.side == .buy }.map(\.code))
+        if store.data.holdings.contains(where: { $0.quantity > 0 && !ledgerBuyCodes.contains($0.code) }) {
             warnings.append("部分当前手动持仓可能缺少买入起点流水，回放份额只按现有持仓和可见流水反推。")
         }
-        if store.data.holdings.contains(where: { holding in
-            holding.kind == .fund && holding.quantity > 0 && !store.data.fundTransactions.contains(where: { $0.code == holding.code && $0.side == .buy })
+        if store.data.holdings.contains(where: {
+            $0.kind == .fund && $0.quantity > 0 && !fundBuyCodes.contains($0.code)
         }) {
             warnings.append("部分当前基金没有申购或历史起点记录，所选日期的基金份额和成本可能不完整。")
         }
@@ -228,9 +246,11 @@ struct HistoricalReplayView: View {
         // 是否联动“参考现金”只影响现金余额，不影响这笔分红是否真实发生。
         let cashDividends = fundToDate.filter { $0.side == .dividend && $0.dividendMode == .cash }.reduce(0) { $0 + $1.amount }
         let fees = ledgerToDate.reduce(0) { $0 + $1.fee } + fundToDate.reduce(0) { $0 + $1.fee }
-        let laterBuys = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target && $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
+        // 所选日之后的场内流水只扫一遍，买卖两侧共用。
+        let laterLedger = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target }
+        let laterBuys = laterLedger.filter { $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
             + laterFundTrades.filter { $0.side == .buy && !$0.isBackfill }.reduce(0) { $0 + $1.amount + (($1.isAutomaticDCA ?? false) ? 0 : $1.fee) }
-        let laterSells = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target && $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
+        let laterSells = laterLedger.filter { $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
             + laterFundTrades.filter { $0.side == .sell && $0.status == .confirmed }.reduce(0) { $0 + max(0, $1.amount - $1.fee) }
         // 先在闭包外算出补录基金代码集合，避免嵌套 contains 闭包让类型检查超时。
         let backfillFundCodes = Set(store.data.fundTransactions.filter { $0.isBackfill }.map { $0.code })
@@ -242,9 +262,10 @@ struct HistoricalReplayView: View {
             fees: fees, laterBuys: laterBuys, laterSells: laterSells, warnings: warnings)
     }
 
+    /// 上海时区 `yyyy-MM-dd`。走 `MarketCalendar` 里那个**建一次**的格式化器 ——
+    /// 这个函数在本页多处 `store.data.ledger.filter { format($0.date) ... }` 的闭包里
+    /// 逐条调用，原来每次调用都新建一个 `DateFormatter`，几百条流水就是几百次构造。
     private func format(_ date: Date) -> String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 }

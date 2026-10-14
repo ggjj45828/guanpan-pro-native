@@ -611,8 +611,20 @@ final class PortfolioStore: ObservableObject {
     }
 
     /// `code` → `day` → （总点数, 带有效 IOPV 的点数）。
-    /// 供分时档案页做覆盖统计：只走 O(标的 × 交易日) 的字典操作，不遍历分钟点。
+    /// 供分时档案页做覆盖统计：**带指纹缓存**，档案没变就是 O(1)。
+    ///
+    /// 为什么必须缓存：这一项要**逐点**统计带 IOPV 的点数，也就是 O(全部分时点) ——
+    /// 档案攒到几十万点以后，档案页每重算一次 `body`（拖动主图选择线每秒几十次、
+    /// store 每 10~15 秒发布一次行情）就跑一遍全量扫描，页面必然一卡一卡。
+    /// 指纹只取「点数 / code-day 组数 / 末点时间 / 末点 IOPV」，这四样任一变化都会重建。
+    private var cachedCoverageKey = ""
+    private var cachedCoverage: [String: [String: (points: Int, iopvPoints: Int)]] = [:]
+
     var intradayCoverageByCode: [String: [String: (points: Int, iopvPoints: Int)]] {
+        let last = intradayBars.last
+        let key = "\(intradayBars.count)|\(intradayBarsByCodeDay.count)"
+            + "|\(last?.timestamp.timeIntervalSince1970 ?? 0)|\(last?.iopv ?? -1)"
+        if key == cachedCoverageKey { return cachedCoverage }
         var result: [String: [String: (points: Int, iopvPoints: Int)]] = [:]
         for (_, list) in intradayBarsByCodeDay {
             guard let sample = list.first else { continue }
@@ -620,7 +632,43 @@ final class PortfolioStore: ObservableObject {
             for bar in list where (bar.iopv ?? 0) > 0 { iopvPoints += 1 }
             result[sample.code, default: [:]][sample.day] = (list.count, iopvPoints)
         }
+        cachedCoverageKey = key
+        cachedCoverage = result
         return result
+    }
+
+    /// 这条分时点是不是落在**正常交易时段**里？
+    ///
+    /// 实测（2026-10-14，`web.ifzq.gtimg.cn/appstock/app/minute/query`）：
+    /// **沪深 ETF / 个股的分钟接口会带上 15:00–15:30 的「盘后固定价格交易」数据** ——
+    /// `sh510300`、`sz159915` 都是 **267 行、末点 `1530`**；而同一天的 `sh000001` 指数
+    /// 只有 242 行、末点 `1500`。盘后那半小时成交量极低、价格基本钉在收盘价上。
+    ///
+    /// 为什么必须丢掉它们：分时横轴是按**完整交易时段**固定的（09:30–15:00，午休压缩），
+    /// 而 **Swift Charts 不会把域外的落点裁掉** —— 盘后那些点（压缩后落在 13:31 之后）
+    /// 会被照样画到绘图区**外面**，表现就是「曲线/面积一直画到屏幕右边缘、还带着一段
+    /// 尾巴露不出来」，点最右边又会选中盘后点、读数显示 15:00 之后的时间。
+    /// 用户 2026-10-14 报「横坐标超出收盘、最右边没法滑过去，是不是还有盘后，一般不需要」。
+    ///
+    /// **只对沪深 / 北交所标的生效**（`sh` / `sz` / `bj` 前缀，或纯 6 位数字）：
+    /// 港股有 16:00 之后的收市竞价、美股要到 16:00 且用纽约时间，各自时段不同，
+    /// 一律按 15:00 砍会把它们的尾巴砍掉。
+    ///
+    /// 只在**建索引**时过滤：原始档案不动（不删数据），只是界面不再看到盘后那一段。
+    static func keepsIntradaySession(code: String, timestamp: Date) -> Bool {
+        let lowered = code.lowercased()
+        let plain: String
+        if lowered.hasPrefix("sh") || lowered.hasPrefix("sz") || lowered.hasPrefix("bj") {
+            plain = String(lowered.dropFirst(2))
+        } else {
+            plain = lowered
+        }
+        guard plain.count == 6, plain.allSatisfy(\.isNumber) else { return true }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let parts = calendar.dateComponents([.hour, .minute], from: timestamp)
+        let minuteOfDay = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        return minuteOfDay <= 15 * 60
     }
 
     /// 分时索引的唯一重建入口。**只在整批替换/首次载入时调用**；
@@ -630,7 +678,7 @@ final class PortfolioStore: ObservableObject {
         byKey.reserveCapacity(intradayBars.count)
         var byCodeDay: [String: [IntradayBar]] = [:]
         var daySetByCode: [String: Set<String>] = [:]
-        for bar in intradayBars {
+        for bar in intradayBars where Self.keepsIntradaySession(code: bar.code, timestamp: bar.timestamp) {
             byKey[Self.intradayMinuteKey(code: bar.code, at: bar.timestamp)] = bar
             byCodeDay[Self.codeDayKey(code: bar.code, day: bar.day), default: []].append(bar)
             daySetByCode[bar.code, default: []].insert(bar.day)
@@ -658,7 +706,7 @@ final class PortfolioStore: ObservableObject {
         var byCodeDay = intradayBarsByCodeDay
         var daySetByCode = intradayDaySetByCode
         var touched: Set<String> = []
-        for bar in bars {
+        for bar in bars where Self.keepsIntradaySession(code: bar.code, timestamp: bar.timestamp) {
             let key = Self.codeDayKey(code: bar.code, day: bar.day)
             daySetByCode[bar.code, default: []].insert(bar.day)
             if var list = byCodeDay[key] {
@@ -2454,10 +2502,7 @@ final class PortfolioStore: ObservableObject {
             }
             var stamp: Date?
             if let day, let clock {
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-                formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                let formatter = FormatCache.shanghai("yyyy-MM-dd HH:mm:ss")
                 stamp = formatter.date(from: "\(day) \(clock)")
             }
             result[code] = (price, percent / 100, stamp)
@@ -3436,9 +3481,9 @@ final class PortfolioStore: ObservableObject {
                   rawNAV.isFinite, rawNAV > 0 else { return nil }
             let timestamp = rawTime > 100_000_000_000 ? rawTime / 1000 : rawTime
             let date = Date(timeIntervalSince1970: timestamp)
-            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-            return FundNAVPoint(code: code, date: formatter.string(from: date), nav: rawNAV)
+            // 这里是**逐行**调用的（一只有三四千个净值点），原来每行都现造一个
+            // `DateFormatter` —— 一次页面刷新就能叠出几千次构造。走全局缓存。
+            return FundNAVPoint(code: code, date: MarketCalendar.isoDay(date), nav: rawNAV)
         }
         return points.sorted { $0.date < $1.date }
     }
@@ -3505,11 +3550,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     private static func shanghaiDay(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        FormatCache.shanghai("yyyy-MM-dd").string(from: date)
     }
 
     private func decodeTencent(_ bytes: Data) -> String {
@@ -3832,11 +3873,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     private func parseDay(_ day: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: day)
+        FormatCache.shanghai("yyyy-MM-dd").date(from: day)
     }
 
     func recordTrade(code: String, kind: Holding.Kind, side: LedgerEntry.Side, quantity: Double, price: Double,
@@ -4332,8 +4369,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     private func dayString(_ date: Date) -> String {
-        let f = DateFormatter(); f.calendar = Calendar(identifier: .gregorian); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
+        FormatCache.shanghai("yyyy-MM-dd").string(from: date)
     }
 
     private func dayBoundary(after day: String) -> Date {

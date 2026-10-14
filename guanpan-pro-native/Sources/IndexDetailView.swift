@@ -136,11 +136,8 @@ struct IndexDetailView: View {
             // 交易日开盘前，行情同样停在上一个交易日 —— 那不是休市，只是还没开盘。
             return store.isMarketClosedToday ? "休市 · \(day) 收盘" : "\(day) 收盘 · 待开盘"
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "HH:mm"
-        return "\(day) \(formatter.string(from: date))"
+        // 走全局缓存：`quoteTimeText` 每次 body 求值都会读一次（指数卡在列表里）。
+        return "\(day) \(FormatCache.shanghai("HH:mm").string(from: date))"
     }
 
     // MARK: - 分时
@@ -245,11 +242,9 @@ struct IndexDetailView: View {
 
     private var intradayAxis: some View {
         // 横轴标签按真实分时数据的首/中/尾时间生成，不再给港股、美股硬套 A 股 09:30–15:00。
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.timeZone = isUSIndex ? (TimeZone(identifier: "America/New_York") ?? .current)
-                                 : (TimeZone(identifier: "Asia/Shanghai") ?? .current)
-        fmt.dateFormat = "HH:mm"
+        let fmt = FormatCache.date("HH:mm",
+                                   zone: isUSIndex ? (TimeZone(identifier: "America/New_York") ?? .current)
+                                                   : (TimeZone(identifier: "Asia/Shanghai") ?? .current))
         let times = minutes.map(\.timestamp)
         if isUSIndex {
             return HStack {
@@ -600,10 +595,6 @@ struct IndexDetailView: View {
 
     /// `yyyy-MM-dd` 形态的「今天」。
     private func shortDayDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 }

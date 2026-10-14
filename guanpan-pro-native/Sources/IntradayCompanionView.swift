@@ -141,10 +141,6 @@ struct IntradayCompanionView: View {
     }
 
     private func shanghaiDay(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 }

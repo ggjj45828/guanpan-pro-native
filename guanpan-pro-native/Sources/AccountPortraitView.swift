@@ -66,10 +66,7 @@ enum PortraitEngine {
 
         // ---- 交易跨度（月）----
         var dates: [Date] = data.ledger.map(\.date)
-        let iso = DateFormatter()
-        iso.locale = Locale(identifier: "en_US_POSIX")
-        iso.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        iso.dateFormat = "yyyy-MM-dd"
+        let iso = FormatCache.shanghai("yyyy-MM-dd")
         for t in data.fundTransactions where t.side != .dividend {
             if let d = iso.date(from: String(t.effectiveDate.prefix(10))) { dates.append(d) }
         }

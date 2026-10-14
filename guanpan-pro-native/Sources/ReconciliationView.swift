@@ -22,32 +22,82 @@ struct ReconciliationView: View {
             total + (entry.side == .buy ? -(entry.gross + entry.fee) : entry.gross - entry.fee)
         }
     }
+    /// 当日逐只持仓的盈亏。
+    ///
+    /// **必须一次算完**：原来是计算属性，且被 `estimatedDayPnL`（内部又读 3 次）和
+    /// 列表 `ForEach` 各读一遍 —— 一次 body 求值要重算 7 遍，而 `dailyPnL` 内部
+    /// 对每只持仓都要**全量扫一遍流水**（还要为场外基金 filter+sort 几千个净值点）。
+    /// 这个页面有三个输入框，**每敲一个数字 body 就重算一次**，于是打字像卡住。
+    /// 现在改成：流水按标的一次分组、报价建字典、净值历史一次遍历取每只基金最近两期，
+    /// 整份只算一遍。
     private var dayRows: [(Holding, Double?)] {
         var holdings = store.data.holdings
         let heldCodes = Set(holdings.filter { $0.kind == .etf }.map(\.code))
-        let soldOnlyCodes = Set(store.data.ledger.filter {
-            $0.kind != .fund && dayString($0.date) == marketDay
-        }.map(\.code)).subtracting(heldCodes)
+        // 当日 ETF/证券流水按标的分组：代替 `dailyPnL` 里「每只持仓各扫一遍全部流水」。
+        var todayLedger: [String: [LedgerEntry]] = [:]
+        for entry in store.data.ledger where entry.kind != .fund && dayString(entry.date) == marketDay {
+            todayLedger[entry.code, default: []].append(entry)
+        }
+        let soldOnlyCodes = Set(todayLedger.keys).subtracting(heldCodes)
+        var quotesByCode: [String: Quote] = [:]
+        for quote in store.data.quotes where quotesByCode[quote.code] == nil { quotesByCode[quote.code] = quote }
         for code in soldOnlyCodes {
-            let quote = store.data.quotes.first { $0.code == code }
+            let quote = quotesByCode[code]
             holdings.append(Holding(code: code, name: quote?.name ?? code, quantity: 0,
                                     cost: 0, current: quote?.price ?? 0, kind: .etf))
         }
-        return holdings.map { holding in (holding, dailyPnL(for: holding)) }
-    }
-    private var estimatedDayPnL: Double? {
-        guard !dayRows.isEmpty, dayRows.allSatisfy({ $0.1 != nil }) else { return nil }
-        return dayRows.reduce(0) { $0 + ($1.1 ?? 0) }
+        // 每只场外基金的最近两期净值：一次遍历，代替「每只 filter 全量 + 排序」。
+        var navLatest: [String: FundNAVPoint] = [:]
+        var navPrevious: [String: FundNAVPoint] = [:]
+        for point in store.data.fundNAVHistory where point.nav > 0 {
+            guard let best = navLatest[point.code] else { navLatest[point.code] = point; continue }
+            if point.date > best.date {
+                navPrevious[point.code] = best
+                navLatest[point.code] = point
+            } else if navPrevious[point.code] == nil || point.date > navPrevious[point.code]!.date {
+                navPrevious[point.code] = point
+            }
+        }
+        return holdings.map { holding in
+            (holding, dailyPnL(for: holding, todayLedger: todayLedger, quotes: quotesByCode,
+                               navLatest: navLatest, navPrevious: navPrevious))
+        }
     }
 
-    private func dailyPnL(for holding: Holding) -> Double? {
-        if holding.kind == .fund {
-            let points = store.data.fundNAVHistory.filter { $0.code == holding.code && $0.nav > 0 }
-                .sorted { $0.date > $1.date }
-            guard points.count >= 2 else { return nil }
-            return holding.quantity * (points[0].nav - points[1].nav)
+    private func estimatedDayPnL(from rows: [(Holding, Double?)]) -> Double? {
+        guard !rows.isEmpty, rows.allSatisfy({ $0.1 != nil }) else { return nil }
+        return rows.reduce(0) { $0 + ($1.1 ?? 0) }
+    }
+
+    /// 总盈亏逐只（含合计）。
+    ///
+    /// `store.totalPnL` 与列表里的 `holdingPnL` 都会走 `displayedCost` —— 摊薄口径下
+    /// 那是「每只持仓各扫一遍全部流水」，而原来这段排序比较器里还要**反复**调用它
+    /// （n log n 次比较 × 2 次调用）。这里改成：先用 store 已有的一次遍历结果
+    /// （`dilutedRealizedSums`）算好逐只盈亏，合计一次性求和（顺序与 `totalPnL` 一致），
+    /// 再按绝对值排序。
+    private var totalPnLRows: (rows: [(holding: Holding, pnl: Double)], total: Double) {
+        let sums = store.dilutedRealizedSums()
+        let mapped: [(holding: Holding, pnl: Double)] = store.data.holdings.map { holding in
+            let realized = (sums["\(holding.code)|nil"] ?? 0)
+                + (sums["\(holding.code)|\(holding.kind.rawValue)"] ?? 0)
+            let cost = store.displayedCost(for: holding, dilutedRealizedSum: realized)
+            return (holding, holding.quantity * (holding.current - cost))
         }
-        let quote = store.data.quotes.first { $0.code == holding.code }
+        let total = mapped.reduce(0) { $0 + $1.pnl }
+        return (mapped.sorted { abs($0.pnl) > abs($1.pnl) }, total)
+    }
+
+    private func dailyPnL(for holding: Holding,
+                          todayLedger: [String: [LedgerEntry]],
+                          quotes: [String: Quote],
+                          navLatest: [String: FundNAVPoint],
+                          navPrevious: [String: FundNAVPoint]) -> Double? {
+        if holding.kind == .fund {
+            guard let latest = navLatest[holding.code], let previous = navPrevious[holding.code] else { return nil }
+            return holding.quantity * (latest.nav - previous.nav)
+        }
+        let quote = quotes[holding.code]
         let manual = store.data.manualQuoteOverrides[holding.code]
         let current = manual?.price ?? quote?.price ?? holding.current
         let previous: Double?
@@ -61,9 +111,7 @@ struct ReconciliationView: View {
             previous = nil
         }
         guard let previous, previous.isFinite, previous > 0, current.isFinite, current > 0 else { return nil }
-        let trades = store.data.ledger.filter {
-            $0.code == holding.code && $0.kind != .fund && dayString($0.date) == marketDay
-        }
+        let trades = todayLedger[holding.code] ?? []
         let buys = trades.filter { $0.side == .buy }
         let sells = trades.filter { $0.side == .sell }
         let buyQuantity = buys.reduce(0) { $0 + $1.quantity }
@@ -94,20 +142,22 @@ struct ReconciliationView: View {
     }
 
     private func dayString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 
     var body: some View {
+        // 两块重活每帧只算一遍：`dayRows`（当日盈亏逐只）、`totalPnLRows`（摊薄成本逐只 + 合计）。
+        // 这个页面有三个输入框，**每敲一个字符 body 就重算一次** —— 原来每次都要把全部流水与
+        // 净值历史扫七遍，打字就会一顿一顿。现在同样的数只取一次，下方各分区读这份结果。
+        let rows = dayRows
+        let estimate = estimatedDayPnL(from: rows)
+        let totalPnL = totalPnLRows
         NavigationStack {
             List {
                 cashSection
-                dayPnLSection
+                dayPnLSection(rows, estimate: estimate)
                 costSection
-                totalPnLSection
+                totalPnLSection(totalPnL.rows, total: totalPnL.total)
             }
             .scrollContentBackground(.hidden)
             .listStyle(.plain)
@@ -176,23 +226,23 @@ struct ReconciliationView: View {
         entry.side == .buy ? -(entry.gross + entry.fee) : entry.gross - entry.fee
     }
 
-    @ViewBuilder private var dayPnLSection: some View {
+    @ViewBuilder private func dayPnLSection(_ rows: [(Holding, Double?)], estimate: Double?) -> some View {
         Section("当日盈亏对账") {
             LabeledContent("行情基准日", value: marketDay)
             Picker("计算口径", selection: Binding(get: { store.data.dailyPnLMode }, set: { store.data.dailyPnLMode = $0; store.save(label: "修改当日盈亏口径") })) {
                 ForEach(DailyPnLMode.allCases) { mode in Text(mode.title).tag(mode) }
             }
-            if let estimate = estimatedDayPnL {
+            if let estimate {
                 LabeledContent("\(store.data.dailyPnLMode.title)", value: (estimate).cny())
             } else {
                 Text("行情涨跌数据不完整，暂时不能汇总当日盈亏。")
                     .foregroundStyle(.secondary)
             }
             TextField("券商显示的当日盈亏（元）", text: $brokerDayPnL).keyboardType(.decimalPad)
-            if let broker = Double(brokerDayPnL), broker.isFinite, let estimate = estimatedDayPnL {
+            if let broker = Double(brokerDayPnL), broker.isFinite, let estimate {
                 LabeledContent("估算 − 券商", value: (estimate - broker).cny())
             }
-            ForEach(Array(dayRows.enumerated()), id: \.offset) { row in
+            ForEach(Array(rows.enumerated()), id: \.offset) { row in
                 HStack {
                     Text(row.element.0.name)
                     Spacer()
@@ -228,24 +278,24 @@ struct ReconciliationView: View {
         .plainCard(isLight: isLight)
     }
 
-    @ViewBuilder private var totalPnLSection: some View {
+    @ViewBuilder private func totalPnLSection(_ pnlRows: [(holding: Holding, pnl: Double)], total: Double) -> some View {
         Section("总盈亏对账") {
-            LabeledContent("原生浮动盈亏", value: (store.totalPnL).cny())
+            LabeledContent("原生浮动盈亏", value: (total).cny())
             TextField("券商显示的总浮盈（元）", text: $brokerTotalPnL).keyboardType(.decimalPad)
             if let broker = Double(brokerTotalPnL), broker.isFinite {
-                LabeledContent("原生 − 券商", value: (store.totalPnL - broker).cny())
+                LabeledContent("原生 − 券商", value: (total - broker).cny())
             }
-            ForEach(store.data.holdings.sorted { abs(store.holdingPnL($0)) > abs(store.holdingPnL($1)) }) { holding in
+            ForEach(pnlRows, id: \.holding.id) { row in
                 HStack {
-                    Text(holding.name)
+                    Text(row.holding.name)
                     Spacer()
-                    Text((store.holdingPnL(holding)).cny())
+                    Text((row.pnl).cny())
                 }.font(.caption)
             }
             Text("优先核对差异较大的持仓份额、成本和行情；此处只对比浮动盈亏，不包含已实现盈亏及外部现金流。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
-        .toneCard(CardTone.pnl(store.totalPnL), isLight: isLight)
+        .toneCard(CardTone.pnl(total), isLight: isLight)
     }
 
     /// 差额文案用普通方法返回，避免在 ViewBuilder 的 if 分支里做赋值。

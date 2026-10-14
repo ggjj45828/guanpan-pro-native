@@ -1595,14 +1595,21 @@ struct MarketChartView: View {
         }
         let finiteAll = all.filter { $0 > 0 && $0.isFinite }
         guard let low = finiteAll.min(), let high = finiteAll.max() else { return 0...1 }
-        // 三线共同范围 + 5% 边距，作为「无论如何都不能裁掉线」的保底区间。
-        let tight = intradaySharedYDomain(finiteAll)
-        let finiteVisible = visible.filter { $0 > 0 && $0.isFinite }
-        if let vLow = finiteVisible.min(), let vHigh = finiteVisible.max(),
-           let symmetric = symmetricIntradayYDomain(low: vLow, high: vHigh, previous: intradayPrevClose) {
-            return min(symmetric.lowerBound, tight.lowerBound)...max(symmetric.upperBound, tight.upperBound)
+        // **严格对称**：以昨收为 0 轴，上下各按「所有可见线里最大的那个偏离幅度」展开**相同的比例**。
+        // 用户口径是「上限涨到 1%，下限就对称扩到 −1%」——1% 是**举例**，不是「最少 1%」；
+        // 同样也**不允许**某一侧单独多留一截。
+        //
+        // 这里曾经写成「对称区间 ∪ 三线共同范围 + 边距」，即
+        // `min(对称下界, 保底下界) ... max(对称上界, 保加上界)` —— 两条边各走各的，
+        // 打开 IOPV 后高溢价品种（纳指 ETF 之类）会把某一侧单独撑出去，
+        // 纵轴一眼就看出是歪的（用户 2026-10-14 报「分时图总坐标不对称」）。
+        // 现在统一交给对称函数：传进去的就是**含 IOPV / 均价**的完整范围，
+        // 需要扩就两侧一起扩，不会只动一边。
+        if let symmetric = symmetricIntradayYDomain(low: low, high: high, previous: intradayPrevClose) {
+            return symmetric
         }
-        return tight
+        // 拿不到昨收（新标的 / 参考价缺失）时才退回「跟着数据自适应 + 留余量」。
+        return intradaySharedYDomain(finiteAll)
     }
     private var priceLevels: PriceLevelSummary? {
         let today = shanghaiDay(.now)

@@ -189,29 +189,26 @@ struct MonthlyReviewView: View {
         return result
     }
 
+    /// 上海时区 `yyyy-MM-dd`。走 `MarketCalendar` 里那个**建一次**的格式化器 ——
+    /// 这个函数是在 `store.data.ledger.filter` 的闭包里逐条调用的，
+    /// 原来每次调用都新建一个 `DateFormatter`，几百条流水就是几百次构造。
     private func day(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 
     private static func monthString(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM"
-        return formatter.string(from: date)
+        FormatCache.shanghai("yyyy-MM").string(from: date)
     }
 
     private static func nextMonthStart(_ month: String) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = FormatCache.shanghai("yyyy-MM-dd")
         guard let date = formatter.date(from: "\(month)-01"),
               let next = Calendar(identifier: .gregorian).date(byAdding: .month, value: 1, to: date) else { return "9999-12-31" }
         return formatter.string(from: next)
     }
 
     private static func shift(_ month: String, by amount: Int) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = FormatCache.shanghai("yyyy-MM-dd")
         guard let date = formatter.date(from: "\(month)-01"),
               let shifted = Calendar(identifier: .gregorian).date(byAdding: .month, value: amount, to: date) else { return month }
         return monthString(shifted)
