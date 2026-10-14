@@ -60,14 +60,16 @@ final class PortfolioStore: ObservableObject {
     private var nasSyncTask: Task<Void, Never>?
     private var nasPollingTask: Task<Void, Never>?
     private var lastIntradayNASSyncAt = Date.distantPast
-    /// 分时去重索引。不能每 5 秒为每只标的扫描多年历史；统一按“代码 + 自然分钟”判断。
-    private var intradayMinuteKeys: Set<String> = []
-    /// 「分钟键 → 分时点」主索引。
+    /// 「分钟键 → 分时点」主索引。**同时就是去重索引**（`containsIntradayMinute`）。
     ///
     /// 合并分时时**以它为底改写**，而不是为全部 N 个历史点重新算一遍分钟键：
     /// 档案只增不减，旧写法每次合并都要新分配 N 个字符串键 + 一张 N 项字典，
     /// 档案一大就是一次几百 MB 的瞬时内存峰值 —— 打开分时页 / 日 K 时被系统
     /// 杀进程（闪退）往往就发生在这一步。同时也是「本次合并有没有实质变化」的判定源。
+    ///
+    /// v2.13.35：原来还有一份 `Set<String> intradayMinuteKeys` 专门存全部键做去重判断，
+    /// 但它和这张字典的键**完全重复**，而每次合并 / 载入都要重建一份几十万项字符串 Set
+    /// （每项还要现拼 `"代码-分钟"`）。已删除，去重直接查这张字典。
     private var intradayBarByKey: [String: IntradayBar] = [:]
     /// `code|day` → 该标的该交易日、按时间升序的分时点。
     ///
@@ -88,6 +90,8 @@ final class PortfolioStore: ObservableObject {
     /// 缓存键取「根数 + 末根日期/收盘/成交量」：日线的任何实质变化
     /// （新交易日、盘中刷新最后一根）都会自然失效，无需手动清理。
     private var signalCache: [String: (key: String, signal: MarketSignal?)] = [:]
+    /// `code → 视图用的那份日线`（去坏数据 + 去重 + 升序）。见 `normalizedDailyBars(forCode:)`。
+    private var normalizedDailyBarsCache: [String: (key: String, bars: [DailyBar])] = [:]
 
     private func invalidateSignalCache(for code: String? = nil) {
         if let code { signalCache.removeValue(forKey: code) }
@@ -104,6 +108,33 @@ final class PortfolioStore: ObservableObject {
         if signalCache.count > 512 { signalCache.removeAll(keepingCapacity: true) }
         signalCache[code] = (key, value)
         return value
+    }
+
+    /// 视图要的日线序列：剔掉坏数据 + 按日期去重 + 按日期升序。**带 memo。**
+    ///
+    /// 日 K 页在一次 `body` 里会把日线取十几次（`bars` / `periodBars` / 均线 /
+    /// 支撑压力 / 副图…），每次都做一遍 filter + 去重字典 + 全量排序；
+    /// 640 根 × 十几次，捏合缩放时就是**逐帧**付这个钱 —— 这是图表页卡顿最大的一块。
+    /// 缓存键取「根数 + 首尾日期 + 末根收盘/成交量」：日线一有实质变化
+    /// （新交易日、盘中刷新最后一根、补历史）就自动失效，不需要手动清理。
+    ///
+    /// 注意：`signal(forCode:)` 用的是未过滤的原始日线（历史行为，别改），
+    /// 视图一律走这里。
+    func normalizedDailyBars(forCode code: String) -> [DailyBar] {
+        let source = dailyBars[code] ?? []
+        let key = "\(source.count)|\(source.first?.date ?? "")|\(source.last?.date ?? "")"
+            + "|\(source.last?.close ?? 0)|\(source.last?.volume ?? 0)"
+        if let hit = normalizedDailyBarsCache[code], hit.key == key { return hit.bars }
+        let rows = source.filter {
+            $0.open.isFinite && $0.close.isFinite && $0.high.isFinite && $0.low.isFinite
+                && $0.volume.isFinite && $0.close > 0 && $0.high > 0 && $0.low > 0
+        }
+        let bars = Dictionary(rows.map { ($0.date, $0) }, uniquingKeysWith: { _, newer in newer })
+            .values.sorted { $0.date < $1.date }
+        // 逛过很多标的后不要让缓存无限长住（每只约 640 根）。
+        if normalizedDailyBarsCache.count > 24 { normalizedDailyBarsCache.removeAll(keepingCapacity: true) }
+        normalizedDailyBarsCache[code] = (key: key, bars: bars)
+        return bars
     }
 
     init() {
@@ -512,7 +543,8 @@ final class PortfolioStore: ObservableObject {
     static func codeDayKey(code: String, day: String) -> String { "\(code)|\(day)" }
 
     func containsIntradayMinute(code: String, at time: Date) -> Bool {
-        intradayMinuteKeys.contains(Self.intradayMinuteKey(code: code, at: time))
+        // 直接查主索引：它的键就是「代码-分钟」，原来那份独立的 `Set<String>` 完全冗余。
+        intradayBarByKey[Self.intradayMinuteKey(code: code, at: time)] != nil
     }
 
     // MARK: - 分时读取（一律走索引，不要扫全量档案）
@@ -590,7 +622,55 @@ final class PortfolioStore: ObservableObject {
         intradayBarByKey = byKey
         intradayBarsByCodeDay = byCodeDay
         intradayDaySetByCode = daySetByCode
-        intradayMinuteKeys = Set(byKey.keys)
+    }
+
+    /// **增量**维护 `code|day` / `code→交易日集合` 两张索引（v2.13.35）。
+    ///
+    /// 为什么必须增量：`rebuildIntradayMinuteIndex()` 是 O(档案总点数)，而盘中每分钟都
+    /// 会合并一次新的分钟点（`captureMinuteQuotes`）. 档案几十万点以后，旧写法等于
+    /// **每分钟在主线程重建一次几十万项的字典 + 几十万个字符串键**，一次就是几百毫秒的
+    /// 卡顿 —— 用户说的「所有页面上下滑动特别卡」里，最大的一块就是它。
+    /// 现在只更新本次真正变动的那些点：改动数通常是一屏标的数（几十个），
+    /// 成本从 O(总点数) 降到 O(本次点数)。
+    private func applyIntradayIndexUpdates(_ bars: [IntradayBar]) {
+        guard !bars.isEmpty else { return }
+        var byCodeDay = intradayBarsByCodeDay
+        var daySetByCode = intradayDaySetByCode
+        var touched: Set<String> = []
+        for bar in bars {
+            let key = Self.codeDayKey(code: bar.code, day: bar.day)
+            daySetByCode[bar.code, default: []].insert(bar.day)
+            if var list = byCodeDay[key] {
+                // 同一天内 ≤ 242 个点：线性找同一分钟即可，比重新排序整份档案便宜得多。
+                if let index = list.firstIndex(where: { $0.timestamp == bar.timestamp }) {
+                    list[index] = bar
+                } else {
+                    list.append(bar)
+                }
+                byCodeDay[key] = list
+            } else {
+                byCodeDay[key] = [bar]
+            }
+            touched.insert(key)
+        }
+        // 只对被动过的那几天排序；正常盘中追加本来就是升序，这里通常一次都不排。
+        for key in touched {
+            guard let list = byCodeDay[key], list.count > 1 else { continue }
+            if !Self.isAscendingByTime(list) {
+                byCodeDay[key] = list.sorted { $0.timestamp < $1.timestamp }
+            }
+        }
+        intradayBarsByCodeDay = byCodeDay
+        intradayDaySetByCode = daySetByCode
+    }
+
+    /// 升序判定（分时点已按分钟归一到整点，不会出现相等但乱序的情况）。
+    private static func isAscendingByTime(_ bars: [IntradayBar]) -> Bool {
+        guard bars.count > 1 else { return true }
+        for index in 1..<bars.count where bars[index].timestamp < bars[index - 1].timestamp {
+            return false
+        }
+        return true
     }
 
     /// 本次合并里有没有「值得重建」的实质变化。
@@ -853,8 +933,19 @@ final class PortfolioStore: ObservableObject {
         }
         guard !changed.isEmpty else { return }
         intradayBarByKey = byMinute
-        intradayBars = byMinute.values.sorted { $0.timestamp < $1.timestamp }
-        rebuildIntradayMinuteIndex()
+        // ③ 档案本身按时间升序，所以「本次全部晚于末点」（盘中每分钟的常规情况）只要按序追加，
+        //    不需要为全部 N 个点做一次 O(N log N) 的全量排序；只有「插到中间」时
+        //    （NAS 回补历史交易日、导入备份、补上早盘漏掉的点）才退化为一次全量排序。
+        //    判据用**严格大于**：等于末点的那种「同日同分钟被改写」必须走全量分支，
+        //    否则会把同一分钟追加成两条。
+        let incoming = changed.sorted { $0.timestamp < $1.timestamp }
+        if let last = intradayBars.last, let first = incoming.first, first.timestamp > last.timestamp {
+            intradayBars.append(contentsOf: incoming)
+        } else {
+            intradayBars = byMinute.values.sorted { $0.timestamp < $1.timestamp }
+        }
+        // ④ 索引增量更新（O(本次点数)），不再整份重建（O(档案总点数)）。
+        applyIntradayIndexUpdates(changed)
         appendIntradayBars(changed)
         // Keep live minute history in NAS without uploading on every 15-second quote poll.
         if Date().timeIntervalSince(lastIntradayNASSyncAt) >= 60 {
@@ -887,7 +978,7 @@ final class PortfolioStore: ObservableObject {
             mergeIntradayBars(bars)
             return bars.count
         } catch {
-            intradayArchiveStatus = "NAS 历史分时同步失败：\(error.localizedDescription)"
+            setIntradayArchiveStatus("NAS 历史分时同步失败：\(error.localizedDescription)")
             return 0
         }
     }
@@ -1043,7 +1134,7 @@ final class PortfolioStore: ObservableObject {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .sorted()
         guard !codes.isEmpty else {
-            intradayArchiveStatus = "没有可采集的自选或场内持仓"
+            setIntradayArchiveStatus("没有可采集的自选或场内持仓")
             return (0, 0)
         }
         if !force {
@@ -1060,9 +1151,8 @@ final class PortfolioStore: ObservableObject {
         }
 
         isArchivingIntraday = true
-        intradayArchiveStatus = "正在补全 0/\(codes.count)…"
+        setIntradayArchiveStatus("正在连接行情源补全最近交易日…")
         defer { isArchivingIntraday = false }
-        intradayArchiveStatus = "正在连接行情源补全最近交易日…"
         let webArchive = await fetchLegacyWebIntradayArchive()
         let codeKeys = codes.reduce(into: [String: String]()) { $0[$1] = intradayCodeKey($1) }
         let webArchiveByCode = Dictionary(grouping: webArchive, by: { intradayCodeKey($0.code) })
@@ -1086,7 +1176,14 @@ final class PortfolioStore: ObservableObject {
                 } else {
                     failure += 1
                 }
-                intradayArchiveStatus = "正在补全 \(success + failure)/\(codes.count) · \(code)…"
+                // 进度文案**不能每只标的都写一次**（v2.13.35）：30 只自选就是 30 次
+                // `@Published` 通知，每一次都把五个 Tab 的整棵视图树重建一遍 ——
+                // 后台补分时的那十几秒里，界面看上去就是「卡着不动、滑也滑不顺」。
+                // 改成每 4 只更新一次（并保证最后一只一定有终值）。
+                let done = success + failure
+                if done % 4 == 0 || done == codes.count {
+                    setIntradayArchiveStatus("正在补全 \(done)/\(codes.count) · \(code)…")
+                }
             }
         }
         mergeIntradayBars(downloaded)
@@ -1103,9 +1200,9 @@ final class PortfolioStore: ObservableObject {
         let coverage = latestDay.map { "\($0) · 本次行情取回 \(pointCount) 点 · 本机已保存并去重" }
             ?? "行情源没有返回新分钟点"
         let retry = remaining > 0 ? " · \(remaining) 只未完整，5 分钟后自动重试" : " · 本机档案完整"
-        intradayArchiveStatus = failure == 0
+        setIntradayArchiveStatus(failure == 0
             ? "已更新 \(success) 只 · \(coverage)\(retry) · \(time)"
-            : "已更新 \(success)/\(codes.count) 只，\(failure) 只未取到 · \(coverage)\(retry) · \(time)"
+            : "已更新 \(success)/\(codes.count) 只，\(failure) 只未取到 · \(coverage)\(retry) · \(time)")
         return (success, failure)
     }
     /// - Parameter propagate: 是否把这次改动推给 NAS 与网页版账本。默认 `true`。
@@ -1305,7 +1402,7 @@ final class PortfolioStore: ObservableObject {
             !d.manualQuoteOverrides.isEmpty || !d.etfDividendEvents.isEmpty ||
             !d.allocationTargets.isEmpty || !d.tradePlans.isEmpty || !d.dayGridPlans.isEmpty ||
             !d.legacyGridArchives.isEmpty || !d.legacyShadowArchives.isEmpty || !d.legacyDCAEvents.isEmpty ||
-            !d.legacySettingsArchives.isEmpty || d.savedAccountAIAnalysis != nil || d.savedPortraitAIAnalysis != nil ||
+            d.savedAccountAIAnalysis != nil || d.savedPortraitAIAnalysis != nil ||
             !d.savedInstrumentAIAnalyses.isEmpty || d.cash != 0 || d.cashLinkedByDefault || d.appearance != .system ||
             d.quoteRefreshSeconds != 60 || d.dailyPnLMode != .pnl || d.intradaySubchartMode != "macd" || d.dailyChartRangeDays != 250 || d.intradayLineColorMode != .automatic || !d.intradayCaptureEnabled || d.automaticFundNAVRefreshEnabled || d.costAccountingMode != .diluted || d.globalPositionLimitPercent != 0 || !d.positionHintsEnabled || d.rebalanceAlertThreshold != 5 || d.investmentProfile.style != "swing" || d.investmentProfile.risk != "bal" ||
             d.aiAnalysisConfig.endpoint != AIAnalysisConfig().endpoint || d.aiAnalysisConfig.model != AIAnalysisConfig().model || d.aiAnalysisConfig.timeoutSeconds != AIAnalysisConfig().timeoutSeconds || d.aiAnalysisConfig.systemPrompt != AIAnalysisConfig().systemPrompt ||
@@ -2374,17 +2471,17 @@ final class PortfolioStore: ObservableObject {
         // fund codes there or present a stock quote as a fund valuation.
         let shadowCodes = data.legacyShadowArchives.filter { !$0.closed }.map(\.code)
         let symbols = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code) + shadowCodes)
-        guard !symbols.isEmpty else { sourceStatus = "还没有标的"; return false }
+        guard !symbols.isEmpty else { setSourceStatus("还没有标的"); return false }
         let requestCodes = symbols.map(tencentSymbol).sorted()
         guard let url = URL(string: "https://qt.gtimg.cn/q=" + requestCodes.joined(separator: ",") + "&_t=" + String(Int(Date().timeIntervalSince1970))) else {
-            sourceStatus = "行情请求地址无效"; return false
+            setSourceStatus("行情请求地址无效"); return false
         }
         // 自动轮询「保持安静」（v2.13.34）：`isRefreshingQuotes` 与 `sourceStatus` 只在
         // **用户自己点的刷新**时才翻。这两个都是 `@Published`，每 15 秒各翻两次，
         // 每次都会发一轮改动通知把整棵视图树重建 —— 这就是用户说的
         // 「已经确认就是刷新的那一会就会卡」。自动刷新现在连这两个通知都不发。
         if manual {
-            sourceStatus = "正在刷新行情…"
+            setSourceStatus("正在刷新行情…")
             isRefreshingQuotes = true
         }
         defer { if manual { isRefreshingQuotes = false } }
@@ -2450,7 +2547,7 @@ final class PortfolioStore: ObservableObject {
                 }
             }
             guard !values.isEmpty else {
-                sourceStatus = "接口未返回可识别报价"
+                setSourceStatus("接口未返回可识别报价")
                 Task { await NativeNotifications.sendSourceHealthOnce(category: "market", body: "行情接口没有返回可识别报价。请检查数据源状态或 NAS 网络连接。") }
                 return false
             }
@@ -2532,7 +2629,14 @@ final class PortfolioStore: ObservableObject {
             }
             let route = usedNASProxy ? "NAS 代理" : "iPhone 直连"
             saveAutomaticMarketState()
-            sourceStatus = "行情已更新（\(route)）· \(Date.now.formatted(date: .omitted, time: .shortened))"
+            // **状态文案不再带「本机请求时刻」**（v2.13.35）。原来这里写
+            // `"…· 15:04"`（`Date.now` 格式化），字符串每 15 秒必然不同，
+            // `@Published` 于是一定发一轮通知 —— 哪怕行情一个数字都没变，
+            // 整棵视图树（五个 Tab 全在里面）也会被重建一次。用户说的
+            // 「所有页面上下滑动都卡」里，这就是那个「什么都没发生时也在卡」的部分。
+            // 现在只写「状态 + 路由」，值不变就不发通知；界面上那个时间改成读
+            // `latestMarketTimestamp`（行情源自带的时间戳），**只有数据真的变了才变**。
+            setSourceStatus("行情已更新（\(route)）")
             // 不把整批分时下载塞进刷新按钮的等待时间里；后台补全结束后单独更新状态。
             // 即使用户白天没有一直打开详情页，下次打开或刷新也会补回最近交易日整日数据。
             if captureIntraday && data.intradayCaptureEnabled {
@@ -2540,7 +2644,7 @@ final class PortfolioStore: ObservableObject {
             }
             return true
         } catch {
-            sourceStatus = "行情刷新失败：\(error.localizedDescription)"
+            setSourceStatus("行情刷新失败：\(error.localizedDescription)")
             Task { await NativeNotifications.sendSourceHealthOnce(category: "market", body: "行情刷新失败。请打开观盘 Pro 检查数据源和网络连接。") }
             return false
         }
@@ -2609,6 +2713,45 @@ final class PortfolioStore: ObservableObject {
         guard self[keyPath: keyPath] != value else { return false }
         self[keyPath: keyPath] = value
         return true
+    }
+
+    /// 行情状态文案统一走这里写：**值没变就不发通知**。
+    ///
+    /// 它每 15 秒被自动刷新调用一次。`@Published` 是无条件发布的，所以只要文案里有
+    /// 「本机时刻」这种每次都会变的东西，就等于每 15 秒把整棵视图树重建一遍 ——
+    /// 用户描述的「所有页面上下滑动都卡」有一大半来自这里。文案里的时间已经挪到
+    /// `sourceStatusText`（数据自带时间戳），这里只会因为**真实状态变化**才发布。
+    private func setSourceStatus(_ text: String) {
+        assignIfChanged(\.sourceStatus, text)
+    }
+
+    /// 分时档案状态文案统一走这里写：值没变就不发通知。
+    /// 它在补全过程中会被连续调用（每 4 只一次），同样的文案不该重复发布。
+    private func setIntradayArchiveStatus(_ text: String) {
+        assignIfChanged(\.intradayArchiveStatus, text)
+    }
+
+    /// 最近一次**行情源自带**的时间戳（不是本机发出请求的时刻）。
+    ///
+    /// 界面上「行情已更新 · 15:04」显示的就是它。这样显示时间会跟着数据走：
+    /// 只有真的取到了新的报价，时间才会前进 —— 而不是每刷一次就跳一下。
+    var latestMarketTimestamp: Date? {
+        var latest: Date?
+        for quote in data.quotes {
+            guard let stamp = quote.updatedAt else { continue }
+            if latest == nil || stamp > latest! { latest = stamp }
+        }
+        for holding in data.holdings where holding.kind == .etf {
+            guard let stamp = holding.marketUpdatedAt else { continue }
+            if latest == nil || stamp > latest! { latest = stamp }
+        }
+        return latest
+    }
+
+    /// 界面上显示的行情状态：状态词（+ 出错详情）+ 数据自带的截至时间。
+    var sourceStatusText: String {
+        guard sourceStatus.contains("已更新"), let moment = latestMarketTimestamp else { return sourceStatus }
+        return "\(sourceStatus) · \(moment.formatted(date: .omitted, time: .shortened))"
     }
 
     /// 行情相关字段有没有实质变化。

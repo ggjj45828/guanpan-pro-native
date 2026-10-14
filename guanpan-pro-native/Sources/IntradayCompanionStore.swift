@@ -209,6 +209,7 @@ struct IntradayCompanionDecision {
     }
     func evaluateIntradayCompanions() {
         var changed = false
+        var levelChanged = false
         for i in data.intradayCompanionIntents.indices where data.intradayCompanionIntents[i].enabled {
             let intent = data.intradayCompanionIntents[i]
             let decision = intradayCompanionDecision(code: intent.code, side: intent.side, quantity: intent.quantity)
@@ -219,11 +220,19 @@ struct IntradayCompanionDecision {
             changed = true
             // 价格百分比会随刷新变化，不能每次文字变动都推通知；只有结论档位改变才提醒。
             if previousLevel != decision.level.rawValue {
+                levelChanged = true
                 data.intradayCompanionIntents[i].lastNotifiedAt = .now
                 Task { try? await NativeNotifications.send(title: "观盘 Pro · 盘中 AI 陪伴", body: "\(intent.name)：\(decision.title(for: intent.side))。\(decision.summary)") }
             }
         }
-        if changed { save(label: nil) }
+        // **只有结论档位变了才落盘**（v2.13.35）。
+        //
+        // 结论文案里带着价格百分比，几乎每轮 15 秒刷新都会变，原来的 `if changed { save() }`
+        // 就等于「每 15 秒在主线程把整份账本 JSON 编码一次 + 写 UserDefaults」
+        // （账本里带着几万条净值历史，一次几十到上百毫秒），还会顺手排一次 NAS 上传 ——
+        // 这是「盘中所有页面都在卡」的第二个来源。档位没变时，内存里的文案照常更新、
+        // 界面照常刷新，只是不再每 15 秒付一次落盘的钱。
+        if changed, levelChanged { save(label: nil) }
     }
 
     /// 当天快照的结算状态。

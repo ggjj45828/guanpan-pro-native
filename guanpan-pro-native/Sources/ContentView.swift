@@ -28,7 +28,10 @@ enum PadTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .watchlist: return "自选"
-        case .holdings: return "持仓"
+        // 底部标签与 iPad 侧栏统一叫「证券」（2026-10-14 用户选定）：
+        // 这一页装的是场内标的 —— ETF / LOF / 股票 / 可转债，叫「股票」名不副实，
+        // 叫「持仓」又和右边的基金页重复。右边保持「基金」，两个标签正好成对。
+        case .holdings: return "证券"
         case .funds: return "基金"
         case .assets: return "资产"
         case .more: return "更多"
@@ -137,7 +140,7 @@ struct ContentView: View {
     @ViewBuilder private var phoneTabRoot: some View {
         TabView {
             DashboardView().tabItem { Label("自选", systemImage: "chart.xyaxis.line") }
-            HoldingsView(kind: .etf).tabItem { Label("持仓", systemImage: "briefcase.fill") }
+            HoldingsView(kind: .etf).tabItem { Label("证券", systemImage: "briefcase.fill") }
             HoldingsView(kind: .fund).tabItem { Label("基金", systemImage: "building.columns.fill") }
             AssetsView().tabItem { Label("资产", systemImage: "chart.pie.fill") }
             MoreHubView().tabItem { Label("更多", systemImage: "ellipsis.circle.fill") }
@@ -198,7 +201,61 @@ struct ContentView: View {
 private struct WatchSection: Identifiable {
     let name: String
     let items: [Quote]
+    /// 分节图标（按类型分节时才有；自定义分组不带图标）。
+    var icon: String? = nil
     var id: String { name }
+}
+
+/// 自选标的的「类型」分节。
+///
+/// 用户 2026-10-14：「自选也可以分为 ETF 和个股这种」。理由很实在 ——
+/// ETF 看的是折溢价 / IOPV / 场内成交量，个股看的是涨跌停与技术形态，
+/// 两类混在一列里滚动时既难定位，按涨幅排序也会互相干扰。
+/// 这里**只做显示层切分**：不改存储顺序、不动分组、不联网，纯代码规则判定。
+private enum WatchInstrumentKind: String, CaseIterable, Identifiable {
+    // 顺序就是界面里的分节顺序：**个股在前、ETF / LOF 在后**（2026-10-14 用户指定），
+    // 指数与「其他」永远排最后。改顺序直接改这里的 case 次序即可 —— 分节就是按
+    // `allCases` 排列后跳过空节的。
+    case stock, etf, index, other
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .etf: return "ETF / LOF"
+        case .stock: return "个股"
+        case .index: return "指数"
+        case .other: return "其他"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .etf: return "chart.bar.doc.horizontal"
+        case .stock: return "chart.line.uptrend.xyaxis"
+        case .index: return "globe.asia.australia"
+        case .other: return "questionmark.circle"
+        }
+    }
+
+    /// 按代码判定类型（与行情源的口径一致）：
+    /// - `sh000xxx` / `sz399xxx` / `hk*` / `us*` / `nq*` → 指数或海外标的
+    /// - 沪市 `5xxxxx`（510/511/512/513/515/516/518/560/588…）、深市 `159xxx`（ETF）、
+    ///   `150xxx`（分级）、`16xxxx` / `18xxxx`（LOF） → 场内基金
+    /// - 其余 6 位纯数字 → 个股（沪深主板 / 创业板 / 科创板 / 北交所）；
+    ///   可转债（11xxxx / 12xxxx）等落到「其他」，不硬塞进个股。
+    static func classify(_ code: String) -> WatchInstrumentKind {
+        let lower = code.lowercased()
+        if lower.hasPrefix("sh000") || lower.hasPrefix("sz399")
+            || lower.hasPrefix("hk") || lower.hasPrefix("us") || lower.hasPrefix("nq") { return .index }
+        let digits = lower.filter(\.isNumber)
+        guard digits.count == 6 else { return .other }
+        if digits.hasPrefix("5") || digits.hasPrefix("159") || digits.hasPrefix("150")
+            || digits.hasPrefix("16") || digits.hasPrefix("18") { return .etf }
+        if digits.hasPrefix("0") || digits.hasPrefix("3") || digits.hasPrefix("4")
+            || digits.hasPrefix("6") || digits.hasPrefix("8") || digits.hasPrefix("9") { return .stock }
+        return .other
+    }
 }
 
 /// 首页「盘中机会」的轻量结论。它不是下单指令：日线技术分只提供底座，
@@ -267,7 +324,6 @@ struct DashboardView: View {
     @State private var groupDraft = ""
 
     // 拿不到当日涨跌幅时显示 --，避免把「没数据」画成 0。
-    private var pnlRateText: String { store.totalPnLRate.map { $0.pct(2) } ?? "--" }
     @Environment(\.scenePhase) private var scenePhase
     @State private var showAdd = false
     @State private var showAlertEditor = false
@@ -306,9 +362,23 @@ struct DashboardView: View {
         return list
     }
 
-    /// 分组后的分节数据。关掉分组时返回单节。
+    /// 分节后的自选数据。
+    ///
+    /// **没开自定义分组时按类型分节**：个股 → ETF / LOF → 指数 → 其他
+    /// （用户 2026-10-14：「自选也可以分为 ETF 和个股」，且个股要排在上面）。
+    /// 开了自定义分组就以用户自己的分组为准 —— 那是他明确表达的组织意图，
+    /// 不该被自动分类打散。空分节直接跳过，所以只有 ETF 的账号不会看到一串空标题。
     private var watchSections: [WatchSection] {
-        guard groupEnabled else { return [WatchSection(name: "", items: filteredQuotes)] }
+        guard groupEnabled else {
+            var buckets: [WatchInstrumentKind: [Quote]] = [:]
+            for quote in filteredQuotes {
+                buckets[WatchInstrumentKind.classify(quote.code), default: []].append(quote)
+            }
+            return WatchInstrumentKind.allCases.compactMap { kind in
+                guard let items = buckets[kind], !items.isEmpty else { return nil }
+                return WatchSection(name: kind.title, items: items, icon: kind.icon)
+            }
+        }
         var order: [String] = []
         var buckets: [String: [Quote]] = [:]
         for q in filteredQuotes {
@@ -519,6 +589,11 @@ struct DashboardView: View {
                         } header: {
                             if !section.name.isEmpty {
                                 HStack(spacing: 6) {
+                                    // 按类型分节时带一个图标，个股 / ETF 一眼分得清
+                                    // （自定义分组来自用户输入，没有图标）。
+                                    if let icon = section.icon {
+                                        Image(systemName: icon).font(.caption).foregroundStyle(.secondary)
+                                    }
                                     Text(section.name).font(.subheadline.weight(.semibold))
                                     Text("\(section.items.count) 只").font(.caption2).foregroundStyle(.secondary)
                                 }
@@ -686,7 +761,10 @@ struct DashboardView: View {
             }
             HStack(spacing: 5) {
                 Circle().fill(statusDotColor).frame(width: 5, height: 5)
-                Text(store.sourceStatus).scaledFont(10).foregroundStyle(.secondary).lineLimit(1)
+                // 时间读的是行情源自带的截至时刻（`sourceStatusText`），不是本机请求时刻：
+                // 只有数据真的更新了它才会走字，状态字符串本身保持稳定，避免每 15 秒
+                // 白重建一次整棵视图树（详见 PortfolioStore.setSourceStatus 的说明）。
+                Text(store.sourceStatusText).scaledFont(10).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 6)
                 if !store.indexQuotes.isEmpty {
                     Text("左滑 · 点开看走势")
@@ -728,107 +806,6 @@ struct DashboardView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tone.opacity(0.24), lineWidth: 0.5))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(item.name) \((item.price).num(2))，\(item.changePct.directionMark())\(percent)")
-    }
-
-    // MARK: - 首页账户卡
-
-    /// 首页账户卡：一行「总资产 / 当日盈亏」+ 3×3 明细。
-    ///
-    /// v2.12 把两张卡合成了一张，但「今日盈亏」当时只统计了场内 ETF，却和「总资产」
-    /// 并排放在最显眼的位置，很容易被读成「全部账户的今日盈亏」。
-    ///
-    /// v2.13 按主流基金 App 的账户卡重排：主区域只留两个数 —— 左边总资产、右边当日盈亏，
-    /// **并把数据日期写进标签**（「10-09 当日盈亏」），一眼能分辨谁是谁；
-    /// 场内 / 场外各自的盈亏压到下面宫格里分成两格，主区域不再堆第二、第三行。
-    private var accountSummaryCard: some View {
-        let grossTone = store.hasDayPnLGross ? PnLColor.of(store.dayPnLGross) : Color.secondary
-        return VStack(alignment: .leading, spacing: 12) {
-            // 与资产页的账户卡共用同一个头部组件（见 `AccountHeadlineRow`）：
-            // 字号、标签位置、取色规则一处维护，两页不会再各走各的。
-            AccountHeadlineRow(
-                totalText: (store.totalAsset).cny(),
-                dayLabel: dayPnLLabel,
-                dayText: store.hasDayPnLGross ? store.dayPnLGross.cny() : "--",
-                dayRateText: store.hasDayPnLGross
-                    ? "\(store.dayPnLGross.directionMark()) \(store.dayPnLGrossRate.map { $0.pct(2) } ?? "--")"
-                    : "--",
-                dayTone: grossTone)
-            Divider().opacity(0.4)
-            MetricGrid(columns: 3, cells: [
-                MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
-                MetricCell(title: "参考现金", value: store.data.cash.cny()),
-                MetricCell(title: "仓位", value: store.positionPercent.pct(1)),
-                MetricCell(title: "持仓浮盈", value: store.totalPnL.cny(), toneValue: store.totalPnL),
-                MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
-                MetricCell(title: "总成本", value: store.totalCost.cny()),
-                MetricCell(title: "已实现", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
-                MetricCell(title: "场内盈亏", value: store.hasIntradayPnL ? store.intradayPnL.cny() : "--",
-                           toneValue: store.hasIntradayPnL ? store.intradayPnL : nil),
-                MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
-                           toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
-            ])
-            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 净值日期为今天的场外基金变化（\(fundNAVDateNote)）。晚一天公布的美股基金净值归到它对应的净值日，不挪到公布日；补到的历史净值用于回算历史快照。")
-                .scaledFont(10).foregroundStyle(.secondary)
-        }
-        // 取色规则与资产页的账户卡保持一致：当日盈亏优先、没有当日数才回落总浮盈。
-        .cardSurface(tone: store.hasDayPnLGross
-                     ? CardTone.pnl(store.dayPnLGross)
-                     : CardTone.pnl(store.totalPnL))
-    }
-
-    /// 当日盈亏的标签。核心是**别让人以为是当天**：
-    /// 休市时行情源照旧返回上一交易日收盘价，而场外基金要 T+1 才有净值 ——
-    /// 场内还在跳、场外是空的，很容易被读成「今天场内赚了这么多」。
-    /// 所以标签按数据时点分档写死：今日盈亏 / 今日收盘盈亏 / 休市 · MM-dd 盈亏。
-    private var dayPnLLabel: String {
-        // 只有场外基金、且今日净值还没到公布时间：没有任何可显示的数字，
-        // 与其显示一个会被误读成「今天场外盈亏」的旧净值日数字，不如说清楚在等什么。
-        if !store.hasIntradayPnL,
-           store.data.holdings.contains(where: { $0.kind == .fund }),
-           !store.hasFundDayPnL {
-            return "今日盈亏（场外净值未更新）"
-        }
-        guard store.hasDayPnLGross else { return "当日盈亏" }
-        if store.hasIntradayPnL, let day = store.intradayQuoteDate.map({ shortDay($0) }) {
-            if !store.isIntradayQuoteToday {
-                // 「行情停在上一个交易日」有两种原因，措辞必须分开：
-                // 真休市（周末 / 节假日），和**交易日开盘前**。后者写「休市」是错的 ——
-                // 早上打开 App 会看到「休市 · 10-13 盈亏」，像是在说今天不开盘。
-                let closed = store.isMarketClosedToday
-                if store.hasFundDayPnL {
-                    return closed ? "行情休市 \(day) · 净值今日更新" : "\(day) 收盘 · 净值今日更新"
-                }
-                return closed ? "休市 · \(day) 盈亏" : "\(day) 收盘盈亏"
-            }
-            return store.isMarketOpenNow ? "今日盈亏" : "今日收盘盈亏"
-        }
-        // 场外实际收益只在净值估值日入账；采集日不能把前几天的变化挪成今天收益。
-        if store.hasFundDayPnL, let day = store.latestFundNAVDate.map({ shortDay($0) }) {
-            return "基金净值日 \(day)"
-        }
-        return "当日盈亏"
-    }
-
-    /// 场内行情的时点说明。休市时行情源仍会返回上一交易日收盘价 ——
-    /// 必须写死状态，否则周末看到的数字会被当成当天的。
-    private var intradayDateNote: String {
-        guard store.hasIntradayPnL, let date = store.intradayQuoteDate else { return "无行情" }
-        if !store.isIntradayQuoteToday {
-            // 同上：交易日开盘前行情必然停在上一个交易日，那不是休市，是「待开盘」。
-            return store.isMarketClosedToday ? "休市 · \(shortDay(date)) 收盘" : "\(shortDay(date)) 收盘 · 待开盘"
-        }
-        return store.isMarketOpenNow ? "实时" : "\(shortDay(date)) 收盘"
-    }
-
-    /// 场外基金最新公布净值日。"2026-10-08" → "净值 10-08"。
-    /// 开市日白天今日净值还没公布时，场外盈亏不参与合计，这里要写明在等晚间更新。
-    private var fundNAVDateNote: String {
-        guard let date = store.latestFundNAVDate else { return "无净值" }
-        let today = MarketCalendar.isoDay(.now)
-        guard date == today, store.hasFundDayPnL else {
-            return "最新净值日 \(shortDay(date)) · 今日净值未公布，不计入今日"
-        }
-        return "净值日 \(shortDay(date)) · 今日已公布"
     }
 
     // MARK: - 自选行渲染
@@ -1395,7 +1372,9 @@ struct HoldingsView: View {
     /// 把持仓卡和基金工具挤到下面。展开状态记在 AppStorage 里，下次打开保持用户选择。
     @AppStorage("guanpan.native.fundRecentTrades.expanded") private var fundRecentTradesExpanded = false
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
-    private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
+    /// 页面标题跟着底部标签走：左边「证券」、右边「基金」。
+    /// 原来这里写「ETF / 证券持仓」，与底部的标签对不上，也和右边的「场外基金」不成对。
+    private var title: String { kind == .fund ? "场外基金" : "证券" }
 
     /// 场内 / 场外的类别色。场外沿用「基金资产概览」卡的强调紫，场内沿用状态蓝绿。
     /// 用户反馈「场外基金卡片与持仓卡片长一样」——两页的持仓行本来就是同一个渲染函数，
@@ -1734,9 +1713,15 @@ struct HoldingsView: View {
                 }
             }
             .task {
+                // 这个时钟唯一的作用是「跨过午夜后让彩虹强调自动消失」。
+                // 原来每 60 秒无条件写一次 `@State`，等于**每分钟把整页持仓行重建一遍**；
+                // 现在只在**日期真的翻篇**时才写，其余时间一次重绘都不产生。
                 while !Task.isCancelled {
-                    fundFreshnessClock = .now
                     try? await Task.sleep(for: .seconds(60))
+                    let now = Date.now
+                    if MarketCalendar.isoDay(now) != MarketCalendar.isoDay(fundFreshnessClock) {
+                        fundFreshnessClock = now
+                    }
                 }
             }
         }
@@ -6854,7 +6839,6 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     @State private var themePickerExpanded = false
-    @AppStorage("guanpan.native.legacyArchive.expanded") private var legacyArchiveExpanded = false
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
@@ -7275,47 +7259,13 @@ struct SettingsView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
         }
-        if !store.data.legacySettingsArchives.isEmpty {
-            Section("旧版资料") {
-                DisclosureGroup(isExpanded: $legacyArchiveExpanded) {
-                    ForEach(store.data.legacySettingsArchives) { item in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.title).font(.subheadline)
-                            Text(legacyArchiveDescription(item.id))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    Text("这些资料来自旧版备份，只为避免迁移时丢失信息；当前 iOS 不会把其中的代码或参数当作设置执行。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                } label: {
-                    HStack {
-                        Label("迁移存档", systemImage: "archivebox")
-                        Spacer()
-                        Text("\(store.data.legacySettingsArchives.count) 项 · 不生效")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
     }
 
-    private func legacyArchiveDescription(_ id: String) -> String {
-        switch id {
-        case "cfg": return "旧版界面和刷新偏好；当前 iOS 使用本页设置，不读取它。"
-        case "profile": return "旧版记录的个人风格文字；仅保留，不参与当前建议。"
-        case "ai": return "旧版 AI 分析结果缓存；可能已经过期，不参与当前分析。"
-        case "tradePlans": return "旧版计划的原始存档；不会自动执行。"
-        case "gridExperience": return "旧版网格模拟经验；不参与当前网格参数计算。"
-        case "hol": return "旧版休市日期原始存档；有效日期已另行迁入当前日历。"
-        case "gridmeta": return "旧版分时采集状态；当前版本不沿用运行状态。"
-        case "marketTargets": return "旧版仓位和均线参数原始存档；当前设置以 iOS 页面为准。"
-        case "dividendReference": return "旧版分红估算参考，不代表真实到账。"
-        case "exchangeRates": return "旧版汇率参考值；当前版本不会把它当实时汇率。"
-        case "manualPrices": return "旧版手填价格原始存档；已识别的数据会迁入当前手动行情。"
-        default: return "旧版迁移时保留的只读资料；当前版本不执行。"
-        }
-    }
+    // 「旧版资料」分区已于 v2.13.35 整块删除（用户要求）。
+    // 它展示的是旧版备份里**没被识别**的那些设置原文（`legacySettingsArchives`），
+    // 当年只是为了「迁移时不丢东西」留档；这些内容永远不会被执行，占着一整块设置页
+    // 却没有任何可操作价值。采集端（`LegacyMigration.appendSettingsArchive`）
+    // 与数据字段一并移除，旧备份里多出来的 key 由 JSONDecoder 自然忽略。
 
     @ViewBuilder private var notificationSection: some View {
         Section("系统通知") {
@@ -7365,7 +7315,7 @@ struct SettingsView: View {
                 }
                 store.replaceData(migrated.data, intradayBars: migrated.intradayBars)
                 store.configureNASSync()
-                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 项旧版只读资料、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
+                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
             }
         } catch { message = "导入失败：\(error.localizedDescription)" }
     }

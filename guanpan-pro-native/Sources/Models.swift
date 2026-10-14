@@ -818,12 +818,6 @@ struct LegacyDCAEventArchive: Codable, Identifiable {
     var rawJSON: String
 }
 
-struct LegacySettingsArchive: Codable, Identifiable {
-    var id: String
-    var title: String
-    var rawJSON: String
-}
-
 struct GridReplayResult: Identifiable {
     var id: UUID = UUID()
     var code: String
@@ -1091,7 +1085,9 @@ struct PortfolioData: Codable {
     var legacyGridArchives: [LegacyGridArchive] = []
     var legacyShadowArchives: [LegacyShadowArchive] = []
     var legacyDCAEvents: [LegacyDCAEventArchive] = []
-    var legacySettingsArchives: [LegacySettingsArchive] = []
+    // v2.13.35 移除 `legacySettingsArchives`（旧版未识别设置的只读留档）。
+    // 用户已明确不需要这块「旧版资料」，采集端与展示端一并删除；
+    // 旧备份 / NAS 文档里多余的 key 会被 JSONDecoder 忽略，不影响解码。
     var aiAnalysisConfig = AIAnalysisConfig()
     var savedAccountAIAnalysis: SavedAIAnalysis?
     var savedPortraitAIAnalysis: SavedAIAnalysis?
@@ -1122,7 +1118,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -1147,7 +1143,6 @@ struct PortfolioData: Codable {
         legacyGridArchives = try c.decodeIfPresent([LegacyGridArchive].self, forKey: .legacyGridArchives) ?? []
         legacyShadowArchives = try c.decodeIfPresent([LegacyShadowArchive].self, forKey: .legacyShadowArchives) ?? []
         legacyDCAEvents = try c.decodeIfPresent([LegacyDCAEventArchive].self, forKey: .legacyDCAEvents) ?? []
-        legacySettingsArchives = try c.decodeIfPresent([LegacySettingsArchive].self, forKey: .legacySettingsArchives) ?? []
         aiAnalysisConfig = try c.decodeIfPresent(AIAnalysisConfig.self, forKey: .aiAnalysisConfig) ?? AIAnalysisConfig()
         savedAccountAIAnalysis = try c.decodeIfPresent(SavedAIAnalysis.self, forKey: .savedAccountAIAnalysis)
         savedPortraitAIAnalysis = try c.decodeIfPresent(SavedAIAnalysis.self, forKey: .savedPortraitAIAnalysis)

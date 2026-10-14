@@ -284,23 +284,16 @@ enum LegacyMigration {
         let gridRecords = db["gridTrades"] as? [[String: Any]] ?? []
         for row in gridRecords { appendLegacyGrid(row, to: &result) }
         let bars = parseGridHistory(root["gridhist"])
-        appendSettingsArchive("cfg", title: "旧版应用设置（已移除凭证与截图模型）", value: sanitizedLegacyConfig(root["cfg"]), to: &result)
-        appendSettingsArchive("profile", title: "旧版个人风格偏好", value: db["profile"], to: &result)
-        appendSettingsArchive("ai", title: "旧版 AI 分析缓存与偏好（只读）", value: db["ai"], to: &result)
-        appendSettingsArchive("tradePlans", title: "旧版交易计划", value: db["tradePlans"], to: &result)
-        appendSettingsArchive("gridExperience", title: "旧版网格策略经验（只读）", value: db["gridExperience"], to: &result)
-        appendSettingsArchive("hol", title: "旧版自定义休市日", value: root["hol"], to: &result)
-        appendSettingsArchive("gridmeta", title: "旧版分时采集状态", value: root["gridmeta"], to: &result)
-        appendSettingsArchive("marketTargets", title: "旧版仓位与均线参数", value: root["tgt"], to: &result)
-        appendSettingsArchive("dividendReference", title: "旧版分红参考数据", value: root["div"], to: &result)
-        appendSettingsArchive("exchangeRates", title: "旧版汇率数据", value: root["fx"], to: &result)
-        appendSettingsArchive("manualPrices", title: "旧版手填价格", value: root["mp"], to: &result)
+        // v2.13.35：不再把旧版备份里「没被识别」的设置原文留档
+        // （用户要求删除「旧版资料 / 迁移存档」这块功能）。
+        // 顺带删掉了 `sanitizedLegacyConfig` —— 它唯一的作用就是给这份留档脱敏，
+        // 现在整条路径都不存在了，旧备份里多出来的 key 交给 JSONDecoder 忽略即可。
 
         guard !result.quotes.isEmpty || !result.holdings.isEmpty || !result.snapshots.isEmpty
             || !result.cashFlows.isEmpty || !result.ledger.isEmpty || !result.dayGridPlans.isEmpty
             || !result.fundDCAPlans.isEmpty || !result.legacyDCAEvents.isEmpty
             || !result.legacyGridArchives.isEmpty || !result.fundNAVHistory.isEmpty
-            || !result.legacySettingsArchives.isEmpty || !bars.isEmpty || root["cash"] != nil else {
+            || !bars.isEmpty || root["cash"] != nil else {
             throw LegacyMigrationError.invalidBackup
         }
         return LegacyMigrationResult(data: result, intradayBars: bars, nasConfig: parseNASConfig(root["cfg"]))
@@ -657,22 +650,6 @@ enum LegacyMigration {
                   formatter.date(from: day) != nil else { return nil }
             return day
         })).sorted()
-    }
-
-    private static func appendSettingsArchive(_ id: String, title: String, value: Any?, to data: inout PortfolioData) {
-        guard let value, !(value is NSNull) else { return }
-        let encoded = encodeJSON(value)
-        guard encoded != "{}" else { return }
-        data.legacySettingsArchives.append(LegacySettingsArchive(id: id, title: title, rawJSON: encoded))
-    }
-
-    private static func sanitizedLegacyConfig(_ raw: Any?) -> [String: Any]? {
-        guard var cfg = raw as? [String: Any] else { return nil }
-        // Credentials are handled separately: AI keys are never imported, NAS
-        // tokens go directly to Keychain, and screenshot model preferences are
-        // excluded by the user's migration scope.
-        ["apiKey", "syncToken", "visionModel"].forEach { cfg.removeValue(forKey: $0) }
-        return cfg
     }
 
     private static func string(_ value: Any?) -> String? {

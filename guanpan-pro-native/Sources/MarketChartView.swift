@@ -1051,6 +1051,31 @@ private struct DailySubChartTabs: View {
 }
 
 struct MarketChartView: View {
+    /// **只建一次**的日期格式化器。
+    ///
+    /// `DateFormatter()` 初始化 + 设 locale/timeZone/dateFormat 一次要几十微秒，
+    /// 而本文件里的转换函数都写在 `body` 与逐根 K 线 / 逐条流水的路径上
+    /// （`shanghaiDay` 出现在 ledger 的 `filter` 闭包里，周 / 月聚合会逐根解析日期，
+    /// 分时横轴刻度每次重绘都要造一个）。每次现建一个，等于把一次字符串转换
+    /// 放大成一次格式化器构造 —— 这是分时 / 日 K 页缩放与滑动掉帧的直接来源之一。
+    /// 所有调用都在主线程；`DateFormatter` 自 iOS 7 起格式化是线程安全的。
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    /// 「yyyy-MM-dd HH:mm」解析器：分时横轴刻度与全天时段边界共用。
+    private static let minuteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
@@ -1114,12 +1139,9 @@ struct MarketChartView: View {
     @State private var selectedDailyDate: String?
 
     private var allBars: [DailyBar] {
-        let rows = (store.dailyBars[holding.code] ?? []).filter {
-            $0.open.isFinite && $0.close.isFinite && $0.high.isFinite && $0.low.isFinite
-                && $0.volume.isFinite && $0.close > 0 && $0.high > 0 && $0.low > 0
-        }
-        return Dictionary(rows.map { ($0.date, $0) }, uniquingKeysWith: { _, newer in newer })
-            .values.sorted { $0.date < $1.date }
+        // 走 store 的带缓存版本（v2.13.35）：日 K 页一次 body 里会取十几次日线，
+        // 每次都做一遍 filter + 去重字典 + 全量排序的话，捏合缩放就是逐帧付这个钱。
+        store.normalizedDailyBars(forCode: holding.code)
     }
     private var bars: [DailyBar] { allBars }
     /// 日 K 始终基于完整历史；屏幕上显示多少根只由捏合缩放与拖动决定。
@@ -1130,21 +1152,36 @@ struct MarketChartView: View {
     /// 才能算出区间左端的值 —— 之前只有 MA250 走了这条路，MA5/10/20/60 是拿 `bars`
     /// 当计算源，于是捏合放大到「可见根数 < 窗口长度」时，`source.count >= window`
     /// 不成立，整条线直接消失；拖动去看更早的历史也一样。
-    private var periodAllBars: [DailyBar] { aggregated(allBars) }
+    ///
+    /// v2.13.35：它就是 `periodBars`（两者都是 `aggregated(allBars)`，一字不差），
+    /// 原来各算一遍等于把周 / 月聚合的日期解析做两遍。改为直接复用。
+    private var periodAllBars: [DailyBar] { periodBars }
 
     /// 把日线聚合成当前周期（日 / 周 / 月）。
     /// 传 `bars` 得到显示区间的序列，传 `allBars` 得到全量序列，两者口径完全一致 ——
     /// 只有口径一致，均线「用全量算、按可见日期取」才对得上横坐标。
+    ///
+    /// 周 / 月的结果按「标的 + 周期 + 源序列边界」memo（v2.13.35）：
+    /// 这个函数一次 body 会被调十几次（`periodBars`、均线、支撑压力、副图…），
+    /// 每次都要把每根日线的日期字符串解析一遍再分组排序；缓存之后只算一次。
     private func aggregated(_ source: [DailyBar]) -> [DailyBar] {
         switch selectedChartPeriod {
         case .intraday, .minute30, .minute60: return []
         case .day: return source
         case .week, .month:
+            let key = "\(holding.code)|\(selectedChartPeriod.rawValue)|\(source.count)"
+                + "|\(source.first?.date ?? "")|\(source.last?.date ?? "")"
+            return ChartAggregationMemo.value(key: key) { buildAggregated(source) }
+        }
+    }
+
+    private func buildAggregated(_ source: [DailyBar]) -> [DailyBar] {
+        switch selectedChartPeriod {
+        case .intraday, .minute30, .minute60: return []
+        case .day: return source
+        case .week, .month:
             let calendar = Calendar(identifier: .iso8601)
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-            formatter.dateFormat = "yyyy-MM-dd"
+            let formatter = Self.dayFormatter
             let grouped = Dictionary(grouping: source) { bar -> String in
                 guard let date = formatter.date(from: bar.date) else { return bar.date }
                 if selectedChartPeriod == .month { return String(bar.date.prefix(7)) }
@@ -1371,10 +1408,8 @@ struct MarketChartView: View {
 
     private var intradayAxisTicks: [(time: Date, label: String)] {
         guard compressIntradayLunch, let day = selectedIntradayBars.first?.day else { return [] }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        // 静态缓存的解析器：这个属性每次重绘都要取值，原来每次现造一个 DateFormatter。
+        let formatter = Self.minuteFormatter
         return ["09:30", "10:30", "11:30", "14:00", "15:00"].compactMap { label in
             guard let date = formatter.date(from: "\(day) \(label)") else { return nil }
             return (intradayChartTime(date), label)
@@ -1390,10 +1425,7 @@ struct MarketChartView: View {
     /// 现在无条件画全天，主图、MACD 与分时量共用同一个域，时间点严格上下对齐。
     private var intradaySessionDomain: ClosedRange<Date>? {
         guard let first = selectedIntradayBars.first else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let formatter = Self.minuteFormatter
         let day = shanghaiDay(first.timestamp)
         guard let start = formatter.date(from: "\(day) 09:30"),
               let end = formatter.date(from: "\(day) 15:00") else { return nil }
@@ -2748,12 +2780,10 @@ struct MarketChartView: View {
         backtestResult = result; backtestMessage = ""
     }
 
+    /// 上海时区的 `yyyy-MM-dd`。直接复用 `MarketCalendar` 里那个缓存好的格式化器 ——
+    /// 本函数会被 ledger / 分时点**逐条**调用，原来自建 `DateFormatter` 等于每次几十微秒。
     private func shanghaiDay(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        MarketCalendar.isoDay(date)
     }
 
     @MainActor private func analyzeInstrument() async {
@@ -2853,6 +2883,33 @@ struct MarketChartView: View {
 // MARK: - 图表共用配色与宽度
 
 /// 均线配色单一数据源。日 K 主图从这里取，避免两处配色漂移。
+/// 「日线周期聚合」memo（周 K / 月 K 用）。
+///
+/// 一次 `body` 里 `periodBars` / `periodAllBars` 会被取十几次（均线、支撑压力、
+/// 副图、刻度…），而周 / 月聚合每次都要把每根日线的日期字符串解析一遍再分组排序 ——
+/// 640 根 × 十几次就是几千次日期解析，捏合缩放 / 拖动时**逐帧**都付这个钱。
+/// 这里按「标的 + 周期 + 源序列边界」缓存结果；日线一变（新交易日、盘中刷新末根）
+/// 键就变，自然失效，不需要手动清理。只保留最近 12 条，避免逛过很多标的后长驻内存。
+///
+/// 全部调用都在主线程（SwiftUI 视图是 `@MainActor`），所以这里是单线程状态。
+@MainActor
+private enum ChartAggregationMemo {
+    private static var storage: [String: [DailyBar]] = [:]
+    private static var order: [String] = []
+
+    static func value(key: String, build: () -> [DailyBar]) -> [DailyBar] {
+        if let hit = storage[key] { return hit }
+        let built = build()
+        storage[key] = built
+        order.append(key)
+        while order.count > 12 {
+            let oldest = order.removeFirst()
+            storage.removeValue(forKey: oldest)
+        }
+        return built
+    }
+}
+
 private enum ChartPalette {
     static let ma5 = Color(red: 1.0, green: 0.62, blue: 0.11)    // 橙
     static let ma10 = Color(red: 0.30, green: 0.66, blue: 1.0)   // 蓝
