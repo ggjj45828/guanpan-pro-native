@@ -1257,12 +1257,25 @@ final class PortfolioStore: ObservableObject {
         scheduleNASSync(delay: 1)
         nasPollingTask = Task { @MainActor in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                try? await Task.sleep(nanoseconds: Self.nasPollingIntervalSeconds * 1_000_000_000)
                 guard !Task.isCancelled else { return }
                 await synchronizeNASSafely()
             }
         }
     }
+
+    /// 前台轮询「另一台设备有没有改」的间隔。
+    ///
+    /// **一小时**。它只负责「收到别人（另一台手机）的改动」，方向单一、也不紧急 ——
+    /// 本机自己的改动从来不靠它：启动、回到前台、每次编辑（4 秒防抖）、退到后台，
+    /// 四条路各自都会立刻同步一次。
+    ///
+    /// 原来写的是 60 秒，用户明确否掉：「不需要 60 秒就检查一次，改成 1 小时就行」。
+    /// 而且这一轮之前，这个循环每 60 秒会把**整份原生文档**（含全部分时与日 K 档案，
+    /// 单次可能好几 MB）拉回来只为比一个指纹 —— 那是穿透流量最大的一笔。
+    /// 现在即使触发，也只是先打一个几十字节的 `/api/ping`（见 `synchronizeNASSafely`
+    /// 的快速通道），远端版本号没变就直接收工，不再下载文档。
+    private static let nasPollingIntervalSeconds: UInt64 = 3600
 
     func pauseNASSyncPolling() {
         flushAutomaticMarketState()
