@@ -3577,21 +3577,28 @@ struct AssetsView: View {
         return [first, rows[rows.count / 2].date, last]
     }
 
-    /// 「净值日早于采集日」的那些净值日 —— 也就是**迟到到手机**的净值。
+    /// 持仓场外基金的全部净值日（升序去重）。用来回答快照行那句话：
+    /// **「这条快照里的场外基金，是按哪一天的净值算的？」**
     ///
-    /// 美股 / QDII 的典型形态：周一（美东）收盘的净值，北京周二晚才公布并采到本机。
-    /// 这份收益属于净值日那一天，所以回算只认 `date`，不认 `fetchedAt`；
-    /// 这个集合只是用来在界面上把「哪几条快照已经收下了这份迟到净值」标出来，
-    /// 让「补没补上」变成可核对的事实，而不是靠猜。
-    private var reconciledFundNAVDays: Set<String> {
+    /// 场外基金净值是滞后公布的 —— 14 号这天的账户里，某只基金能取到的最新净值
+    /// 可能就是 9 号那一份。这没错，14 号的总资产本来就用它算
+    /// （用户 2026-10-14 确认：「14 号就是 14 号，跟 9 号没关系」）。
+    /// 界面把锚点标出来就行，**不要**去改那条快照的数字。
+    private var fundNAVAnchorDays: [String] {
         let codes = Set(store.data.holdings.filter { $0.kind == .fund }.map(\.code))
         guard !codes.isEmpty else { return [] }
-        var days: Set<String> = []
-        for point in store.data.fundNAVHistory where codes.contains(point.code) {
-            guard let fetchedAt = point.fetchedAt else { continue }
-            if MarketCalendar.isoDay(fetchedAt) > point.date { days.insert(point.date) }
+        return Set(store.data.fundNAVHistory.filter { codes.contains($0.code) }.map(\.date)).sorted()
+    }
+
+    /// 在已排序的净值日数组里找「不晚于 day 的最后一个」，二分而不是每行扫一遍。
+    private func fundNAVAnchor(for day: String, in days: [String]) -> String? {
+        var low = 0, high = days.count - 1
+        var best: String?
+        while low <= high {
+            let mid = (low + high) / 2
+            if days[mid] <= day { best = days[mid]; low = mid + 1 } else { high = mid - 1 }
         }
-        return days
+        return best
     }
     var body: some View {
         NavigationStack {
@@ -3669,7 +3676,7 @@ struct AssetsView: View {
                         }
                     }
                     if !snapshotBackfillMessage.isEmpty { Text(snapshotBackfillMessage).font(.footnote).foregroundStyle(.secondary) }
-                    Text("净值更新后会按净值日期自动修正可核实的历史快照，并补建缺失日期；手动核实的快照不会被覆盖。重建只使用完整流水、现金与真实历史价格，无法核实的日期会保留原值并提示。")
+                    Text("快照一经记录即定稿：净值更新后**不会**回头改写已有的历史快照，只会补建此前缺失的日期；手动核实的快照更不会被覆盖。补建只使用完整流水、现金与真实历史价格，无法核实的日期保持空白。")
                         .font(.footnote).foregroundStyle(.secondary)
                     DisclosureGroup(isExpanded: $snapshotDetailsExpanded) {
                     if !store.snapshotMonths.isEmpty {
@@ -3687,9 +3694,9 @@ struct AssetsView: View {
                     }
                     if store.data.snapshots.isEmpty { Text("暂无快照").foregroundStyle(.secondary) }
                     let sortedSnapshots = store.data.snapshots.sorted { $0.date < $1.date }
-                    // 只算一次：哪些净值日是「迟到到手机」的（净值日 < 采集日）。
-                    // 美股 / QDII 的典型形态就是它 —— 周一（美东）收盘的净值，北京周二晚才到。
-                    let reconciledDays = reconciledFundNAVDays
+                    // 只算一次：全部场外净值日（升序）。每行做一次二分就能查出
+                    // 「这条快照按哪一天的场外净值计价」—— 逐行 filter 全量历史会卡列表。
+                    let navAnchorDays = fundNAVAnchorDays
                     if sortedSnapshots.count > 1 {
                         let first = snapshotChartData.first
                         let last = snapshotChartData.last
@@ -3773,13 +3780,13 @@ struct AssetsView: View {
                                 Text("较上次快照收益（已扣除现金流） \((result).directionMark()) \((result).cny())")
                                     .font(.caption).foregroundStyle(PnLColor.of(result))
                             }
-                            // 美股 / QDII 的净值晚一个交易日公布，它带来的变动属于**净值日**那一天，
-                            // 不属于公布日。`reconcileProvisionalSnapshotsAfterNAVUpdate` 会在净值
-                            // 到手机后把这一天重算回去（用户诉求「历史快照要补美股晚一个交易日公布的收益」）。
-                            // 这里把「哪几条快照确实收下了这份迟到净值」直接标出来，
-                            // 免得只能靠猜 —— 数字对不对，看这一行就知道。
-                            if reconciledDays.contains(s.date) {
-                                Text("已并入晚一个交易日公布的场外净值（按净值日回算到这一天，不挪到公布日）")
+                            // 场外基金净值公布滞后：这条快照里的基金部分，用的是「当天能取到的
+                            // 最新一期净值」。把那一期标出来，用户就不用猜这个数字是怎么来的 ——
+                            // 数字本身不会事后被改（快照一经写入即定稿）。
+                            if let anchor = fundNAVAnchor(for: s.date, in: navAnchorDays) {
+                                Text(anchor == s.date
+                                     ? "场外基金按 \(anchor) 净值计价"
+                                     : "场外基金按 \(anchor) 净值计价（该期公布滞后，当天只能取到这一期）")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
@@ -3789,7 +3796,7 @@ struct AssetsView: View {
                             }
                         }
                     }
-                    Text("口径：快照 = 当天收盘的持仓市值 + 现金；相邻两条之差再扣掉手动记录的现金流，才是这一期的净收益。场外基金按**净值日**入账 —— 美股 / QDII 晚一个交易日公布的净值会在到手机后自动回算到它自己的净值日那条快照上，不挪到公布日，所以某天的收益在净值到齐前后可能变一次。")
+                    Text("口径：快照 = **记录当时**的持仓市值（场外基金按当时能取到的最新一期净值）+ 现金，写进去就定稿。场外基金公布得慢（美股 / QDII 常晚一个交易日以上），某只基金在 14 号可能只公布了 9 号的净值 —— 那 14 号的总资产就按 9 号净值算，这正是 14 号账户的真实账面值；事后**不会**拿迟到的净值回头改写它。相邻两条之差再扣掉手动记录的现金流，才是这一期的净收益。")
                         .font(.caption2).foregroundStyle(.secondary)
                     } label: {
                         HStack {

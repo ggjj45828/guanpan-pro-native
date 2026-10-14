@@ -226,6 +226,11 @@ struct IntradayCompanionDecision {
         if changed { save(label: nil) }
     }
 
+    /// 当天快照的结算状态。
+    ///
+    /// **只用于「今天」这一条**：历史快照的 quality 和数值一样，写入即冻结
+    /// （见 `clearStaleSnapshotBackfillNotes`），不会再被重算 —— 所以下面
+    /// `day != today` 那半段只是给按日查询留的，正常流程走不到。
     func snapshotQuality(for day: String) -> PortfolioSnapshot.Quality {
         let funds = data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
         return funds.allSatisfy { fund in
@@ -241,66 +246,31 @@ struct IntradayCompanionDecision {
         } ? .settled : .provisional
     }
 
-    /// 新基金净值到账后，按净值估值日重算所有自动历史快照。
-    /// 延迟到达的 9 日净值必须回写 9 日快照，即使该快照此前已被标为“完整”。
-    /// 手动核实快照始终保留；缺少流水/历史价格时不伪造总额，并标明未能重算。
-    @discardableResult func reconcileProvisionalSnapshotsAfterNAVUpdate() -> Int {
-        let today = companionDay()
+    /// **历史快照一经写入即定稿：迟到的净值不再回头改写它。**
+    ///
+    /// 这是用户 2026-10-14 当面确认的口径，也是这个 App 里最容易写反的一处。
+    /// 场外基金净值滞后公布是常态（美股 / QDII 常晚一个交易日以上），所以
+    /// **14 号那天能取到的最新净值，可能标着 9 号** —— 14 号的账户就值这么多。
+    /// 事后拿真正属于 9 号的那份净值回头重算 9 号（或 14 号）的快照，会坏两件事：
+    /// ① 用户当天明明看到的数字，过一天自己变了 —— 快照就不再是「账实核对」的记录；
+    /// ② 区间收益被追溯修改，复盘时无法归因到某一天。
+    /// 所以 `total` / `cash` / `quality` 落盘即冻结，只有**今天**那一条随行情刷新
+    /// （当天还没结束，尚未定稿，见 `refreshTodaySnapshotIfPresent`）。
+    /// 净值公布得慢这件事，靠界面把「这条快照用的是哪个净值日」标出来解释，而不是改数。
+    ///
+    /// 本函数只做迁移：把老版本 `reconcileProvisionalSnapshotsAfterNAVUpdate`
+    /// 留下的「迟到净值到达后会回补」这类已经不成立的说明清掉，数值一个都不动。
+    @discardableResult func clearStaleSnapshotBackfillNotes() -> Int {
         var changed = 0
-        for index in data.snapshots.indices where data.snapshots[index].quality != .manual {
-            let day = data.snapshots[index].date
-            guard day < today else { continue }
-            let oldTotal = data.snapshots[index].total
-            let oldCash = data.snapshots[index].cash
-            let oldQuality = data.snapshots[index].quality
-            let oldNote = data.snapshots[index].note
-            if let state = reconstructedState(on: day),
-               let total = historicalPortfolioTotal(on: day, state: state) {
-                data.snapshots[index].total = total
-                data.snapshots[index].cash = state.cash
-                // 保留“重建”来源标签；其他自动快照按当日净值覆盖完整度更新。
-                if oldQuality != .reconstructed {
-                    data.snapshots[index].quality = snapshotQuality(for: day)
-                }
-                data.snapshots[index].note = data.snapshots[index].quality == .provisional
-                    ? "仍有基金净值未公布；当前总资产按截至当日最近净值估算，迟到净值到达后会回补。"
-                    : (oldQuality == .reconstructed ? oldNote : nil)
-            } else {
-                data.snapshots[index].quality = snapshotQuality(for: day)
-                data.snapshots[index].note = "已按净值日期检查；缺少可核实的完整流水或历史价格，未覆盖原总资产。可手动录入该日真实总资产。"
-            }
-            if abs(data.snapshots[index].total - oldTotal) > 0.005
-                || abs(data.snapshots[index].cash - oldCash) > 0.005
-                || data.snapshots[index].quality != oldQuality
-                || data.snapshots[index].note != oldNote {
-                changed += 1
-            }
+        for index in data.snapshots.indices {
+            guard let note = data.snapshots[index].note else { continue }
+            guard note.contains("迟到净值") || note.contains("按净值日期检查") else { continue }
+            data.snapshots[index].note = data.snapshots[index].quality == .provisional
+                ? "记录时仍有场外基金未公布当日净值；该日总资产按当时能取到的最新已公布净值估值"
+                : nil
+            changed += 1
         }
-        if changed > 0 { data.snapshots.sort { $0.date < $1.date } }
         return changed
-    }
-
-    private func historicalPortfolioTotal(on day: String,
-        state: (cash: Double, positions: [(code: String, kind: Holding.Kind, quantity: Double)])) -> Double? {
-        var total = state.cash
-        for position in state.positions where position.quantity > 0.000001 {
-            let price: Double?
-            if position.kind == .fund {
-                price = data.fundNAVHistory.filter { $0.code == position.code && $0.date <= day }
-                    .max(by: { $0.date < $1.date })?.nav
-            } else {
-                // 场内价格从「精确等于当天」放宽为「截至当天最近一个交易日」，与上面场外基金的口径对齐。
-                // 原来精确匹配时，只要那天缺这根日 K（App 关闭期间漏拉的、停牌、或者快照记在了非交易日），
-                // 下面的 guard 就把**整天**放弃 —— 这天的总资产永远停在旧值，
-                // 晚一个交易日公布的场外净值也就永远补不进来
-                // （用户诉求「历史快照要补美股晚一个交易日公布的收益」）。
-                // 当天有 K 线时行为与原来完全一致，只是多了兜底。
-                price = dailyBars[position.code]?.last(where: { $0.date <= day })?.close
-            }
-            guard let price, price.isFinite, price > 0 else { return nil }
-            total += position.quantity * price
-        }
-        return total.isFinite && total >= 0 ? total : nil
     }
 
     func recordManualSnapshot(date: String, total: Double, cash: Double? = nil) throws {
@@ -336,6 +306,10 @@ struct IntradayCompanionDecision {
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         return calendar.dateComponents([.day], from: a, to: b).day
     }
+    /// 补建「此前没有记录的日期」的快照，全部标 `.reconstructed`（事后推算，蓝标）。
+    ///
+    /// **只填空缺，绝不改已有记录** —— 已经记过的日期会在下面的 `existing` 集合里被跳过，
+    /// 所以它永远不会碰用户当天看到的那个数字（见 `clearStaleSnapshotBackfillNotes` 的口径）。
     @discardableResult func backfillVerifiableSnapshots(audit: Bool = true) -> (added: Int, skipped: Int) {
         let today = companionDay(), existing = Set(data.snapshots.map(\.date))
         var days = Set(dailyBars.values.flatMap { $0.map(\.date) }); days.formUnion(data.fundNAVHistory.map(\.date))
@@ -370,7 +344,7 @@ struct IntradayCompanionDecision {
             guard complete else { skipped += 1; continue }
             data.snapshots.append(.init(date: day, total: total, cash: max(0, state.cash), recordedAt: nil,
                                         quality: .reconstructed,
-                                        note: "按真实历史价格、持仓流水与现金流水反向重建；场外基金采用截至当日最近已公布净值")); added += 1
+                                        note: "事后推算（当天没有记录）：按流水与历史价格反推，场外基金用截至当日最近已公布净值")); added += 1
         }
         if added > 0 {
             data.snapshots.sort { $0.date < $1.date }

@@ -743,12 +743,14 @@ final class PortfolioStore: ObservableObject {
             + data.fundTransactions.map(\.code))
         if !fundCodes.isEmpty { _ = await refreshFundNAVsAndWait() }
 
-        // 不依赖“本次有没有新增净值”来触发：App 关闭期间漏掉的 ETF 交易日，
-        // 也要用刚拉回的日 K 自动补快照。手动核实的快照仍由重建函数保留。
-        let reconciled = reconcileProvisionalSnapshotsAfterNAVUpdate()
+        // **不会回头改已有的历史快照**：快照是「记录当时的账面值」，一经写入即定稿
+        // （见 `clearStaleSnapshotBackfillNotes` 的口径说明，用户 2026-10-14 确认）。
+        // 这里只补「本来就没有记录的日期」——App 关闭期间漏掉的交易日、场外基金净值日；
+        // 手动核实的快照一律保留。
+        let cleaned = clearStaleSnapshotBackfillNotes()
         let rebuilt = backfillVerifiableSnapshots(audit: false)
-        if reconciled > 0 {
-            save(label: rebuilt.added > 0 ? "自动重建漏记历史快照" : "按最新历史数据核对快照")
+        if cleaned > 0 || rebuilt.added > 0 {
+            save(label: rebuilt.added > 0 ? "自动重建漏记历史快照" : "清理过期的快照说明")
         }
         // 网络报价与净值加载完成后再更新今天的临时快照，避免只保存启动时的旧行情。
         recordSnapshot(automatic: true)
@@ -2792,16 +2794,15 @@ final class PortfolioStore: ObservableObject {
                 }
             }
             let dcaBooked = processAutomaticDCA()
-            let reconciledSnapshots = fetched > 0 ? reconcileProvisionalSnapshotsAfterNAVUpdate() : 0
-            // 迟到净值可能对应一个此前没有快照的估值日；收到历史净值后自动补建可核实日期。
-            // backfill 会跳过已有记录，因此不会覆盖手动快照。
+            // 迟到的净值**不回填**已有快照（快照是记录当时的账面值，一经写入即定稿）；
+            // 它只可能对应一个此前没有记录的估值日，这种情况下才补建一条。
             let backfilledSnapshots = fetched > 0 ? backfillVerifiableSnapshots(audit: false) : (added: 0, skipped: 0)
             let refreshedSnapshot = fetched > 0 ? refreshTodaySnapshotIfPresent() : false
             save()
             isRefreshingFunds = false
-            let snapshotCount = reconciledSnapshots + backfilledSnapshots.added + (refreshedSnapshot ? 1 : 0)
+            let snapshotCount = backfilledSnapshots.added + (refreshedSnapshot ? 1 : 0)
             let snapshotNote = snapshotCount > 0
-                ? "；按净值日期核对/补建 \(snapshotCount) 条快照" : ""
+                ? "；补建 \(snapshotCount) 条缺失日期的快照" : ""
             let routeNote = usedNASProxy ? " · 含 NAS 代理" : " · iPhone 直连"
             if dcaBooked > 0 { fundDCAStatus = "已按已公布净值补记定投 \(dcaBooked) 期；仅更新本机账本" }
             let resultNote = "本次净值新增/变化 \(changedNAVCodes.count) 只（持仓 \(changedHoldingNAVCodes.count)/\(holdingFundCodes.count)）；成功读取 \(fetched)/\(codes.count) 个代码"
@@ -3572,6 +3573,13 @@ final class PortfolioStore: ObservableObject {
     ///   交易日**开盘前**不自动写：那一刻行情还停在上一个交易日，写进去的其实是
     ///   上一交易日的估值，只会让收益曲线多出一段平线。手动点按钮时不拦 ——
     ///   那是用户明确要记这一次。
+    ///
+    /// **口径（2026-10-14 用户确认）：快照 = 记录那一刻的账面总资产，写进去就定稿。**
+    /// 场外基金净值公布滞后（美股 / QDII 常晚一个交易日以上），所以今天能取到的
+    /// 最新净值可能标着几天前的日期 —— 那也照样算今天的总资产：今天的账户就值这么多。
+    /// 事后不会拿迟到的净值回头改这条（见 `clearStaleSnapshotBackfillNotes`）。
+    /// 唯一会变的是**今天**这一条：当天没结束，行情与净值还在动，随刷新更新；
+    /// 过了今天它就不再被任何人改写。
     func recordSnapshot(automatic: Bool = false) {
         // 休市日自动进入页面不应重复写入上一交易日估值；需要手工校正时走历史快照表单。
         guard !isMarketClosedToday else { return }
