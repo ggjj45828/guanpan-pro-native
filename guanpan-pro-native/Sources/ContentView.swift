@@ -89,6 +89,7 @@ struct ContentView: View {
                 // 每次进前台都串一次「App 账本 → 网页版账本」：只在内容指纹变过时才真的发请求，
                 // 所以可以放心每次都调。用户会在网页版点「下载」，而那一刻网页读到的就是 NAS 上的
                 // `/api/data` —— 不主动写，网页版永远是上一版的数据。
+                // 关掉「自动同步」或「自动上传」时，它在内部直接返回，不会动 NAS。
                 await store.writeBackWebLedgerIfEnabled()
             }
         }
@@ -7155,6 +7156,9 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
+    /// 「自动上传本机改动」：关掉后同步只做下行 —— NAS 采集到的数据照常自动下来，
+    /// 本机的改动不再往上推，NAS 上的版本号也不再滚动。
+    @AppStorage(NASSyncService.uploadKey) private var nasUpload = true
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var confirmNASDownload = false
@@ -7514,6 +7518,16 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Toggle("自动同步", isOn: $nasAutoSync)
+            // 第二层开关：只收不发。用户要的就是「NAS 收集的数据自动到我手机上，
+            // 而不是一直往上同步，版本还一直变化」。
+            Toggle("自动上传本机改动", isOn: $nasUpload)
+                .disabled(!nasAutoSync)
+            Text(nasAutoSync
+                ? (nasUpload
+                    ? "当前是双向：App 里改了账本会自动推给 NAS，NAS 上的更新也会自动接收。两边都没变化时只发一个几十字节的版本探针，不传文档，也不会产生新版本。"
+                    : "当前**只收不发**：NAS 上采集到的数据会自动接收下来；本机的改动不再推给 NAS，NAS 上的版本号也不会再滚动。要主动上传时用下面的手动按钮。")
+                : "自动同步已关闭：不会自动检查、也不会自动推数据。要更新 NAS 就用下面的手动按钮（「网页版账本」卡片里的「立即写回」仍然可用）。")
+                .font(.footnote).foregroundStyle(.secondary)
             // 三个动作语义不同，各自独立成行并加说明，避免误触「上传/下载」覆盖数据
             VStack(alignment: .leading, spacing: 4) {
                 Button { testNAS() } label: {
@@ -7523,7 +7537,7 @@ struct SettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Button { Task { await store.synchronizeNASSafely() } } label: {
+                Button { Task { await store.synchronizeNASSafely(manual: true) } } label: {
                     Label("② 安全同步（双向，冲突时暂停）", systemImage: "arrow.triangle.2.circlepath")
                 }
                 Text("先比对两边改动再做合并；两台设备同时修改会暂停并提示，不会静默覆盖。")
@@ -7563,7 +7577,7 @@ struct SettingsView: View {
                 }
             }
             Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每小时检查一次其他设备的更新（探针只取版本号，远端没动就不下载文档）。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。**App 账本与网页账本是 NAS 上两份不同的文档**（App 走 /api/native/data，网页走 /api/data），迁移只发生一次（原生空间为空时把网页账本迁进来）；想让网页版跟着 App 走，用下面那张「网页版账本」卡片写回。分时和日线缓存随原生账本同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复；如果仍在用未升级的一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
+            Text("「自动同步」决定要不要自动连 NAS：打开时会在启动 / 回到前台 / 数据变更后检查远端版本，两边都没变就只发一个几十字节的探针、不传文档，也不会产生新版本；关掉之后自动路径全部停（手动按钮照常可用）。「自动上传本机改动」再细一层：关掉就只收不发 —— NAS 上采集到的分时档案与净值仍会自动来到手机上，但本机改动不再推上去，NAS 的版本号也不会再滚动。\n\n两台设备同时修改会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。**App 账本与网页账本是 NAS 上两份不同的文档**（App 走 /api/native/data，网页走 /api/data），迁移只发生一次（原生空间为空时把网页账本迁进来）；想让网页版跟着 App 走，用下面那张「网页版账本」卡片写回。分时和日线缓存随原生账本同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复；如果仍在用未升级的一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         Section {

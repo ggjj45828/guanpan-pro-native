@@ -1599,6 +1599,7 @@ final class PortfolioStore: ObservableObject {
         nasSyncTask = nil
         // 退到后台时把网页版那份补齐：马上要去浏览器点「下载」了，
         // 这一趟不等防抖（防抖任务会被系统挂起，等不到）。
+        // 自动同步 / 自动上传任一关着时，`scheduleWebLedgerWriteBack` 内部会直接返回。
         scheduleWebLedgerWriteBack(delay: 0)
     }
 
@@ -1641,7 +1642,18 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
-    func synchronizeNASSafely() async {
+    /// - Parameter manual: 设置页里手动点「安全同步」时传 `true`。
+    ///   自动触发（启动 / 回到前台 / 轮询 / 数据变更）一律用默认值 —— 那时会先看
+    ///   「自动同步」总开关：**关掉就整个不跑**。
+    ///
+    ///   用户原话：「就算我关闭了自动同步，软件还是会自动同步，我只是想要 nas 收集的数据
+    ///   自动到我手机上，而不是一直往上同步，版本还一直变化」。原来 `RootView` 的
+    ///   `onAppear` 和 `scenePhase == .active` 是**无条件**调这里的，于是关掉开关之后
+    ///   每打开一次 App 仍会完整同步一轮、并把本机文档推上去（版本 +1）。
+    ///   现在自动路径先看开关；「NAS → 本机」的下行数据（分时档案、净值）走的是
+    ///   `syncNASMarketArchive` 等独立通道，不受这里影响，仍然自动到手机上。
+    func synchronizeNASSafely(manual: Bool = false) async {
+        if !manual, !UserDefaults.standard.bool(forKey: NASSyncService.automaticKey) { return }
         guard !applyingNASData, !isSynchronizingNAS else { return }
         isSynchronizingNAS = true
         defer { isSynchronizingNAS = false }
@@ -1655,6 +1667,12 @@ final class PortfolioStore: ObservableObject {
             let localFingerprint = try NASSyncService.fingerprint(local)
             let baseline = defaults.string(forKey: NASSyncService.fingerprintKey)
             let knownRevision = defaults.integer(forKey: NASSyncService.revisionKey)
+            // 「账本真的改了没有」与「档案该不该顺带传」分开判断：账本指纹只覆盖
+            // 用户改得动的东西（见 `NASSyncService.fingerprint`），分时 / 日 K 档案
+            // 由前台自动采集，不参与前者，否则开一次 App 就会被判成「本机改了」。
+            let ledgerChanged = localFingerprint != baseline
+            let archiveDue = archiveUploadDue(local)
+            let localHasChanges = ledgerChanged || archiveDue
 
             // ── 快速通道：先问一句版本号，再决定要不要把整份文档拉回来 ──────────
             // `/api/ping` 只回两个文档的版本号（几十字节，见 `NASSyncService.probeRevisions`）。
@@ -1665,8 +1683,13 @@ final class PortfolioStore: ObservableObject {
             if knownRevision > 0,
                let probe = try? await NASSyncService.probeRevisions(base: url),
                let remoteRevision = probe["native"], remoteRevision == knownRevision {
-                if localFingerprint == baseline {
+                if !localHasChanges {
+                    // 远端没动、本机也没有真正的改动 → **一个字节都不发**。
                     nasSyncStatus = "已同步（版本 \(remoteRevision)）"
+                    return
+                }
+                guard nasUploadEnabled else {
+                    nasSyncStatus = "已关闭「自动上传」：本机有改动，但没有推给 NAS（版本 \(remoteRevision)）"
                     return
                 }
                 // 远端没动、本机动过 → 直接上传，同样省掉一次完整下载。
@@ -1731,23 +1754,32 @@ final class PortfolioStore: ObservableObject {
                 return
             }
             if remote.revision == knownRevision {
-                if localFingerprint != baseline {
+                if !localHasChanges {
+                    nasSyncStatus = "已同步（版本 \(remote.revision)）"
+                } else if localFingerprint == remoteFingerprint, !archiveDue {
+                    // 内容其实一模一样（例如只是采集时刻被重写、或指纹算法升级过）：
+                    // 不必为了对齐版本号再推一份上去。
+                    recordNASSync(revision: remote.revision, document: local)
+                    nasSyncStatus = "已同步（版本 \(remote.revision)）"
+                } else if !nasUploadEnabled {
+                    nasSyncStatus = "已关闭「自动上传」：本机有改动，但没有推给 NAS"
+                } else {
                     let result = try await NASSyncService.put(base: url, token: token, document: local,
                                                               expectedRevision: remote.revision)
                     recordNASSync(revision: result.revision, document: local)
                     nasSyncStatus = "已同步到 NAS（版本 \(result.revision)）"
-                } else {
-                    nasSyncStatus = "已同步（版本 \(remote.revision)）"
                 }
-            } else if localFingerprint == baseline {
+            } else if !ledgerChanged {
                 applyNASDocument(remoteDocument)
                 recordNASSync(revision: remote.revision, document: remoteDocument)
                 nasSyncStatus = "已接收另一台设备的数据（版本 \(remote.revision)）"
-            } else if remoteFingerprint == baseline {
+            } else if remoteFingerprint == baseline, nasUploadEnabled {
                 let result = try await NASSyncService.put(base: url, token: token, document: local,
                                                           expectedRevision: remote.revision)
                 recordNASSync(revision: result.revision, document: local)
                 nasSyncStatus = "已上传本机更改（版本 \(result.revision)）"
+            } else if !nasUploadEnabled {
+                nasSyncStatus = "已关闭「自动上传」：只接收 NAS 的数据，本机改动不会推上去"
             } else {
                 nasSyncStatus = "本机和 NAS 都有新更改，已暂停自动覆盖；请先下载备份再选择同步方向"
             }
@@ -1859,7 +1891,10 @@ final class PortfolioStore: ObservableObject {
     /// 所以交易时段里前台来回切、行情每 15 秒刷一轮、分时档案每分钟多一个点，
     /// 这里都是空转。
     func writeBackWebLedgerIfEnabled() async {
-        guard webLedgerWriteBackEnabled else { return }
+        // 自动写回要同时满足三件事：卡片里开了写回、没关「自动同步」、没关「自动上传」。
+        // 手动「立即写回」走的是 `writeBackWebLedger`，不受这里限制。
+        guard webLedgerWriteBackEnabled, nasUploadEnabled,
+              UserDefaults.standard.bool(forKey: NASSyncService.automaticKey) else { return }
         let stamp = WebLedgerWriter.ledgerFingerprint(of: data)
         guard !stamp.isEmpty, stamp != lastWebLedgerWrittenFingerprint else { return }
         _ = await writeBackWebLedger(reason: "自动")
@@ -1874,6 +1909,12 @@ final class PortfolioStore: ObservableObject {
     /// 只要求「配了 NAS 地址 + 写回开关是开的」。
     func scheduleWebLedgerWriteBack(delay: UInt64 = 6) {
         guard webLedgerWriteBackEnabled else { return }
+        // 「自动同步」关掉 = 用户明确说了「别再自己动 NAS」，这条写回也不能例外。
+        // 用户原话：「就算我关闭了自动同步，软件还是会自动同步」—— 关掉之后
+        // 只剩下面那张卡片里的「立即写回」是手动的，其他一律停。
+        guard UserDefaults.standard.bool(forKey: NASSyncService.automaticKey) else { return }
+        // 关掉「自动上传」= 只收不发，同理。
+        guard nasUploadEnabled else { return }
         let url = UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? ""
         guard !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         webLedgerWriteBackTask?.cancel()
@@ -2034,6 +2075,42 @@ final class PortfolioStore: ObservableObject {
         if let fingerprint = try? NASSyncService.fingerprint(document) {
             defaults.set(fingerprint, forKey: NASSyncService.fingerprintKey)
         }
+        // 档案的「上次规模 / 条数 / 时刻」只在这里推进 —— 也就是**真的传上去或接收下来**之后。
+        // 「跳过上传」的分支故意不写，否则 `bars - lastBars` 会被反复清零，档案永远攒不到阈值。
+        defaults.set(NASSyncService.archiveSignature(document), forKey: NASSyncService.archiveSignatureKey)
+        defaults.set(document.intradayBars.count + document.dailyBars.count, forKey: NASSyncService.archiveBarCountKey)
+        defaults.set(Date.now, forKey: NASSyncService.lastSyncAtKey)
+    }
+
+    /// 档案（分时 / 日 K）该不该顺带传一次。
+    ///
+    /// 档案**不进**「本机有没有改动」的指纹（见 `NASSyncService.fingerprint` 的说明）——
+    /// 它由前台逐分钟自动采集，开一次 App 就会多几根 bar，若算进指纹就会
+    /// 「每打开一次 App 上传一次、NAS 版本 +1」，这正是用户报的那个问题。
+    /// 改成：条数比上次上传时多 ≥ 400 根，或距上次上传已经 ≥ 12 小时，才值得跑一趟穿透。
+    private func archiveUploadDue(_ document: NativeSyncDocument) -> Bool {
+        let defaults = UserDefaults.standard
+        let signature = NASSyncService.archiveSignature(document)
+        guard signature != (defaults.string(forKey: NASSyncService.archiveSignatureKey) ?? "") else { return false }
+        let bars = document.intradayBars.count + document.dailyBars.count
+        let lastBars = defaults.integer(forKey: NASSyncService.archiveBarCountKey)
+        if bars - lastBars >= 400 { return true }
+        guard let lastSync = defaults.object(forKey: NASSyncService.lastSyncAtKey) as? Date else { return true }
+        return Date.now.timeIntervalSince(lastSync) >= 12 * 3600
+    }
+
+    /// 「自动上传本机改动」是否开启（默认开）。
+    ///
+    /// 关掉之后同步只做**下行**：远端版本变了就接收，本机改动不往上推，
+    /// NAS 版本号也不再滚动。用户要的就是「NAS 收集的数据自动到我手机上，
+    /// 而不是一直往上同步」。手动「上传到 NAS」按钮不受影响。
+    var nasUploadEnabled: Bool {
+        UserDefaults.standard.object(forKey: NASSyncService.uploadKey) as? Bool ?? true
+    }
+
+    func setNASUploadEnabled(_ value: Bool) {
+        UserDefaults.standard.set(value, forKey: NASSyncService.uploadKey)
+        objectWillChange.send()
     }
     /// 优先读取腾讯 ETF 报价字段 78 的净值参考，缺失时才用字段 77 溢价率反推。
     /// 不用场外基金净值或昨收数据冒充 IOPV。

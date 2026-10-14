@@ -60,6 +60,22 @@ enum NASSyncService {
     /// 是为了「内容没变就别再发请求」这条判断**重启后依然成立** ——
     /// 否则每次启动都会白写一份回去。
     static let webLedgerFingerprintKey = "guanpan.native.nas.webledger.fingerprint"
+    /// 上一次上传时「分时 / 日 K 档案」的**规模签名**与总条数、以及上传时刻。
+    ///
+    /// 档案由前台逐分钟自动采集，开一次 App 就会多几根 bar。它**不能**进冲突指纹
+    /// （否则每次启动都被判成「本机改了」→ 上传 → NAS 版本 +1，用户原话：
+    /// 「每打开一下 app，nas 自动同步一下，而且版本就升一次，这也太废了」）。
+    /// 现在改成：条数比上次多 ≥ 400，或距上次上传 ≥ 12 小时，才顺带把档案传一次。
+    static let archiveSignatureKey = "guanpan.native.nas.archive.signature"
+    static let archiveBarCountKey = "guanpan.native.nas.archive.barcount"
+    static let lastSyncAtKey = "guanpan.native.nas.lastsync"
+    /// 「自动上传本机改动」开关（设备本地设置，默认开）。
+    ///
+    /// 用户原话：「我只是想要 nas 收集的数据自动到我手机上，而不是一直往上同步，
+    /// 版本还一直变化」。关掉它之后同步只做**下行**：远端版本变了就接收下来，
+    /// 本机的改动一个字节都不往上推，NAS 上的版本号也不再滚动。
+    /// 手动点「上传到 NAS」不受这个开关限制。
+    static let uploadKey = "guanpan.native.nas.upload"
 
     /// 轻量版本探针：`GET /api/ping` 只回两个文档的版本号，**不带数据**（几十字节）。
     ///
@@ -93,30 +109,54 @@ enum NASSyncService {
         return result.isEmpty ? nil : result
     }
 
+    /// 「本机到底有没有真的改动」的**内容指纹**，决定要不要推 NAS。
+    ///
+    /// 只保留**用户改得动的东西**（持仓、流水、自选成员/名称/分组、现金、净值点、
+    /// 快照的日期与现金…）。所有自动采集 / 自动计算的字段一律抹平：
+    /// - 自选现价、涨跌幅、报价时间；
+    /// - 持仓 `current` 与行情时间 —— 场内是实时行情，场外是每晚自动落账的净值；
+    /// - 快照 `total` / `recordedAt` —— 行情一动今日快照就重算，跟用户操作无关；
+    /// - 净值点的 `fetchedAt` / `observedDelta` —— 每轮刷新都会重写采集时刻。
+    ///
+    /// **分时 / 日 K 档案不进这个指纹**（v2.13.41 改）。它们由前台逐分钟自动采集，
+    /// 只要开过一次 App 就会新增，于是次次被判成「本机改了」→ 上传 → NAS 版本 +1。
+    /// 用户原话：「每打开一下 app，nas 自动同步一下，而且版本就升一次，这也太废了，
+    /// 应该是云端检查，发现没变化，就不要了」。档案改用 `archiveSignature` 单独判断
+    /// （见 `PortfolioStore.archiveUploadDue`），条数涨够或隔天才顺带传一次。
     static func fingerprint(_ document: NativeSyncDocument) throws -> String {
         struct Content: Encodable {
             var data: PortfolioData
-            var intradayBars: [IntradayBar]
-            var dailyBars: [DailyBar]
         }
-        // 现价、涨跌幅和时间戳是高频缓存。若把它们计入冲突指纹，前台每次行情刷新
-        // 都会被判断为“账本已修改”，导致 NAS 版本每分钟滚动并制造假冲突。
-        // 自选成员、名称、分组、持仓份额/成本等真实账本字段仍参与指纹。
         var stableData = document.data
         for index in stableData.quotes.indices {
             stableData.quotes[index].price = 0
             stableData.quotes[index].changePct = 0
             stableData.quotes[index].updatedAt = nil
         }
-        for index in stableData.holdings.indices where stableData.holdings[index].kind == .etf {
+        for index in stableData.holdings.indices {
             stableData.holdings[index].current = 0
             stableData.holdings[index].marketUpdatedAt = nil
         }
+        for index in stableData.snapshots.indices {
+            stableData.snapshots[index].total = 0
+            stableData.snapshots[index].recordedAt = nil
+        }
+        for index in stableData.fundNAVHistory.indices {
+            stableData.fundNAVHistory[index].fetchedAt = nil
+            stableData.fundNAVHistory[index].observedDelta = nil
+        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        let content = Content(data: stableData, intradayBars: document.intradayBars, dailyBars: document.dailyBars)
-        let digest = SHA256.hash(data: try encoder.encode(content))
+        let digest = SHA256.hash(data: try encoder.encode(Content(data: stableData)))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 分时 / 日 K 档案的**规模签名**：只用「总条数 + 覆盖了多少天 + 日 K 最后一天」，
+    /// 让「档案长了一大截」能触发一次上传，又不会因为多了一根 bar 就跑一趟穿透。
+    static func archiveSignature(_ document: NativeSyncDocument) -> String {
+        let intradayDays = Set(document.intradayBars.map(\.day)).count
+        let dailyLast = document.dailyBars.map(\.date).max() ?? ""
+        return "\(document.intradayBars.count)|\(intradayDays)|\(document.dailyBars.count)|\(dailyLast)"
     }
 
     static func endpoint(base: String) throws -> URL {
