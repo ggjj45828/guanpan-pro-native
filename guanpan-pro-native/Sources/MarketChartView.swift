@@ -237,7 +237,8 @@ func intradayAxisLabel(_ time: Date, ticks: [(time: Date, label: String)]) -> St
 }
 
 /// 分时量柱涨跌配色。`prevClose` 是第一根柱的前收基准。
-func intradayVolumeColor(at index: Int, in buckets: [MinuteBucket], prevClose: Double?) -> Color {
+/// 参数用到文件私有的 `MinuteBucket`，所以这里必须是 `private`（文件作用域 private ≡ fileprivate，同文件内可见）。
+private func intradayVolumeColor(at index: Int, in buckets: [MinuteBucket], prevClose: Double?) -> Color {
     guard buckets.indices.contains(index) else { return Color.secondary }
     let previous = index > 0 ? buckets[index - 1].close : (prevClose ?? buckets[index].close)
     return buckets[index].close >= previous ? Color.red.opacity(0.82) : Color.green.opacity(0.82)
