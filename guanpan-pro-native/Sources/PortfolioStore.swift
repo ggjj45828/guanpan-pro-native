@@ -1186,8 +1186,9 @@ final class PortfolioStore: ObservableObject {
         let latestDay = bars.map(\.day).max() ?? ""
         guard !latestDay.isEmpty else { return }
         var latestIOPV: [String: Double] = [:]
-        for bar in bars where bar.day == latestDay,
-                         let iopv = bar.iopv, iopv.isFinite, iopv > 0 {
+        for bar in bars {
+            guard bar.day == latestDay,
+                  let iopv = bar.iopv, iopv.isFinite, iopv > 0 else { continue }
             let code = Self.intradayCodeKey(bar.code)
             guard tracked.contains(code) else { continue }
             latestIOPV[code] = iopv // 同日后面的点覆盖前面的，越新越准
