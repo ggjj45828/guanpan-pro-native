@@ -222,7 +222,7 @@ struct HistoricalReplayView: View {
         if !cashKnown { warnings.append("现金反推结果为负数或无效；可能缺少期初现金/现金流水记录。") }
         if snapshot == nil { warnings.append("所选日期前没有全账户快照，无法对比当时记录的总资产。") }
         if rows.contains(where: { $0.price == nil }) { warnings.append("部分持仓没有所选日之前的本地历史价格，因此总资产估值未完整显示。") }
-        if store.data.ledger.contains(where: { $0.kind == nil }) { warnings.append("部分旧版交易流水没有资产类别，回放暂按场内证券处理。") }
+        if store.data.ledger.contains(where: { $0.kind == nil }) { warnings.append("部分交易流水没有资产类别，回放暂按场内证券处理。") }
         let realizedETF = ledgerToDate.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
         let realizedFund = fundToDate.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
         // 是否联动“参考现金”只影响现金余额，不影响这笔分红是否真实发生。

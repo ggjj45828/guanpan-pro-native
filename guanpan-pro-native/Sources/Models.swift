@@ -426,7 +426,7 @@ enum DailyPnLMode: String, Codable, CaseIterable, Identifiable {
         case .today: return "含当日全部交易"
         case .open: return "按开盘初始份额"
         case .ths: return "同花顺成交额口径"
-        case .old: return "旧版近似口径"
+        case .old: return "近似口径"
         }
     }
 }
@@ -685,145 +685,6 @@ struct DayGridPlan: Codable, Identifiable {
     var legacyRecordID: String? = nil
 }
 
-struct LegacyGridArchive: Codable, Identifiable {
-    var id: String
-    var code: String
-    var name: String
-    var horizon: String
-    var status: String
-    var mode: String
-    var capital: Double
-    var quantity: Double
-    var anchor: Double
-    var lower: Double
-    var upper: Double
-    var step: Double
-    var created: String
-    var rawJSON: String
-}
-
-struct LegacyShadowFill: Codable, Identifiable {
-    var id: String { "\(day)-\(time)-\(index)" }
-    var index: Int
-    var day: String
-    var time: String
-    var side: String
-    var price: Double
-    var quantity: Double
-    var fee: Double
-    var realizedPnL: Double
-}
-
-struct LegacyShadowDay: Codable, Identifiable {
-    var id: String { day }
-    var day: String
-    var fills: Int
-    var buys: Int
-    var sells: Int
-    var fees: Double
-    var realizedPnL: Double
-    var startEquity: Double
-    var endEquity: Double
-}
-
-struct LegacyShadowArchive: Codable, Identifiable {
-    var id: String
-    var code: String
-    var name: String
-    var capital: Double
-    var cash: Double
-    var shares: Double
-    var cost: Double
-    var lastPrice: Double
-    var initialPrice: Double
-    var initialShares: Double
-    var totalFees: Double
-    var realizedPnL: Double
-    var buys: Int
-    var sells: Int
-    var wins: Int
-    var scoredSells: Int
-    var lower: Double
-    var upper: Double
-    var anchor: Double
-    var step: Double
-    var quantity: Double
-    var eligible: Double
-    var t0: Bool
-    var active: Bool
-    var closed: Bool
-    var lastTimestamp: String
-    var fills: [LegacyShadowFill]
-    var days: [LegacyShadowDay]
-
-    private enum CodingKeys: String, CodingKey {
-        case id, code, name, capital, cash, shares, cost, lastPrice, initialPrice, initialShares, totalFees, realizedPnL
-        case buys, sells, wins, scoredSells, lower, upper, anchor, step, quantity, eligible, t0, active, closed, lastTimestamp, fills, days
-    }
-
-    init(id: String, code: String, name: String, capital: Double, cash: Double, shares: Double, cost: Double,
-         lastPrice: Double, initialPrice: Double, initialShares: Double, totalFees: Double, realizedPnL: Double,
-         buys: Int, sells: Int, wins: Int, scoredSells: Int, lower: Double, upper: Double, anchor: Double,
-         step: Double, quantity: Double, eligible: Double, t0: Bool, active: Bool, closed: Bool,
-         lastTimestamp: String, fills: [LegacyShadowFill], days: [LegacyShadowDay]) {
-        self.id = id; self.code = code; self.name = name; self.capital = capital; self.cash = cash
-        self.shares = shares; self.cost = cost; self.lastPrice = lastPrice; self.initialPrice = initialPrice
-        self.initialShares = initialShares; self.totalFees = totalFees; self.realizedPnL = realizedPnL
-        self.buys = buys; self.sells = sells; self.wins = wins; self.scoredSells = scoredSells
-        self.lower = lower; self.upper = upper; self.anchor = anchor; self.step = step; self.quantity = quantity
-        self.eligible = eligible; self.t0 = t0; self.active = active; self.closed = closed
-        self.lastTimestamp = lastTimestamp; self.fills = fills; self.days = days
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        let decodedCode = try c.decode(String.self, forKey: .code)
-        code = decodedCode
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? decodedCode
-        capital = try c.decodeIfPresent(Double.self, forKey: .capital) ?? 0
-        cash = try c.decodeIfPresent(Double.self, forKey: .cash) ?? 0
-        let decodedShares = try c.decodeIfPresent(Double.self, forKey: .shares) ?? 0
-        shares = decodedShares
-        cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0
-        lastPrice = try c.decodeIfPresent(Double.self, forKey: .lastPrice) ?? 0
-        initialPrice = try c.decodeIfPresent(Double.self, forKey: .initialPrice) ?? 0
-        initialShares = try c.decodeIfPresent(Double.self, forKey: .initialShares) ?? 0
-        totalFees = try c.decodeIfPresent(Double.self, forKey: .totalFees) ?? 0
-        realizedPnL = try c.decodeIfPresent(Double.self, forKey: .realizedPnL) ?? 0
-        buys = try c.decodeIfPresent(Int.self, forKey: .buys) ?? 0
-        sells = try c.decodeIfPresent(Int.self, forKey: .sells) ?? 0
-        wins = try c.decodeIfPresent(Int.self, forKey: .wins) ?? 0
-        scoredSells = try c.decodeIfPresent(Int.self, forKey: .scoredSells) ?? 0
-        lower = try c.decodeIfPresent(Double.self, forKey: .lower) ?? 0
-        upper = try c.decodeIfPresent(Double.self, forKey: .upper) ?? 0
-        anchor = try c.decodeIfPresent(Double.self, forKey: .anchor) ?? 0
-        step = try c.decodeIfPresent(Double.self, forKey: .step) ?? 0
-        quantity = try c.decodeIfPresent(Double.self, forKey: .quantity) ?? 0
-        eligible = try c.decodeIfPresent(Double.self, forKey: .eligible) ?? decodedShares
-        t0 = try c.decodeIfPresent(Bool.self, forKey: .t0) ?? false
-        active = try c.decodeIfPresent(Bool.self, forKey: .active) ?? false
-        closed = try c.decodeIfPresent(Bool.self, forKey: .closed) ?? false
-        lastTimestamp = try c.decodeIfPresent(String.self, forKey: .lastTimestamp) ?? ""
-        fills = try c.decodeIfPresent([LegacyShadowFill].self, forKey: .fills) ?? []
-        days = try c.decodeIfPresent([LegacyShadowDay].self, forKey: .days) ?? []
-    }
-
-    private var markPrice: Double { lastPrice > 0 ? lastPrice : anchor }
-    var lastEquityChange: Double { cash + shares * markPrice - capital }
-    var holdOnlyChange: Double { initialShares * (markPrice - initialPrice) }
-}
-
-struct LegacyDCAEventArchive: Codable, Identifiable {
-    var id: String
-    var planID: String
-    var code: String
-    var name: String
-    var dueDate: String
-    var amount: Double
-    var status: String
-    var rawJSON: String
-}
 
 struct GridReplayResult: Identifiable {
     var id: UUID = UUID()
@@ -1089,12 +950,6 @@ struct PortfolioData: Codable {
     var fundFeePolicies: [FundFeePolicy] = []
     var fundDCAPlans: [FundDCAPlan] = []
     var dayGridPlans: [DayGridPlan] = []
-    var legacyGridArchives: [LegacyGridArchive] = []
-    var legacyShadowArchives: [LegacyShadowArchive] = []
-    var legacyDCAEvents: [LegacyDCAEventArchive] = []
-    // v2.13.35 移除 `legacySettingsArchives`（旧版未识别设置的只读留档）。
-    // 用户已明确不需要这块「旧版资料」，采集端与展示端一并删除；
-    // 旧备份 / NAS 文档里多余的 key 会被 JSONDecoder 忽略，不影响解码。
     var aiAnalysisConfig = AIAnalysisConfig()
     var savedAccountAIAnalysis: SavedAIAnalysis?
     var savedPortraitAIAnalysis: SavedAIAnalysis?
@@ -1125,7 +980,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -1147,9 +1002,6 @@ struct PortfolioData: Codable {
         fundFeePolicies = try c.decodeIfPresent([FundFeePolicy].self, forKey: .fundFeePolicies) ?? []
         fundDCAPlans = try c.decodeIfPresent([FundDCAPlan].self, forKey: .fundDCAPlans) ?? []
         dayGridPlans = try c.decodeIfPresent([DayGridPlan].self, forKey: .dayGridPlans) ?? []
-        legacyGridArchives = try c.decodeIfPresent([LegacyGridArchive].self, forKey: .legacyGridArchives) ?? []
-        legacyShadowArchives = try c.decodeIfPresent([LegacyShadowArchive].self, forKey: .legacyShadowArchives) ?? []
-        legacyDCAEvents = try c.decodeIfPresent([LegacyDCAEventArchive].self, forKey: .legacyDCAEvents) ?? []
         aiAnalysisConfig = try c.decodeIfPresent(AIAnalysisConfig.self, forKey: .aiAnalysisConfig) ?? AIAnalysisConfig()
         savedAccountAIAnalysis = try c.decodeIfPresent(SavedAIAnalysis.self, forKey: .savedAccountAIAnalysis)
         savedPortraitAIAnalysis = try c.decodeIfPresent(SavedAIAnalysis.self, forKey: .savedPortraitAIAnalysis)

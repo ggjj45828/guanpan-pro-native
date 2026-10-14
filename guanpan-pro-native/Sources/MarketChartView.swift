@@ -290,6 +290,69 @@ func intradaySegmentedLines(_ points: [IntradayLine], maxGap: TimeInterval = 300
     return result
 }
 
+/// 用「两个真实 IOPV 锚点 + 分时价格」还原一条 IOPV 曲线（**估算**，非实测）。
+///
+/// 背景：腾讯和东财的分钟线接口**都不给 IOPV**，快照接口也只给两个数 ——
+/// 字段 78（今天此刻的 IOPV）和字段 81（昨天的 IOPV）。所以「分时 IOPV 曲线」
+/// 在任何行情源上都不存在真数据，网页版（`观盘.html` 的 `iopvSeries()`）的做法是：
+///
+///   1. `昨收 ÷ 昨IOPV − 1` = **昨天收盘时的溢价率**；
+///   2. `现价 ÷ 今IOPV − 1` = **此刻的溢价率**；
+///   3. 假设溢价率在日内**线性变化**，对每个分时点插值出该时刻的溢价率；
+///   4. `IOPV = 该时点价格 ÷ (1 + 该时点溢价率)`，末端用真实 IOPV 校正。
+///
+/// 这条线**首尾是真实值、中间是插值估计**。之所以够用：ETF 的折溢价日内通常变化平缓，
+/// 曲线形状基本跟随价格线，只是被溢价率调制；而用户看这条线是为了「价格离净值有多远」，
+/// 这个差值本身就在插值里被保留下来了。
+///
+/// **必须画成虚线并标注「估算」**：它和前台逐分钟采集的实测点不是一回事，
+/// 混成一条实线就是在骗人。实测够用时优先用实测（见 `iopvLineMode`）。
+///
+/// - Parameters:
+///   - points: 当日分时价格序列（时间升序或乱序都可，内部会排）。
+///   - previousClose: 昨收价（分时接口自带）。
+///   - navPrev: 昨日 IOPV（腾讯字段 81 / 新浪字段 4）。
+///   - navNow: 今日 IOPV（腾讯字段 78 / 新浪字段 3）。
+///   - priceNow: 现价；传 nil 时退化为用最后一个分时点。
+func estimatedIOPVSeries(points: [IntradayLine],
+                         previousClose: Double?,
+                         navPrev: Double?,
+                         navNow: Double?,
+                         priceNow: Double? = nil) -> [IntradayLine] {
+    guard points.count >= 2,
+          let previousClose, previousClose.isFinite, previousClose > 0,
+          let navPrev, navPrev.isFinite, navPrev > 0,
+          let navNow, navNow.isFinite, navNow > 0 else { return [] }
+    let ordered = points
+        .filter { $0.price.isFinite && $0.price > 0 }
+        .sorted { $0.time < $1.time }
+    guard ordered.count >= 2 else { return [] }
+    let lastPrice: Double = {
+        if let priceNow, priceNow.isFinite, priceNow > 0 { return priceNow }
+        return ordered[ordered.count - 1].price
+    }()
+    guard lastPrice > 0 else { return [] }
+    let premiumPrev = previousClose / navPrev - 1   // 昨天收盘时的溢价率
+    let premiumNow = lastPrice / navNow - 1         // 此刻的溢价率
+    // 溢价率必须有限，且 1+溢价 > 0（否则 IOPV = 价格 ÷ 非正数 会翻号或爆掉）。
+    guard premiumPrev.isFinite, premiumNow.isFinite,
+          (1 + premiumPrev) > 0.01, (1 + premiumNow) > 0.01 else { return [] }
+    let denominator = Double(ordered.count - 1)
+    var result: [IntradayLine] = []
+    result.reserveCapacity(ordered.count)
+    for (index, point) in ordered.enumerated() {
+        let ratio = index == ordered.count - 1 ? 1 : Double(index) / denominator
+        let premium = premiumPrev + (premiumNow - premiumPrev) * ratio
+        let value = (1 + premium) > 0 ? point.price / (1 + premium) : point.price
+        guard value.isFinite, value > 0 else { continue }
+        result.append(IntradayLine(time: point.time, price: value))
+    }
+    guard result.count >= 2 else { return [] }
+    // 末端用真实 IOPV 对齐：中间的插值有估计误差，但收盘那一刻的 IOPV 是实打实的。
+    result[result.count - 1] = IntradayLine(time: result[result.count - 1].time, price: navNow)
+    return result
+}
+
 /// 分时均价点（原先是 `MarketChartView` 的嵌套类型，抽图后要跨类型使用）。
 private struct IntradayAvgPoint: Identifiable {
     let timestamp: Date
@@ -375,9 +438,10 @@ struct IntradayMainChart: View {
     let lines: [IntradayLine]
     let average: [IntradayLine]
     let iopv: [IntradayLine]
-    /// 历史遗留参数：曾经在「一个 IOPV 样本都没有」时用它补一条当前值参考线。
-    /// 用户明确否掉（没数据就不该画线），现在**只保留在签名里**，不参与任何绘制。
-    let iopvFallback: Double?
+    /// **估算** IOPV 曲线：由「昨 IOPV / 今 IOPV 两个真实锚点 + 分时价格」插值而来
+    /// （见 `estimatedIOPVSeries`）。只在**实测点连不成线**时使用，画虚线。
+    /// 它原来叫 `iopvFallback`（一个 Double，什么都不画），现在换成真正能画的一条线。
+    let estimatedIOPV: [IntradayLine]
     let previousClose: Double?
     let showAverage: Bool
     let showIOPV: Bool
@@ -407,8 +471,14 @@ struct IntradayMainChart: View {
         return intradaySegmentedLines(iopv).filter { $0.count == 1 }.compactMap(\.first)
     }
 
+    /// 实测点连不成线时，用插值曲线顶上。实测够用就**不画估算线** —— 两条叠在一起
+    /// 只能看出「哪条是真的」是看不出来的，反倒是视觉噪音。
+    private var showsEstimatedIOPV: Bool {
+        showIOPV && iopvSegments.isEmpty && estimatedIOPV.count >= 2
+    }
+
     init(lines: [IntradayLine], average: [IntradayLine], iopv: [IntradayLine],
-         iopvFallback: Double?, previousClose: Double?, showAverage: Bool,
+         estimatedIOPV: [IntradayLine], previousClose: Double?, showAverage: Bool,
          showIOPV: Bool, showPreviousClose: Bool, lineColor: Color,
          xDomain: ClosedRange<Date>, yDomain: ClosedRange<Double>,
          ticks: [(time: Date, label: String)], compressLunch: Bool,
@@ -418,7 +488,7 @@ struct IntradayMainChart: View {
         self.lines = lines
         self.average = average
         self.iopv = iopv
-        self.iopvFallback = iopvFallback
+        self.estimatedIOPV = estimatedIOPV
         self.previousClose = previousClose
         self.showAverage = showAverage
         self.showIOPV = showIOPV
@@ -489,6 +559,17 @@ struct IntradayMainChart: View {
                 ForEach(iopvIsolatedPoints) { p in
                     PointMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price))
                         .foregroundStyle(Color.purple).symbolSize(18)
+                }
+            }
+            // 实测一个点都连不起来时，用「昨 IOPV / 今 IOPV + 分时价格」插值出的曲线顶上。
+            // **虚线**是刻意的：这条线首尾是真实值、中间是估算，不能和实测实线混为一谈。
+            if showsEstimatedIOPV {
+                ForEach(estimatedIOPV) { p in
+                    LineMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price),
+                             series: .value("主图序列", "IOPV估算"))
+                        .foregroundStyle(Color.purple.opacity(0.75))
+                        .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .round,
+                                               lineJoin: .round, dash: [4, 3]))
                 }
             }
             if showPreviousClose, let value = previousClose {
@@ -732,7 +813,7 @@ private struct IntradayPanelView: View {
     let lines: [IntradayLine]
     let average: [IntradayLine]
     let iopv: [IntradayLine]
-    let iopvFallback: Double?
+    let estimatedIOPV: [IntradayLine]
     let previousClose: Double?
     let macdPoints: [MinuteMACDPoint]
     let volumeBuckets: [MinuteBucket]
@@ -770,7 +851,7 @@ private struct IntradayPanelView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 7) {
                 IntradayMainChart(lines: lines, average: average, iopv: iopv,
-                    iopvFallback: iopvFallback, previousClose: previousClose,
+                    estimatedIOPV: estimatedIOPV, previousClose: previousClose,
                     showAverage: showAverage, showIOPV: showIOPV, showPreviousClose: showPreviousClose,
                     lineColor: lineColor, xDomain: xDomain, yDomain: priceYDomain,
                     ticks: ticks, compressLunch: compressLunch, height: mainHeight, lineWidth: lineWidth)
@@ -1312,6 +1393,27 @@ struct MarketChartView: View {
     private var selectedDayETFQuoteSummary: IntradayETFQuoteSummary? {
         intradayETFQuoteSummaryDay == selectedIntradayDay ? intradayETFQuoteSummary : nil
     }
+    /// 估算 IOPV 曲线：实测点连不成线时的兜底（见 `estimatedIOPVSeries`）。
+    ///
+    /// 为什么需要它：IOPV 的**分时数据在任何行情源上都不存在**，本机那条紫线是
+    /// 「前台逐分钟采集」攒出来的 —— 刚装上、或退后台几十分钟，就是空的。
+    /// 网页版没有这个空窗，因为它从来就是用两个真实锚点（昨 IOPV / 今 IOPV）
+    /// 加价格插值算一条，这里把同一套算法搬过来了。
+    ///
+    /// 只在 ETF、且**当日**分时上提供：历史某天没有那天的 78/81 字段，无从插值。
+    private var estimatedIOPVLine: [IntradayLine] {
+        guard holding.kind == .etf else { return [] }
+        guard selectedIntradayDay.isEmpty || selectedIntradayDay == shanghaiDay(.now) else { return [] }
+        // 实测点自己已经能连成线时不给估算 —— 两条线叠在一起只会互相干扰。
+        let measured = selectedDayIOPVPoints.map { IntradayLine(time: $0.timestamp, price: $0.value) }
+        if intradaySegmentedLines(measured).contains(where: { $0.count >= 2 }) { return [] }
+        return estimatedIOPVSeries(
+            points: selectedIntradayBars.map { IntradayLine(time: $0.timestamp, price: $0.price) },
+            previousClose: intradayPrevClose,
+            navPrev: store.marketNavPrevs[holding.code],
+            navNow: selectedDayIOPV,
+            priceNow: intradayLatestPrice)
+    }
     private var intradayChangeText: String {
         guard let latest = intradayLatestPrice, let previous = intradayPrevClose, previous > 0 else { return "涨跌暂无" }
         let change = latest - previous
@@ -1488,6 +1590,8 @@ struct MarketChartView: View {
             all += selectedDayIOPVPoints.map(\.value)
             // 一个历史点都没有、但快照给了当前值时，把它也留进范围，免得线一出现就贴着边。
             if selectedDayIOPVPoints.isEmpty, let currentIOPV = selectedDayIOPV { all.append(currentIOPV) }
+            // 估算线（插值）也要进范围：两端是真值，中间由溢价率插值决定，可能落在价格线外侧。
+            all += estimatedIOPVLine.map(\.price)
         }
         let finiteAll = all.filter { $0 > 0 && $0.isFinite }
         guard let low = finiteAll.min(), let high = finiteAll.max() else { return 0...1 }
@@ -1771,6 +1875,10 @@ struct MarketChartView: View {
                                 .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
                                 .listRowSeparator(.hidden)
                             Text("行情源当日分时 · 前台约 15 秒刷新 · \(minuteStatus)").font(.caption).foregroundStyle(.secondary)
+                            if showIntradayIOPV, !estimatedIOPVLine.isEmpty {
+                                Text("紫色 IOPV 是估算线：行情源不提供逐分钟 IOPV，这条线由「昨 IOPV / 今 IOPV」两个实测锚点加分时价格插值而来，首尾是真实值、中间是估计；本机逐分钟实测点攒够两段以上后会自动改回实测实线。")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                         } else {
                             ContentUnavailableView("暂无当日分时", systemImage: "chart.xyaxis.line", description: Text(minuteStatus))
                         }
@@ -1795,7 +1903,7 @@ struct MarketChartView: View {
                             // 这里只是换数据源、换高度、换成顶部分段选择器。
                             IntradayPanelView(
                                 lines: minuteBuckets.map { IntradayLine(time: $0.start, price: $0.close) },
-                                average: [], iopv: [], iopvFallback: nil, previousClose: nil,
+                                average: [], iopv: [], estimatedIOPV: [], previousClose: nil,
                                 macdPoints: minuteMACD,
                                 volumeBuckets: minuteBuckets,
                                 volumePrevClose: intradayPrevClose,
@@ -2577,7 +2685,7 @@ struct MarketChartView: View {
             lines: selectedIntradayBars.map { IntradayLine(time: $0.timestamp, price: $0.price) },
             average: intradayAvgPoints.map { IntradayLine(time: $0.timestamp, price: $0.price) },
             iopv: selectedDayIOPVPoints.map { IntradayLine(time: $0.timestamp, price: $0.value) },
-            iopvFallback: selectedDayIOPV,
+            estimatedIOPV: estimatedIOPVLine,
             previousClose: intradayPrevClose,
             macdPoints: minuteMACD,
             volumeBuckets: minuteBuckets,

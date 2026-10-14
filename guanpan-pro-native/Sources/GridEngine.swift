@@ -2,104 +2,12 @@ import Foundation
 
 @MainActor
 extension PortfolioStore {
-    func setLegacyShadowActive(_ archive: LegacyShadowArchive, active: Bool) {
-        guard let index = data.legacyShadowArchives.firstIndex(where: { $0.id == archive.id }),
-              !data.legacyShadowArchives[index].closed else { return }
-        data.legacyShadowArchives[index].active = active
-        // Reset the crossing baseline on resume so a paused interval cannot create
-        // a synthetic fill when the next quote arrives.
-        data.legacyShadowArchives[index].lastPrice = 0
-        data.legacyShadowArchives[index].lastTimestamp = ""
-        save(label: "启停旧版模拟网格")
-    }
-
-    func advanceLegacyShadowSimulations(_ quotes: [(String, Double, Date)]) {
-        let byCode = Dictionary(quotes.map { ($0.0, ($0.1, $0.2)) }, uniquingKeysWith: { _, latest in latest })
-        let dayFormatter = DateFormatter(); dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dayFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); dayFormatter.dateFormat = "yyyy-MM-dd"
-        let timeFormatter = DateFormatter(); timeFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timeFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); timeFormatter.dateFormat = "HH:mm:ss"
-
-        for index in data.legacyShadowArchives.indices {
-            var shadow = data.legacyShadowArchives[index]
-            guard !shadow.closed, let (price, timestamp) = byCode[shadow.code],
-                  price.isFinite, price > 0 else { continue }
-            let day = dayFormatter.string(from: timestamp)
-            let time = timeFormatter.string(from: timestamp)
-            let stamp = "\(day) \(time)"
-            let previous = shadow.lastPrice > 0 ? shadow.lastPrice : price
-            let dayIndex: Int
-            if let found = shadow.days.firstIndex(where: { $0.day == day }) {
-                dayIndex = found
-            } else {
-                shadow.days.append(LegacyShadowDay(day: day, fills: 0, buys: 0, sells: 0,
-                    fees: 0, realizedPnL: 0, startEquity: shadow.cash + shadow.shares * previous,
-                    endEquity: shadow.cash + shadow.shares * previous))
-                dayIndex = shadow.days.count - 1
-            }
-
-            if shadow.lastTimestamp != stamp && shadow.lastPrice > 0 && shadow.active && shadow.step > 0 && shadow.quantity > 0 {
-                let etf = Self.isGridETF(shadow.code)
-                let tick = etf ? 0.001 : 0.01
-                let decimals = etf ? 3.0 : 2.0
-                let scale = pow(10.0, decimals)
-                let buyLevel = ((shadow.anchor - shadow.step) * scale).rounded() / scale
-                let sellLevel = ((shadow.anchor + shadow.step) * scale).rounded() / scale
-                if previous > buyLevel + tick / 2, price <= buyLevel - tick / 2, buyLevel >= shadow.lower {
-                    let amount = buyLevel * shadow.quantity
-                    let fee = Self.legacyShadowFee(code: shadow.code, side: "buy", amount: amount)
-                    let slippage = tick * shadow.quantity
-                    let debit = amount + fee + slippage
-                    if shadow.cash >= debit {
-                        shadow.cost = ((shadow.shares * (shadow.cost > 0 ? shadow.cost : buyLevel)) + amount + fee + slippage) / (shadow.shares + shadow.quantity)
-                        shadow.cash -= debit; shadow.shares += shadow.quantity
-                        if shadow.t0 { shadow.eligible += shadow.quantity }
-                        shadow.totalFees += fee + slippage; shadow.buys += 1
-                        shadow.anchor = buyLevel
-                        shadow.days[dayIndex].buys += 1; shadow.days[dayIndex].fills += 1
-                        shadow.days[dayIndex].fees += fee + slippage
-                        shadow.fills.append(LegacyShadowFill(index: Int(timestamp.timeIntervalSince1970), day: day,
-                            time: time, side: "buy", price: buyLevel, quantity: shadow.quantity,
-                            fee: fee + slippage, realizedPnL: 0))
-                    }
-                } else if previous < sellLevel - tick / 2, price >= sellLevel + tick / 2,
-                          sellLevel <= shadow.upper, shadow.eligible >= shadow.quantity {
-                    let amount = sellLevel * shadow.quantity
-                    let fee = Self.legacyShadowFee(code: shadow.code, side: "sell", amount: amount)
-                    let slippage = tick * shadow.quantity
-                    let realized = (sellLevel - (shadow.cost > 0 ? shadow.cost : sellLevel)) * shadow.quantity - fee - slippage
-                    shadow.cash += amount - fee - slippage; shadow.shares -= shadow.quantity
-                    shadow.eligible -= shadow.quantity
-                    if shadow.shares <= 0 { shadow.shares = 0; shadow.cost = 0 }
-                    shadow.totalFees += fee + slippage; shadow.realizedPnL += realized
-                    shadow.sells += 1; shadow.scoredSells += 1
-                    if realized > 0 { shadow.wins += 1 }
-                    shadow.anchor = sellLevel
-                    shadow.days[dayIndex].sells += 1; shadow.days[dayIndex].fills += 1
-                    shadow.days[dayIndex].fees += fee + slippage
-                    shadow.days[dayIndex].realizedPnL += realized
-                    shadow.fills.append(LegacyShadowFill(index: Int(timestamp.timeIntervalSince1970), day: day,
-                        time: time, side: "sell", price: sellLevel, quantity: shadow.quantity,
-                        fee: fee + slippage, realizedPnL: realized))
-                }
-            }
-
-            shadow.lastPrice = price
-            shadow.lastTimestamp = stamp
-            shadow.days[dayIndex].endEquity = shadow.cash + shadow.shares * price
-            shadow.days.sort { $0.day < $1.day }
-            if shadow.days.count > 60 { shadow.days.removeFirst(shadow.days.count - 60) }
-            if shadow.fills.count > 300 { shadow.fills.removeFirst(shadow.fills.count - 300) }
-            data.legacyShadowArchives[index] = shadow
-        }
-    }
-
     private static func isGridETF(_ code: String) -> Bool {
         let digits = code.lowercased().replacingOccurrences(of: "^(sh|sz|bj)", with: "", options: .regularExpression)
         return digits.range(of: "^(51|56|58|159|150|16|18)|^(15|16|18)\\d{4}$", options: .regularExpression) != nil
     }
 
-    private static func legacyShadowFee(code: String, side: String, amount: Double) -> Double {
+    private static func gridTradeFee(code: String, side: String, amount: Double) -> Double {
         if isGridETF(code) { return 0.10 }
         let commission = max(5, amount * 0.000086)
         return commission + (side == "sell" ? amount * 0.0005 : 0)
@@ -486,8 +394,8 @@ extension PortfolioStore {
         // 步长的第二条下界：一格涨跌必须能覆盖「买+卖两次费用 + 两次一跳滑点」，
         // 否则来回一趟净亏，格距再密也是白忙。1.15 是留出的安全边际。
         let sampleQuantity = max(100, quantity)
-        let roundTripCost = (Self.legacyShadowFee(code: code, side: "buy", amount: first * sampleQuantity)
-            + Self.legacyShadowFee(code: code, side: "sell", amount: first * sampleQuantity)
+        let roundTripCost = (Self.gridTradeFee(code: code, side: "buy", amount: first * sampleQuantity)
+            + Self.gridTradeFee(code: code, side: "sell", amount: first * sampleQuantity)
             + 2 * tick * sampleQuantity) / sampleQuantity
         let minGridStep = max(minStep, roundTripCost * 1.15)
         let stepMultipliers: [Double] = [1, 1.25, 1.5, 2, 2.5, 3, 4]
@@ -516,7 +424,7 @@ extension PortfolioStore {
                     if price <= anchor - step - tick / 2, anchor - step >= dayLow - tick / 2 {
                         // 向下穿越一档且该档没跌出当天低点 → 买一手（含费用 + 一跳不利滑点）。
                         let target = gridRound(anchor - step, decimals: decimals)
-                        let fee = Self.legacyShadowFee(code: code, side: "buy", amount: target * quantity)
+                        let fee = Self.gridTradeFee(code: code, side: "buy", amount: target * quantity)
                         let slippage = tick * quantity
                         if cash >= target * quantity + fee + slippage {
                             cost = (shares * cost + target * quantity + fee + slippage) / (shares + quantity)
@@ -533,7 +441,7 @@ extension PortfolioStore {
                     } else if price >= anchor + step + tick / 2, anchor + step <= dayHigh + tick / 2, eligible >= quantity {
                         // 向上穿越一档且没涨出当天高点、且有可卖份额 → 卖一手。
                         let target = gridRound(anchor + step, decimals: decimals)
-                        let fee = Self.legacyShadowFee(code: code, side: "sell", amount: target * quantity)
+                        let fee = Self.gridTradeFee(code: code, side: "sell", amount: target * quantity)
                         let slippage = tick * quantity
                         shares -= quantity
                         eligible -= quantity
@@ -804,8 +712,8 @@ extension PortfolioStore {
     private func rangeStep(code: String, percent: Double, setup: GridRangeDaySetup, tick: Double) -> Double {
         let raw = percent / 100 * setup.first
         let sampleQuantity = max(100, setup.quantity)
-        let roundTripCost = (Self.legacyShadowFee(code: code, side: "buy", amount: setup.first * sampleQuantity)
-            + Self.legacyShadowFee(code: code, side: "sell", amount: setup.first * sampleQuantity)
+        let roundTripCost = (Self.gridTradeFee(code: code, side: "buy", amount: setup.first * sampleQuantity)
+            + Self.gridTradeFee(code: code, side: "sell", amount: setup.first * sampleQuantity)
             + 2 * tick * sampleQuantity) / sampleQuantity
         let floorStep = roundTripCost * 1.15
         let chosen = max(raw, floorStep)
@@ -832,7 +740,7 @@ extension PortfolioStore {
         for price in prices {
             if price <= anchor - step - tick / 2, anchor - step >= setup.low - tick / 2 {
                 let target = gridRound(anchor - step, decimals: decimals)
-                let fee = Self.legacyShadowFee(code: code, side: "buy", amount: target * quantity)
+                let fee = Self.gridTradeFee(code: code, side: "buy", amount: target * quantity)
                 let slippage = tick * quantity
                 if cash >= target * quantity + fee + slippage {
                     cost = (shares * cost + target * quantity + fee + slippage) / (shares + quantity)
@@ -849,7 +757,7 @@ extension PortfolioStore {
             } else if price >= anchor + step + tick / 2, anchor + step <= setup.high + tick / 2,
                       eligible >= quantity {
                 let target = gridRound(anchor + step, decimals: decimals)
-                let fee = Self.legacyShadowFee(code: code, side: "sell", amount: target * quantity)
+                let fee = Self.gridTradeFee(code: code, side: "sell", amount: target * quantity)
                 let slippage = tick * quantity
                 shares -= quantity
                 eligible -= quantity

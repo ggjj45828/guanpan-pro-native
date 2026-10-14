@@ -167,7 +167,7 @@ struct ReturnSourceView: View {
             r.warnings.append("区间内不足两个全账户快照；只能查看流水归因，不能计算完整区间收益。")
         }
         if store.data.holdings.contains(where: { $0.kind == .etf }) && store.data.ledger.contains(where: { $0.kind == nil }) {
-            r.warnings.append("部分旧版交易流水没有资产类别，场内/基金代码相同的记录可能无法可靠区分。")
+            r.warnings.append("部分交易流水没有资产类别，场内/基金代码相同的记录可能无法可靠区分。")
         }
         if r.start == nil || r.end == nil {
             let from = dateFormatter.string(from: min(fromDate, toDate))

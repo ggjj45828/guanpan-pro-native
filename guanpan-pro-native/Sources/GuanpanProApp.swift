@@ -19,10 +19,6 @@ struct GuanpanProApp: App {
         UITableViewCell.appearance().backgroundColor = .clear
         UINavigationBar.appearance().backgroundColor = .clear
 
-        // v2.12 起只保留配色主题，设置页不再提供图片 / 渐变背景，
-        // 老版本遗留的背景图在这里一次性清掉（详见 NativeBackgroundStore 的注释）。
-        NativeBackgroundStore.removeLegacyBackgroundIfNeeded()
-
         let store = PortfolioStore()
         _store = StateObject(wrappedValue: store)
         // Background fetch can launch the process without first showing a view.

@@ -13,6 +13,10 @@ final class PortfolioStore: ObservableObject {
     /// 不写入账本；接口没给或品种不是 ETF 时保持 nil，绝不拿昨收/净值猜。
     @Published private(set) var marketPremiums: [String: Double] = [:]
     @Published private(set) var marketIOPVs: [String: Double] = [:]
+    /// 腾讯字段 81 / 新浪字段 4 = **昨日 IOPV**。只用于算「昨天收盘时的溢价率」，
+    /// 不直接显示。`IntradayIOPVEstimate` 用它 + 今日 IOPV 把分时价格换算成 IOPV 曲线
+    /// （网页版同一条曲线就是这么来的）。没有它就只能靠前台逐分钟采集，刚装上时是空的。
+    @Published private(set) var marketNavPrevs: [String: Double] = [:]
     @Published var fundNAVStatus = "尚未更新基金净值"
     @Published var fundHoldingsStatus = "基金重仓尚未更新"
     @Published var isRefreshingFundHoldings = false
@@ -384,12 +388,22 @@ final class PortfolioStore: ObservableObject {
     /// 键为 "代码|nil"（旧版无类型流水）与 "代码|etf/fund"；调用方按持仓类型相加，
     /// 与 displayedCost 里 `kind == nil || kind == holding.kind` 的过滤规则一致。
     func dilutedRealizedSums() -> [String: Double] {
+        // 带 memo：这个值在持仓页每次 body 重算时都要取一次，而它要遍历全部交易流水
+        // （摊薄成本口径下流水可能上千条）。指纹只看「条数 + 末条的已实现盈亏」，
+        // 流水是只追加的，够用。
+        let ledger = data.ledger
+        let key = "\(ledger.count)|\(ledger.last?.realizedPnL ?? 0)"
+        if key == cachedDilutedRealizedKey { return cachedDilutedRealized }
         var sums: [String: Double] = [:]
-        for entry in data.ledger {
+        for entry in ledger {
             sums["\(entry.code)|\(entry.kind?.rawValue ?? "nil")", default: 0] += entry.realizedPnL
         }
+        cachedDilutedRealized = sums
+        cachedDilutedRealizedKey = key
         return sums
     }
+    private var cachedDilutedRealized: [String: Double] = [:]
+    private var cachedDilutedRealizedKey = ""
 
     /// displayedCost 的预计算版本：dilutedRealizedSum 传入页面级算好的已实现盈亏合计，
     /// 避免每次调用都全量过滤流水（持仓列表每行两次，是滚动卡顿来源之一）。
@@ -459,6 +473,13 @@ final class PortfolioStore: ObservableObject {
     func load() {
         guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
         data = value
+        // 整份账本换掉了，派生缓存必须全部作废：指纹可能碰巧相同（条数与末条字段都没变），
+        // 但内容已经不是同一份数据了。
+        cachedLatestFundNAVKey = ""
+        cachedFundNAVPairsKey = ""
+        cachedDilutedRealizedKey = ""
+        normalizedDailyBarsCache.removeAll(keepingCapacity: true)
+        signalCache.removeAll(keepingCapacity: true)
         migrateChartRangeIfNeeded()
     }
 
@@ -812,6 +833,114 @@ final class PortfolioStore: ObservableObject {
             for event in untouchedEstimates + refreshed + confirmed {
                 let key = "\(event.code)|\(event.date)"
                 if event.isEstimated != true || byKey[key] == nil { byKey[key] = event }
+            }
+            data.etfDividendEvents = byKey.values.sorted { $0.date < $1.date }
+            save(label: nil)
+        }
+    }
+
+    // MARK: - 个股现金分红（红利类标的的评分依据）
+
+    /// 需要补个股现金分红的代码：自选 + 持仓里的**个股**。
+    ///
+    /// 「个股」= 6 位纯数字，且不是 ETF/LOF 前缀（15/16/18/50/51/52/56/58/59）。
+    /// 港股 / 美股 / 指数不在此列 —— 东财这个接口只覆盖沪深个股。
+    private func stockDividendCandidateCodes() -> [String] {
+        let codes = Set(data.holdings.map(\.code) + data.quotes.map(\.code))
+        return codes.filter { code in
+            let digits = code.filter(\.isNumber)
+            return digits.count == 6 && !isTencentETFCode(code)
+        }.sorted()
+    }
+
+    /// 东方财富「分红送配」明细 → 现金派息事件（只收**已实施且有除息日**的）。
+    ///
+    /// 字段含义（拿中国神华 601088 与公开公告逐条比对确认过）：
+    /// `PRETAX_BONUS_RMB` = **每 10 股税前派息**（元），`EX_DIVIDEND_DATE` = 除权除息日，
+    /// `ASSIGN_PROGRESS` = 进度（"实施分配" / "股东大会决议通过" / "预案"）。
+    ///
+    /// **只收「实施分配」**：已公告但还没除息的，钱还没到股东账户，
+    /// 算进「近 12 个月到手分红」会把股息率算高。
+    private func fetchStockDividendEvents(code: String) async throws -> [ETFDividendEvent] {
+        let digits = code.filter(\.isNumber)
+        guard digits.count == 6 else { return [] }
+        var components = URLComponents(string: "https://datacenter-web.eastmoney.com/api/data/v1/get")
+        components?.queryItems = [
+            URLQueryItem(name: "reportName", value: "RPT_SHAREBONUS_DET"),
+            URLQueryItem(name: "columns", value: "SECURITY_CODE,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE,ASSIGN_PROGRESS,REPORT_DATE"),
+            URLQueryItem(name: "filter", value: "(SECURITY_CODE=\"\(digits)\")"),
+            URLQueryItem(name: "pageSize", value: "30"),
+            URLQueryItem(name: "pageNumber", value: "1"),
+            URLQueryItem(name: "sortColumns", value: "EX_DIVIDEND_DATE"),
+            URLQueryItem(name: "sortTypes", value: "-1")
+        ]
+        guard let url = components?.url else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        // 与东财其它接口一样必须带 Referer，否则拿不到数据。
+        request.setValue("https://data.eastmoney.com/", forHTTPHeaderField: "Referer")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        let (bytes, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let rows = result["data"] as? [[String: Any]] else { return [] }
+        var events: [ETFDividendEvent] = []
+        for row in rows {
+            let progress = (row["ASSIGN_PROGRESS"] as? String) ?? ""
+            guard progress.contains("实施") else { continue }
+            guard let rawDate = row["EX_DIVIDEND_DATE"] as? String, rawDate.count >= 10 else { continue }
+            let date = String(rawDate.prefix(10))
+            // 接口有时给数字、有时给字符串，两种都要认。
+            let per10: Double? = {
+                if let value = row["PRETAX_BONUS_RMB"] as? NSNumber { return value.doubleValue }
+                if let text = row["PRETAX_BONUS_RMB"] as? String { return Double(text) }
+                return nil
+            }()
+            guard let per10, per10.isFinite, per10 > 0 else { continue }
+            events.append(ETFDividendEvent(code: digits, date: date,
+                                           amountPerShare: per10 / 10, isEstimated: false))
+        }
+        return events
+    }
+
+    /// 补齐个股现金分红（每天最多一次）。
+    ///
+    /// 为什么必须单独做：既有的两条路 —— 前复权价差推算（`inferredEvents`）与
+    /// 写死的核实表（`verifiedEvents`）—— **都只覆盖 ETF**。结果红利个股
+    /// （银行 / 煤炭 / 电力 / 高速 / 运营商 / 家电…）在股息率和「值不值得买」
+    /// 评分里完全是空档，而股息率恰恰是这类标的唯一的买入依据。
+    ///
+    /// 事件写进同一张 `etfDividendEvents`：结构与口径完全一致
+    /// （code + date + amountPerShare），`twelveMonthPerShare` 按 code 取用不会串味；
+    /// 标 `isEstimated = false`，这样 `refreshETFDividendEstimates` 的 confirmed
+    /// 分支会原样保留它们，不会被当成"可被推算覆盖的旧事件"。
+    func refreshStockDividendEvents(force: Bool = false) {
+        let today = MarketCalendar.isoDay(.now)
+        // 分红公告是按季度才变的，一天一次足够；键带 v1 便于以后改口径时强制重跑。
+        let key = "guanpan.native.stockDividend.lastRun.v1"
+        if !force, UserDefaults.standard.string(forKey: key) == today { return }
+        let codes = stockDividendCandidateCodes()
+        guard !codes.isEmpty else { return }
+        UserDefaults.standard.set(today, forKey: key)
+        Task {
+            var fetched: [ETFDividendEvent] = []
+            var completed = Set<String>()
+            for code in codes {
+                guard let events = try? await fetchStockDividendEvents(code: code) else { continue }
+                completed.insert(code.filter(\.isNumber))
+                fetched.append(contentsOf: events)
+            }
+            // 一只都没取到（比如整段网络不通）就原样不动，别把已有记录清空。
+            guard !completed.isEmpty else { return }
+            // 只替换**本轮成功取到**的那些代码：取失败的可能是网络问题，
+            // 把它们的历史记录留着，比清成空白好。
+            let kept = data.etfDividendEvents.filter { !completed.contains($0.code) }
+            var byKey: [String: ETFDividendEvent] = [:]
+            for event in kept + fetched {
+                let eventKey = "\(event.code)|\(event.date)"
+                // 公告数据（isEstimated == false）优先于推算数据。
+                if event.isEstimated != true || byKey[eventKey] == nil { byKey[eventKey] = event }
             }
             data.etfDividendEvents = byKey.values.sorted { $0.date < $1.date }
             save(label: nil)
@@ -1222,7 +1351,14 @@ final class PortfolioStore: ObservableObject {
     ///   只有「自动记录当日快照」那种**纯估值刷新**才传 `false` —— 用户明确要求
     ///   「日内的持仓盈亏这些两边都会自动变，不需要实时同步，浪费穿透流量」。
     func save(label: String? = nil, propagate: Bool = true) {
-        cachedLatestFundNAVKey = ""   // 净值可能变了，先把「最新净值」缓存作废
+        // 账本一改，几个跟账本内容绑定的派生缓存全部作废。
+        // 只靠指纹（条数 / 末条字段）不够：撤销、改中间某一条都可能让条数与末条都不变，
+        // 但内容已经不同了 —— 那样界面会一直显示旧值。宁可多算一次。
+        cachedLatestFundNAVKey = ""
+        cachedFundNAVPairsKey = ""
+        cachedDilutedRealizedKey = ""
+        normalizedDailyBarsCache.removeAll(keepingCapacity: true)
+        signalCache.removeAll(keepingCapacity: true)
         guard let raw = try? JSONEncoder().encode(data) else { return }
         let defaults = UserDefaults.standard
         if !isUndoingSave, let previous = defaults.data(forKey: key), previous != raw {
@@ -1265,6 +1401,43 @@ final class PortfolioStore: ObservableObject {
         cachedLatestFundNAVKey = key
         return result
     }
+
+    /// 「最新一期净值 + 上一期净值」按代码成对返回（持仓页的当日涨跌、净值新鲜度都要它）。
+    ///
+    /// **必须带 memo**：它要在每只基金的净值历史里做「按日期去重（同一日期保留采集更晚的
+    /// 那条）+ 按日期排序」，而 `fundNAVHistory` 动辄几万条。这个值原来是在
+    /// `HoldingsView` 里现算的 computed property —— 持仓页每次 body 重算都会取它，
+    /// 而 store 每 10~15 秒就刷一次行情，等于每 15 秒把几万条重新分组、去重、排序一遍。
+    /// （`latestFundNAVByCode` 早就加了 memo，这里漏了，是持仓页滑动发涩的主因之一。）
+    ///
+    /// 指纹只用「条数 + 最后一条的代码/日期/净值」：净值历史是只追加的，
+    /// 条数变了或末条变了就说明有更新，够用且是 O(1)。
+    var latestFundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] {
+        let history = data.fundNAVHistory
+        let key = "\(history.count)|\(history.last?.code ?? "")|\(history.last?.date ?? "")|\(history.last?.nav ?? 0)"
+        if key == cachedFundNAVPairsKey { return cachedFundNAVPairs }
+        var result: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
+        result.reserveCapacity(64)
+        let groups = Dictionary(grouping: history.filter { $0.nav.isFinite && $0.nav > 0 }, by: \.code)
+        for (code, rows) in groups {
+            let byDate = Dictionary(rows.map { ($0.date, $0) }, uniquingKeysWith: { old, new in
+                switch (old.fetchedAt, new.fetchedAt) {
+                case let (a?, b?): return a >= b ? old : new
+                case (_?, nil): return old
+                case (nil, _?): return new
+                case (nil, nil): return new
+                }
+            })
+            let sorted = byDate.values.sorted { $0.date < $1.date }
+            guard let latest = sorted.last else { continue }
+            result[code] = (latest, sorted.count > 1 ? sorted[sorted.count - 2] : nil)
+        }
+        cachedFundNAVPairs = result
+        cachedFundNAVPairsKey = key
+        return result
+    }
+    private var cachedFundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
+    private var cachedFundNAVPairsKey = ""
 
     /// 保存 AI 最近结果，不占用“撤销上一次账本修改”的位置。
     /// 结果仍进入原生备份与 NAS，多设备打开时可以继续查看。
@@ -1414,7 +1587,6 @@ final class PortfolioStore: ObservableObject {
             !d.cashFlows.isEmpty || !d.snapshots.isEmpty || !d.quotes.isEmpty || !d.quoteAlerts.isEmpty ||
             !d.manualQuoteOverrides.isEmpty || !d.etfDividendEvents.isEmpty ||
             !d.allocationTargets.isEmpty || !d.tradePlans.isEmpty || !d.dayGridPlans.isEmpty ||
-            !d.legacyGridArchives.isEmpty || !d.legacyShadowArchives.isEmpty || !d.legacyDCAEvents.isEmpty ||
             d.savedAccountAIAnalysis != nil || d.savedPortraitAIAnalysis != nil ||
             !d.savedInstrumentAIAnalyses.isEmpty || d.cash != 0 || d.cashLinkedByDefault || d.appearance != .system ||
             d.quoteRefreshSeconds != 60 || d.dailyPnLMode != .pnl || d.intradaySubchartMode != "macd" || d.dailyChartRangeDays != 250 || d.intradayLineColorMode != .automatic || !d.intradayCaptureEnabled || d.automaticFundNAVRefreshEnabled || d.costAccountingMode != .diluted || d.globalPositionLimitPercent != 0 || !d.positionHintsEnabled || d.rebalanceAlertThreshold != 5 || d.investmentProfile.style != "swing" || d.investmentProfile.risk != "bal" ||
@@ -1872,9 +2044,10 @@ final class PortfolioStore: ObservableObject {
             value = rawNAV
         } else if let premium = quote.premiumPct, (1 + premium / 100) > 0 {
             value = quote.price / (1 + premium / 100)
-        } else if let sinaValue = await fetchSinaFundIOPVs(codes: [code])[code], sinaValue.isFinite, sinaValue > 0 {
+        } else if let sina = await fetchSinaFundIOPVs(codes: [code])[code], sina.iopv > 0 {
             // 腾讯这条路彻底拿不到字段时，再问新浪基金接口一次。
             // 溢价率这时就用「现价 ÷ 新浪 IOPV − 1」，与腾讯自己算 77 字段的口径一致。
+            let sinaValue = sina.iopv
             value = sinaValue
             return (value, quote.price / sinaValue * 100 - 100, quote.timestamp)
         } else {
@@ -2079,11 +2252,14 @@ final class PortfolioStore: ObservableObject {
     /// 字段含义（拿 4 只 ETF 与腾讯 88 字段逐一比对确认过）：
     /// ① 名称 ② 时间 ③ **当日 IOPV**（= 腾讯字段 78）④ 昨日 IOPV（= 腾讯字段 81）
     /// ⑤/⑥/⑦ 其他指标 ⑧ 日期 ⑨ 最近公布的单位净值 ⑩ 其他。
-    /// **只取字段 3**：取 4 会拿到昨天的数、取 9 会拿到净值而不是 IOPV。
+    /// 这里取字段 3（当日）与字段 4（昨日）：**取 9 会拿到净值而不是 IOPV**。
+    ///
+    /// 昨日 IOPV 不是给界面直接显示的，它是 `IntradayIOPVEstimate` 还原
+    /// 「昨天收盘时溢价率」的锚点 —— 腾讯那边同值是字段 81。
     ///
     /// 与腾讯一样必须带 `Referer: https://finance.sina.com.cn`，否则返回空 body；
     /// 编码是 GB18030，复用 `decodeTencent`。
-    private func fetchSinaFundIOPVs(codes: [String]) async -> [String: Double] {
+    private func fetchSinaFundIOPVs(codes: [String]) async -> [String: (iopv: Double, navPrev: Double?)] {
         let cleaned = codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.count == 6 && $0.allSatisfy(\.isNumber) }
         guard !cleaned.isEmpty else { return [:] }
@@ -2095,7 +2271,7 @@ final class PortfolioStore: ObservableObject {
         guard let (bytes, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return [:] }
         let text = decodeTencent(bytes)
-        var result: [String: Double] = [:]
+        var result: [String: (iopv: Double, navPrev: Double?)] = [:]
         for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             let row = String(line)
             guard let range = row.range(of: "hq_str_fu_") else { continue }
@@ -2106,7 +2282,11 @@ final class PortfolioStore: ObservableObject {
             let body = tail[tail.index(after: equals)...].trimmingCharacters(in: CharacterSet(charactersIn: "\"; "))
             let fields = body.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
             guard fields.count >= 3, let iopv = Double(fields[2]), iopv.isFinite, iopv > 0 else { continue }
-            result[code] = iopv
+            // 字段 4 是昨日 IOPV。缺失时为 nil，不要退化成"拿今天的当昨天"，
+            // 否则插值出来的昨天溢价率恒等于今天，估算线就是一条假直线。
+            var navPrev: Double? = nil
+            if fields.count >= 4, let raw = Double(fields[3]), raw.isFinite, raw > 0 { navPrev = raw }
+            result[code] = (iopv, navPrev)
         }
         return result
     }
@@ -2482,8 +2662,7 @@ final class PortfolioStore: ObservableObject {
     private func performQuoteRefresh(captureIntraday: Bool, manual: Bool = false) async -> Bool {
         // Tencent's stock quote endpoint does not return OTC fund NAVs. Never send
         // fund codes there or present a stock quote as a fund valuation.
-        let shadowCodes = data.legacyShadowArchives.filter { !$0.closed }.map(\.code)
-        let symbols = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code) + shadowCodes)
+        let symbols = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code))
         guard !symbols.isEmpty else { setSourceStatus("还没有标的"); return false }
         let requestCodes = symbols.map(tencentSymbol).sorted()
         guard let url = URL(string: "https://qt.gtimg.cn/q=" + requestCodes.joined(separator: ",") + "&_t=" + String(Int(Date().timeIntervalSince1970))) else {
@@ -2530,7 +2709,8 @@ final class PortfolioStore: ObservableObject {
                     guard let proxy = proxyValues[symbol] else { continue }
                     if let direct = values[symbol] {
                         values[symbol] = (direct.name, direct.price, direct.changePct, direct.timestamp,
-                                          direct.premiumPct ?? proxy.premiumPct, direct.iopv ?? proxy.iopv)
+                                          direct.premiumPct ?? proxy.premiumPct, direct.iopv ?? proxy.iopv,
+                                          direct.navPrev ?? proxy.navPrev)
                     } else {
                         values[symbol] = proxy
                     }
@@ -2544,19 +2724,21 @@ final class PortfolioStore: ObservableObject {
             // 新浪的 `hq.sinajs.cn/list=fu_<code>` 是**基金专用**接口：
             // 字段 3 = 当日实时参考净值（字段 4 是昨日 IOPV，字段 9 是最近公布的单位净值，
             // 三个都实测比对过，别取错）。一次请求可以批量，且与腾讯完全独立。
-            // 这里**只补 IOPV**，价格 / 涨跌幅 / 时间戳一律不动。
-            // `etfCodes` 是 Set，`filter` 出来还是 Set；这里要的是数组（下游按下标拼请求），
-            // 顺手转成 Array —— 上一版直接把它交给了 `[String]` 形参，CI 报
-            // `cannot convert value of type 'Set<String>' to expected argument type '[String]'`。
-            let stillMissingIOPV = Array(incompleteETFCodes.filter { values[tencentSymbol($0)]?.iopv == nil })
-            if !stillMissingIOPV.isEmpty {
-                let sinaIOPVs = await fetchSinaFundIOPVs(codes: stillMissingIOPV)
-                for code in stillMissingIOPV {
+            // 这里补两类字段：**当日 IOPV**（价格线旁边那条紫线）和**昨日 IOPV**（估算线的左端点）。
+            // 腾讯在部分深市 ETF 上会整段缺 77/78/81，所以两者都要问一次新浪，
+            // 谁缺补谁，腾讯已经给了的以腾讯为准。价格 / 涨跌幅 / 时间戳一律不动。
+            // `etfCodes` / `incompleteETFCodes` 都是 Set，取并集用 `union`（`+` 对 Set 不存在）；
+            // 下游按数组拼请求，所以最后转回 Array。
+            let missingNavPrev = etfCodes.filter { values[tencentSymbol($0)]?.navPrev == nil }
+            let sinaNeeds = Array(incompleteETFCodes.union(missingNavPrev))
+            if !sinaNeeds.isEmpty {
+                let sinaRefs = await fetchSinaFundIOPVs(codes: sinaNeeds)
+                for code in sinaNeeds {
                     let symbol = tencentSymbol(code)
-                    guard let iopv = sinaIOPVs[code], iopv.isFinite, iopv > 0,
-                          let direct = values[symbol] else { continue }
+                    guard let sina = sinaRefs[code], sina.iopv > 0, let direct = values[symbol] else { continue }
                     values[symbol] = (direct.name, direct.price, direct.changePct, direct.timestamp,
-                                      direct.premiumPct, iopv)
+                                      direct.premiumPct, direct.iopv ?? sina.iopv,
+                                      direct.navPrev ?? sina.navPrev)
                 }
             }
             guard !values.isEmpty else {
@@ -2586,6 +2768,7 @@ final class PortfolioStore: ObservableObject {
             var changes = marketChanges
             var premiums = marketPremiums
             var iopvs = marketIOPVs
+            var navPrevs = marketNavPrevs
             for code in symbols {
                 if let quote = values[tencentSymbol(code)] {
                     changes[code] = quote.changePct
@@ -2593,6 +2776,8 @@ final class PortfolioStore: ObservableObject {
                     else { premiums.removeValue(forKey: code) }
                     if let iopv = quote.iopv, iopv.isFinite, iopv > 0 { iopvs[code] = iopv }
                     else { iopvs.removeValue(forKey: code) }
+                    if let navPrev = quote.navPrev, navPrev.isFinite, navPrev > 0 { navPrevs[code] = navPrev }
+                    else { navPrevs.removeValue(forKey: code) }
                 }
             }
             var updated = data
@@ -2622,21 +2807,16 @@ final class PortfolioStore: ObservableObject {
             assignIfChanged(\.marketChanges, changes)
             assignIfChanged(\.marketPremiums, premiums)
             assignIfChanged(\.marketIOPVs, iopvs)
+            assignIfChanged(\.marketNavPrevs, navPrevs)
             if Self.isRegularTradingSession(Date()) {
                 checkQuoteAlerts(using: values)
                 if captureIntraday && data.intradayCaptureEnabled {
-                    let liveCodes = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code) + shadowCodes)
+                    let liveCodes = Set(data.quotes.map(\.code) + data.holdings.filter { $0.kind == .etf }.map(\.code))
                     let live = liveCodes.compactMap { code -> (String, Double)? in
                         guard let quote = values[tencentSymbol(code)], Self.isFreshQuote(quote.timestamp, now: .now) else { return nil }
                         return (code, quote.price)
                     }
                     captureMinuteQuotes(live)
-                    let shadowQuotes = live.compactMap { item -> (String, Double, Date)? in
-                        let code = item.0
-                        guard let quote = values[tencentSymbol(code)], let timestamp = quote.timestamp else { return nil }
-                        return (code, quote.price, timestamp)
-                    }
-                    advanceLegacyShadowSimulations(shadowQuotes)
                 }
                 evaluateIntradayCompanions()
             }
@@ -3203,8 +3383,8 @@ final class PortfolioStore: ObservableObject {
             ?? String(data: bytes, encoding: .isoLatin1) ?? ""
     }
 
-    private func parseTencent(_ text: String) -> [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?, iopv: Double?)] {
-        var result: [String: (String, Double, Double, Date?, Double?, Double?)] = [:]
+    private func parseTencent(_ text: String) -> [String: (name: String, price: Double, changePct: Double, timestamp: Date?, premiumPct: Double?, iopv: Double?, navPrev: Double?)] {
+        var result: [String: (String, Double, Double, Date?, Double?, Double?, Double?)] = [:]
         let pattern = #"v_([a-zA-Z0-9]+)="([^"]*)""#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return result }
         let ns = text as NSString
@@ -3235,7 +3415,18 @@ final class PortfolioStore: ObservableObject {
                 guard isETF, let rawIOPV, rawIOPV.isFinite, rawIOPV > 0 else { return nil }
                 return rawIOPV
             }()
-            result[symbol] = (name, price, pct / 100, timestamp, premium, iopv)
+            // 下标 81 = **昨日 IOPV**（与新浪基金接口 `fu_<code>` 的字段 4 同值，逐只比对确认过：
+            // 510300 昨收 4.345 / 字段 81 = 4.3479，159352 昨收 1.165 / 字段 81 = 1.1656 ——
+            // 与昨收接近但不等，正是「昨天的参考净值」而不是昨天的收盘价）。
+            //
+            // 它本身没有历史分时，但配上「今日 IOPV（78）」就能还原**昨天收盘时的溢价率**，
+            // 这是网页版那条 IOPV 曲线的两个真实锚点之一（见 `IntradayIOPVEstimate`）。
+            let rawNavPrev = fields.count > 81 ? parseTencentNumericField(String(fields[81])) : nil
+            let navPrev: Double? = {
+                guard isETF, let rawNavPrev, rawNavPrev.isFinite, rawNavPrev > 0 else { return nil }
+                return rawNavPrev
+            }()
+            result[symbol] = (name, price, pct / 100, timestamp, premium, iopv, navPrev)
         }
         return result
     }

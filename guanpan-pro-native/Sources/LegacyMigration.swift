@@ -229,7 +229,7 @@ enum LegacyMigration {
                   let rawDate = string(row["date"]), let date = dateFromDay(String(rawDate.prefix(10))) else { continue }
             let internalFundTransfer = string(row["internal"]) == "fund"
             result.cashFlows.append(CashFlow(date: date, amount: type == "in" ? amount : -amount,
-                memo: string(row["note"]) ?? (type == "in" ? "旧版现金转入" : "旧版现金转出"),
+                memo: string(row["note"]) ?? (type == "in" ? "现金转入" : "现金转出"),
                 affectsCash: true, external: !internalFundTransfer))
         }
 
@@ -277,22 +277,15 @@ enum LegacyMigration {
 
         let plans = fund["plans"] as? [[String: Any]] ?? []
         for row in plans { appendDCAPlan(row, fundHoldings: funds, transactions: result.fundTransactions, to: &result) }
-        let planEvents = fund["planEvents"] as? [[String: Any]] ?? []
-        result.legacyDCAEvents = planEvents.compactMap(legacyDCAEvent)
         result.tradePlans = (db["tradePlans"] as? [[String: Any]] ?? []).compactMap(migrateTradePlan)
 
         let gridRecords = db["gridTrades"] as? [[String: Any]] ?? []
         for row in gridRecords { appendLegacyGrid(row, to: &result) }
         let bars = parseGridHistory(root["gridhist"])
-        // v2.13.35：不再把旧版备份里「没被识别」的设置原文留档
-        // （用户要求删除「旧版资料 / 迁移存档」这块功能）。
-        // 顺带删掉了 `sanitizedLegacyConfig` —— 它唯一的作用就是给这份留档脱敏，
-        // 现在整条路径都不存在了，旧备份里多出来的 key 交给 JSONDecoder 忽略即可。
 
         guard !result.quotes.isEmpty || !result.holdings.isEmpty || !result.snapshots.isEmpty
             || !result.cashFlows.isEmpty || !result.ledger.isEmpty || !result.dayGridPlans.isEmpty
-            || !result.fundDCAPlans.isEmpty || !result.legacyDCAEvents.isEmpty
-            || !result.legacyGridArchives.isEmpty || !result.fundNAVHistory.isEmpty
+            || !result.fundDCAPlans.isEmpty || !result.fundNAVHistory.isEmpty
             || !bars.isEmpty || root["cash"] != nil else {
             throw LegacyMigrationError.invalidBackup
         }
@@ -422,62 +415,6 @@ enum LegacyMigration {
         let mode = string(row["mode"]) ?? "unknown"
         let horizon = string(row["horizon"]) ?? "intraday"
         let rawJSON = encodeJSON(row)
-        data.legacyGridArchives.append(LegacyGridArchive(
-            id: recordID, code: code, name: string(row["name"]) ?? code,
-            horizon: horizon, status: status, mode: mode,
-            capital: capital, quantity: number(row["qty"]) ?? 0,
-            anchor: anchor, lower: lower, upper: upper, step: step,
-            created: string(row["created"]) ?? "", rawJSON: rawJSON
-        ))
-        let shadow = row["shadow"] as? [String: Any] ?? [:]
-        let shadowQuantity = number(row["qty"]) ?? 0
-        let shadowShares = number(shadow["shares"]) ?? shadowQuantity * 3
-        let shouldKeepShadow = row["shadow"] != nil || (horizon == "intraday" && status != "closed" && capital > 0 && anchor > 0 && step > 0 && shadowQuantity > 0)
-        if shouldKeepShadow {
-            let totals = shadow["totals"] as? [String: Any] ?? [:]
-            let fills = (shadow["fills"] as? [[String: Any]] ?? []).enumerated().compactMap { index, fill -> LegacyShadowFill? in
-                guard let day = string(fill["day"]), let side = string(fill["side"]),
-                      let price = number(fill["price"]), price.isFinite, price > 0,
-                      let quantity = number(fill["qty"]), quantity.isFinite, quantity > 0 else { return nil }
-                return LegacyShadowFill(index: index, day: day, time: string(fill["time"]) ?? "",
-                    side: side, price: price, quantity: quantity, fee: number(fill["fee"]) ?? 0,
-                    realizedPnL: number(fill["realized"]) ?? 0)
-            }
-            let daily = shadow["daily"] as? [String: [String: Any]] ?? [:]
-            let days = daily.keys.sorted().compactMap { day -> LegacyShadowDay? in
-                guard let value = daily[day] else { return nil }
-                return LegacyShadowDay(day: day, fills: count(value["fills"]),
-                    buys: count(value["buy"]), sells: count(value["sell"]),
-                    fees: number(value["fees"]) ?? 0, realizedPnL: number(value["realized"]) ?? 0,
-                    startEquity: number(value["startEquity"]) ?? 0, endEquity: number(value["endEquity"]) ?? 0)
-            }
-            let fillBuys = fills.filter { $0.side == "buy" }.count
-            let fillSells = fills.filter { $0.side == "sell" }.count
-            let dailyBuys = days.reduce(0) { $0 + $1.buys }
-            let dailySells = days.reduce(0) { $0 + $1.sells }
-            let scoredFills = fills.filter { $0.side == "sell" }
-            data.legacyShadowArchives.append(LegacyShadowArchive(
-                id: recordID, code: code, name: string(row["name"]) ?? code,
-                capital: number(shadow["capital"]) ?? capital,
-                cash: number(shadow["cash"]) ?? (capital - shadowShares * anchor),
-                shares: shadowShares, cost: number(shadow["cost"]) ?? anchor,
-                lastPrice: number(shadow["lastPrice"]) ?? 0,
-                initialPrice: number(shadow["initialPrice"]) ?? anchor,
-                initialShares: number(shadow["initialShares"]) ?? shadowShares,
-                totalFees: number(totals["fees"]) ?? days.reduce(0) { $0 + $1.fees },
-                realizedPnL: number(totals["realized"]) ?? days.reduce(0) { $0 + $1.realizedPnL },
-                buys: max(count(totals["buy"]), max(dailyBuys, fillBuys)),
-                sells: max(count(totals["sell"]), max(dailySells, fillSells)),
-                wins: max(count(totals["wins"]), scoredFills.filter { $0.realizedPnL > 0 }.count),
-                scoredSells: max(count(totals["scoredSells"]), scoredFills.count),
-                lower: lower, upper: upper, anchor: number(shadow["anchor"]) ?? anchor,
-                step: step, quantity: shadowQuantity, eligible: number(shadow["eligible"]) ?? shadowShares,
-                t0: row["t0"] as? Bool ?? false,
-                active: row["active"] as? Bool == true && status == "active",
-                closed: status == "closed", lastTimestamp: string(shadow["lastT"]) ?? "",
-                fills: fills, days: days
-            ))
-        }
         guard horizon == "intraday", capital > 0, anchor > 0, step > 0 else { return }
         let sides = min(anchor - lower, upper - anchor)
         let levels = max(1, min(20, Int(floor(max(0, sides) / step))))
@@ -488,19 +425,6 @@ enum LegacyMigration {
             levelsEachSide: levels, feePerOrder: 0.1, enabled: active,
             legacyRecordID: recordID
         ))
-    }
-
-    private static func legacyDCAEvent(_ row: [String: Any]) -> LegacyDCAEventArchive? {
-        guard let code = string(row["code"]), !code.isEmpty,
-              let due = validDay(string(row["due"])) else { return nil }
-        return LegacyDCAEventArchive(
-            id: string(row["id"]) ?? "\(code)-\(due)",
-            planID: string(row["planId"]) ?? "",
-            code: code, name: string(row["name"]) ?? code,
-            dueDate: due, amount: number(row["amt"]) ?? 0,
-            status: string(row["migrationStatus"]) ?? "未迁入流水",
-            rawJSON: encodeJSON(row)
-        )
     }
 
     private static func migrateTradePlan(_ row: [String: Any]) -> TradePlan? {

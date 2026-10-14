@@ -188,8 +188,6 @@ struct ContentView: View {
     /// 这一整组已经移除（用户要求「只留配色主题」）。原来这里会叠一层图片或渐变，
     /// 再靠 `overlayTint` 压暗、靠卡片半透明透出来；界线很难调到每种主题都好看，
     /// 而且一旦铺了图，主题底色就完全看不见了。
-    /// 老用户本机残留的背景文件由 `NativeBackgroundStore.removeLegacyBackgroundIfNeeded()` 一次性清掉，
-    /// 否则设置页里已经没有入口，界面却还铺着那张图，既看不见也撤不掉。
     @ViewBuilder private var backgroundLayer: some View {
         currentTheme.gradient
             .ignoresSafeArea()
@@ -438,6 +436,14 @@ struct DashboardView: View {
             } else {
                 premiumAdjustment = 0
             }
+            // 股息率维度。红利类标的（银行 / 煤炭 / 电力 / 高速 / 运营商 / 红利 ETF…）
+            // 的买入依据就是「当前价格对应多少股息率」，只看技术面等于没看这个维度。
+            let dividendYield = scoringDividendYield(quote)
+            let dividendAdjustment = Self.dividendScoreAdjustment(dividendYield)
+            // 红利标的的日内涨跌含义和成长股是反的：跌下去 = 股息率被抬高 = 更划算。
+            // 不做这个修正的话，模型会「越跌越不推荐、越涨越推荐」，对红利策略正好反了。
+            let isIncomePlay = (dividendYield ?? 0) >= 3
+            let effectiveChangeAdjustment = isIncomePlay ? changeAdjustment / 3 : changeAdjustment
             let holding = store.data.holdings.first { $0.kind == .etf && $0.code == quote.code && $0.quantity > 0 }
             let currentWeight = holding.map { store.totalAsset > 0 ? $0.marketValue / store.totalAsset * 100 : 0 }
             let positionLimit = holding?.maxPositionPercent
@@ -448,22 +454,85 @@ struct DashboardView: View {
             } else {
                 positionAdjustment = 0
             }
-            let score = Int((Double(signal.score) + changeAdjustment + moodAdjustment + premiumAdjustment + positionAdjustment).rounded())
+            let score = Int((Double(signal.score) + effectiveChangeAdjustment + moodAdjustment
+                             + premiumAdjustment + positionAdjustment + dividendAdjustment).rounded())
             let clamped = min(99, max(1, score))
             let action: String
             if clamped >= 65 { action = "可考虑" }
             else if clamped >= 48 { action = "等确认" }
             else { action = "谨慎" }
             let technical = signal.tags.first?.text ?? signal.trendText
+            let dividendNote = dividendYield.map { "股息 \($0.pct(2))" }
             let context = currentWeight.map { "仓位 \($0.pct(0))" }
                 ?? (moodPercent >= 0.3 ? "环境配合" : moodPercent <= -0.3 ? "环境偏弱" : "环境中性")
             return IntradayOpportunity(quote: quote, score: clamped, action: action,
-                                       detail: "\(technical) · \(context)")
+                                       detail: [technical, dividendNote, context]
+                                           .compactMap { $0 }.joined(separator: " · "))
         }
         .sorted { lhs, rhs in
             lhs.score == rhs.score ? lhs.quote.code < rhs.quote.code : lhs.score > rhs.score
         }
         .map { $0 }
+    }
+
+    /// 股息率 → 评分加分。
+    ///
+    /// 档位刻意做得粗，并且**只加分、不扣分** —— 不分红不等于不好（成长股本来就不分红），
+    /// 所以没有股息率时是 0 而不是负分。
+    ///
+    /// 上界卡在 +14：一只股息率 8% 的标的也不该只凭这一项就把分数顶进「可考虑」，
+    /// 技术面与仓位仍然要参与。而且高股息率也可能是**股价跌出来的**（股息陷阱），
+    /// 所以这只是「更值得看一眼」，不是「闭眼买」。
+    private static func dividendScoreAdjustment(_ yieldPercent: Double?) -> Double {
+        guard let yieldPercent, yieldPercent.isFinite, yieldPercent > 0 else { return 0 }
+        switch yieldPercent {
+        case 6...: return 14
+        case 5..<6: return 11
+        case 4..<5: return 8
+        case 3..<4: return 5
+        case 2..<3: return 2
+        default: return 0
+        }
+    }
+
+    /// 评分用的股息率（百分数）。
+    ///
+    /// - **场内 ETF**：分子走 `twelveMonthPerShare`（近 12 个月已核实派息 + 前复权价差推算），
+    ///   分母**优先用 IOPV（净值）** —— 场内价含折溢价，溢价 15% 的跨境 ETF 用场内价
+    ///   算股息率会被低估同样比例；红利策略看的是「按净值算的真实分红回报」，
+    ///   而不是「我此刻买入价能拿到的回报」—— 后者才是溢价会侵蚀的部分。
+    /// - **红利个股**：分子来自东财分红公告（见 `refreshStockDividendEvents`），分母用现价
+    ///   （个股没有 IOPV 概念）。
+    private func scoringDividendYield(_ quote: Quote) -> Double? {
+        guard let perShare = scoringAnnualDividendPerShare(quote), perShare > 0 else { return nil }
+        let base: Double = {
+            if store.isTencentETFCode(quote.code),
+               let iopv = store.marketIOPVs[quote.code], iopv.isFinite, iopv > 0 {
+                return iopv
+            }
+            return quote.price
+        }()
+        guard base.isFinite, base > 0 else { return nil }
+        return perShare / base * 100
+    }
+
+    /// 每份（每股）的年现金分红。
+    /// 人工填的「年分红修正」优先级最高（填 0 表示明确声明不分红）。
+    private func scoringAnnualDividendPerShare(_ quote: Quote) -> Double? {
+        let holding = store.data.holdings.first { $0.kind == .etf && $0.code == quote.code }
+        if let manual = holding?.annualDividendPerShare, manual.isFinite {
+            return manual > 0 ? manual : nil
+        }
+        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: quote.code,
+                                                              events: store.data.etfDividendEvents)
+        if twelve.amount > 0 { return twelve.amount }
+        if let holding,
+           let projection = ETFDividendProjection.projectedAnnualPerShare(for: holding,
+                                                                         events: store.data.etfDividendEvents),
+           projection.amount > 0 {
+            return projection.amount
+        }
+        return nil
     }
 
     private func marketActionHint(_ strength: Double) -> String {
@@ -816,7 +885,14 @@ struct DashboardView: View {
                 chartTarget = Holding(code: q.code, name: q.name, quantity: 0, cost: 0,
                                       current: q.price, kind: .etf, marketUpdatedAt: q.updatedAt)
             } label: {
-                watchCard(q)
+                WatchQuoteCard(
+                    quote: q,
+                    displayName: displayName(q),
+                    signal: store.signal(forCode: q.code),
+                    premium: store.marketPremiums[q.code],
+                    dividendYield: watchDividendYield(q),
+                    hasDailyBars: store.dailyBars[q.code] != nil,
+                    tone: watchCardTone(q.code))
             }
             .buttonStyle(.plain)
             .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
@@ -832,126 +908,10 @@ struct DashboardView: View {
         }
     }
 
-    private func watchCard(_ q: Quote) -> some View {
-        // 国内红涨绿跌
-        let accent = q.changePct >= 0
-            ? Color(red: 0.93, green: 0.30, blue: 0.37)
-            : Color(red: 0.07, green: 0.77, blue: 0.55)
-        let signal = store.signal(forCode: q.code)
-        let premium = store.marketPremiums[q.code]
-        let dividendYield = watchDividendYield(q)
-        return HStack(spacing: 10) {
-            // 左侧 3pt 涨跌色条：扫列表时不用逐个读数字就能分辨红绿
-            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                .fill(accent.opacity(0.85))
-                .frame(width: 3)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(displayName(q)).font(.headline).lineLimit(1)
-                        Text(q.code).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(q.price > 0 ? q.price.num(3) : "--")
-                            .font(.system(.title3, design: .rounded, weight: .semibold))
-                            .monospacedDigit()
-                        // 方向符号：色盲 / 灰度打印时也能分辨涨跌，不单靠红绿
-                        Text("\((q.changePct).directionMark()) \((q.changePct * 100).pct(2))")
-                            .font(.caption.weight(.semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(accent)
-                    }
-                }
-                // 技术信号标签：与网页版口径一致（MACD多空 / 超买超卖 / 放量 / MA20 位置）
-                // 需要该标的日线缓存；无缓存则静默不显示，不臆测。
-                if let signal {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 3) {
-                            compactScoreTag(signal)
-                            compactTrendTag(signal.trendText)
-                            SignalTagRow(tags: Array(signal.tags.prefix(3)))
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 3) {
-                                compactScoreTag(signal)
-                                compactTrendTag(signal.trendText)
-                            }
-                            SignalTagRow(tags: Array(signal.tags.prefix(3)))
-                        }
-                    }
-                } else if store.dailyBars[q.code] == nil {
-                    Text("点开一次可载入日线，显示技术信号")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-                if premium != nil || dividendYield != nil {
-                    HStack(spacing: 8) {
-                        if let premium {
-                            Text("溢价 \(premium.pct(2))")
-                                .scaledFont(9, weight: .semibold)
-                                .foregroundStyle(abs(premium) >= 1 ? Color.orange : Color.purple)
-                        }
-                        if let dividendYield {
-                            Text("股息率 \(dividendYield.pct(2))")
-                                .scaledFont(9, weight: .semibold)
-                                .foregroundStyle(Color(red: 0.07, green: 0.68, blue: 0.48))
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-                HStack(spacing: 6) {
-                    let groupName = q.group.isEmpty ? "未分组" : q.group
-                    HStack(spacing: 3) {
-                        Image(systemName: "folder").scaledFont(8)
-                        Text(groupName).scaledFont(9, weight: .medium)
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
-                    Spacer(minLength: 6)
-                    if let updated = q.updatedAt {
-                        Text("\(updated.formatted(date: .omitted, time: .shortened)) 更新")
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    } else {
-                        Text("点开查看分时、日K和指标")
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-            }
-        }
-        .padding(AppLayout.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
-            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
-            tone: watchCardTone(q.code))
-        // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
-        .combineAccessibility()
-        .accessibilityLabel(watchSpokenLabel(q))
-    }
-
-    private func compactScoreTag(_ signal: MarketSignal) -> some View {
-        let tone = signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
-            : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary
-        return Text("\(signal.score) \(signal.label)")
-            .scaledFont(9, weight: .semibold).lineLimit(1)
-            .padding(.horizontal, 4).padding(.vertical, 2)
-            .foregroundStyle(tone)
-            .background(tone.opacity(0.14), in: Capsule())
-    }
-
-    private func compactTrendTag(_ text: String) -> some View {
-        Text(text)
-            .scaledFont(9, weight: .medium).lineLimit(1)
-            .padding(.horizontal, 4).padding(.vertical, 2)
-            .foregroundStyle(.secondary)
-            .background(Color.secondary.opacity(0.12), in: Capsule())
-    }
-
-    /// 自选卡片的读屏文案。价格可能缺失，缺了就说「无报价」而不是念 0。
-    private func watchSpokenLabel(_ q: Quote) -> String {
-        let price = q.price > 0 ? "现价 \(q.price.num(3))" : "无报价"
-        return "\(displayName(q))，代码 \(q.code)，\(price)，\(spokenPercent(q.changePct * 100))"
-    }
+    // 自选卡片本身已抽成文件级 `WatchQuoteCard`（见本文件 `MoreHubView` 之前）。
+    // 这里只保留「点开 → 打开图表」的语义与列表修饰器：
+    // 把行的绘制实体放在**独立类型**里，父视图重建时 SwiftUI 才能按行做结构 diff，
+    // 而不是把每一行的视图树都跟着父 body 一起重建（滚动掉帧的直接原因）。
 
     @ViewBuilder private func watchContextMenu(_ q: Quote) -> some View {
         Button { store.pinWatchToTop(code: q.code) } label: {
@@ -974,6 +934,143 @@ struct DashboardView: View {
 
     private var groupEditorBinding: Binding<Bool> {
         Binding(get: { groupEditor != nil }, set: { if !$0 { groupEditor = nil } })
+    }
+}
+
+/// 自选卡片。
+///
+/// **为什么是独立类型**：它原来是 `DashboardView` 里的一个 `@ViewBuilder private func`。
+/// 那种写法会被**内联进父视图的类型**——父 body 每重算一次（行情刷新、切换排序、
+/// 点开任何一个 sheet），屏幕里每一行的整棵视图树都要跟着重建；滚动时每帧还要
+/// 为新露出来的行现建一遍。抽成文件级 struct 之后类型不再嵌套，SwiftUI 能按行做
+/// 结构 diff，只重建真正变的那几行。
+///
+/// 另外把每行一个的 `ViewThatFits` 去掉了：它在布局期要**尝试多套候选布局并逐一
+/// 测量**，一屏十几行、滚动时每帧都做，是自选页掉帧的固定开销。三个标签都很短，
+/// 压成一行 + `minimumScaleFactor` 足够。
+private struct WatchQuoteCard: View {
+    let quote: Quote
+    let displayName: String
+    let signal: MarketSignal?
+    let premium: Double?
+    let dividendYield: Double?
+    /// 本机是否已有这只标的的日线缓存（没有时提示「点开一次可载入」）。
+    let hasDailyBars: Bool
+    /// 卡片外框的着色主题（由自选分组/代码决定）。
+    let tone: Color
+
+    /// 国内红涨绿跌。
+    private var accent: Color {
+        quote.changePct >= 0
+            ? Color(red: 0.93, green: 0.30, blue: 0.37)
+            : Color(red: 0.07, green: 0.77, blue: 0.55)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // 左侧 3pt 涨跌色条：扫列表时不用逐个读数字就能分辨红绿
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(accent.opacity(0.85))
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayName).font(.headline).lineLimit(1)
+                        Text(quote.code).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(quote.price > 0 ? quote.price.num(3) : "--")
+                            .font(.system(.title3, design: .rounded, weight: .semibold))
+                            .monospacedDigit()
+                        // 方向符号：色盲 / 灰度打印时也能分辨涨跌，不单靠红绿
+                        Text("\((quote.changePct).directionMark()) \((quote.changePct * 100).pct(2))")
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(accent)
+                    }
+                }
+                // 技术信号标签：与网页版口径一致（MACD多空 / 超买超卖 / 放量 / MA20 位置）
+                // 需要该标的日线缓存；无缓存则静默不显示，不臆测。
+                if let signal {
+                    HStack(spacing: 3) {
+                        scoreTag(signal)
+                        trendTag(signal.trendText)
+                        SignalTagRow(tags: Array(signal.tags.prefix(3)))
+                    }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                } else if !hasDailyBars {
+                    Text("点开一次可载入日线，显示技术信号")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                if premium != nil || dividendYield != nil {
+                    HStack(spacing: 8) {
+                        if let premium {
+                            Text("溢价 \(premium.pct(2))")
+                                .scaledFont(9, weight: .semibold)
+                                .foregroundStyle(abs(premium) >= 1 ? Color.orange : Color.purple)
+                        }
+                        if let dividendYield {
+                            Text("股息率 \(dividendYield.pct(2))")
+                                .scaledFont(9, weight: .semibold)
+                                .foregroundStyle(Color(red: 0.07, green: 0.68, blue: 0.48))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+                HStack(spacing: 6) {
+                    let groupName = quote.group.isEmpty ? "未分组" : quote.group
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder").scaledFont(8)
+                        Text(groupName).scaledFont(9, weight: .medium)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                    Spacer(minLength: 6)
+                    if let updated = quote.updatedAt {
+                        Text("\(updated.formatted(date: .omitted, time: .shortened)) 更新")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    } else {
+                        Text("点开查看分时、日K和指标")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(AppLayout.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
+            fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
+            tone: tone)
+        // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
+        .combineAccessibility()
+        .accessibilityLabel(spokenLabel)
+    }
+
+    private func scoreTag(_ signal: MarketSignal) -> some View {
+        let tone = signal.score > 50 ? Color(red: 0.93, green: 0.30, blue: 0.37)
+            : signal.score < 50 ? Color(red: 0.07, green: 0.77, blue: 0.55) : Color.secondary
+        return Text("\(signal.score) \(signal.label)")
+            .scaledFont(9, weight: .semibold).lineLimit(1)
+            .padding(.horizontal, 4).padding(.vertical, 2)
+            .foregroundStyle(tone)
+            .background(tone.opacity(0.14), in: Capsule())
+    }
+
+    private func trendTag(_ text: String) -> some View {
+        Text(text)
+            .scaledFont(9, weight: .medium).lineLimit(1)
+            .padding(.horizontal, 4).padding(.vertical, 2)
+            .foregroundStyle(.secondary)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
+    }
+
+    /// 自选卡片的读屏文案。价格可能缺失，缺了就说「无报价」而不是念 0。
+    private var spokenLabel: String {
+        let price = quote.price > 0 ? "现价 \(quote.price.num(3))" : "无报价"
+        return "\(displayName)，代码 \(quote.code)，\(price)，\(spokenPercent(quote.changePct * 100))"
     }
 }
 
@@ -1424,16 +1521,6 @@ struct HoldingsView: View {
         }
     }
 
-    private func legacyDCAStatus(_ value: String) -> String {
-        switch value {
-        case "booked": return "网页端已补入份额"
-        case "waiting-nav": return "等待历史净值"
-        case "needs-hold": return "基金不在当前持仓"
-        case "error": return "网页端补记失败"
-        case "未迁入流水": return "未迁入流水"
-        default: return value.isEmpty ? "状态未记录" : value
-        }
-    }
 
     /// 年股息只采用人工修正或近 12 个月已记录的分红事件；缺少记录不等于确认不分红。
     private func annualDividendProjection(for holding: Holding) -> (amount: Double, source: ETFDividendProjection.Source)? {
@@ -1542,25 +1629,14 @@ struct HoldingsView: View {
 
     /// 每只基金的最新/上一期净值，先按估值日期去重，再一次遍历算好。
     /// 旧备份可能有重复日期；不能依赖数组顺序决定哪个净值参与日收益。
+    /// 走 store 里**带 memo** 的版本。
+    ///
+    /// 这里原来是自己现算的：全量 `fundNAVHistory` 分组 → 每组按日期去重 → 排序，
+    /// 而它是持仓页每次 body 重算都会取的值 —— store 每 10~15 秒刷一次行情，
+    /// 就等于每 15 秒把几万条净值重新跑一遍。现在 memo 在 `PortfolioStore` 里，
+    /// 只在这份历史真的追加了新点时才重算。
     private var fundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] {
-        var result: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
-        let groups = Dictionary(grouping: store.data.fundNAVHistory.filter {
-            $0.nav.isFinite && $0.nav > 0
-        }, by: \.code)
-        for (code, rows) in groups {
-            let byDate = Dictionary(rows.map { ($0.date, $0) }, uniquingKeysWith: { old, new in
-                switch (old.fetchedAt, new.fetchedAt) {
-                case let (a?, b?): return a >= b ? old : new
-                case (_?, nil): return old
-                case (nil, _?): return new
-                case (nil, nil): return new
-                }
-            })
-            let sorted = byDate.values.sorted { $0.date < $1.date }
-            guard let latest = sorted.last else { continue }
-            result[code] = (latest, sorted.count > 1 ? sorted[sorted.count - 2] : nil)
-        }
-        return result
+        store.latestFundNAVPairs
     }
 
     /// 场外基金**最近一期已公布净值**带来的收益（元 / %）。
@@ -1661,7 +1737,13 @@ struct HoldingsView: View {
             }
             .onAppear {
                 if kind == .fund { store.maybeRefreshFundNAVsAfterMarketClose() }
-                if kind == .etf { store.refreshETFDividendEstimates() }
+                if kind == .etf {
+                    store.refreshETFDividendEstimates()
+                    // 个股的现金分红不在 ETF 那套推算里（`ETFDividendProjection` 只认
+                    // ETF 的前复权价差与写死的核实表），要单独从东财公告补。
+                    // 「值不值得买」的评分现在带股息率维度，没有这一步红利个股就一直是空档。
+                    store.refreshStockDividendEvents()
+                }
             }
     }
 
@@ -1992,17 +2074,25 @@ struct HoldingsView: View {
             Text("\(h.code) · \((h.quantity).compactNum(4)) 份 · 成本 \((unitCost).num((kind == .fund ? 4 : 3))) · 现价 \((h.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: h)).pct(1))")
                 .font(.caption).foregroundStyle(.secondary)
             if kind == .etf {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 7)], alignment: .leading, spacing: 6) {
+                // 每行一个 `LazyVGrid(.adaptive)` 是滚动时的固定开销：adaptive 网格每次布局
+                // 都要按可用宽度反推列数、再逐个摆放。这里最多 3 个 chip，一行 HStack 就够
+                // （窄屏放不下时压缩字号，不会挤成两行）。
+                // `dividendStatus` 只算一次 —— 原来在「显示什么」和「什么颜色」里各算一遍。
+                let dividendStatusText = dividendStatus(for: h)
+                HStack(spacing: 7) {
                     if let premium {
                         holdingMetricChip("溢价 \(premium.pct(2))", color: abs(premium) >= 1 ? .orange : .purple)
                     }
                     if let dividendYield {
                         holdingMetricChip("股息 \(dividendYield.pct(2))", color: Color(red: 0.07, green: 0.68, blue: 0.48))
                     } else {
-                        holdingMetricChip(dividendStatus(for: h), color: dividendStatus(for: h) == "不分红" ? .secondary : .orange)
+                        holdingMetricChip(dividendStatusText, color: dividendStatusText == "不分红" ? .secondary : .orange)
                     }
                     if hasDay { holdingMetricChip("今日 \(dayValue.cny())", color: PnLColor.of(dayValue)) }
+                    Spacer(minLength: 0)
                 }
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 // 把股息率的口径写在卡片上：偏低的常见原因是「月月分红的品种本机只记到几次」，
                 // 而不是算错。用户能据此自己判断要不要去「编辑持仓」覆盖。
                 if dividendYield != nil, let note = dividendYieldNote(for: h) {
@@ -2163,17 +2253,6 @@ struct HoldingsView: View {
             Text(store.fundDCAStatus).font(.footnote).foregroundStyle(.secondary)
             Text("净值可用页面右上角的刷新按钮更新，也可直接下拉刷新；本页只展示已公布净值。")
                 .font(.footnote).foregroundStyle(.secondary)
-        }
-        if !store.data.legacyDCAEvents.isEmpty {
-            Section("旧版定投档案") {
-                ForEach(store.data.legacyDCAEvents.sorted { $0.dueDate > $1.dueDate }) { event in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("\(event.name) · \(event.code)")
-                        Text("计划日 \(event.dueDate) · \((event.amount).cny()) · \(legacyDCAStatus(event.status))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
         }
     }
 
@@ -3805,7 +3884,7 @@ struct AssetsView: View {
                 .toneCard(CardTone.pnl(snapshotMonthPnL ?? 0), isLight: isLight)
                 Section("ETF / 证券已实现收益") {
                     if store.ledgerMonths.isEmpty {
-                        Text("暂无 ETF / 证券卖出流水。旧版未标注类别的流水按当时唯一支持的 ETF 类型兼容。")
+                        Text("暂无 ETF / 证券卖出流水。未标注类别的流水按当时唯一支持的 ETF 类型兼容。")
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("流水月份", selection: $selectedLedgerMonth) {
@@ -4416,32 +4495,27 @@ struct ToolsView: View {
     @State private var shockPercent = 20
     @State private var showShockDetails = false
     @State private var showRebalanceDetails = false
-    @State private var showGrid = false
-    @State private var showLongGridPlanner = false
-    @State private var showGridReview = false
-    @State private var showAIAnalysis = false
-    @State private var showPortrait = false
-    @State private var showLedgerHealth = false
-    @State private var showTradePlans = false
-    @State private var showOverlap = false
-    @State private var showAddCash = false
-    @State private var showFundReplay = false
-    @State private var showQuantEngine = false
-    @State private var showTradeCSVImport = false
-    @State private var showETFIncomeCalendar = false
-    @State private var showDividendCalendar = false
-    @State private var showPortfolioAnalysis = false
-    @State private var showTradePreview = false
-    @State private var showReturnSource = false
-    @State private var showHistoricalReplay = false
-    @State private var showIntradayArchive = false
-    @State private var showDataTrust = false
-    @State private var showReconciliation = false
-    @State private var showTradeLedger = false
-    @State private var showMonthlyReview = false
-    @State private var showYearlyReview = false
-    @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
+
+    /// 工具页全部弹窗的**唯一入口**。
+    ///
+    /// 以前这里是 25 个 `@State private var showXxx = false`，每个再配一层
+    /// `.sheet(isPresented:)`。它们挂在同一个 List 上，而 store 每 10~15 秒就会
+    /// 发布一次行情更新 —— 每次发布都要把这 25 层 modifier 重新求值一遍。
+    /// 合并成一个 `item` 之后只剩一层，且天然保证同一时刻只有一个弹窗。
+    private enum ToolSheet: String, Identifiable {
+        case grid, longGridPlanner, gridReview,
+             aiAnalysis, portrait, ledgerHealth,
+             tradePlans, overlap, addCash,
+             fundReplay, quantEngine, tradeCSVImport,
+             etfIncomeCalendar, dividendCalendar, portfolioAnalysis,
+             tradePreview, returnSource, historicalReplay,
+             intradayArchive, dataTrust, reconciliation,
+             tradeLedger, monthlyReview, yearlyReview,
+             portfolioScenario
+        var id: String { rawValue }
+    }
+    @State private var activeSheet: ToolSheet?
 
     init(initialAnchor: String? = nil, title: String = "工具") {
         self.initialAnchor = initialAnchor
@@ -4495,14 +4569,14 @@ struct ToolsView: View {
         NavigationStack {
             List {
                 if title == "分析工具" {
-                    Section("风险与决策") { Button("资产穿透与分市场压力测试") { showPortfolioAnalysis = true }; Button("交易前沙盘") { showTradePreview = true }; Button("账户画像") { showPortrait = true } }
-                    Section("信号与数据质量") { Button("日线量化信号") { showQuantEngine = true }; Button("数据可信度") { showDataTrust = true }; Button("运行账本体检") { showLedgerHealth = true }; Button("现金、盈亏与成本对账") { showReconciliation = true } }
-                    Section("持仓结构") { Button("ETF / 基金成分重叠") { showOverlap = true }; Button("换仓情景试算") { showPortfolioScenario = true } }
+                    Section("风险与决策") { Button("资产穿透与分市场压力测试") { activeSheet = .portfolioAnalysis }; Button("交易前沙盘") { activeSheet = .tradePreview }; Button("账户画像") { activeSheet = .portrait } }
+                    Section("信号与数据质量") { Button("日线量化信号") { activeSheet = .quantEngine }; Button("数据可信度") { activeSheet = .dataTrust }; Button("运行账本体检") { activeSheet = .ledgerHealth }; Button("现金、盈亏与成本对账") { activeSheet = .reconciliation } }
+                    Section("持仓结构") { Button("ETF / 基金成分重叠") { activeSheet = .overlap }; Button("换仓情景试算") { activeSheet = .portfolioScenario } }
                 } else {
-                    Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { showTradePlans = true }; Button("日内网格计划与回放") { showGrid = true }; Button("中长期网格计划") { showLongGridPlanner = true }; Button("新增资金加仓试算") { showAddCash = true } }
-                    Section("复盘") { Button("网格参数复盘（当日最优 / 长期参数）") { showGridReview = true } }
-                    Section("收益与复盘") { Button("ETF 每日收益日历") { showETFIncomeCalendar = true }; Button("分红日历") { showDividendCalendar = true }; Button("收益来源拆解") { showReturnSource = true }; Button("历史状态回放") { showHistoricalReplay = true }; Button("月度投资复盘") { showMonthlyReview = true }; Button("年度账单") { showYearlyReview = true } }
-                    Section("历史数据") { Button("分时采集") { showIntradayArchive = true }; Button("导入券商成交") { showTradeCSVImport = true }; Button("全部交易流水") { showTradeLedger = true }; Button("基金定投回放") { showFundReplay = true } }
+                    Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button("日内网格计划与回放") { activeSheet = .grid }; Button("中长期网格计划") { activeSheet = .longGridPlanner }; Button("新增资金加仓试算") { activeSheet = .addCash } }
+                    Section("复盘") { Button("网格参数复盘（当日最优 / 长期参数）") { activeSheet = .gridReview } }
+                    Section("收益与复盘") { Button("ETF 每日收益日历") { activeSheet = .etfIncomeCalendar }; Button("分红日历") { activeSheet = .dividendCalendar }; Button("收益来源拆解") { activeSheet = .returnSource }; Button("历史状态回放") { activeSheet = .historicalReplay }; Button("月度投资复盘") { activeSheet = .monthlyReview }; Button("年度账单") { activeSheet = .yearlyReview } }
+                    Section("历史数据") { Button("分时采集") { activeSheet = .intradayArchive }; Button("导入券商成交") { activeSheet = .tradeCSVImport }; Button("全部交易流水") { activeSheet = .tradeLedger }; Button("基金定投回放") { activeSheet = .fundReplay } }
                 }
             }
         .scrollContentBackground(.hidden)
@@ -4516,34 +4590,42 @@ struct ToolsView: View {
             .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
-            .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
-            // 「复盘」是独立的一级功能（和分红日历、中长期网格计划同级）：
-            // 它靠的是历史档案 + 事后拟合，跟「在 App 里怎么下单」是两件事，
-            // 所以不再塞在「日内网格计划与回放」里面，也不再塞在「分时采集」里面。
-            .sheet(isPresented: $showGridReview) { GridReviewView().environmentObject(store).themedSheetBackground() }
-            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
-            .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradePlans) { TradePlansView() .themedSheetBackground() }
-            .sheet(isPresented: $showOverlap) { ETFOverlapView() .themedSheetBackground() }
-            .sheet(isPresented: $showAddCash) { AddCashSimulationView() .themedSheetBackground() }
-            .sheet(isPresented: $showFundReplay) { FundDCAReplayView() .themedSheetBackground() }
-            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradeCSVImport) { TradeCSVImportView() .themedSheetBackground() }
-            .sheet(isPresented: $showETFIncomeCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioAnalysis) { PortfolioAnalysisView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradePreview) { TradePreviewView() .themedSheetBackground() }
-            .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
-            .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
-            .sheet(isPresented: $showIntradayArchive) { IntradayArchiveView() .themedSheetBackground() }
-            .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
-            .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }
-            .sheet(isPresented: $showMonthlyReview) { MonthlyReviewView() .themedSheetBackground() }
-            .sheet(isPresented: $showYearlyReview) { YearlyReviewView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() .themedSheetBackground() }
+            // 25 个工具弹窗合并成**一个** `.sheet(item:)`。
+            // 原来每个功能都是「一个 @State var showXxx = false + 一层 .sheet(isPresented:)」，
+            // 全挂在同一个 List 上：store 每刷一次行情，这一摞 modifier 就要重新求值一遍
+            // （25 个 Binding + 25 次 presentation 状态检查），弹窗打开时还要和背后的
+            // 重建抢主线程。合并后只剩 1 层，同一时刻也本来就只可能有一个工具弹窗。
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .grid: DayGridView().themedSheetBackground()
+                case .longGridPlanner: StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
+                case .gridReview: GridReviewView().environmentObject(store).themedSheetBackground()
+                case .aiAnalysis: AIAnalysisView().themedSheetBackground()
+                case .portrait: AccountPortraitView().themedSheetBackground()
+                case .ledgerHealth: LedgerHealthView().themedSheetBackground()
+                case .tradePlans: TradePlansView().themedSheetBackground()
+                case .overlap: ETFOverlapView().themedSheetBackground()
+                case .addCash: AddCashSimulationView().themedSheetBackground()
+                case .fundReplay: FundDCAReplayView().themedSheetBackground()
+                case .quantEngine: QuantitativeEngineView().themedSheetBackground()
+                case .tradeCSVImport: TradeCSVImportView().themedSheetBackground()
+                case .etfIncomeCalendar: ETFIncomeCalendarView().themedSheetBackground()
+                case .dividendCalendar: DividendCalendarView().themedSheetBackground()
+                case .portfolioAnalysis: PortfolioAnalysisView().themedSheetBackground()
+                case .tradePreview: TradePreviewView().themedSheetBackground()
+                case .returnSource: ReturnSourceView().themedSheetBackground()
+                case .historicalReplay: HistoricalReplayView().themedSheetBackground()
+                case .intradayArchive: IntradayArchiveView().themedSheetBackground()
+                case .dataTrust: DataTrustView().themedSheetBackground()
+                case .reconciliation: ReconciliationView().themedSheetBackground()
+                case .tradeLedger: TradeLedgerManagementView().themedSheetBackground()
+                case .monthlyReview: MonthlyReviewView().themedSheetBackground()
+                case .yearlyReview: YearlyReviewView().themedSheetBackground()
+                case .portfolioScenario: PortfolioScenarioView().themedSheetBackground()
+                }
+            }
+            // 目标仓位编辑器要带**具体持仓**，所以走 `item: $targetEdit` 这条路，
+            // 和上面那个「选功能」的 `item: $activeSheet` 是两个不同的东西，不合并。
             .sheet(item: $targetEdit) { holding in
                 AllocationTargetEditor(holding: holding,
                     targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
@@ -4803,7 +4885,7 @@ struct DividendCalendarView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    Text("旧版迁入记录按复权价格推算，只作历史参考，不计入实际派息；只有已记录的现金分红才计入股息金额。")
+                    Text("迁入记录按复权价格推算，只作历史参考，不计入实际派息；只有已记录的现金分红才计入股息金额。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -6127,7 +6209,13 @@ struct DayGridView: View {
     private var currentInstrument: GridInstrument? { instruments.first { $0.code == code } }
 
     var body: some View {
-        NavigationStack {
+        // `instruments` 是每次访问都重建的 computed（拼实时行情 + 持仓 + 已存计划，去重再排序），
+        // 而 body 里 `isEmpty` / Picker 的 `ForEach` / `currentInstrument` 各引用一次 ——
+        // 同一次渲染要算三遍。弹窗一打开就要走这一步，是「弹窗要反应一会」的一部分。
+        // 这里算一次，后面全部用这一份。注意多语句函数体没有隐式 return，末尾要显式写。
+        let instruments = self.instruments
+        let currentInstrument = instruments.first { $0.code == code }
+        return NavigationStack {
             Form {
                 Section("标的与参数") {
                     if instruments.isEmpty {
@@ -6334,66 +6422,6 @@ struct DayGridView: View {
                     }
                 }
                 .plainCard(isLight: isLight)
-                if !store.data.legacyGridArchives.isEmpty {
-                    Section("旧版网格记录（只读归档）") {
-                        ForEach(store.data.legacyGridArchives) { record in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("\(record.name) · \(record.code)")
-                                Text("\(record.horizon) · \(record.mode) · \(record.status) · \(record.created)")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if record.capital > 0 {
-                                    Text("计划资金 \((record.capital).cny()) · 原网格 \((record.lower).num(3))–\((record.upper).num(3)) · 每档 \((record.quantity).num(0)) 份")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        Text("旧版每条网格记录及其成交、模拟资金等字段以原始 JSON 保留；符合日内参数条件的已另外转换为可载入回放的计划。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                if !store.data.legacyShadowArchives.isEmpty {
-                    Section("旧版影子盘历史与自动模拟") {
-                        ForEach(store.data.legacyShadowArchives) { record in
-                            DisclosureGroup("\(record.name) · \(record.code)") {
-                                LabeledContent("模拟状态", value: record.closed ? "已结束" : (record.active ? "运行中" : "已暂停"))
-                                if !record.closed {
-                                    Button(record.active ? "暂停影子模拟" : "恢复影子模拟") {
-                                        store.setLegacyShadowActive(record, active: !record.active)
-                                    }
-                                }
-                                LabeledContent("影子账户盈亏（末次行情估算）", value: (record.lastEquityChange).cny())
-                                LabeledContent("相对初始持有", value: (record.lastEquityChange - record.holdOnlyChange).cny())
-                                LabeledContent("累计已实现", value: (record.realizedPnL).cny())
-                                LabeledContent("估算费用", value: (record.totalFees).cny())
-                                LabeledContent("模拟买 / 卖", value: "\(record.buys) / \(record.sells)")
-                                if record.scoredSells > 0 {
-                                    LabeledContent("旧记录卖出胜率", value: "\((Double(record.wins) / Double(record.scoredSells) * 100).num(1))%")
-                                }
-                                if !record.days.isEmpty {
-                                    DisclosureGroup("每日摘要（最近 20 日）") {
-                                        ForEach(Array(record.days.suffix(20).reversed())) { day in
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(day.day)
-                                                Text("买 \(day.buys) / 卖 \(day.sells) · 费用 \((day.fees).cny()) · 已实现 \((day.realizedPnL).cny())")
-                                                    .font(.caption).foregroundStyle(.secondary)
-                                            }
-                                        }
-                                    }
-                                }
-                                if !record.fills.isEmpty {
-                                    DisclosureGroup("成交明细（最近 20 笔，共 \(record.fills.count) 笔）") {
-                                        ForEach(Array(record.fills.suffix(20).reversed())) { fill in
-                                            Text("\(fill.day) \(fill.time) · \(fill.side == "buy" ? "买" : "卖") \((fill.quantity).num(0)) 份 @ \((fill.price).num(3)) · 费用 \((fill.fee).cny())")
-                                                .font(.caption)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Text("影子盘使用隔离的虚拟资金，前台有效行情更新时按网格档位模拟，不会计入原生真实持仓或现金。价格、费用与胜率均为估算，不能代表可成交结果；暂停期间只更新参考价、不记模拟成交，恢复时会重新建立行情基准。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
             }
             .scrollContentBackground(.hidden)
             .listStyle(.plain)
@@ -7254,7 +7282,7 @@ struct SettingsView: View {
                 }
             }
             Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每小时检查一次其他设备的更新（探针只取版本号，远端没动就不下载文档）。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。**App 账本与网页账本是 NAS 上两份不同的文档**（App 走 /api/native/data，网页走 /api/data），迁移只发生一次（原生空间为空时把网页账本迁进来）；想让网页版跟着 App 走，用下面那张「网页版账本」卡片写回。分时和日线缓存随原生账本同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
+            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每小时检查一次其他设备的更新（探针只取版本号，远端没动就不下载文档）。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。**App 账本与网页账本是 NAS 上两份不同的文档**（App 走 /api/native/data，网页走 /api/data），迁移只发生一次（原生空间为空时把网页账本迁进来）；想让网页版跟着 App 走，用下面那张「网页版账本」卡片写回。分时和日线缓存随原生账本同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复；如果仍在用未升级的一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         Section {
@@ -7264,12 +7292,6 @@ struct SettingsView: View {
                 .listRowSeparator(.hidden)
         }
     }
-
-    // 「旧版资料」分区已于 v2.13.35 整块删除（用户要求）。
-    // 它展示的是旧版备份里**没被识别**的那些设置原文（`legacySettingsArchives`），
-    // 当年只是为了「迁移时不丢东西」留档；这些内容永远不会被执行，占着一整块设置页
-    // 却没有任何可操作价值。采集端（`LegacyMigration.appendSettingsArchive`）
-    // 与数据字段一并移除，旧备份里多出来的 key 由 JSONDecoder 自然忽略。
 
     @ViewBuilder private var notificationSection: some View {
         Section("系统通知") {
@@ -7319,7 +7341,7 @@ struct SettingsView: View {
                 }
                 store.replaceData(migrated.data, intradayBars: migrated.intradayBars)
                 store.configureNASSync()
-                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
+                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条分红事件、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
             }
         } catch { message = "导入失败：\(error.localizedDescription)" }
     }

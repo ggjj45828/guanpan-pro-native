@@ -440,7 +440,7 @@ struct IntradayArchiveView: View {
                 guard let value = bar.iopv, value.isFinite, value > 0 else { return nil }
                 return IntradayLine(time: bar.timestamp, price: value)
             },
-            iopvFallback: nil,
+            estimatedIOPV: [],
             previousClose: nil,
             showAverage: showAverageLine,
             showIOPV: showIOPVLine,
