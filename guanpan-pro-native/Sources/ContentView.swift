@@ -927,8 +927,8 @@ struct DashboardView: View {
                     premium: store.marketPremiums[q.code],
                     iopv: store.marketIOPVs[q.code],
                     dividendYield: watchDividendYield(q),
-                    hasDailyBars: store.dailyBars[q.code] != nil,
                     expectsValuation: store.isTencentETFCode(q.code),
+                    hasDailyBars: store.dailyBars[q.code] != nil,
                     tone: watchCardTone(q.code))
             }
             .buttonStyle(.plain)
