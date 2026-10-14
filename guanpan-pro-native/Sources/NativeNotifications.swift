@@ -13,10 +13,14 @@ final class GuanpanAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         BackgroundQuoteRefresh.perform(completion: completionHandler)
     }
 
-    /// K 线横屏大图：由 OrientationLock 动态决定当前允许的方向。
+    /// 支持的方向。
+    ///
+    /// 原来这里返回 `OrientationLock.shared.mask`，那个类只服务于「K 线横屏大图」；
+    /// 该功能已按用户要求整组下线，于是这里直接写死成原来的默认值（`OrientationLock`
+    /// 的初始 mask 就是它），行为完全不变，只是少了一层没用的间接。
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        OrientationLock.shared.mask
+        .allButUpsideDown
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

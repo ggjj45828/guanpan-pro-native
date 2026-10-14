@@ -90,6 +90,29 @@ extension View {
             .listStyle(.plain)
             .listSectionSpacing(.compact)
     }
+
+    /// 列表行里的按钮改成**整行可点**。
+    ///
+    /// 用户反馈：「一整行只有三个字，我必须点到字上面才能打开弹窗」。
+    /// 原因是 `List` 里裸写 `Button("三个字")` 时，标签只占文字本身的宽度，
+    /// 而整行列表又被统一套了 `.buttonStyle(.plain)` —— 那会把系统默认给行按钮的
+    /// 整行热区也一并去掉。于是只有那几个字能被点中，右边一大片空白点了没反应。
+    ///
+    /// 这里把它换成自定义样式：外观不变，只是让标签撑满行宽并显式声明矩形热区，
+    /// 点这一行的任何位置都会触发。按下列时给一点透明度反馈，不然整行按钮完全没有回声。
+    func fullRowRowButtons() -> some View {
+        buttonStyle(FullRowButtonStyle())
+    }
+}
+
+/// 「整行可点」的列表行按钮样式。见 `View.fullRowRowButtons()` 的说明。
+struct FullRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.55 : 1)
+    }
 }
 
 /// 情绪分档的统一口径：阈值和文案只定义一次。

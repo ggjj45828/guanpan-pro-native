@@ -125,7 +125,7 @@ private struct PriceLevelSummary {
     var bollingerLower: Double
 }
 
-/// MA 均线显示开关（竖屏/横屏共用同一份 UserDefaults，点图例 chip 切换）。
+/// MA 均线显示开关（UserDefaults 持久化，点图例 chip 切换）。
 private enum MAVisibility {
     static let key = "guanpan.native.ma.visible"
     static let ma250DefaultMigrationKey = "guanpan.native.ma250.default.migrated"
@@ -146,7 +146,7 @@ private enum MAVisibility {
     }
 }
 
-/// X 轴的日期刻度点（竖屏 / 横屏共用）。
+/// X 轴的日期刻度点。
 ///
 /// 逐根显示日期时，相邻标签间距会被压到 10pt 以下互相压叠，小字号下基本读不出来。
 /// 改成「每个月只取当月第一个交易日」，上限 5 个；整个可见区间都在同一个月内时等间隔取日期。
@@ -347,10 +347,22 @@ private struct IntradayMainChart: View {
                         .foregroundStyle(Color.purple)
                         .lineStyle(StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
                 }
-            }
-            if showIOPV, iopv.isEmpty, let value = iopvFallback {
-                RuleMark(y: .value("IOPV", value)).foregroundStyle(.purple)
-                    .lineStyle(StrokeStyle(lineWidth: 0.95, dash: [4, 3]))
+                // 只有 1 个点时 `LineMark` 画不出任何东西 —— 用户看到的就是「IOPV 根本没线」。
+                // 而 IOPV **没有历史分时接口**（腾讯 / 东财的分时都只给价量，IOPV 只在快照的
+                // 第 78 字段里给一个当前值），所以本机的 IOPV 曲线是「逐分钟实测攒出来的」：
+                // 今天开了多久就攒了多少点。点数不足 2 个时，退化成一条当前值的水平参考线，
+                // 并单独画一个圆点，让人知道是「线还在攒」而不是功能坏了。
+                if iopv.count == 1 {
+                    ForEach(iopv) { p in
+                        PointMark(x: .value("时间", t(p.time)), y: .value("IOPV", p.price))
+                            .foregroundStyle(Color.purple)
+                            .symbolSize(26)
+                    }
+                }
+                if iopv.count < 2, let value = iopvFallback ?? iopv.last?.price {
+                    RuleMark(y: .value("IOPV", value)).foregroundStyle(.purple)
+                        .lineStyle(StrokeStyle(lineWidth: 0.95, dash: [4, 3]))
+                }
             }
             if showPreviousClose, let value = previousClose {
                 RuleMark(y: .value("昨收", value)).foregroundStyle(previousCloseLineColor)
@@ -927,7 +939,6 @@ struct MarketChartView: View {
     @State private var isManuallyUpdatingDaily = false
     @State private var isFetchingMinute = false
     @State private var isManuallyRefreshingMinute = false
-    @State private var showLandscapeChart = false
     @State private var showRecentDailyBars = false
     @State private var showTechnicalNotes = false
     @State private var showDecisionFactors = false
@@ -1229,8 +1240,13 @@ struct MarketChartView: View {
         }
     }
 
-    /// 盘中随已到达的分钟线扩展，让曲线使用主要绘图区；收盘和历史日展示完整交易时段。
-    /// 主图、MACD 与分时量共用横轴域，时间点上下对应。
+    /// 分时横轴**固定为完整交易时段**（09:30–15:00，午休压缩到同一点）。
+    ///
+    /// 以前盘中会让右边界跟着「已到达的最后一根分钟线」往后延伸，图个曲线铺满绘图区。
+    /// 但分时的意义恰恰是「现在走到一天的哪个位置」——横轴必须是稳定参照物。
+    /// 用户反馈「有时候打开没固定，有时候打开又固定了」：那正是这个延伸逻辑在起作用
+    /// （盘中有数据就延伸、数据没到就退回全天，同一时刻两次打开看到的横轴都可能不同）。
+    /// 现在无条件画全天，主图、MACD 与分时量共用同一个域，时间点严格上下对齐。
     private var intradaySessionDomain: ClosedRange<Date>? {
         guard let first = selectedIntradayBars.first else { return nil }
         let formatter = DateFormatter()
@@ -1239,19 +1255,7 @@ struct MarketChartView: View {
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         let day = shanghaiDay(first.timestamp)
         guard let start = formatter.date(from: "\(day) 09:30"),
-              let close = formatter.date(from: "\(day) 15:00") else { return nil }
-        let calendar = Calendar(identifier: .gregorian)
-        var shanghaiCalendar = calendar
-        shanghaiCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let parts = shanghaiCalendar.dateComponents([.hour, .minute], from: .now)
-        let minuteOfDay = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
-        let isTradingSession = (minuteOfDay >= 570 && minuteOfDay <= 690) || (minuteOfDay >= 780 && minuteOfDay < 900)
-        let end: Date
-        if day == shanghaiDay(.now), isTradingSession, let latest = selectedIntradayBars.last?.timestamp {
-            end = min(close, max(start.addingTimeInterval(3600), latest.addingTimeInterval(720)))
-        } else {
-            end = close
-        }
+              let end = formatter.date(from: "\(day) 15:00") else { return nil }
         // 压缩午休后 15:00 会映射到 13:31，仍晚于 09:30；这里再做一次上下界保护，
         // 任何情况下都不把「下界 > 上界」的区间交给 Swift Charts（那是一定崩的）。
         let lower = min(intradayChartTime(start), intradayChartTime(end))
@@ -1567,6 +1571,21 @@ struct MarketChartView: View {
                                 .foregroundStyle((selectedDayPremium ?? 0) >= 0 ? .red : .green)
                         }
                         .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                        // IOPV 曲线是**实测攒出来的**：行情源的分时接口只给价量，
+                        // IOPV 只在快照里给一个当前值，没有任何「历史 IOPV」可拉。
+                        // 所以这件事必须说出来，否则用户会以为曲线坏了。
+                        if store.isTencentETFCode(holding.code), selectedDayIOPV != nil {
+                            if selectedDayIOPVPoints.count >= 2 {
+                                Text("IOPV 曲线：本机实测 \(selectedDayIOPVPoints.count) 个分钟点（行情源不提供历史 IOPV，只能前台逐分钟攒）")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            } else if selectedDayIOPVPoints.count == 1 {
+                                Text("IOPV 曲线刚攒到 1 个点，先画一条当前值参考线。行情源不提供历史 IOPV，前台每刷新一分钟就多一个点。")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            } else {
+                                Text("这一天还没有采到 IOPV 点，先画一条当前值参考线。历史日期的 IOPV 无法回溯补齐。")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
                         if let stats = selectedDayETFQuoteSummary {
                             Text("换手 \(stats.turnoverPercent.map { $0.pct(2) } ?? "暂无")  ·  振幅 \(stats.amplitudePercent.map { $0.pct(2) } ?? "暂无")  ·  成交额 \(stats.amountYi.map { "\($0.num(2))亿" } ?? "暂无")  ·  规模 \(stats.marketCapYi.map { "\($0.num(2))亿" } ?? "暂无")")
                                 .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(2).minimumScaleFactor(0.75)
@@ -1866,11 +1885,6 @@ struct MarketChartView: View {
             .themedSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showLandscapeChart = true } label: {
-                        Label("横屏大图", systemImage: "arrow.up.left.and.arrow.down.right")
-                    }
-                }
             }
             .overlay(alignment: .leading) {
                 Color.clear.frame(width: 32).contentShape(Rectangle())
@@ -1881,9 +1895,6 @@ struct MarketChartView: View {
                         dismiss()
                     })
                     .accessibilityHidden(true)
-            }
-            .fullScreenCover(isPresented: $showLandscapeChart) {
-                LandscapeChartView(holding: holding)
             }
             .sheet(isPresented: $showIntradayCompanion) { IntradayCompanionView(holding: holding).themedSheetBackground() }
             .sheet(isPresented: $showInstrumentAI) {
@@ -2052,7 +2063,7 @@ struct MarketChartView: View {
     // MARK: - 日K 图（主图 + 成交量副图）
 
     // 四条均线色相尽量拉开，避免挤在相邻波段导致「看起来都是一个颜色」。
-    // 色值统一放在 ChartPalette，横屏大图与这里共用同一套，不会两处配色不一致。
+    // 色值统一放在 ChartPalette，日 K 主图与这里共用同一套，不会两处配色不一致。
     private var ma5Color: Color { ChartPalette.ma5 }
     private var ma10Color: Color { ChartPalette.ma10 }
     private var ma20Color: Color { ChartPalette.ma20 }
@@ -2693,9 +2704,9 @@ struct MarketChartView: View {
     }
 }
 
-// MARK: - 横屏大图
+// MARK: - 图表共用配色与宽度
 
-/// 均线配色单一数据源。竖屏日K、横屏大图都从这里取，避免两处配色漂移。
+/// 均线配色单一数据源。日 K 主图从这里取，避免两处配色漂移。
 private enum ChartPalette {
     static let ma5 = Color(red: 1.0, green: 0.62, blue: 0.11)    // 橙
     static let ma10 = Color(red: 0.30, green: 0.66, blue: 1.0)   // 蓝
@@ -2720,7 +2731,7 @@ private enum ChartPalette {
     }
 }
 
-/// K 线实体与量柱的宽度口径（竖屏日K、横屏大图共用）。
+/// K 线实体与量柱的宽度口径（日 K 主图与量能副图共用）。
 ///
 /// **量柱为什么必须比 K 线实体窄**：两处原先共用一个 `bodyWidth`，量柱和实体一样宽。
 /// 缩到 120 根以上时每根只有几 pt，相邻两根的边正好贴在一起 ——
@@ -2738,270 +2749,5 @@ enum ChartBarWidth {
     /// 量柱 2.6pt + 1.7pt 间隙 —— 原来 1.4pt 的细柱在手机上密到看不见。
     static func volume(slot: CGFloat) -> CGFloat {
         min(max(slot * 0.60, 2.0), 18)
-    }
-}
-
-/// 横屏 K 线大图的主图绘制实体（独立类型，理由同文件顶部那段注释）。
-private struct LandscapeCandlePlot: View {
-    let bars: [DailyBar]
-    let maSeries: [Int: [IndicatorPoint]]
-    let yDomain: ClosedRange<Double>
-    let bodyWidth: CGFloat
-
-    var body: some View {
-        Chart {
-            ForEach(bars) { bar in
-                let candleColor = bar.close >= bar.open ? Color.red : Color.green
-                let lowBody = min(bar.open, bar.close)
-                let highBody = max(bar.open, bar.close)
-                // 一字线（开=收）时给最小高度，否则实体画不出来
-                let pad = (highBody - lowBody) < highBody * 0.0008 ? highBody * 0.0008 : 0
-                RuleMark(x: .value("日期", bar.date), yStart: .value("最低", bar.low), yEnd: .value("最高", bar.high))
-                    .foregroundStyle(candleColor.opacity(0.9))
-                    .lineStyle(StrokeStyle(lineWidth: max(1.2, bodyWidth * 0.2)))
-                RectangleMark(x: .value("日期", bar.date),
-                              yStart: .value("开盘", lowBody),
-                              yEnd: .value("收盘", highBody + pad),
-                              width: .fixed(bodyWidth))
-                    .foregroundStyle(candleColor)
-            }
-            ForEach(DailyCandleChart.maWindows, id: \.self) { window in
-                ForEach(maSeries[window] ?? []) { point in
-                    LineMark(x: .value("日期", point.date), y: .value("MA\(window)", point.value),
-                             series: .value("均线", "MA\(window)"))
-                        .foregroundStyle(ChartPalette.color(forMA: window))
-                        .lineStyle(StrokeStyle(lineWidth: 1.2))
-                }
-            }
-        }
-        // 横屏同样显式跟随可见窗口
-        .chartYScale(domain: yDomain)
-        .chartXAxis {
-            AxisMarks(values: xAxisDates(bars)) { value in
-                AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
-                AxisValueLabel {
-                    if let date = value.as(String.self) {
-                        Text(xAxisLabel(date, bars)).font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 6)) { _ in
-                AxisGridLine().foregroundStyle(Color.primary.opacity(0.10))
-                AxisValueLabel().font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-/// 横屏 K 线大图的副图（成交量）。
-private struct LandscapeVolumePlot: View {
-    let bars: [DailyBar]
-    let width: CGFloat
-
-    var body: some View {
-        Chart {
-            ForEach(bars) { bar in
-                BarMark(x: .value("日期", bar.date), y: .value("成交量", bar.volume), width: .fixed(width))
-                    .foregroundStyle(bar.close >= bar.open ? Color.red.opacity(0.75) : Color.green.opacity(0.75))
-            }
-        }
-        .chartXAxis(.hidden)
-        .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 2)) { _ in
-                AxisValueLabel().font(.system(size: 9)).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-/// 横屏 K 线大图。
-///
-/// 为什么单独写一个视图而不是复用 MarketChartView：
-/// 后者是塞了分时 / 副图 / 回测 / AI 的长 List，横屏下上半屏是列表、下半屏才是图，
-/// 图反而更小。这里只保留日K + 四条均线 + 成交量，横向铺满整屏，
-/// 并在 onAppear/onDisappear 里锁 / 解锁横屏。
-struct LandscapeChartView: View {
-    @EnvironmentObject private var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let holding: Holding
-
-    @State private var zoom: CGFloat = 1
-    @GestureState private var pinch: CGFloat = 1
-    @State private var showVolume = true
-    /// 与竖屏共用同一份开关状态（UserDefaults）
-    @State private var maVisible: Set<Int> = MAVisibility.read()
-
-    private var allBars: [DailyBar] {
-        let rows = (store.dailyBars[holding.code] ?? []).filter {
-            $0.open.isFinite && $0.close.isFinite && $0.high.isFinite && $0.low.isFinite
-                && $0.volume.isFinite && $0.close > 0 && $0.high > 0 && $0.low > 0
-        }
-        return Dictionary(rows.map { ($0.date, $0) }, uniquingKeysWith: { _, newer in newer })
-            .values.sorted { $0.date < $1.date }
-    }
-
-    /// 缩放后实际显示的 K 线根数。下限 20 根：再少就没有形态可言了。
-    private var visibleBars: [DailyBar] {
-        guard !allBars.isEmpty else { return [] }
-        // `zoom * pinch` 在手势异常时可能为 0 / NaN / 无穷大，`Int()` 转换会直接 trap，
-        // 所以先退化成 1 倍，再夹到合法范围后才转 Int。
-        let scale = zoom * pinch
-        let safeScale = (scale.isFinite && scale > 0.0001) ? scale : 1
-        let target = Int(min(max(CGFloat(allBars.count) / safeScale, 20), CGFloat(allBars.count)).rounded())
-        return Array(allBars.suffix(min(max(target, 20), allBars.count)))
-    }
-
-    /// 与主视图同口径：Y 轴显式跟随可见窗口（含均线），放大缩小都实时重算。
-    /// 横屏只有日K，`allBars` 就是字典取值、没有聚合开销，所以直接在这里取全量。
-    private func yDomain(for bars: [DailyBar]) -> ClosedRange<Double> {
-        guard !bars.isEmpty else { return 0...1 }
-        var low = bars.map(\.low).min() ?? 0
-        var high = bars.map(\.high).max() ?? 1
-        let visibleWindows = [5, 10, 20, 60, 250].filter { maVisible.contains($0) }
-        for window in visibleWindows {
-            let source = average(window, source: bars, full: allBars)
-            for point in source {
-                low = min(low, point.value)
-                high = max(high, point.value)
-            }
-        }
-        guard high > low else {
-            let base = max(high, 0.0001)
-            return (base * 0.999)...(base * 1.001)
-        }
-        let padding = (high - low) * 0.06
-        return (low - padding)...(high + padding)
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            VStack(spacing: 0) {
-                topBar
-                if visibleBars.isEmpty {
-                    Spacer(minLength: 0)
-                    Text("还没有日线数据，先在主界面打开一次行情")
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                } else {
-                    candleChart(height: geo.size.height * (showVolume ? 0.74 : 0.92))
-                    if showVolume {
-                        volumeChart(height: geo.size.height * 0.16)
-                    }
-                }
-            }
-        }
-        .background(.clear)
-        .themedSheetBackground()
-        .onAppear { OrientationLock.shared.lockLandscape() }
-        .onDisappear { OrientationLock.shared.unlock() }
-    }
-
-    private var topBar: some View {
-        let quote = store.data.quotes.first(where: { $0.code == holding.code })
-        return HStack(spacing: 10) {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭横屏图表")
-            VStack(alignment: .leading, spacing: 1) {
-                Text(holding.name.isEmpty ? holding.code : holding.name)
-                    .font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text("日K · \(visibleBars.count) 根")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            Text((quote?.price ?? holding.current).num(3))
-                .font(.system(.headline, design: .rounded)).monospacedDigit()
-            if let quote {
-                Text((quote.changePct * 100).pct(2))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(quote.changePct >= 0 ? .red : .green)
-            }
-            Spacer(minLength: 0)
-            maChip("MA5", 5, ChartPalette.ma5)
-            maChip("MA10", 10, ChartPalette.ma10)
-            maChip("MA20", 20, ChartPalette.ma20)
-            maChip("MA60", 60, ChartPalette.ma60)
-            maChip("MA250", 250, ChartPalette.ma250)
-            Button { showVolume.toggle() } label: {
-                Image(systemName: showVolume ? "chart.bar.fill" : "chart.bar").font(.caption)
-            }.buttonStyle(.bordered)
-                .accessibilityLabel(showVolume ? "隐藏成交量" : "显示成交量")
-            Button("复位") { zoom = 1 }.buttonStyle(.bordered)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-    }
-
-    private func maChip(_ title: String, _ window: Int, _ color: Color) -> some View {
-        let on = maVisible.contains(window)
-        return Button {
-            Haptics.selection()
-            if on { maVisible.remove(window) } else { maVisible.insert(window) }
-            MAVisibility.write(maVisible)
-        } label: {
-            HStack(spacing: 3) {
-                RoundedRectangle(cornerRadius: 1).fill(on ? color : Color.secondary.opacity(0.3)).frame(width: 10, height: 3)
-                Text(title).scaledFont(9, weight: .semibold).foregroundStyle(on ? color : Color.secondary)
-            }.opacity(on ? 1 : 0.55)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title)显示开关，当前\(on ? "打开" : "关闭")")
-    }
-
-    private func candleChart(height: CGFloat) -> some View {
-        GeometryReader { geo in
-            let bars = visibleBars
-            let count = max(bars.count, 1)
-            let slot = geo.size.width / CGFloat(count)
-            LandscapeCandlePlot(bars: bars, maSeries: landscapeMASeries(bars),
-                                yDomain: yDomain(for: bars),
-                                bodyWidth: ChartBarWidth.candle(slot: slot))
-                .gesture(magnifyGesture)
-        }
-        .frame(height: height)
-        .clipped()
-    }
-
-    /// 横屏可见窗口的均线（只在开关打开时才计算）。
-    private func landscapeMASeries(_ bars: [DailyBar]) -> [Int: [IndicatorPoint]] {
-        var out: [Int: [IndicatorPoint]] = [:]
-        for window in DailyCandleChart.maWindows where maVisible.contains(window) {
-            out[window] = average(window, source: bars, full: allBars)
-        }
-        return out
-    }
-
-    private func volumeChart(height: CGFloat) -> some View {
-        GeometryReader { geo in
-            let count = max(visibleBars.count, 1)
-            let slot = geo.size.width / CGFloat(count)
-            LandscapeVolumePlot(bars: visibleBars, width: ChartBarWidth.volume(slot: slot))
-        }
-        .frame(height: height)
-        .clipped()
-    }
-
-    private var magnifyGesture: some Gesture {
-        MagnificationGesture()
-            .updating($pinch) { value, state, _ in state = value }
-            .onEnded { value in zoom = min(max(zoom * value, 1), 12) }
-    }
-
-    /// 横屏大图的均线。横屏只有日K，所以「全量序列」就是 `allBars`，
-    /// 口径与竖屏 `MarketChartView` 的那一份完全一致（详见那边的注释）。
-    private func average(_ window: Int, source: [DailyBar], full: [DailyBar]) -> [IndicatorPoint] {
-        guard window > 0, full.count >= window, !source.isEmpty else { return [] }
-        let visibleDates = Set(source.map(\.date))
-        guard !visibleDates.isEmpty else { return [] }
-        var out: [IndicatorPoint] = []
-        out.reserveCapacity(visibleDates.count)
-        for index in (window - 1)..<full.count where visibleDates.contains(full[index].date) {
-            let values = full[(index - window + 1)...index].map(\.close)
-            out.append(IndicatorPoint(date: full[index].date, value: values.reduce(0, +) / Double(window)))
-        }
-        return out
     }
 }

@@ -24,6 +24,8 @@ final class PortfolioStore: ObservableObject {
     private var autoRefreshInFlight = false
     /// 上一次写回网页账本时，原生账本的指纹。相同就跳过，避免每轮轮询都去写一遍。
     private var lastWebLedgerWrittenFingerprint = ""
+    /// 写回网页账本的防抖任务（合并短时间内连续几次改动）。
+    private var webLedgerWriteBackTask: Task<Void, Never>?
     @Published private(set) var intradayArchiveStatus = "尚未补全分时档案"
     @Published private(set) var isArchivingIntraday = false
     /// 首页顶部指数条。与账本数据无关，单独缓存，不参与备份 / NAS 同步。
@@ -1103,6 +1105,9 @@ final class PortfolioStore: ObservableObject {
         }
         defaults.set(raw, forKey: key)
         if !applyingNASData { scheduleNASSync() }
+        // 账本一改就排队写回网页版（6 秒防抖）。用户的操作顺序常常是
+        // 「App 里记一笔 → 切到浏览器打开观盘.html → 点下载」，所以这一份必须已经在 NAS 上。
+        if !applyingNASData { scheduleWebLedgerWriteBack() }
     }
 
     /// `code → 最新净值点` 的缓存（v2.13.34）。
@@ -1248,6 +1253,9 @@ final class PortfolioStore: ObservableObject {
         nasPollingTask = nil
         nasSyncTask?.cancel()
         nasSyncTask = nil
+        // 退到后台时把网页版那份补齐：马上要去浏览器点「下载」了，
+        // 这一趟不等防抖（防抖任务会被系统挂起，等不到）。
+        scheduleWebLedgerWriteBack(delay: 0)
     }
 
     private func makeNASDocument() -> NativeSyncDocument {
@@ -1438,7 +1446,23 @@ final class PortfolioStore: ObservableObject {
     // ④ 只替换账本字段，其余键（设置 / 分红参考 / 汇率 / 休市日 / 网格历史）原样保留。
 
     var webLedgerWriteBackEnabled: Bool {
-        UserDefaults.standard.bool(forKey: NASSyncService.webLedgerKey)
+        let defaults = UserDefaults.standard
+        // **默认开**（前提：已经配了 NAS 地址）。
+        //
+        // 第一版把它做成默认关，结果用户升级后打开网页版一「下载」，看到的还是老数据 ——
+        // 功能等于没做。用户对这件事的要求是明确的「App 为准」，那就该默认按 App 走；
+        // 而且这条链路本来就有四道保护（空账本跳过、读不回就放弃、写前备份、可一键还原），
+        // 误伤面很小。用户一旦手动关过，就以他关的那个状态为准，不再自动翻回来。
+        guard let stored = defaults.object(forKey: NASSyncService.webLedgerKey) as? Bool else {
+            let url = defaults.string(forKey: NASSyncService.urlKey) ?? ""
+            return !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return stored
+    }
+
+    /// 这个开关是「用户亲自设过」的，还是走的默认值。界面据此决定要不要提示默认行为。
+    var webLedgerWriteBackIsExplicit: Bool {
+        UserDefaults.standard.object(forKey: NASSyncService.webLedgerKey) != nil
     }
 
     /// 本机是否存有「上一次写回前」的网页账本备份。
@@ -1470,6 +1494,25 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
+    /// 防抖版的写回触发：`save()` 里每改一次账本都会调它，但真正发请求要等 6 秒静默期。
+    ///
+    /// **为什么不挂在 `scheduleNASSync` 上**：那条链路的第一行就是
+    /// `guard defaults.bool(forKey: automaticKey)` ——「自动同步」关掉就整个不走。
+    /// 可「App 账本 → 网页版」是另一件事，是用户明确要的方向（App 为准），
+    /// 不该被另一个开关连带关掉，否则又回到「网页版下载还是老数据」。
+    /// 只要求「配了 NAS 地址 + 写回开关是开的」。
+    func scheduleWebLedgerWriteBack(delay: UInt64 = 6) {
+        guard webLedgerWriteBackEnabled else { return }
+        let url = UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? ""
+        guard !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        webLedgerWriteBackTask?.cancel()
+        webLedgerWriteBackTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            await writeBackWebLedgerIfEnabled()
+        }
+    }
+
     /// 把本机原生账本写回 NAS 上的**网页格式**账本（`/api/data`）。
     @discardableResult
     func writeBackWebLedger(reason: String) async -> Bool {
@@ -1498,18 +1541,66 @@ final class PortfolioStore: ObservableObject {
             // ④ 只替换账本字段
             let document = WebLedgerWriter.document(from: data, merging: existing)
             let revision = try await NASSyncService.putWebLedger(base: url, token: token, payload: document)
+            // ⑤ 写完立刻读回来核对。
+            //
+            // 用户的要求是「数据要准确，不能乱来」——只说一句「已写回」不足以让人放心，
+            // 因为「写成功但网页下到的还是旧的」这种中间态真的会发生（比如写到了另一份文档、
+            // 或服务端按 revision 拒了却又返回了 200）。这里把网页端实际会拿到的那份读回来，
+            // 只比最显眼的几个数（现金 / 自选 / 场内持仓 / 流水 / 场外持仓），不一致就明说。
+            let readBack = try? await NASSyncService.webLedger(base: url, token: token)
+            let verification = Self.webLedgerConsistencyNote(written: document, readBack: readBack)
             let etfCount = data.holdings.filter { $0.kind == .etf }.count
             let fundCount = data.holdings.filter { $0.kind == .fund }.count
             let stamp = Date.now.formatted(date: .omitted, time: .shortened)
             let action = existing == nil ? "已新建网页账本" : "已写回网页账本"
             assignIfChanged(\.webLedgerStatus,
                 "\(action)（\(reason)）· 场内 \(etfCount) 只 · 场外 \(fundCount) 只 · "
-                + "流水 \(data.ledger.count) 笔 · 版本 \(revision) · \(stamp)")
+                + "流水 \(data.ledger.count) 笔 · 版本 \(revision) · \(stamp)\(verification)")
             return true
         } catch {
             assignIfChanged(\.webLedgerStatus, "写回失败：\(error.localizedDescription)")
             return false
         }
+    }
+
+    /// 写回后的轻量核对：只比「页面上最显眼的那几个数」，不逐字节比整份 JSON。
+    ///
+    /// 逐字节比会被服务端对键顺序/数字格式的再序列化搞出假报警；
+    /// 而现金、自选数、场内持仓数、流水条数、场外持仓数这几项只要对得上，
+    /// 网页版「下载」拿到的就是这份 App 账本。
+    private static func webLedgerConsistencyNote(written: [String: Any], readBack: [String: Any]?) -> String {
+        guard let readBack else { return " · ⚠️ 写完读不回来，请在网页版点一次「下载」确认" }
+        func number(_ root: [String: Any], _ key: String) -> Double? {
+            if let value = root[key] as? Double { return value }
+            if let value = root[key] as? NSNumber { return value.doubleValue }
+            return nil
+        }
+        func count(_ root: [String: Any], _ path: [String]) -> Int? {
+            var node: Any = root
+            for key in path {
+                guard let dict = node as? [String: Any], let next = dict[key] else { return nil }
+                node = next
+            }
+            return (node as? [Any])?.count
+        }
+        var mismatches: [String] = []
+        if let a = number(written, "cash"), let b = number(readBack, "cash"), abs(a - b) > 0.005 {
+            mismatches.append("现金 \(a.cny()) → \(b.cny())")
+        }
+        let fields: [(String, [String])] = [
+            ("自选", ["db", "watch"]),
+            ("场内持仓", ["db", "hold"]),
+            ("场内流水", ["db", "trades"]),
+            ("网页流水", ["tr"]),
+            ("场外持仓", ["fund", "hold"]),
+            ("场外流水", ["fund", "trades"])
+        ]
+        for (label, path) in fields {
+            guard let a = count(written, path), let b = count(readBack, path) else { continue }
+            if a != b { mismatches.append("\(label) \(a) → \(b)") }
+        }
+        if mismatches.isEmpty { return " · 已读回核对一致 ✅" }
+        return " · ⚠️ 读回不一致：\(mismatches.joined(separator: "、"))"
     }
 
     /// 误覆盖时的后悔药：把「上一次写回之前」的那份网页账本原样写回去。
@@ -1608,6 +1699,11 @@ final class PortfolioStore: ObservableObject {
             value = rawNAV
         } else if let premium = quote.premiumPct, (1 + premium / 100) > 0 {
             value = quote.price / (1 + premium / 100)
+        } else if let sinaValue = await fetchSinaFundIOPVs(codes: [code])[code], sinaValue.isFinite, sinaValue > 0 {
+            // 腾讯这条路彻底拿不到字段时，再问新浪基金接口一次。
+            // 溢价率这时就用「现价 ÷ 新浪 IOPV − 1」，与腾讯自己算 77 字段的口径一致。
+            value = sinaValue
+            return (value, quote.price / sinaValue * 100 - 100, quote.timestamp)
         } else {
             return nil
         }
@@ -1802,6 +1898,46 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
+    /// 新浪基金源：一次取多只 ETF 的**当日实时参考净值（IOPV）**。
+    ///
+    /// `hq.sinajs.cn/list=fu_510300,fu_159915` → 每行
+    /// `var hq_str_fu_510300="华泰柏瑞沪深300ETF,11:32:00,4.3349,4.3479,1.9393,0,-0.2999,2026-10-14,4.2907,-1.3162";`
+    ///
+    /// 字段含义（拿 4 只 ETF 与腾讯 88 字段逐一比对确认过）：
+    /// ① 名称 ② 时间 ③ **当日 IOPV**（= 腾讯字段 78）④ 昨日 IOPV（= 腾讯字段 81）
+    /// ⑤/⑥/⑦ 其他指标 ⑧ 日期 ⑨ 最近公布的单位净值 ⑩ 其他。
+    /// **只取字段 3**：取 4 会拿到昨天的数、取 9 会拿到净值而不是 IOPV。
+    ///
+    /// 与腾讯一样必须带 `Referer: https://finance.sina.com.cn`，否则返回空 body；
+    /// 编码是 GB18030，复用 `decodeTencent`。
+    private func fetchSinaFundIOPVs(codes: [String]) async -> [String: Double] {
+        let cleaned = codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count == 6 && $0.allSatisfy(\.isNumber) }
+        guard !cleaned.isEmpty else { return [:] }
+        let list = cleaned.map { "fu_\($0)" }.joined(separator: ",")
+        guard let url = URL(string: "https://hq.sinajs.cn/list=" + list) else { return [:] }
+        var request = URLRequest(url: url); request.timeoutInterval = 10
+        request.setValue("https://finance.sina.com.cn", forHTTPHeaderField: "Referer")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        guard let (bytes, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return [:] }
+        let text = decodeTencent(bytes)
+        var result: [String: Double] = [:]
+        for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let row = String(line)
+            guard let range = row.range(of: "hq_str_fu_") else { continue }
+            let tail = row[range.upperBound...]
+            guard let equals = tail.firstIndex(of: "=") else { continue }
+            let code = String(tail[tail.startIndex..<equals])
+            guard code.count == 6, code.allSatisfy(\.isNumber) else { continue }
+            let body = tail[tail.index(after: equals)...].trimmingCharacters(in: CharacterSet(charactersIn: "\"; "))
+            let fields = body.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count >= 3, let iopv = Double(fields[2]), iopv.isFinite, iopv > 0 else { continue }
+            result[code] = iopv
+        }
+        return result
+    }
+
     /// 新浪源：`hq.sinajs.cn` 一次请求覆盖全部代码，用来补腾讯**没有**的日经与东证。
     ///
     /// **两个坑**（都是实测踩出来的）：
@@ -1928,6 +2064,29 @@ final class PortfolioStore: ObservableObject {
     static func normalizedDay(_ raw: String) -> String {
         guard raw.count == 8, raw.allSatisfy(\.isNumber) else { return raw }
         return "\(raw.prefix(4))-\(raw.dropFirst(4).prefix(2))-\(raw.suffix(2))"
+    }
+
+    /// 行情源分时行的首列 → 「当天第几分钟」。
+    ///
+    /// 腾讯给的是紧凑写法 `0930`（也有 `930`），东财给的是 `09:30`；
+    /// 一律先归一化再算，避免依赖 `DateFormatter` 对「模式有冒号、输入没冒号」的宽容度。
+    /// 无法确定就返回 nil —— 宁可丢这一个点，也不猜一个时间。
+    static func intradayClockMinute(_ raw: String) -> Int? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if text.contains(":") {
+            let parts = text.split(separator: ":")
+            guard parts.count >= 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+                  hour >= 0, hour < 24, minute >= 0, minute < 60 else { return nil }
+            return hour * 60 + minute
+        }
+        guard text.allSatisfy(\.isNumber) else { return nil }
+        let digits = text.count > 4 ? String(text.prefix(4)) : text
+        guard digits.count == 3 || digits.count == 4, let value = Int(digits) else { return nil }
+        let minute = value % 100
+        let hour = value / 100
+        guard hour >= 0, hour < 24, minute >= 0, minute < 60 else { return nil }
+        return hour * 60 + minute
     }
 
     /// 指数日 K。腾讯有该指数就用腾讯（更稳），否则走东财 secid。
@@ -2070,17 +2229,37 @@ final class PortfolioStore: ObservableObject {
         let rawDay = (payload["date"] as? String) ?? (node["date"] as? String) ?? ""
         let day = Self.normalizedDay(rawDay)
         guard day.count == 10 else { return [] }
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = symbol.lowercased().hasPrefix("us")
+        // 时间列是**紧凑写法**「HHmm」（`0930`），没有冒号。
+        //
+        // 这里以前交给 `DateFormatter` 用 `"yyyy-MM-dd HH:mm"` 去啃 "2026-10-14 0930"：
+        // 模式里带 `:`、输入里没有，能不能解析完全取决于 ICU 对缺失字面量的宽容度，
+        // 结果就是**整段返回 nil**。表现很隐蔽 —— 因为本机分时档案里还有 NAS 归档和
+        // 前台自动采集的点，持仓的分时图看着是好的，于是没人怀疑解析器；
+        // 直到要看**指数**的分时（指数不在账本里、没有 NAS 归档，只能靠这条直连接口）
+        // 才暴露成「上证指数那一排点开永远是空的」。
+        //
+        // 改成自己按整数算时分、再用上海/纽约日历组装：结果确定，也不受手机
+        // 12/24 小时制开关影响（这是 DateFormatter 另一个有名的坑）。
+        let zone = symbol.lowercased().hasPrefix("us")
             ? (TimeZone(identifier: "America/New_York") ?? TimeZone(secondsFromGMT: -5 * 3600)!)
             : (TimeZone(identifier: "Asia/Shanghai") ?? .current)
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var clock = Calendar(identifier: .gregorian)
+        clock.timeZone = zone
+        let dayParts = day.split(separator: "-").compactMap { Int($0) }
+        guard dayParts.count == 3 else { return [] }
         var parsed: [IntradayBar] = []
         var previousVolume = 0.0
         for row in rows {
             let fields = row.split(whereSeparator: { $0.isWhitespace }).map(String.init)
             guard fields.count >= 2, let price = Double(fields[1]), price > 0,
-                  let date = formatter.date(from: "\(day) \(fields[0])") else { continue }
+                  let minuteOfDay = Self.intradayClockMinute(fields[0]) else { continue }
+            var components = DateComponents()
+            components.year = dayParts[0]
+            components.month = dayParts[1]
+            components.day = dayParts[2]
+            components.hour = minuteOfDay / 60
+            components.minute = minuteOfDay % 60
+            guard let date = clock.date(from: components) else { continue }
             let cumulative = fields.count > 2 ? Double(fields[2]) : nil
             let delta = cumulative.map { max(0, $0 - previousVolume) }
             if let cumulative { previousVolume = cumulative }
@@ -2182,6 +2361,26 @@ final class PortfolioStore: ObservableObject {
                     } else {
                         values[symbol] = proxy
                     }
+                }
+            }
+            // 还没补到 IOPV 的 ETF 再走一次**新浪基金接口**。
+            //
+            // 为什么要第三条路：腾讯的 88 字段里字段 78 确实是当日 IOPV，但实测
+            // **部分深市 ETF 会整段缺这几个字段**（返回的数组长度就不够），
+            // 而 IOPV 是分时图上那条紫线唯一的来源，缺一次就少一个分钟点。
+            // 新浪的 `hq.sinajs.cn/list=fu_<code>` 是**基金专用**接口：
+            // 字段 3 = 当日实时参考净值（字段 4 是昨日 IOPV，字段 9 是最近公布的单位净值，
+            // 三个都实测比对过，别取错）。一次请求可以批量，且与腾讯完全独立。
+            // 这里**只补 IOPV**，价格 / 涨跌幅 / 时间戳一律不动。
+            let stillMissingIOPV = incompleteETFCodes.filter { values[tencentSymbol($0)]?.iopv == nil }
+            if !stillMissingIOPV.isEmpty {
+                let sinaIOPVs = await fetchSinaFundIOPVs(codes: stillMissingIOPV)
+                for code in stillMissingIOPV {
+                    let symbol = tencentSymbol(code)
+                    guard let iopv = sinaIOPVs[code], iopv.isFinite, iopv > 0,
+                          let direct = values[symbol] else { continue }
+                    values[symbol] = (direct.name, direct.price, direct.changePct, direct.timestamp,
+                                      direct.premiumPct, iopv)
                 }
             }
             guard !values.isEmpty else {

@@ -897,10 +897,92 @@ struct GridOptimizeReport: Identifiable {
     var note: String
 }
 
-/// 策略经验累积（网页版 `DB.gridExperience` 的对应物）。
+/// 「按区间复盘」里的一组候选参数：**一个格距百分比，跑遍区间内全部有分时档案的交易日**。
 ///
-/// 只做「这台设备上跑过的复盘」的统计，不参与选参本身 ——
-/// 它回答的是「这个标的过去几次事后最优的格距大概落在哪一档」。
+/// 这是「找一组长期能用的网格参数」的最小单元。与单日复盘的区别在于：
+/// 单日只问「这一天事后最优是什么」，区间会问「同一组参数在这些天里平均表现如何」——
+/// 后者才有资格指导以后的操作。逐日判定口径与单日复盘完全一致（同一套 `alpha`）。
+struct GridRangeCandidate: Codable, Identifiable, Hashable {
+    /// 用格距百分比本身当 id：同一区间内不会有两组相同百分比。
+    var id: Double { stepPercent }
+    /// 格距占**当日首价**的百分比（区间内每日各自换算成绝对格距）。
+    var stepPercent: Double
+    /// 真正跑成功的交易日数（分时点不足或资金不够的日子不计入）
+    var samples: Int
+    /// `alpha > 0` 的天数 —— 「跑赢持有不动」的天数
+    var winDays: Int
+    var totalAlpha: Double
+    var averageAlpha: Double
+    var totalProfit: Double
+    var totalHoldProfit: Double
+    var totalFees: Double
+    /// 区间内最差一天的 alpha
+    var worstAlpha: Double
+    /// 区间内单日最大回撤的最大值（%）
+    var worstDrawdown: Double
+    /// 平均每日成交笔数
+    var averageFills: Double
+    /// 最近一个交易日按该格距换算出的**绝对格距**（填券商单子时用这个数）
+    var lastStep: Double
+    /// 最近一个交易日、按计划资金算出的每格份数
+    var lastQuantity: Double
+    var lastStepPercent: Double
+
+    var winRate: Double { samples > 0 ? Double(winDays) / Double(samples) * 100 : 0 }
+}
+
+/// 区间复盘里某一天的逐日明细（只保留最终胜出那组参数的结果）。
+struct GridRangeDayDetail: Codable, Identifiable, Hashable {
+    var id: String { day }
+    var day: String
+    var points: Int
+    var firstPrice: Double
+    var lastPrice: Double
+    var dayLow: Double
+    var dayHigh: Double
+    var step: Double
+    var buyCount: Int
+    var sellCount: Int
+    var fills: Int
+    var profit: Double
+    var holdProfit: Double
+    var alpha: Double
+    var maxDrawdown: Double
+    var fees: Double
+}
+
+/// 一次「按区间复盘」的完整报告。
+///
+/// ⚠️ 依然是**事后拟合**：用的是已经走完的完整分时。它的价值不在于预测，
+/// 而在于把「这个标的过去 N 天里，多大的格距最经得起折腾」用同一把尺子量出来。
+struct GridRangeReport: Codable, Identifiable, Hashable {
+    var id: String { "\(code)|\(from)|\(to)" }
+    var code: String
+    var name: String
+    var from: String
+    var to: String
+    var capital: Double
+    var t0: Bool
+    var tick: Double
+    /// 真正参与统计的交易日（正序）
+    var days: [String]
+    /// 档案里在区间内、但因为分时点不足 30 个而被跳过的交易日
+    var skippedDays: [String]
+    var totalPoints: Int
+    var rangeLow: Double
+    var rangeHigh: Double
+    /// 区间内「第一日首价 → 最后一日末价」的变化百分比
+    var rangeChangePercent: Double
+    /// 日均振幅（每日最高/最低的百分比振幅，取平均）
+    var averageAmplitudePercent: Double
+    var best: GridRangeCandidate
+    var candidates: [GridRangeCandidate]
+    /// 胜出那组的逐日明细
+    var details: [GridRangeDayDetail]
+    var note: String
+}
+
+/// 策略经验累积（网页版 `DB.gridExperience` 的对应物）。
 struct GridExperienceRecord: Codable {
     var samples = 0
     var wins = 0

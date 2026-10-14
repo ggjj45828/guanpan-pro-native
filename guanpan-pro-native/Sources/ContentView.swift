@@ -83,6 +83,10 @@ struct ContentView: View {
                 await store.syncNASMarketArchive()
                 await store.archiveTrackedIntraday()
                 await store.ensureBackfillHistory()
+                // 每次进前台都串一次「App 账本 → 网页版账本」：只在内容指纹变过时才真的发请求，
+                // 所以可以放心每次都调。用户会在网页版点「下载」，而那一刻网页读到的就是 NAS 上的
+                // `/api/data` —— 不主动写，网页版永远是上一版的数据。
+                await store.writeBackWebLedgerIfEnabled()
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -97,6 +101,10 @@ struct ContentView: View {
                     await store.syncNASMarketArchive()
                     await store.archiveTrackedIntraday()
                     await store.ensureBackfillHistory()
+                    // 每次进前台都串一次「App 账本 → 网页版账本」：只在内容指纹变过时才真的发请求，
+                    // 所以可以放心每次都调。用户会在网页版点「下载」，而那一刻网页读到的就是 NAS 上的
+                    // `/api/data` —— 不主动写，网页版永远是上一版的数据。
+                    await store.writeBackWebLedgerIfEnabled()
                 }
             }
             else { store.pauseNASSyncPolling() }
@@ -4227,6 +4235,7 @@ struct ToolsView: View {
     @State private var showRebalanceDetails = false
     @State private var showGrid = false
     @State private var showLongGridPlanner = false
+    @State private var showGridReview = false
     @State private var showAIAnalysis = false
     @State private var showPortrait = false
     @State private var showLedgerHealth = false
@@ -4308,15 +4317,17 @@ struct ToolsView: View {
                     Section("持仓结构") { Button("ETF / 基金成分重叠") { showOverlap = true }; Button("换仓情景试算") { showPortfolioScenario = true } }
                 } else {
                     Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { showTradePlans = true }; Button("日内网格计划与回放") { showGrid = true }; Button("中长期网格计划") { showLongGridPlanner = true }; Button("新增资金加仓试算") { showAddCash = true } }
+                    Section("复盘") { Button("网格参数复盘（当日最优 / 长期参数）") { showGridReview = true } }
                     Section("收益与复盘") { Button("ETF 每日收益日历") { showETFIncomeCalendar = true }; Button("分红日历") { showDividendCalendar = true }; Button("收益来源拆解") { showReturnSource = true }; Button("历史状态回放") { showHistoricalReplay = true }; Button("月度投资复盘") { showMonthlyReview = true }; Button("年度账单") { showYearlyReview = true } }
-                    Section("历史数据") { Button("分时采集与历史复盘") { showIntradayArchive = true }; Button("导入券商成交") { showTradeCSVImport = true }; Button("全部交易流水") { showTradeLedger = true }; Button("基金定投回放") { showFundReplay = true } }
+                    Section("历史数据") { Button("分时采集") { showIntradayArchive = true }; Button("导入券商成交") { showTradeCSVImport = true }; Button("全部交易流水") { showTradeLedger = true }; Button("基金定投回放") { showFundReplay = true } }
                 }
             }
         .scrollContentBackground(.hidden)
         .listStyle(.plain)
         .appListLayout()
         .listRowBackground(Color.clear)
-        .buttonStyle(.plain)
+        // 这一页几乎全是「一个功能 = 一行」的按钮，整行可点，别让人对着空白处点不动。
+        .fullRowRowButtons()
         .background(.clear).navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
@@ -4324,6 +4335,10 @@ struct ToolsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
             .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
+            // 「复盘」是独立的一级功能（和分红日历、中长期网格计划同级）：
+            // 它靠的是历史档案 + 事后拟合，跟「在 App 里怎么下单」是两件事，
+            // 所以不再塞在「日内网格计划与回放」里面，也不再塞在「分时采集」里面。
+            .sheet(isPresented: $showGridReview) { GridReviewView().environmentObject(store).themedSheetBackground() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
             .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() .themedSheetBackground() }
@@ -5907,8 +5922,6 @@ struct DayGridView: View {
     @State private var recommendationText = ""
     @State private var showImporter = false
     @State private var showStrategicGridPlanner = false
-    /// 「复盘并寻找当日最优」：只给资金，自动搜出当天事后最优的锚点与格距。
-    @State private var showGridOptimize = false
     /// 网格适合度排名（规则版评估，见 GridSuitability.swift）。
     @State private var suitability: [GridSuitability] = []
     @State private var isEvaluatingSuitability = false
@@ -6085,15 +6098,10 @@ struct DayGridView: View {
                     }
                 }
                 .plainCard(isLight: isLight)
-                Section("自动找最优参数（复盘当日）") {
-                    Button {
-                        showGridOptimize = true
-                    } label: {
-                        Label("复盘并寻找当日最优", systemImage: "wand.and.stars")
-                    }
-                    Text("只填标的、交易日和计划资金，自动搜出当天事后最优的锚点与格距"
-                        + "（3 个锚点 × 7 个步长倍率 = 21 组回放），按「跑赢持有不动」排序。"
-                        + "用的是当天完整分时，属于事后拟合，不是预测。")
+                Section("找最优参数") {
+                    Text("这一页只管「计划与回放」：按你填的锚点、格距、档位把当天走势跑一遍。"
+                        + "「复盘」（自动搜事后最优参数、长期可用参数、大模型建议）已经单独拎出来，"
+                        + "在「工具 → 复盘 → 网格参数复盘」。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -6207,13 +6215,13 @@ struct DayGridView: View {
             .scrollContentBackground(.hidden)
             .listStyle(.plain)
             .background(.clear)
-            .navigationTitle("日内网格 / 复盘")
+            .navigationTitle("日内网格计划与回放")
             .toolbarBackground(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
             .themedSheetBackground()
             .listRowBackground(Color.clear)
-            .buttonStyle(.plain)
+            .fullRowRowButtons()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .onAppear {
                 if code.isEmpty, let first = instruments.first { code = first.code; name = first.name; anchor = first.price > 0 ? String(format: "%.4f", first.price) : "" }
@@ -6231,9 +6239,6 @@ struct DayGridView: View {
             }
             .sheet(isPresented: $showStrategicGridPlanner) {
                 StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
-            }
-            .sheet(isPresented: $showGridOptimize) {
-                GridOptimizeView().environmentObject(store).themedSheetBackground()
             }
         }
     }
@@ -6524,7 +6529,7 @@ private struct StrategicGridPlannerView: View {
             .scrollContentBackground(.hidden)
             .listStyle(.plain)
             .listRowBackground(Color.clear)
-            .buttonStyle(.plain)
+            .fullRowRowButtons()
             .background(.clear)
             .navigationTitle("中长期网格计划")
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -6766,7 +6771,7 @@ struct SettingsView: View {
             .listStyle(.plain)
             .appListLayout()
             .listRowBackground(Color.clear)
-            .buttonStyle(.plain)
+            .fullRowRowButtons()
             .background(.clear)
         }
         // presentationBackground 要挂在 sheet 的导航根上；挂在 Form 内层会留下系统默认的不透明白底。
@@ -6926,7 +6931,7 @@ struct SettingsView: View {
             Text("最短 5 秒，与网页版一致。行情走 iPhone 直连，刷新频率由本机控制，不经过 NAS。")
                 .font(.footnote).foregroundStyle(.secondary).disabled(store.data.quoteRefreshSeconds == 0)
             Toggle("自动保存每日分时", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
-            Text("前台刷新时记录实时点，并每 30 分钟至多补全一次自选和场内持仓的最近交易日整日分时；旧日期持续保留，可在“工具－分时采集与历史复盘”查看。")
+            Text("前台刷新时记录实时点，并每 30 分钟至多补全一次自选和场内持仓的最近交易日整日分时；旧日期持续保留，可在“工具－分时采集”查看。这份档案也是「工具－复盘」的原料。")
                 .font(.footnote).foregroundStyle(.secondary)
             Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
             Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")

@@ -639,6 +639,296 @@ extension PortfolioStore {
               let map = try? JSONDecoder().decode([String: GridExperienceRecord].self, from: raw) else { return [:] }
         return map
     }
+
+    // MARK: - 按区间复盘（长周期网格参数）
+    //
+    // 与 `optimizeGridReplay` 的关系：
+    //   · 单日版问「这一天事后最优是什么」——只能说明这一天；
+    //   · 区间版问「同一组格距，在这些天里平均表现如何」——这才有资格指导以后怎么挂单。
+    // 逐日判定口径**完全复用同一套 alpha**（网格盈亏 − 买了不动），只是把结果按天汇总。
+    //
+    // 锚点固定为「每天的首价」：真实的长期网格就是每天早上按当时的价位重铺一遍，
+    // 用一个跨越几十天的固定绝对价当锚点是不成立的（价格早跑没了）。
+
+    /// 按区间搜索长周期网格参数。`from` / `to` 用 `yyyy-MM-dd`，顺序无所谓。
+    func optimizeGridRange(code: String, from: String, to: String, capital: Double, t0: Bool,
+                           stepPercents: [Double] = GridRangeDefaults.stepPercents)
+        -> Result<GridRangeReport, GridOptimizeError> {
+        let lower = min(from, to)
+        let upper = max(from, to)
+        // `yyyy-MM-dd` 的字典序就是时间序，可以直接比较，不必先转 Date。
+        let archived = intradayDays(forCode: code).filter { $0 >= lower && $0 <= upper }.sorted()
+        guard !archived.isEmpty else { return .failure(.noArchivedDay) }
+
+        let money = capital.isFinite && capital > 0 ? capital : 0
+        guard money > 0 else { return .failure(.capitalTooSmall) }
+        let etf = Self.isGridETF(code)
+        let tick = etf ? 0.001 : 0.01
+        let decimals = etf ? 3 : 2
+
+        // 逐日预处理一次，9 组候选反复复用 —— 不然每天都要重扫一遍整份分钟档案。
+        var setups: [GridRangeDaySetup] = []
+        var skipped: [String] = []
+        var totalPoints = 0
+        var overallLow = Double.greatestFiniteMagnitude
+        var overallHigh = 0.0
+        var amplitudeSum = 0.0
+        for day in archived {
+            let bars = intradayBars(code: code, day: day)
+            let prices = bars.map(\.price).filter { $0.isFinite && $0 > 0 }
+            guard prices.count >= 30, let first = prices.first, let last = prices.last else {
+                skipped.append(day)
+                continue
+            }
+            let low = prices.min() ?? first
+            let high = prices.max() ?? first
+            // 每格股数：分母 4 = 「2 手初始建仓 + 2 手留给网格买入」，与单日复盘同一条规则。
+            let quantity = (money / (max(first, 0.0001) * 4 * 100)).rounded(.down) * 100
+            guard quantity >= 100 else {
+                skipped.append(day)
+                continue
+            }
+            setups.append(GridRangeDaySetup(day: day, prices: prices, first: first, last: last,
+                                            low: low, high: high, quantity: quantity))
+            totalPoints += prices.count
+            overallLow = min(overallLow, low)
+            overallHigh = max(overallHigh, high)
+            if first > 0 { amplitudeSum += (high - low) / first * 100 }
+        }
+        guard setups.count >= 3 else { return .failure(.notEnoughRangeDays(setups.count)) }
+
+        var candidates: [GridRangeCandidate] = []
+        var detailsByPercent: [Double: [GridRangeDayDetail]] = [:]
+        for percent in stepPercents where percent.isFinite && percent > 0 {
+            var samples = 0, winDays = 0, fillsTotal = 0
+            var totalAlpha = 0.0, totalProfit = 0.0, totalHold = 0.0, totalFees = 0.0
+            var worstAlpha = Double.greatestFiniteMagnitude
+            var worstDrawdown = 0.0
+            var details: [GridRangeDayDetail] = []
+            for setup in setups {
+                let step = rangeStep(code: code, percent: percent, setup: setup, tick: tick)
+                let anchor = gridRound(setup.first, decimals: decimals)
+                let outcome = replayGridDay(code: code, setup: setup, step: step, anchor: anchor,
+                                            money: money, t0: t0, tick: tick, decimals: decimals)
+                samples += 1
+                if outcome.alpha > 0 { winDays += 1 }
+                fillsTotal += outcome.fills
+                totalAlpha += outcome.alpha
+                totalProfit += outcome.profit
+                totalHold += outcome.holdProfit
+                totalFees += outcome.fees
+                worstAlpha = min(worstAlpha, outcome.alpha)
+                worstDrawdown = max(worstDrawdown, outcome.maxDrawdown)
+                details.append(GridRangeDayDetail(day: setup.day, points: setup.prices.count,
+                                                  firstPrice: setup.first, lastPrice: setup.last,
+                                                  dayLow: setup.low, dayHigh: setup.high, step: step,
+                                                  buyCount: outcome.buyCount, sellCount: outcome.sellCount,
+                                                  fills: outcome.fills, profit: outcome.profit,
+                                                  holdProfit: outcome.holdProfit, alpha: outcome.alpha,
+                                                  maxDrawdown: outcome.maxDrawdown, fees: outcome.fees))
+            }
+            guard samples > 0 else { continue }
+            // 「填单要用什么数」按**最近一个交易日**算：区间平均格距对今天的下单没有意义。
+            let latest = setups[setups.count - 1]
+            let lastStep = rangeStep(code: code, percent: percent, setup: latest, tick: tick)
+            candidates.append(GridRangeCandidate(
+                stepPercent: percent,
+                samples: samples,
+                winDays: winDays,
+                totalAlpha: totalAlpha,
+                averageAlpha: totalAlpha / Double(samples),
+                totalProfit: totalProfit,
+                totalHoldProfit: totalHold,
+                totalFees: totalFees,
+                worstAlpha: worstAlpha == .greatestFiniteMagnitude ? 0 : worstAlpha,
+                worstDrawdown: worstDrawdown,
+                averageFills: Double(fillsTotal) / Double(samples),
+                lastStep: lastStep,
+                lastQuantity: latest.quantity,
+                lastStepPercent: latest.first > 0 ? lastStep / latest.first * 100 : percent))
+            detailsByPercent[percent] = details
+        }
+
+        guard let winner = pickBestRangeCandidate(candidates) else { return .failure(.noCandidate) }
+        let resolvedName = data.quotes.first { $0.code == code }?.name
+            ?? data.holdings.first { $0.code == code }?.name
+            ?? code
+        let firstSetup = setups[0]
+        let lastSetup = setups[setups.count - 1]
+        let changePercent = firstSetup.first > 0 ? (lastSetup.last / firstSetup.first - 1) * 100 : 0
+        let report = GridRangeReport(
+            code: code,
+            name: resolvedName,
+            from: lower,
+            to: upper,
+            capital: money,
+            t0: t0,
+            tick: tick,
+            days: setups.map(\.day),
+            skippedDays: skipped,
+            totalPoints: totalPoints,
+            rangeLow: overallLow,
+            rangeHigh: overallHigh,
+            rangeChangePercent: changePercent,
+            averageAmplitudePercent: amplitudeSum / Double(setups.count),
+            best: winner,
+            candidates: candidates.sorted(by: rangeCandidateOrder),
+            details: detailsByPercent[winner.stepPercent] ?? [],
+            note: "每天按当日首价重新铺一次网格（长期网格的真实做法），格距按下单当日价格换算成绝对价。"
+                + "ETF 佣金按每笔 0.10 元估算；个股按 max(5, 金额×0.0086%) + 卖出印花税 0.05%。"
+                + "费用含每次一跳不利滑点。格距有一道硬下界：一格涨跌必须覆盖买卖两笔费用加两次滑点，"
+                + "所以低价品种实际格距可能比所选百分比更宽。"
+        )
+        return .success(report)
+    }
+
+    /// 一组候选的排序：先比「平均跑赢」，再比跑赢天数，最后比最差一天的回撤。
+    ///
+    /// 为什么是平均 alpha 而不是总 alpha：区间里交易日数对每组都一样，
+    /// 但用平均能直接对上「每天大概多赚多少」，比总和更好读；排序结果两者等价。
+    private func rangeCandidateOrder(_ lhs: GridRangeCandidate, _ rhs: GridRangeCandidate) -> Bool {
+        if lhs.averageAlpha != rhs.averageAlpha { return lhs.averageAlpha > rhs.averageAlpha }
+        if lhs.winDays != rhs.winDays { return lhs.winDays > rhs.winDays }
+        if lhs.worstDrawdown != rhs.worstDrawdown { return lhs.worstDrawdown < rhs.worstDrawdown }
+        return lhs.stepPercent < rhs.stepPercent
+    }
+
+    private func pickBestRangeCandidate(_ candidates: [GridRangeCandidate]) -> GridRangeCandidate? {
+        candidates.min(by: { rangeCandidateOrder($0, $1) })
+    }
+
+    /// 把「格距百分比」换算成当天的绝对格距。
+    ///
+    /// 取 `max(百分比换算值, 往返成本 × 1.15)` 再向上取整到一跳 —— 与单日复盘那条下界同源：
+    /// 一格连买卖两笔费用都覆盖不了的话，来回一趟净亏，格距再密也是白忙。
+    private func rangeStep(code: String, percent: Double, setup: GridRangeDaySetup, tick: Double) -> Double {
+        let raw = percent / 100 * setup.first
+        let sampleQuantity = max(100, setup.quantity)
+        let roundTripCost = (Self.legacyShadowFee(code: code, side: "buy", amount: setup.first * sampleQuantity)
+            + Self.legacyShadowFee(code: code, side: "sell", amount: setup.first * sampleQuantity)
+            + 2 * tick * sampleQuantity) / sampleQuantity
+        let floorStep = roundTripCost * 1.15
+        let chosen = max(raw, floorStep)
+        return max(tick, (chosen / tick).rounded(.up) * tick)
+    }
+
+    /// 单日回放。口径与 `optimizeGridReplay` 的单日分支逐条一致，只是抽出来给区间复盘复用。
+    private func replayGridDay(code: String, setup: GridRangeDaySetup, step: Double, anchor anchorSeed: Double,
+                               money: Double, t0: Bool, tick: Double, decimals: Int) -> GridRangeDayOutcome {
+        let prices = setup.prices
+        let quantity = setup.quantity
+        let initialShares = quantity * 2
+        var shares = initialShares
+        // eligible 是 T+0 校验：A股当天买入的份额当天不能卖，`t0=false` 时买入不增加它。
+        var eligible = initialShares
+        var cash = money - initialShares * anchorSeed
+        var cost = anchorSeed
+        var anchor = anchorSeed
+        var buyCount = 0, sellCount = 0, fillCount = 0
+        var fees = 0.0, commissionCost = 0.0, slippageCost = 0.0
+        var peak = money
+        var maxDrawdown = 0.0
+
+        for price in prices {
+            if price <= anchor - step - tick / 2, anchor - step >= setup.low - tick / 2 {
+                let target = gridRound(anchor - step, decimals: decimals)
+                let fee = Self.legacyShadowFee(code: code, side: "buy", amount: target * quantity)
+                let slippage = tick * quantity
+                if cash >= target * quantity + fee + slippage {
+                    cost = (shares * cost + target * quantity + fee + slippage) / (shares + quantity)
+                    shares += quantity
+                    if t0 { eligible += quantity }
+                    cash -= target * quantity + fee + slippage
+                    fees += fee + slippage
+                    commissionCost += fee
+                    slippageCost += slippage
+                    buyCount += 1
+                    fillCount += 1
+                    anchor = target
+                }
+            } else if price >= anchor + step + tick / 2, anchor + step <= setup.high + tick / 2,
+                      eligible >= quantity {
+                let target = gridRound(anchor + step, decimals: decimals)
+                let fee = Self.legacyShadowFee(code: code, side: "sell", amount: target * quantity)
+                let slippage = tick * quantity
+                shares -= quantity
+                eligible -= quantity
+                cash += target * quantity - fee - slippage
+                fees += fee + slippage
+                commissionCost += fee
+                slippageCost += slippage
+                sellCount += 1
+                fillCount += 1
+                anchor = target
+            }
+            let equity = cash + shares * price
+            if equity > peak { peak = equity }
+            if peak > 0 {
+                let drawdown = (peak - equity) / peak * 100
+                if drawdown > maxDrawdown { maxDrawdown = drawdown }
+            }
+        }
+
+        let endingEquity = cash + shares * setup.last
+        let profit = endingEquity - money
+        let holdProfit = initialShares * (setup.last - anchorSeed)
+        return GridRangeDayOutcome(profit: profit, holdProfit: holdProfit, alpha: profit - holdProfit,
+                                   fees: fees, commissionCost: commissionCost, slippageCost: slippageCost,
+                                   buyCount: buyCount, sellCount: sellCount, fills: fillCount,
+                                   maxDrawdown: maxDrawdown, endingEquity: endingEquity)
+    }
+
+    // MARK: - 区间复盘的历史记录
+
+    /// 某标的在本机跑过的区间复盘，最近的在前。
+    func gridRangeHistory(forCode code: String) -> [GridRangeReport] {
+        gridRangeHistoryMap()[code] ?? []
+    }
+
+    /// 记住一次区间复盘。每个标的只留最近 20 次 —— 这是「这段时间的格距习惯」，
+    /// 不是永久账本，越老的对现在的参考价值越低。
+    func recordGridRangeHistory(_ report: GridRangeReport) {
+        var map = gridRangeHistoryMap()
+        var list = map[report.code] ?? []
+        list.removeAll { $0.id == report.id }
+        list.insert(report, at: 0)
+        if list.count > 20 { list.removeLast(list.count - 20) }
+        map[report.code] = list
+        guard let raw = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(raw, forKey: gridRangeHistoryDefaultsKey)
+    }
+
+    private func gridRangeHistoryMap() -> [String: [GridRangeReport]] {
+        guard let raw = UserDefaults.standard.data(forKey: gridRangeHistoryDefaultsKey),
+              let map = try? JSONDecoder().decode([String: [GridRangeReport]].self, from: raw) else { return [:] }
+        return map
+    }
+}
+
+/// 区间复盘里某一天的预处理结果。放在文件作用域而不是函数内，方便被多个私有方法共用。
+private struct GridRangeDaySetup {
+    let day: String
+    let prices: [Double]
+    let first: Double
+    let last: Double
+    let low: Double
+    let high: Double
+    let quantity: Double
+}
+
+/// 单日回放的输出（字段与 `GridOptimizeCandidate` 一一对应，只是不带锚点/格距那些入参）。
+private struct GridRangeDayOutcome {
+    var profit: Double
+    var holdProfit: Double
+    var alpha: Double
+    var fees: Double
+    var commissionCost: Double
+    var slippageCost: Double
+    var buyCount: Int
+    var sellCount: Int
+    var fills: Int
+    var maxDrawdown: Double
+    var endingEquity: Double
 }
 
 enum GridError: LocalizedError {
@@ -656,6 +946,10 @@ enum GridOptimizeError: LocalizedError {
     case notEnoughPoints(Int)
     case capitalTooSmall
     case noCandidate
+    /// 区间复盘：所选区间内这个标的没有任何分时档案
+    case noArchivedDay
+    /// 区间复盘：够用的交易日太少
+    case notEnoughRangeDays(Int)
 
     var errorDescription: String? {
         switch self {
@@ -665,6 +959,10 @@ enum GridOptimizeError: LocalizedError {
             return "计划资金不足以覆盖至少两手初始份额和两手网格买入，请加大资金或换单价更低的标的。"
         case .noCandidate:
             return "没有可计算的网格参数。"
+        case .noArchivedDay:
+            return "所选区间里这个标的还没有分时档案。先在自选或 ETF 持仓里留着它，应用在前台时会自动采集。"
+        case .notEnoughRangeDays(let count):
+            return "所选区间里只有 \(count) 个交易日的分时够用（至少需要 3 个，且每天有效分钟点要满 30 个）。把区间放宽，或换一个档案更全的标的。"
         }
     }
 }
@@ -679,3 +977,6 @@ private func gridRound(_ value: Double, decimals: Int) -> Double {
 
 /// 策略经验的 UserDefaults 键。**口径变了就改版本号**，否则老设备上不会重算。
 private let gridExperienceDefaultsKey = "guanpan.native.gridExperience.v1"
+
+/// 区间复盘历史（按标的分组）的 UserDefaults 键。同样地，口径变了要改版本号。
+private let gridRangeHistoryDefaultsKey = "guanpan.native.gridRangeHistory.v1"

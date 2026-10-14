@@ -18,11 +18,21 @@ struct WebLedgerSyncCard: View {
             Toggle("自动写回（在 App 里买卖后，网页版跟着变）", isOn: $enabled)
                 .scaledFont(13)
                 .onChange(of: enabled) { _, value in store.setWebLedgerWriteBack(value) }
+            if !store.webLedgerWriteBackIsExplicit {
+                Text(store.webLedgerWriteBackEnabled
+                    ? "这一项默认就是开的（只要求填过 NAS 地址）。你手动关掉之后，就以你关的那个状态为准。"
+                    : "还没填 NAS 地址，暂时没法写回；在设置里填上地址后会自动开启。")
+                    .scaledFont(10).foregroundStyle(.tertiary)
+            }
             WebLedgerSyncActions(working: $working, canRestore: store.hasWebLedgerBackup)
             statusRow
             Text("只写回账本：现金、持仓、自选、交易记录、场外基金与净值、资金流水、快照、手填价。"
                 + "NAS 上那份的设置、分红参考、汇率、休市日、网格历史原样保留；"
                 + "读不回现有文档时会直接放弃写回，不会拿空账本去覆盖。")
+                .font(.footnote).foregroundStyle(.secondary)
+            Text("写回后网页版不会自己刷新：在观盘.html 上点一次「下载」，拿到的就是这份 App 账本。"
+                + "改完账本约 6 秒、或 App 退到后台时都会自动补一次；"
+                + "实在不放心就按上面的「立即写回」。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         .padding(14)
