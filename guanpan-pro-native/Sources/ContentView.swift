@@ -308,6 +308,41 @@ enum WatchSortMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// 首页（自选 / 指数）的弹窗入口（v2.13.39 合并）。
+///
+/// 和持仓页同理：原来「添加自选」「添加提醒」「指数详情」各挂一层 `.sheet`，
+/// 首页是常驻页，store 刷新时这些修饰器都要重新求值。合成一层后只剩一个 presenter。
+/// 日 K / 分时是全屏呈现，语义不同，仍单独用 `fullScreenCover`。
+private enum WatchlistSheet: Identifiable {
+    case add
+    case alertEditor
+    case indexDetail(MarketIndexQuote)
+
+    var id: String {
+        switch self {
+        case .add: return "add"
+        case .alertEditor: return "alertEditor"
+        case .indexDetail(let index): return "indexDetail-\(index.id)"
+        }
+    }
+}
+
+private struct WatchlistSheetContent: View {
+    let sheet: WatchlistSheet
+
+    var body: some View {
+        content.themedSheetBackground()
+    }
+
+    @ViewBuilder private var content: some View {
+        switch sheet {
+        case .add: WatchEditor()
+        case .alertEditor: QuoteAlertEditor()
+        case .indexDetail(let index): IndexDetailView(index: index)
+        }
+    }
+}
+
 struct DashboardView: View {
     @EnvironmentObject var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
@@ -323,13 +358,11 @@ struct DashboardView: View {
 
     // 拿不到当日涨跌幅时显示 --，避免把「没数据」画成 0。
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showAdd = false
-    @State private var showAlertEditor = false
+    /// 「添加自选 / 添加提醒 / 指数详情」三个入口合并成一个目标（见 `WatchlistSheet`）。
+    @State private var activeSheet: WatchlistSheet?
     @State private var chartTarget: Holding?
     /// 盘中机会默认收起，首页先保留最重要的一条结论，避免推低自选列表。
     @State private var showIntradayOpportunities = false
-    /// 顶部指数条里被点开的那一格（nil = 没打开详情）。
-    @State private var indexDetailTarget: MarketIndexQuote?
 
     // MARK: - 自选：搜索 / 排序 / 分组
 
@@ -705,8 +738,8 @@ struct DashboardView: View {
             .refreshFeedbackOverlay(refreshFeedback)
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("添加自选", systemImage: "plus") { showAdd = true }
-                    Button("添加价格提醒", systemImage: "bell.badge") { showAlertEditor = true }
+                    Button("添加自选", systemImage: "plus") { activeSheet = .add }
+                    Button("添加价格提醒", systemImage: "bell.badge") { activeSheet = .alertEditor }
                     Divider()
                     Menu {
                         ForEach(WatchSortMode.allCases) { mode in
@@ -742,10 +775,12 @@ struct DashboardView: View {
                 .accessibilityLabel("刷新行情")
                 .accessibilityHint("同时刷新自选、持仓和顶部指数")
             } }
-            .sheet(isPresented: $showAdd) { WatchEditor() .themedSheetBackground() }
-            .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() .themedSheetBackground() }
+            // 三层 sheet → **一层**（见 `WatchlistSheet`）。首页常驻，store 每次刷新
+            // 都要让这些修饰器重新求值，合并后只剩一个 presenter。
+            .sheet(item: $activeSheet) { sheet in
+                WatchlistSheetContent(sheet: sheet)
+            }
             .fullScreenCover(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
-            .sheet(item: $indexDetailTarget) { index in IndexDetailView(index: index).themedSheetBackground() }
             .alert("新建分组", isPresented: groupEditorBinding) {
                 TextField("分组名", text: $groupDraft)
                 Button("确定") {
@@ -818,7 +853,7 @@ struct DashboardView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(store.indexQuotes) { item in
-                            Button { Haptics.tap(); indexDetailTarget = item } label: {
+                            Button { Haptics.tap(); activeSheet = .indexDetail(item) } label: {
                                 marketIndexChip(item)
                             }
                             .buttonStyle(.plain)
@@ -890,8 +925,10 @@ struct DashboardView: View {
                     displayName: displayName(q),
                     signal: store.signal(forCode: q.code),
                     premium: store.marketPremiums[q.code],
+                    iopv: store.marketIOPVs[q.code],
                     dividendYield: watchDividendYield(q),
                     hasDailyBars: store.dailyBars[q.code] != nil,
+                    expectsValuation: store.isTencentETFCode(q.code),
                     tone: watchCardTone(q.code))
             }
             .buttonStyle(.plain)
@@ -953,7 +990,14 @@ private struct WatchQuoteCard: View {
     let displayName: String
     let signal: MarketSignal?
     let premium: Double?
+    /// 当日 IOPV（基金份额参考净值）。只有场内 ETF 有；场外基金 / 个股 / 指数没有。
+    let iopv: Double?
     let dividendYield: Double?
+    /// 该标的是否属于「本该有折溢价 / IOPV」的品种（场内 ETF、LOF）。
+    ///
+    /// 用来把两种「看不到溢价」区分开：**品种本来就没有**（个股、场外基金、指数 —— 静默，
+    /// 不打扰）与**本轮没取到**（ETF 却缺字段 —— 给一行灰字说明，用户才知道不是坏了）。
+    let expectsValuation: Bool
     /// 本机是否已有这只标的的日线缓存（没有时提示「点开一次可载入」）。
     let hasDailyBars: Bool
     /// 卡片外框的着色主题（由自选分组/代码决定）。
@@ -1004,12 +1048,19 @@ private struct WatchQuoteCard: View {
                     Text("点开一次可载入日线，显示技术信号")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
-                if premium != nil || dividendYield != nil {
+                if premium != nil || iopv != nil || dividendYield != nil {
                     HStack(spacing: 8) {
                         if let premium {
                             Text("溢价 \(premium.pct(2))")
                                 .scaledFont(9, weight: .semibold)
                                 .foregroundStyle(abs(premium) >= 1 ? Color.orange : Color.purple)
+                        }
+                        // IOPV 是 ETF 的「真实净值」，场内价和它一比就是折溢价 ——
+                        // 看红利的用户直接看这个数，不用自己拿现价去除。
+                        if let iopv {
+                            Text("IOPV \(iopv.num(3))")
+                                .scaledFont(9, weight: .semibold)
+                                .foregroundStyle(Color.purple)
                         }
                         if let dividendYield {
                             Text("股息率 \(dividendYield.pct(2))")
@@ -1018,6 +1069,12 @@ private struct WatchQuoteCard: View {
                         }
                         Spacer(minLength: 0)
                     }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                } else if expectsValuation {
+                    // 场内基金却一个数都没有：不是「这品种没有」，是这一轮行情源没给。
+                    Text("本轮未取到折溢价 / IOPV，下拉刷新即可")
+                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
                 HStack(spacing: 6) {
                     let groupName = quote.group.isEmpty ? "未分组" : quote.group
@@ -1074,6 +1131,39 @@ private struct WatchQuoteCard: View {
     }
 }
 
+/// 「更多」页的弹窗入口（v2.13.39 合并）。
+///
+/// 原来 AI 账户分析 / 量化信号 / 账户决策提示各挂一层 `.sheet`，全在同一个 List 上。
+private enum MoreHubSheet: Identifiable {
+    case aiAnalysis
+    case quantEngine
+    case portfolioAdvice
+
+    var id: String {
+        switch self {
+        case .aiAnalysis: return "aiAnalysis"
+        case .quantEngine: return "quantEngine"
+        case .portfolioAdvice: return "portfolioAdvice"
+        }
+    }
+}
+
+private struct MoreHubSheetContent: View {
+    let sheet: MoreHubSheet
+
+    var body: some View {
+        content.themedSheetBackground()
+    }
+
+    @ViewBuilder private var content: some View {
+        switch sheet {
+        case .aiAnalysis: AIAnalysisView()
+        case .quantEngine: QuantitativeEngineView()
+        case .portfolioAdvice: PortfolioAdviceView()
+        }
+    }
+}
+
 struct MoreHubView: View {
     @EnvironmentObject private var store: PortfolioStore
     @State private var showAnalysisTools = false
@@ -1082,9 +1172,8 @@ struct MoreHubView: View {
     @State private var showDataSync = false
     // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
     // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
-    @State private var showAIAnalysis = false
-    @State private var showQuantEngine = false
-    @State private var showPortfolioAdvice = false
+    /// 三个弹窗入口合并成一个目标（见 `MoreHubSheet`）。
+    @State private var activeSheet: MoreHubSheet?
 
     var body: some View {
         NavigationStack {
@@ -1093,16 +1182,16 @@ struct MoreHubView: View {
                     VStack(spacing: 10) {
                         MoreHubCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
                                     icon: "sparkles", tint: store.effectiveAccentColor) {
-                            showAIAnalysis = true
+                            activeSheet = .aiAnalysis
                         }
                         HStack(spacing: 10) {
                             MoreHubTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
                                         icon: "waveform.path.ecg", tint: Color(red: 0.16, green: 0.72, blue: 0.85)) {
-                                showQuantEngine = true
+                                activeSheet = .quantEngine
                             }
                             MoreHubTile(title: "账户决策提示", subtitle: "仓位上限\n现金占比",
                                         icon: "lightbulb.fill", tint: Color(red: 1.0, green: 0.62, blue: 0.18)) {
-                                showPortfolioAdvice = true
+                                activeSheet = .portfolioAdvice
                             }
                         }
                     }
@@ -1161,9 +1250,10 @@ struct MoreHubView: View {
             .navigationDestination(isPresented: $showPlanningTools) { ToolsView(title: "计划与复盘") }
             .navigationDestination(isPresented: $showAppSettings) { SettingsView(mode: .app) }
             .navigationDestination(isPresented: $showDataSync) { SettingsView(mode: .sync) }
-            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
-            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
+            // 三层 sheet → **一层**（见 `MoreHubSheet`）。
+            .sheet(item: $activeSheet) { sheet in
+                MoreHubSheetContent(sheet: sheet)
+            }
         }
     }
 }
@@ -1433,29 +1523,103 @@ struct WatchEditor: View {
     }
 }
 
+/// 持仓页所有弹窗的**统一目标**（v2.13.39 合并）。
+///
+/// 合并前这里是 **14 个独立 `@State` + 14 层 `.sheet`** 外加一层 `fullScreenCover`，
+/// 全部挂在同一个 List 上。`PortfolioStore` 盘中每 10~15 秒发布一次，这些修饰器就要跟着
+/// 全部重新求值、presenter 链重做 diff —— 用户感受就是「弹窗卡」；同时视图类型也被
+/// 十几层 `ModifiedContent` 推高。合并成一层 `.sheet(item:)` 后，入口再多也只有一个 presenter。
+private enum HoldingSheet: Identifiable {
+    case add(Holding.Kind)
+    case edit(Holding)
+    case trade(Holding)
+    case fundHistory(Holding)
+    case fundReconciliation(Holding)
+    case fundDCA(Holding)
+    case fundFeePolicy(Holding)
+    case fundFeeReconciliation(FundTransaction)
+    case alert(Holding)
+    case fundCalendar
+    case fundQuant
+    case portfolioAdvice
+    case archivedFund(ArchivedFundItem)
+
+    var id: String {
+        switch self {
+        case .add(let kind): return "add-\(kind.rawValue)"
+        case .edit(let holding): return "edit-\(holding.id)"
+        case .trade(let holding): return "trade-\(holding.id)"
+        case .fundHistory(let holding): return "fundHistory-\(holding.id)"
+        case .fundReconciliation(let holding): return "fundReconciliation-\(holding.id)"
+        case .fundDCA(let holding): return "fundDCA-\(holding.id)"
+        case .fundFeePolicy(let holding): return "fundFeePolicy-\(holding.id)"
+        case .fundFeeReconciliation(let transaction): return "fundFeeReconciliation-\(transaction.id)"
+        case .alert(let holding): return "alert-\(holding.id)"
+        case .fundCalendar: return "fundCalendar"
+        case .fundQuant: return "fundQuant"
+        case .portfolioAdvice: return "portfolioAdvice"
+        case .archivedFund(let item): return "archivedFund-\(item.id)"
+        }
+    }
+}
+
+/// `HoldingSheet` 对应的弹窗内容。
+///
+/// **必须单独成类型**：这 13 个分支的 `_ConditionalContent` 嵌套交给它自己承担，
+/// 一旦写成 `HoldingsView` 里的 `@ViewBuilder` 计算属性就会被内联回父视图类型，
+/// 等于把刚拆掉的层数又加回去。
+private struct HoldingSheetContent: View {
+    let sheet: HoldingSheet
+
+    var body: some View {
+        content.themedSheetBackground()
+    }
+
+    @ViewBuilder private var content: some View {
+        switch sheet {
+        case .add(let kind):
+            HoldingEditor(kind: kind)
+        case .edit(let holding):
+            // 用持仓自己的 `kind`（列表已按 kind 过滤，两者一致），不再读页面的 kind。
+            HoldingEditor(kind: holding.kind, initial: holding)
+        case .trade(let holding):
+            TradeEditor(holding: holding)
+        case .fundHistory(let holding):
+            FundNAVHistoryView(fund: holding)
+        case .fundReconciliation(let holding):
+            FundReconciliationView(fund: holding)
+        case .fundDCA(let holding):
+            FundDCAPlanEditor(holding: holding)
+        case .fundFeePolicy(let holding):
+            FundFeePolicyEditor(fund: holding)
+        case .fundFeeReconciliation(let transaction):
+            FundFeeReconciliationEditor(transaction: transaction)
+        case .alert(let holding):
+            QuoteAlertEditor(initialCode: holding.code)
+        case .fundCalendar:
+            FundIncomeCalendarView()
+        case .fundQuant:
+            FundQuantView()
+        case .portfolioAdvice:
+            PortfolioAdviceView()
+        case .archivedFund(let item):
+            ArchivedFundHistoryView(item: item)
+        }
+    }
+}
+
 struct HoldingsView: View {
     @EnvironmentObject var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     /// 自动更新基金净值时不驱动导航栏按钮；只有用户主动刷新才显示转圈。
     @State private var isManuallyRefreshing = false
     let kind: Holding.Kind
-    @State private var showAdd = false
-    @State private var editTarget: Holding?
-    @State private var tradeTarget: Holding?
-    @State private var fundHistoryTarget: Holding?
-    @State private var fundReconciliationTarget: Holding?
-    @State private var backfillTarget: Holding?
-    @State private var dcaTarget: Holding?
-    @State private var feePolicyTarget: Holding?
-    @State private var feeReconciliationTarget: FundTransaction?
+    /// 13 个弹窗入口合并成一个目标（见 `HoldingSheet`）。原来这里是 13 个 `@State`。
+    @State private var activeSheet: HoldingSheet?
+    /// 日 K / 分时是全屏呈现，语义与 sheet 不同，单独保留一层。
     @State private var marketChartTarget: Holding?
-    @State private var showFundCalendar = false
-    @State private var showFundQuant = false
-    @State private var archivedFundTarget: ArchivedFundItem?
     @State private var deleteArchivedFundCode: String?
     @State private var undoTradeMessage: String?
-    @State private var showPortfolioAdvice = false
-    @State private var alertTarget: Holding?
     /// 「基金工具」原来直接用 Menu 嵌在行内 —— List 行内嵌 Menu 会抢走横向平移手势，
     /// 导致整行左滑失效（swipeActions 弹不出来）。改成按钮 + confirmationDialog。
     @State private var fundToolTarget: Holding?
@@ -1702,25 +1866,17 @@ struct HoldingsView: View {
 
     var body: some View {
         listContent
-            .sheet(isPresented: $showAdd) { HoldingEditor(kind: kind) .themedSheetBackground() }
-            .sheet(item: $editTarget) { HoldingEditor(kind: kind, initial: $0) .themedSheetBackground() }
-            .sheet(item: $tradeTarget) { TradeEditor(holding: $0) .themedSheetBackground() }
-            .sheet(item: $fundHistoryTarget) { FundNAVHistoryView(fund: $0) .themedSheetBackground() }
-            .sheet(item: $fundReconciliationTarget) { FundReconciliationView(fund: $0) .themedSheetBackground() }
-            .sheet(item: $backfillTarget) { FundBackfillView(fund: $0) .themedSheetBackground() }
-            .sheet(item: $dcaTarget) { FundDCAPlanEditor(holding: $0) .themedSheetBackground() }
-            .sheet(item: $feePolicyTarget) { FundFeePolicyEditor(fund: $0) .themedSheetBackground() }
-            .sheet(item: $feeReconciliationTarget) { FundFeeReconciliationEditor(transaction: $0) .themedSheetBackground() }
+            // 14 层 sheet → **一层**（见 `HoldingSheet`）。原来每个入口各挂一层 sheet，
+            // store 每 10~15 秒发布一次就全部重新求值 —— 「弹窗卡」的主要来源之一。
+            .sheet(item: $activeSheet) { sheet in
+                HoldingSheetContent(sheet: sheet)
+            }
+            // 日 K / 分时是全屏呈现，语义不同，单独留一层。
             .fullScreenCover(item: $marketChartTarget) { MarketChartView(holding: $0) .themedSheetBackground() }
-            .sheet(item: $alertTarget) { QuoteAlertEditor(initialCode: $0.code) .themedSheetBackground() }
-            .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showFundQuant) { FundQuantView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
-            .sheet(item: $archivedFundTarget) { ArchivedFundHistoryView(item: $0) .themedSheetBackground() }
             .confirmationDialog(fundToolTarget?.name ?? "基金工具", isPresented: Binding(get: { fundToolTarget != nil }, set: { if !$0 { fundToolTarget = nil } }), titleVisibility: .visible) {
-                Button("净值走势") { if let t = fundToolTarget { fundHistoryTarget = t }; fundToolTarget = nil }
-                Button("赎回费率") { if let t = fundToolTarget { feePolicyTarget = t }; fundToolTarget = nil }
-                Button("流水核对") { if let t = fundToolTarget { fundReconciliationTarget = t }; fundToolTarget = nil }
+                Button("净值走势") { if let t = fundToolTarget { activeSheet = .fundHistory(t) }; fundToolTarget = nil }
+                Button("赎回费率") { if let t = fundToolTarget { activeSheet = .fundFeePolicy(t) }; fundToolTarget = nil }
+                Button("流水核对") { if let t = fundToolTarget { activeSheet = .fundReconciliation(t) }; fundToolTarget = nil }
                 Button("取消", role: .cancel) { fundToolTarget = nil }
             } message: { Text("这只基金的历史净值、费率与流水核对工具。") }
             .alert("交易流水", isPresented: Binding(get: { undoTradeMessage != nil }, set: { if !$0 { undoTradeMessage = nil } })) {
@@ -1794,7 +1950,7 @@ struct HoldingsView: View {
                             .disabled(isManuallyRefreshing)
                             .accessibilityLabel(isManuallyRefreshing ? "正在更新基金净值" : "更新基金净值")
                     }
-                    Button { showAdd = true } label: { Image(systemName: "plus") }
+                    Button { activeSheet = .add(kind) } label: { Image(systemName: "plus") }
                         .accessibilityLabel(kind == .fund ? "添加基金持仓" : "添加 ETF / 证券持仓")
                 }
             }
@@ -2003,7 +2159,7 @@ struct HoldingsView: View {
         if kind == .etf {
             Section("账户提示") {
                 Button {
-                    showPortfolioAdvice = true
+                    activeSheet = .portfolioAdvice
                 } label: {
                     Label("查看账户决策提示", systemImage: "lightbulb")
                 }
@@ -2124,8 +2280,8 @@ struct HoldingsView: View {
             }
             // 小屏/大字号下将操作按钮自动换行，避免“基金工具 / 定投 / 编辑”等入口被挤出屏幕。
             HStack(spacing: 10) {
-                holdingActionButton("买入 / 卖出", icon: "arrow.left.arrow.right") { tradeTarget = h }
-                if kind == .fund { holdingActionButton("净值", icon: "chart.line.uptrend.xyaxis") { fundHistoryTarget = h } }
+                holdingActionButton("买入 / 卖出", icon: "arrow.left.arrow.right") { activeSheet = .trade(h) }
+                if kind == .fund { holdingActionButton("净值", icon: "chart.line.uptrend.xyaxis") { activeSheet = .fundHistory(h) } }
                 else { holdingActionButton("日 K", icon: "chart.xyaxis.line") { marketChartTarget = h } }
             }
         }
@@ -2167,14 +2323,14 @@ struct HoldingsView: View {
         // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("删除", role: .destructive) { removeTarget = h }
-            Button("编辑") { Haptics.tap(); editTarget = h }.tint(.blue)
-            Button("交易") { Haptics.tap(); tradeTarget = h }.tint(.orange)
+            Button("编辑") { Haptics.tap(); activeSheet = .edit(h) }.tint(.blue)
+            Button("交易") { Haptics.tap(); activeSheet = .trade(h) }.tint(.orange)
             if kind == .fund {
                 Button("工具") { fundToolTarget = h }.tint(.indigo)
-                Button("定投") { dcaTarget = h }.tint(.teal)
+                Button("定投") { activeSheet = .fundDCA(h) }.tint(.teal)
             } else {
                 Button("日K") { marketChartTarget = h }.tint(.indigo)
-                Button("提醒") { alertTarget = h }.tint(.teal)
+                Button("提醒") { activeSheet = .alert(h) }.tint(.teal)
             }
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -2187,12 +2343,12 @@ struct HoldingsView: View {
         }
         // 长按兜底：万一设备上 swipeActions 仍被系统手势挡住，也能走到删除 / 编辑。
         .contextMenu {
-            Button { editTarget = h } label: { Label("编辑持仓", systemImage: "pencil") }
-            Button { tradeTarget = h } label: { Label("买入 / 卖出", systemImage: "arrow.left.arrow.right") }
+            Button { activeSheet = .edit(h) } label: { Label("编辑持仓", systemImage: "pencil") }
+            Button { activeSheet = .trade(h) } label: { Label("买入 / 卖出", systemImage: "arrow.left.arrow.right") }
             if kind == .fund {
-                Button { fundHistoryTarget = h } label: { Label("历史净值", systemImage: "chart.line.uptrend.xyaxis") }
+                Button { activeSheet = .fundHistory(h) } label: { Label("历史净值", systemImage: "chart.line.uptrend.xyaxis") }
                 Button { fundToolTarget = h } label: { Label("基金工具", systemImage: "wrench.and.screwdriver") }
-                Button { dcaTarget = h } label: { Label("定投", systemImage: "calendar.badge.plus") }
+                Button { activeSheet = .fundDCA(h) } label: { Label("定投", systemImage: "calendar.badge.plus") }
             } else { Button { marketChartTarget = h } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") } }
             Button(role: .destructive) {
                 Haptics.heavy()
@@ -2247,8 +2403,8 @@ struct HoldingsView: View {
 
     @ViewBuilder private var fundToolsSection: some View {
         Section("定投与分析") {
-            Button("基金量化体检") { showFundQuant = true }
-            Button("基金日收益日历") { showFundCalendar = true }
+            Button("基金量化体检") { activeSheet = .fundQuant }
+            Button("基金日收益日历") { activeSheet = .fundCalendar }
             Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
             Text(store.fundDCAStatus).font(.footnote).foregroundStyle(.secondary)
             Text("净值可用页面右上角的刷新按钮更新，也可直接下拉刷新；本页只展示已公布净值。")
@@ -2290,13 +2446,13 @@ struct HoldingsView: View {
                         }
                         Spacer()
                         if trade.side == .sell && trade.feeWasEstimated == true {
-                            Button("核对费用") { feeReconciliationTarget = trade }
+                            Button("核对费用") { activeSheet = .fundFeeReconciliation(trade) }
                                 .font(.caption)
                         }
                         Text((trade.amount).cny())
                     }.contextMenu {
                         if trade.side == .sell && trade.feeWasEstimated == true {
-                            Button("核对实际赎回费", systemImage: "checkmark.seal") { feeReconciliationTarget = trade }
+                            Button("核对实际赎回费", systemImage: "checkmark.seal") { activeSheet = .fundFeeReconciliation(trade) }
                         }
                         if store.isLatestLedgerFundTransaction(trade) {
                             Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
@@ -2381,7 +2537,7 @@ struct HoldingsView: View {
                     Spacer(); Text((realized).cny())
                 }
                 .contentShape(Rectangle())
-                .onTapGesture { archivedFundTarget = ArchivedFundItem(code: code, name: name) }
+                .onTapGesture { activeSheet = .archivedFund(ArchivedFundItem(code: code, name: name)) }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button("删除历史", role: .destructive) { deleteArchivedFundCode = code }
                 }

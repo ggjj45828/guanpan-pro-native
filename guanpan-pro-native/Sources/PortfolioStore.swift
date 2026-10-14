@@ -3432,9 +3432,21 @@ final class PortfolioStore: ObservableObject {
     }
 
     /// 腾讯部分行情源会省略证券类型字段；与网页版按代码前缀识别 ETF 的方式保持一致。
+    ///
+    /// **前缀只是粗筛**（2026-10-14 实测 8 类样本）：沪市 REITs `508xxx`、深市 REITs `180xxx`
+    /// 落在 `50` / `18` 段里，但它们**没有当日 IOPV**（净值按季报更新），
+    /// 而且字段 77 的含义也不是折溢价 —— 508000（华安张江产业园REIT）现价 1.894、
+    /// 昨 IOPV 2.5576，字段 77 = −25.95，正好等于「现价 ÷ 昨 IOPV − 1」。
+    /// 不排除它会有两个后果：①自选 / 持仓卡片顶上一个大得离谱的假「溢价」；
+    /// ②每轮刷新都白白为它去 NAS 代理和新浪基金接口补 IOPV（永远补不到）。
+    ///
+    /// 个股 / 指数 / 可转债（600519、000001、113050 实测）77 / 78 / 81 **三段全空**，
+    /// 前缀也不在白名单里，本来就不会被当成 ETF。
     func isTencentETFCode(_ raw: String) -> Bool {
         let code = raw.filter(\.isNumber)
         guard code.count == 6 else { return false }
+        // 公募 REITs：既不是 ETF，也没有 IOPV 可言，任何地方都按「无折溢价品种」处理。
+        if code.hasPrefix("508") || code.hasPrefix("180") { return false }
         return ["15", "16", "18", "50", "51", "52", "56", "58", "59"].contains { code.hasPrefix($0) }
     }
 
