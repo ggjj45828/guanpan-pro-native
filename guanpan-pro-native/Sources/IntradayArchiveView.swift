@@ -195,7 +195,7 @@ struct IntradayArchiveView: View {
         let target = archiveNormalizedCode(code)
         var result: [IntradayChartTradeMarker] = []
         for trade in ledger where archiveNormalizedCode(trade.code) == target
-            && shanghaiDay(trade.date) == day {
+            && MarketCalendar.isoDay(trade.date) == day {
             guard let nearest = bars.min(by: {
                 abs($0.timestamp.timeIntervalSince(trade.date)) < abs($1.timestamp.timeIntervalSince(trade.date))
             }) else { continue }
@@ -414,8 +414,8 @@ struct IntradayArchiveView: View {
                             Text(coverageText(code: instrument.code, day: latestDay, count: count))
                                 .font(.caption).foregroundStyle(.secondary)
                             if store.isTencentETFCode(instrument.code) {
-                                Text(coverage.latestIOPVCount > 0 ? "IOPV \(coverage.latestIOPVCount) 点" : "IOPV 未采集")
-                                    .font(.caption2).foregroundStyle(coverage.latestIOPVCount > 0 ? Color.purple : Color.secondary)
+                                Text(entry.iopvCount > 0 ? "IOPV \(entry.iopvCount) 点" : "IOPV 未采集")
+                                    .font(.caption2).foregroundStyle(entry.iopvCount > 0 ? Color.purple : Color.secondary)
                             }
                         }
                     }

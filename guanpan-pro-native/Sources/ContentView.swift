@@ -1673,7 +1673,7 @@ func holdingDividendYieldNote(for holding: Holding, events: [ETFDividendEvent]) 
 ///
 /// 只要求「最新两期净值都有效、且最新一期不晚于今天」：美股 / QDII 净值日晚一个交易日
 /// 才公布，若按「净值日 == 今天」筛，这类基金在卡片上的当日涨幅 / 收益就恒为两条横线。
-func holdingFundPeriodMetric(for holding: Holding,
+private func holdingFundPeriodMetric(for holding: Holding,
                              using pairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)])
     -> FundPeriodMetric? {
     guard let pair = pairs[holding.code], let previous = pair.previous,
@@ -1692,7 +1692,7 @@ func holdingFundPeriodMetric(for holding: Holding,
 /// 判定与「今日已更新 X/Y 只持仓基金」那条提示**同源**（都走 `isFreshFundNAV`），
 /// **只比日期、不比时刻** —— 曾写 `now >= fetchedAt`，而 `now` 是页面日期时钟、
 /// `fetchedAt` 是刷新完成那一刻，用户在页面里点刷新拿到的净值必然晚于它，于是永远不亮。
-func holdingIsFreshNAV(_ holding: Holding, latest: FundNAVPoint?, now: Date) -> Bool {
+@MainActor private func holdingIsFreshNAV(_ holding: Holding, latest: FundNAVPoint?, now: Date) -> Bool {
     guard holding.kind == .fund, let point = latest else { return false }
     return PortfolioStore.isFreshFundNAV(point, today: MarketCalendar.isoDay(now))
 }

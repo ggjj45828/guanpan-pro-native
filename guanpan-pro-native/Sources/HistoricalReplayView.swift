@@ -246,11 +246,11 @@ struct HistoricalReplayView: View {
         // 是否联动“参考现金”只影响现金余额，不影响这笔分红是否真实发生。
         let cashDividends = fundToDate.filter { $0.side == .dividend && $0.dividendMode == .cash }.reduce(0) { $0 + $1.amount }
         let fees = ledgerToDate.reduce(0) { $0 + $1.fee } + fundToDate.reduce(0) { $0 + $1.fee }
-        // 所选日之后的场内流水只扫一遍，买卖两侧共用。
-        let laterLedger = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target }
-        let laterBuys = laterLedger.filter { $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
+        // 所选日之后的场内流水只扫一遍，买卖两侧共用（复用上面已算好的 `laterLedger`）。
+        let laterTrades = laterLedger.map { $0.element }
+        let laterBuys = laterTrades.filter { $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
             + laterFundTrades.filter { $0.side == .buy && !$0.isBackfill }.reduce(0) { $0 + $1.amount + (($1.isAutomaticDCA ?? false) ? 0 : $1.fee) }
-        let laterSells = laterLedger.filter { $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
+        let laterSells = laterTrades.filter { $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
             + laterFundTrades.filter { $0.side == .sell && $0.status == .confirmed }.reduce(0) { $0 + max(0, $1.amount - $1.fee) }
         // 先在闭包外算出补录基金代码集合，避免嵌套 contains 闭包让类型检查超时。
         let backfillFundCodes = Set(store.data.fundTransactions.filter { $0.isBackfill }.map { $0.code })
