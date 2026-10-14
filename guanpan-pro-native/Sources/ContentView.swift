@@ -743,28 +743,16 @@ struct DashboardView: View {
     private var accountSummaryCard: some View {
         let grossTone = store.hasDayPnLGross ? PnLColor.of(store.dayPnLGross) : Color.secondary
         return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("总资产").scaledFont(11).foregroundStyle(.secondary)
-                    Text((store.totalAsset).cny())
-                        .scaledFont(28, weight: .bold, design: .rounded)
-                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                }
-                Spacer(minLength: 6)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(dayPnLLabel).scaledFont(11).foregroundStyle(.secondary)
-                    Text(store.hasDayPnLGross ? store.dayPnLGross.cny() : "--")
-                        .scaledFont(20, weight: .bold, design: .rounded)
-                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                        .foregroundStyle(grossTone)
-                    Text(store.hasDayPnLGross
-                         ? "\(store.dayPnLGross.directionMark()) \(store.dayPnLGrossRate.map { $0.pct(2) } ?? "--")"
-                         : "--")
-                        .scaledFont(11, weight: .semibold)
-                        .monospacedDigit().lineLimit(1)
-                        .foregroundStyle(grossTone)
-                }
-            }
+            // 与资产页的账户卡共用同一个头部组件（见 `AccountHeadlineRow`）：
+            // 字号、标签位置、取色规则一处维护，两页不会再各走各的。
+            AccountHeadlineRow(
+                totalText: (store.totalAsset).cny(),
+                dayLabel: dayPnLLabel,
+                dayText: store.hasDayPnLGross ? store.dayPnLGross.cny() : "--",
+                dayRateText: store.hasDayPnLGross
+                    ? "\(store.dayPnLGross.directionMark()) \(store.dayPnLGrossRate.map { $0.pct(2) } ?? "--")"
+                    : "--",
+                dayTone: grossTone)
             Divider().opacity(0.4)
             MetricGrid(columns: 3, cells: [
                 MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
@@ -782,7 +770,10 @@ struct DashboardView: View {
             Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 净值日期为今天的场外基金变化（\(fundNAVDateNote)）。晚一天公布的美股基金净值归到它对应的净值日，不挪到公布日；补到的历史净值用于回算历史快照。")
                 .scaledFont(10).foregroundStyle(.secondary)
         }
-        .cardSurface(tone: CardTone.pnl(store.totalPnL))
+        // 取色规则与资产页的账户卡保持一致：当日盈亏优先、没有当日数才回落总浮盈。
+        .cardSurface(tone: store.hasDayPnLGross
+                     ? CardTone.pnl(store.dayPnLGross)
+                     : CardTone.pnl(store.totalPnL))
     }
 
     /// 当日盈亏的标签。核心是**别让人以为是当天**：
@@ -1242,6 +1233,57 @@ struct QuoteAlertEditor: View {
     }
 }
 
+/// 场外基金「某一期已公布净值」带来的收益。
+///
+/// 必须把 `date` / `isToday` 一起交出去：这只有场内 ETF 不需要 ——
+/// 它有盘中行情，「当日」永远是确定的同一天。场外基金一天只公布一次净值，
+/// 而且美股 / QDII 方向**晚一个交易日**才公布，所以「最新一期」常常不是今天。
+/// 界面拿到 `isToday == false` 时必须把净值日写出来，
+/// 否则又会被读成「今天的场外收益」（这是用户反复纠正过的口径）。
+private struct FundPeriodMetric {
+    let date: String
+    let isToday: Bool
+    let amount: Double
+    let percent: Double
+}
+
+/// 首页与资产页共用的「总资产 + 当日盈亏」头部。
+///
+/// 用户反馈「总资产卡片样式要统一」：原来两处各写一套，
+/// 字号（20pt vs 15pt）、标签位置（标签在上 vs 标签在下）、
+/// 取色依据（总浮盈 vs 当日盈亏优先）三处都不一样，来回切像是两个 App。
+/// 现在只留这一份，两页都调它。
+struct AccountHeadlineRow: View {
+    let totalText: String
+    let dayLabel: String
+    let dayText: String
+    let dayRateText: String
+    let dayTone: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("总资产").scaledFont(11).foregroundStyle(.secondary)
+                Text(totalText)
+                    .scaledFont(28, weight: .bold, design: .rounded)
+                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(dayLabel).scaledFont(11).foregroundStyle(.secondary)
+                Text(dayText)
+                    .scaledFont(20, weight: .bold, design: .rounded)
+                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                    .foregroundStyle(dayTone)
+                Text(dayRateText)
+                    .scaledFont(11, weight: .semibold)
+                    .monospacedDigit().lineLimit(1)
+                    .foregroundStyle(dayTone)
+            }
+        }
+    }
+}
+
 private struct AlertInstrument: Identifiable {
     var code: String
     var name: String
@@ -1354,6 +1396,23 @@ struct HoldingsView: View {
     @AppStorage("guanpan.native.fundRecentTrades.expanded") private var fundRecentTradesExpanded = false
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == kind } }
     private var title: String { kind == .fund ? "场外基金" : "ETF / 证券持仓" }
+
+    /// 场内 / 场外的类别色。场外沿用「基金资产概览」卡的强调紫，场内沿用状态蓝绿。
+    /// 用户反馈「场外基金卡片与持仓卡片长一样」——两页的持仓行本来就是同一个渲染函数，
+    /// 只靠标题区分不够，得让**每一行自己**说得清自己是哪一类。
+    private var kindAccent: Color { kind == .fund ? CardTone.accent : CardTone.ok }
+
+    /// 行首的类别徽标。常显，不随彩虹高亮变化 ——
+    /// 刚更新净值时彩虹描边会盖住左侧色条，兜底的识别手段必须留在文字里。
+    @ViewBuilder private var holdingKindBadge: some View {
+        Text(kind == .fund ? "场外" : "场内")
+            .scaledFont(9, weight: .bold)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .foregroundStyle(kindAccent)
+            .background(Capsule().fill(kindAccent.opacity(0.15)))
+            .overlay(Capsule().strokeBorder(kindAccent.opacity(0.30), lineWidth: 0.6))
+            .accessibilityLabel(kind == .fund ? "场外基金" : "场内 ETF 或证券")
+    }
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1521,15 +1580,56 @@ struct HoldingsView: View {
         return result
     }
 
-    /// 场外基金当日收益（元 / %）。用页面级预计算的 fundNAVPairs，不再逐行扫全表。
+    /// 场外基金**最近一期已公布净值**带来的收益（元 / %）。
+    /// 用页面级预计算的 fundNAVPairs，不再逐行扫全表。
+    ///
+    /// **为什么不再要求「净值日 == 今天」**：美股 / QDII 的净值日晚一个交易日才公布，
+    /// A 股交易日白天它的最新净值日永远是昨天（甚至前天）。按老口径筛，
+    /// 这类基金在卡片上的「当日涨幅 / 当日收益」就恒为两条横线
+    /// —— 用户原话「场外基金的美股当日涨幅/当日收益一直是横线」。
+    ///
+    /// 现在只要求「最新两期净值都有效、且最新一期不晚于今天」，
+    /// 并把 `date` / `isToday` 交给界面：不是今天时标题里必须带上净值日，
+    /// 让「上一期的变化」自己说明是哪一天，而不是冒充今天。
     private func fundDayMetrics(for holding: Holding,
                                 using pairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)])
-        -> (amount: Double, percent: Double)? {
+        -> FundPeriodMetric? {
         guard let pair = pairs[holding.code], let previous = pair.previous,
-              pair.latest.date == MarketCalendar.isoDay(.now),
-              previous.nav > 0, pair.latest.nav.isFinite, previous.nav.isFinite else { return nil }
-        return ((pair.latest.nav - previous.nav) * holding.quantity,
-                (pair.latest.nav / previous.nav - 1) * 100)
+              previous.nav > 0, pair.latest.nav.isFinite, previous.nav.isFinite,
+              pair.latest.date <= MarketCalendar.isoDay(.now) else { return nil }
+        let today = MarketCalendar.isoDay(.now)
+        return FundPeriodMetric(
+            date: pair.latest.date,
+            isToday: pair.latest.date == today,
+            amount: (pair.latest.nav - previous.nav) * holding.quantity,
+            percent: (pair.latest.nav / previous.nav - 1) * 100)
+    }
+
+    /// 本页场外基金「最近一期已公布净值」的合计盈亏，额度与口径日期一起返回。
+    ///
+    /// 汇总卡原来直接读 `store.fundDayPnL`，那个口径只认「净值日 == 今天」，
+    /// 于是美股 / QDII 那部分永远是 0，概览卡上就是「--」。
+    /// 这里改成页面级同源口径（与每行的 `fundDayMetrics` 完全一致），
+    /// 保证「概览合计 == 各行相加」，不会出现卡片有数字、行里是横线的错位。
+    private var fundPeriodSummary: FundPeriodMetric? {
+        let pairs = fundNAVPairs
+        var amount = 0.0
+        var newest: String?
+        var allToday = true
+        var found = false
+        for holding in holdings where holding.kind == .fund && holding.quantity > 0 {
+            guard let metric = fundDayMetrics(for: holding, using: pairs) else { continue }
+            found = true
+            amount += metric.amount
+            if !metric.isToday { allToday = false }
+            newest = max(newest ?? metric.date, metric.date)
+        }
+        guard found, let date = newest else { return nil }
+        // 分母用「前一期净值市值」：与 `store.fundDayNAVRate` 的口径一致，
+        // 用当期市值会把本期涨跌算进分母，涨的时候反而显得少。
+        let base = store.marketValue(of: .fund) - amount
+        return FundPeriodMetric(date: date, isToday: allToday, amount: amount,
+                                percent: base > 0 ? amount / base * 100 : 0)
     }
 
     @ViewBuilder private func holdingMetricChip(_ text: String, color: Color) -> some View {
@@ -1689,15 +1789,23 @@ struct HoldingsView: View {
             // 场内与场外的「当日盈亏」不是一个口径，不能共用 `dayPnL(of:)`：
             // 行情接口只认场内代码，`marketChanges` 里根本没有基金代码，
             // 所以之前场外这一格无论涨跌永远显示 0。场外改按最新净值日两点的净值差算。
-            let dayValue = kind == .fund ? store.fundDayPnL : store.intradayPnL
-            let hasDayValue = kind == .fund ? store.hasFundDayPnL : store.hasIntradayPnL
+            // 场外这一格改用页面级「最近一期已公布净值」口径（见 `fundPeriodSummary`）：
+            // 原来直接读 `store.fundDayPnL`，它只认「净值日 == 今天」，
+            // 美股 / QDII 那部分恒为 0，概览卡上就是「--」。
+            // 这样还能保证「概览合计 == 各行相加」，不会出现卡片有数、行里是横线。
+            let fundPeriod = kind == .fund ? fundPeriodSummary : nil
+            let dayValue = kind == .fund ? (fundPeriod?.amount ?? 0) : store.intradayPnL
+            let hasDayValue = kind == .fund ? (fundPeriod != nil) : store.hasIntradayPnL
             let dayTitle = kind == .fund ? "净值日盈亏" : "今日盈亏"
-            // 只有净值日期为今天才计入今天收益；迟到净值回到它自己的估值日，
-            // 不因今天才采集而挪入今天，也不重复计入今天。
+            // 场外口径的日期说明：当期净值就是今天的写「净值 MM-dd」；
+            // 还没走到今天就写「最近一期净值 MM-dd（今日净值未公布）」——
+            // 不能让上一期的变化看起来像今天的数字。
             let dayDateNote = kind == .fund
-                ? (store.hasFundDayPnL
-                    ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
-                    : (store.latestFundNAVDate.map { "净值 \(shortDay($0)) · 今日未取到" } ?? "无净值"))
+                ? (fundPeriod.map { metric in
+                    metric.isToday
+                        ? "净值 \(shortDay(metric.date))"
+                        : "最近一期净值 \(shortDay(metric.date))（今日净值未公布）"
+                } ?? "无净值")
                 : "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
             // 基金页的资产概览固定用紫色模块色，与下方基金持仓卡片拉开视觉层级；
             // ETF/证券页仍按浮盈亏红绿提示。数字本身继续按真实盈亏着色。
@@ -1864,6 +1972,10 @@ struct HoldingsView: View {
         let dayValue = fundDay?.amount ?? store.dayPnL(of: h)
         let hasDay = kind == .fund ? fundDay != nil : store.marketChanges[h.code] != nil
         let dayPercent: Double? = kind == .fund ? fundDay?.percent : store.marketChanges[h.code].map { $0 * 100 }
+        // 场外这一期还没走到今天（美股 / QDII 晚一天公布）时，把净值日写进格标题，
+        // 让「上一期的变化」自己说明是哪一天，而不是冒充今天的收益。
+        // 场内永远是「当日」：行情时间戳由 `store.isIntradayQuoteToday` 走当日/收盘分档。
+        let fundPeriodCaption = fundDay.map { $0.isToday ? "当日" : shortDay($0.date) }
         // 摊薄口径的已实现盈亏用页面级预计算值（原来每次调用都全量过滤流水）。
         let realizedSum = (dilutedRealized["\(h.code)|nil"] ?? 0) + (dilutedRealized["\(h.code)|\(h.kind.rawValue)"] ?? 0)
         let unitCost = store.displayedCost(for: h, dilutedRealizedSum: realizedSum)
@@ -1876,10 +1988,15 @@ struct HoldingsView: View {
         let premium = kind == .etf ? store.marketPremiums[h.code] : nil
         let highlightFreshNAV = shouldHighlightFreshFundNAV(h, now: fundFreshnessClock)
         VStack(alignment: .leading, spacing: 7) {
-            HStack { Text(h.name).font(.headline).lineLimit(1); Spacer(); Text((h.marketValue).cny()).font(.headline) }
+            HStack(spacing: 6) {
+                holdingKindBadge
+                Text(h.name).font(.headline).lineLimit(1)
+                Spacer(minLength: 6)
+                Text((h.marketValue).cny()).font(.headline)
+            }
             HStack(spacing: 9) {
-                holdingStat("当日涨幅", dayPercent.map { "\($0.directionMark()) \($0.pct(2))" } ?? "--", dayPercent)
-                holdingStat("当日收益", hasDay ? "\(dayValue.directionMark()) \(dayValue.cny())" : "--", hasDay ? dayValue : nil)
+                holdingStat("\(fundPeriodCaption ?? "当日")涨幅", dayPercent.map { "\($0.directionMark()) \($0.pct(2))" } ?? "--", dayPercent)
+                holdingStat("\(fundPeriodCaption ?? "当日")收益", hasDay ? "\(dayValue.directionMark()) \(dayValue.cny())" : "--", hasDay ? dayValue : nil)
                 holdingStat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
                 Spacer(minLength: 0)
             }
@@ -1908,11 +2025,16 @@ struct HoldingsView: View {
             if kind == .fund, let pair = navPairs[h.code] {
                 let latest = pair.latest
                 if let previous = pair.previous {
-                    let change = (latest.nav - previous.nav) * h.quantity
-                    Text("\(latest.date) 近一期净值变化 · 按当前份额折算 \((change).cny())")
-                        .font(.caption).foregroundStyle(change >= 0 ? .red : .green)
+                    // 金额与百分比已经进了上面两格；只有「这一期不是今天」时才需要补充说明，
+                    // 否则会让人以为「今天是横线 = 漏更新了」。
+                    if latest.date != MarketCalendar.isoDay(.now) {
+                        let change = (latest.nav - previous.nav) * h.quantity
+                        Text("上面两格是净值日 \(latest.date) 这一期 · 按当前份额折算 \((change).cny())；今日净值一般要等到晚上公布（美股 / QDII 方向晚一个交易日）")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 } else {
-                    Text("最新净值日期：\(latest.date)").font(.caption).foregroundStyle(.secondary)
+                    Text("最新净值日期：\(latest.date) · 只有一期净值，还看不出变化")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 // 没亮彩虹的常见原因：这只基金的最新净值日还落后于本组其它基金
                 // （QDII 里美股、全球配置的公布节奏不同，T+1 / T+2 都可能）。
@@ -1940,12 +2062,23 @@ struct HoldingsView: View {
             }
         }
         .overlay(alignment: .leading) {
+            // 左侧竖色条：场内蓝绿 / 场外紫。和行首徽标一起，把「这一行属于哪个模块」
+            // 变成不用读页标题就知道的事（用户反馈两页的持仓行长得一模一样）。
+            // 彩虹高亮期间让位给彩虹条 —— 那时「刚更新」比「是场外」更该被看见，
+            // 类别识别由常显的徽标兜底。
             if highlightFreshNAV {
                 Capsule()
                     .fill(fundFreshNAVGradient)
                     .frame(width: 4)
                     .padding(.vertical, 12)
                     .padding(.leading, 2)
+                    .allowsHitTesting(false)
+            } else {
+                Capsule()
+                    .fill(kindAccent.opacity(0.75))
+                    .frame(width: 3)
+                    .padding(.vertical, 16)
+                    .padding(.leading, 3)
                     .allowsHitTesting(false)
             }
         }
@@ -3443,34 +3576,39 @@ struct AssetsView: View {
         if rows.count < 3 || first == last { return [first] }
         return [first, rows[rows.count / 2].date, last]
     }
+
+    /// 「净值日早于采集日」的那些净值日 —— 也就是**迟到到手机**的净值。
+    ///
+    /// 美股 / QDII 的典型形态：周一（美东）收盘的净值，北京周二晚才公布并采到本机。
+    /// 这份收益属于净值日那一天，所以回算只认 `date`，不认 `fetchedAt`；
+    /// 这个集合只是用来在界面上把「哪几条快照已经收下了这份迟到净值」标出来，
+    /// 让「补没补上」变成可核对的事实，而不是靠猜。
+    private var reconciledFundNAVDays: Set<String> {
+        let codes = Set(store.data.holdings.filter { $0.kind == .fund }.map(\.code))
+        guard !codes.isEmpty else { return [] }
+        var days: Set<String> = []
+        for point in store.data.fundNAVHistory where codes.contains(point.code) {
+            guard let fetchedAt = point.fetchedAt else { continue }
+            if MarketCalendar.isoDay(fetchedAt) > point.date { days.insert(point.date) }
+        }
+        return days
+    }
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack(alignment: .firstTextBaseline) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("总资产").font(.caption).foregroundStyle(.secondary)
-                                Text((store.totalAsset).cny())
-                                    .scaledFont(28, weight: .bold, design: .rounded)
-                                    .monospacedDigit()
-                                    .minimumScaleFactor(0.7).lineLimit(1)
-                            }
-                            Spacer(minLength: 8)
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(store.hasDayPnLGross
-                                     ? "\((store.dayPnLGross).directionMark()) \((store.dayPnLGross).cny())" : "--")
-                                    .scaledFont(15, weight: .semibold, design: .rounded)
-                                    .monospacedDigit()
-                                    .foregroundStyle(dayTone)
-                                    .accessibilityLabel(store.hasDayPnLGross
-                                        ? "当日盈亏 \(spokenDirection(store.dayPnLGross)) \(spokenMoney(abs(store.dayPnLGross)))"
-                                        : "当日盈亏暂无数据")
-                                Text(store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--")
-                                    .font(.caption).foregroundStyle(dayTone)
-                                Text("当日盈亏").font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
+                        // 与首页账户卡共用同一个头部组件：字号、标签位置、取色规则完全一致。
+                        // 用户反馈「总资产卡片样式要统一」，原来这里是 15pt + 标签在下、
+                        // 首页是 20pt + 标签在上，来回切看着像两个 App。
+                        AccountHeadlineRow(
+                            totalText: (store.totalAsset).cny(),
+                            dayLabel: "当日盈亏",
+                            dayText: store.hasDayPnLGross ? (store.dayPnLGross).cny() : "--",
+                            dayRateText: store.hasDayPnLGross
+                                ? "\(store.dayPnLGross.directionMark()) \(store.dayPnLGrossRate.map { $0.pct(2) } ?? "--")"
+                                : "--",
+                            dayTone: dayTone)
                         assetComposition
                         MetricGrid(columns: 3, cells: [
                             MetricCell(title: "持仓市值", value: (store.totalMarketValue).cny()),
@@ -3492,9 +3630,11 @@ struct AssetsView: View {
                             .scaledFont(10).foregroundStyle(.secondary)
                         Button("记录现金转入 / 转出") { showCashFlow = true }
                     }
+                    // 与首页账户卡同一套取色规则（当日优先、回落总浮盈），
+                    // 收敛到 `CardTone.pnl` 一处，避免两边阈值各写一遍。
                     .cardSurface(tone: store.hasDayPnLGross
-                                 ? (store.dayPnLGross > 0.005 ? PnLColor.up : store.dayPnLGross < -0.005 ? PnLColor.down : nil)
-                                 : (store.totalPnL > 0.005 ? PnLColor.up : store.totalPnL < -0.005 ? PnLColor.down : nil))
+                                 ? CardTone.pnl(store.dayPnLGross)
+                                 : CardTone.pnl(store.totalPnL))
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
                 } header: { Text("账户总览") }
@@ -3547,6 +3687,9 @@ struct AssetsView: View {
                     }
                     if store.data.snapshots.isEmpty { Text("暂无快照").foregroundStyle(.secondary) }
                     let sortedSnapshots = store.data.snapshots.sorted { $0.date < $1.date }
+                    // 只算一次：哪些净值日是「迟到到手机」的（净值日 < 采集日）。
+                    // 美股 / QDII 的典型形态就是它 —— 周一（美东）收盘的净值，北京周二晚才到。
+                    let reconciledDays = reconciledFundNAVDays
                     if sortedSnapshots.count > 1 {
                         let first = snapshotChartData.first
                         let last = snapshotChartData.last
@@ -3630,6 +3773,15 @@ struct AssetsView: View {
                                 Text("较上次快照收益（已扣除现金流） \((result).directionMark()) \((result).cny())")
                                     .font(.caption).foregroundStyle(PnLColor.of(result))
                             }
+                            // 美股 / QDII 的净值晚一个交易日公布，它带来的变动属于**净值日**那一天，
+                            // 不属于公布日。`reconcileProvisionalSnapshotsAfterNAVUpdate` 会在净值
+                            // 到手机后把这一天重算回去（用户诉求「历史快照要补美股晚一个交易日公布的收益」）。
+                            // 这里把「哪几条快照确实收下了这份迟到净值」直接标出来，
+                            // 免得只能靠猜 —— 数字对不对，看这一行就知道。
+                            if reconciledDays.contains(s.date) {
+                                Text("已并入晚一个交易日公布的场外净值（按净值日回算到这一天，不挪到公布日）")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) { snapshotDeleteTarget = s } label: {
@@ -3637,6 +3789,8 @@ struct AssetsView: View {
                             }
                         }
                     }
+                    Text("口径：快照 = 当天收盘的持仓市值 + 现金；相邻两条之差再扣掉手动记录的现金流，才是这一期的净收益。场外基金按**净值日**入账 —— 美股 / QDII 晚一个交易日公布的净值会在到手机后自动回算到它自己的净值日那条快照上，不挪到公布日，所以某天的收益在净值到齐前后可能变一次。")
+                        .font(.caption2).foregroundStyle(.secondary)
                     } label: {
                         HStack {
                             Text("查看历史快照")

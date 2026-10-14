@@ -289,7 +289,13 @@ struct IntradayCompanionDecision {
                 price = data.fundNAVHistory.filter { $0.code == position.code && $0.date <= day }
                     .max(by: { $0.date < $1.date })?.nav
             } else {
-                price = dailyBars[position.code]?.last(where: { $0.date == day })?.close
+                // 场内价格从「精确等于当天」放宽为「截至当天最近一个交易日」，与上面场外基金的口径对齐。
+                // 原来精确匹配时，只要那天缺这根日 K（App 关闭期间漏拉的、停牌、或者快照记在了非交易日），
+                // 下面的 guard 就把**整天**放弃 —— 这天的总资产永远停在旧值，
+                // 晚一个交易日公布的场外净值也就永远补不进来
+                // （用户诉求「历史快照要补美股晚一个交易日公布的收益」）。
+                // 当天有 K 线时行为与原来完全一致，只是多了兜底。
+                price = dailyBars[position.code]?.last(where: { $0.date <= day })?.close
             }
             guard let price, price.isFinite, price > 0 else { return nil }
             total += position.quantity * price
