@@ -22,8 +22,15 @@ final class PortfolioStore: ObservableObject {
     /// 自动轮询的**重入保护**。故意不是 `@Published`：它每 15 秒翻两次，
     /// 发布出去就等于每 15 秒白重建两次视图树（见 `performQuoteRefresh`）。
     private var autoRefreshInFlight = false
-    /// 上一次写回网页账本时，原生账本的指纹。相同就跳过，避免每轮轮询都去写一遍。
-    private var lastWebLedgerWrittenFingerprint = ""
+    /// 上一次成功写回网页账本时的**内容指纹**（只覆盖会被写进 `/api/data` 的账本字段，
+    /// 见 `WebLedgerWriter.ledgerFingerprint`）。内容没变就跳过，一次请求都不发。
+    ///
+    /// 落在 `UserDefaults` 里而不是内存里：重启一次 App 也要记得「这份内容已经写过了」，
+    /// 否则每次启动都白写一份回去。
+    private var lastWebLedgerWrittenFingerprint: String {
+        get { UserDefaults.standard.string(forKey: NASSyncService.webLedgerFingerprintKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: NASSyncService.webLedgerFingerprintKey) }
+    }
     /// 写回网页账本的防抖任务（合并短时间内连续几次改动）。
     private var webLedgerWriteBackTask: Task<Void, Never>?
     @Published private(set) var intradayArchiveStatus = "尚未补全分时档案"
@@ -1099,7 +1106,10 @@ final class PortfolioStore: ObservableObject {
             : "已更新 \(success)/\(codes.count) 只，\(failure) 只未取到 · \(coverage)\(retry) · \(time)"
         return (success, failure)
     }
-    func save(label: String? = nil) {
+    /// - Parameter propagate: 是否把这次改动推给 NAS 与网页版账本。默认 `true`。
+    ///   只有「自动记录当日快照」那种**纯估值刷新**才传 `false` —— 用户明确要求
+    ///   「日内的持仓盈亏这些两边都会自动变，不需要实时同步，浪费穿透流量」。
+    func save(label: String? = nil, propagate: Bool = true) {
         cachedLatestFundNAVKey = ""   // 净值可能变了，先把「最新净值」缓存作废
         guard let raw = try? JSONEncoder().encode(data) else { return }
         let defaults = UserDefaults.standard
@@ -1111,10 +1121,10 @@ final class PortfolioStore: ObservableObject {
             }
         }
         defaults.set(raw, forKey: key)
-        if !applyingNASData { scheduleNASSync() }
+        if !applyingNASData, propagate { scheduleNASSync() }
         // 账本一改就排队写回网页版（6 秒防抖）。用户的操作顺序常常是
         // 「App 里记一笔 → 切到浏览器打开观盘.html → 点下载」，所以这一份必须已经在 NAS 上。
-        if !applyingNASData { scheduleWebLedgerWriteBack() }
+        if !applyingNASData, propagate { scheduleWebLedgerWriteBack() }
     }
 
     /// `code → 最新净值点` 的缓存（v2.13.34）。
@@ -1315,11 +1325,35 @@ final class PortfolioStore: ObservableObject {
         guard !url.isEmpty else { nasSyncStatus = "请填写 NAS 地址；免口令模式可直接同步"; return }
         do {
             nasSyncStatus = "正在检查 NAS…"
-            let remote = try await NASSyncService.get(base: url, token: token)
             let local = makeNASDocument()
             let localFingerprint = try NASSyncService.fingerprint(local)
             let baseline = defaults.string(forKey: NASSyncService.fingerprintKey)
             let knownRevision = defaults.integer(forKey: NASSyncService.revisionKey)
+
+            // ── 快速通道：先问一句版本号，再决定要不要把整份文档拉回来 ──────────
+            // `/api/ping` 只回两个文档的版本号（几十字节，见 `NASSyncService.probeRevisions`）。
+            // 远端版本号和本机记住的一致 → NAS 没被别人改过 → 就不需要下载整份原生文档。
+            // 这一份文档里塞着**全部分时与日 K 档案**，分钟级轮询整个拉回来只为比一个指纹，
+            // 是穿透流量最大的一笔（用户原话：「一直同步呀，多浪费我的穿透流量」）。
+            // 探针失败、服务器没实现、或版本号确实变了 → 静默走下面的完整同步，行为不变。
+            if knownRevision > 0,
+               let probe = try? await NASSyncService.probeRevisions(base: url),
+               let remoteRevision = probe["native"], remoteRevision == knownRevision {
+                if localFingerprint == baseline {
+                    nasSyncStatus = "已同步（版本 \(remoteRevision)）"
+                    return
+                }
+                // 远端没动、本机动过 → 直接上传，同样省掉一次完整下载。
+                // 万一这段时间 NAS 又被别人改了，服务端会回 409，落到下面走完整流程。
+                if let result = try? await NASSyncService.put(base: url, token: token, document: local,
+                                                              expectedRevision: remoteRevision) {
+                    recordNASSync(revision: result.revision, document: local)
+                    nasSyncStatus = "已同步到 NAS（版本 \(result.revision)）"
+                    return
+                }
+            }
+
+            let remote = try await NASSyncService.get(base: url, token: token)
             guard let remoteDocument = remote.data else {
                 let legacy = try await NASSyncService.legacyBackup(base: url, token: token)
                 if let legacyBytes = legacy.data,
@@ -1490,15 +1524,19 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
-    /// 自动路径：只在原生账本**真的变了**的时候写回，避免每 60 秒的轮询也去写一遍。
+    /// 自动路径：只在**网页账本的内容真的变了**的时候写回，一次请求都不多发。
+    ///
+    /// 判据是 `WebLedgerWriter.ledgerFingerprint`，它只覆盖会被写出去的账本字段：
+    /// 现价、涨跌幅、日内估值、分钟 / 日 K 档案一律**不算改动** ——
+    /// 那些东西两边各自会算、会采（用户原话：「日内的持仓盈亏这些，两边都会自动变的，
+    /// 不需要实时同步」「应该是更改了才同步吧，多浪费我的穿透流量」）。
+    /// 所以交易时段里前台来回切、行情每 15 秒刷一轮、分时档案每分钟多一个点，
+    /// 这里都是空转。
     func writeBackWebLedgerIfEnabled() async {
         guard webLedgerWriteBackEnabled else { return }
-        let local = makeNASDocument()
-        guard let stamp = try? NASSyncService.fingerprint(local) else { return }
-        guard stamp != lastWebLedgerWrittenFingerprint else { return }
-        if await writeBackWebLedger(reason: "自动") {
-            lastWebLedgerWrittenFingerprint = stamp
-        }
+        let stamp = WebLedgerWriter.ledgerFingerprint(of: data)
+        guard !stamp.isEmpty, stamp != lastWebLedgerWrittenFingerprint else { return }
+        _ = await writeBackWebLedger(reason: "自动")
     }
 
     /// 防抖版的写回触发：`save()` 里每改一次账本都会调它，但真正发请求要等 6 秒静默期。
@@ -1563,6 +1601,9 @@ final class PortfolioStore: ObservableObject {
             assignIfChanged(\.webLedgerStatus,
                 "\(action)（\(reason)）· 场内 \(etfCount) 只 · 场外 \(fundCount) 只 · "
                 + "流水 \(data.ledger.count) 笔 · 版本 \(revision) · \(stamp)\(verification)")
+            // 成功之后才记指纹。失败（NAS 不可达、读不回、版本冲突…）时不能记，
+            // 否则会被当成「这份内容已经写过了」，之后再也不补。
+            lastWebLedgerWrittenFingerprint = WebLedgerWriter.ledgerFingerprint(of: data)
             return true
         } catch {
             assignIfChanged(\.webLedgerStatus, "写回失败：\(error.localizedDescription)")
@@ -3527,9 +3568,25 @@ final class PortfolioStore: ObservableObject {
         let quality = snapshotQuality(for: date)
         let snap = PortfolioSnapshot(date: date, total: totalAsset, cash: data.cash, recordedAt: .now,
                                      quality: quality, note: quality == .provisional ? "仍有基金净值未结算" : nil)
+        let previous = data.snapshots.first(where: { $0.date == date })
+        if let previous,
+           previous.total == snap.total, previous.cash == snap.cash,
+           previous.quality == snap.quality, previous.note == snap.note, previous.recordedAt != nil {
+            // 值没变就别写。原来这里每次都替换一次，而 `recordedAt` 每次都不同 ——
+            // 于是每回一次前台都会「变了」，bump 一个 NAS 版本、上传一整份文档
+            // （含全部分时与日 K 档案），还顺带占掉一个撤销点。
+            return
+        }
         if let i = data.snapshots.firstIndex(where: { $0.date == date }) { data.snapshots[i] = snap }
         else { data.snapshots.append(snap) }
-        data.snapshots.sort { $0.date < $1.date }; save(label: "记录资产快照")
+        data.snapshots.sort { $0.date < $1.date }
+        // **只在这一天第一次记、或快照性质变了（临时 → 已核实）时才推给 NAS 与网页版。**
+        // 盘中每次回前台刷新出的只是同一行的当日估值，两边各自算就行 ——
+        // 这正是用户说的「日内的持仓盈亏两边都会自动变，不需要实时同步」。
+        // 自动路径下纯数值刷新只落本地盘，下一次真正的账本编辑会把最新快照一起带上去。
+        let isFirstRecordToday = previous == nil
+        let qualityChanged = previous.map { $0.quality != snap.quality } ?? true
+        save(label: "记录资产快照", propagate: !automatic || isFirstRecordToday || qualityChanged)
     }
 
     func snapshotReturn(from previous: PortfolioSnapshot, to current: PortfolioSnapshot) -> Double {

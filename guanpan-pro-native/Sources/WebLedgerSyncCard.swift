@@ -30,8 +30,11 @@ struct WebLedgerSyncCard: View {
                 + "NAS 上那份的设置、分红参考、汇率、休市日、网格历史原样保留；"
                 + "读不回现有文档时会直接放弃写回，不会拿空账本去覆盖。")
                 .font(.footnote).foregroundStyle(.secondary)
+            Text("只在账本真的改了时才发请求：加自选、买卖、改现金、记流水、更新净值与快照才会写。"
+                + "现价涨跌、当日盈亏、分时与日 K 档案都不算改动 —— 那些两边各自会算、会采，"
+                + "不会为它们跑一趟穿透流量。改完账本约 6 秒、或 App 退到后台时会自动补一次。")
+                .font(.footnote).foregroundStyle(.secondary)
             Text("写回后网页版不会自己刷新：在观盘.html 上点一次「下载」，拿到的就是这份 App 账本。"
-                + "改完账本约 6 秒、或 App 退到后台时都会自动补一次；"
                 + "实在不放心就按上面的「立即写回」。")
                 .font(.footnote).foregroundStyle(.secondary)
         }

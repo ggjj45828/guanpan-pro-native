@@ -55,6 +55,43 @@ enum NASSyncService {
     /// 写回前那一版网页账本的原样备份（只留最近一次，可一键还原）。
     static let webLedgerBackupKey = "guanpan.native.nas.webledger.backup"
     static let webLedgerBackupDateKey = "guanpan.native.nas.webledger.backup.date"
+    /// 上一次成功写回的**网页账本内容指纹**（只覆盖账本字段，见
+    /// `WebLedgerWriter.ledgerFingerprint`）。存进 `UserDefaults` 而不是只放内存，
+    /// 是为了「内容没变就别再发请求」这条判断**重启后依然成立** ——
+    /// 否则每次启动都会白写一份回去。
+    static let webLedgerFingerprintKey = "guanpan.native.nas.webledger.fingerprint"
+
+    /// 轻量版本探针：`GET /api/ping` 只回两个文档的版本号，**不带数据**（几十字节）。
+    ///
+    /// 存在的理由就是省流量：整份原生文档里塞着全部分时与日 K 档案，
+    /// 分钟级轮询为了比一个指纹把它整个拉回来，是穿透流量的大头。
+    /// 先用这里拿到 `native.revision`，和本机记住的版本号一比就知道远端动没动过。
+    ///
+    /// 服务器没实现这个接口、或返回结构不是预期的样子时返回 `nil`，
+    /// 调用方照旧走完整同步 —— 行为与以前完全一致，不会因为这个探针失败而少同步。
+    static func probeRevisions(base: String) async throws -> [String: Int]? {
+        let root = base.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let baseURL = URL(string: root),
+              ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""),
+              baseURL.host != nil else { throw NASSyncError.invalidAddress }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api").appendingPathComponent("ping"))
+        request.timeoutInterval = 10
+        // 当前服务端的 `/api/ping` 不校验口令，带上也无害；将来若改成要令牌就自动兼容。
+        if let token = NASCredentialStore.load(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (bytes, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { return nil }
+        var result: [String: Int] = [:]
+        for key in ["native", "legacy"] {
+            if let node = object[key] as? [String: Any], let revision = node["revision"] as? Int {
+                result[key] = revision
+            }
+        }
+        return result.isEmpty ? nil : result
+    }
 
     static func fingerprint(_ document: NativeSyncDocument) throws -> String {
         struct Content: Encodable {

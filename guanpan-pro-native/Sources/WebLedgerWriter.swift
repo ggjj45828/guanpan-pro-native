@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// 把 App 的原生账本写成「网页版（观盘.html）」的 `/api/data` 格式。
 ///
@@ -68,6 +69,53 @@ enum WebLedgerWriter {
         document["snap"] = data.snapshots.map(snapshotRow)
         document["mp"] = manualPriceSection(data)
         return document
+    }
+
+    // MARK: - 内容指纹（决定「要不要写这一趟」）
+
+    /// 网页账本的**内容指纹**：只覆盖真正会被写进 `/api/data` 的账本字段。
+    ///
+    /// 它回答的是一个问题：**这一次还有必要发请求吗？**
+    /// 所以下面三类东西必须排除，否则流量会被白白烧掉（用户原话：
+    /// 「那也不能一直刷新呀，一直同步呀，多浪费我的穿透流量，应该是更改了才同步吧」）：
+    ///
+    /// 1. **高频行情缓存**：`db.watch[].price/pct`、`snap[].total/mv`。
+    ///    它们每一轮行情刷新都会变，但行情与当日估值两边本来就各算各的 ——
+    ///    「日内的持仓盈亏这些，两边都会自动变的，不需要实时同步」。
+    ///    注意 `snap` 里的**日期与现金**仍然参与（那是账本事实，不是估值派生）。
+    /// 2. **分钟 / 日 K 档案**：网页账本里根本没有这两个键（它们只走原生账本文档），
+    ///    而交易时段每分钟都在长。
+    /// 3. `_t` 写入时间戳：每次调用都会变，纯噪声。
+    ///
+    /// 剩下的（现金、自选成员与名称、持仓份额与成本、交易流水、场外持仓与流水、
+    /// 基金净值历史、资金流水、快照日期、手填价）都是「你不编辑就不会变」的，
+    /// 这才叫「更改了才同步」。
+    ///
+    /// 用 `sortedKeys` 序列化：字典键顺序在 Swift 里不保证稳定，不排序会随进程漂移。
+    static func ledgerFingerprint(of data: PortfolioData) -> String {
+        var document = document(from: data, merging: nil, now: Date(timeIntervalSince1970: 0))
+        document.removeValue(forKey: "_t")
+        if var db = document["db"] as? [String: Any] {
+            if var watch = db["watch"] as? [[String: Any]] {
+                for index in watch.indices {
+                    watch[index].removeValue(forKey: "price")
+                    watch[index].removeValue(forKey: "pct")
+                }
+                db["watch"] = watch
+            }
+            document["db"] = db
+        }
+        if var snap = document["snap"] as? [[String: Any]] {
+            for index in snap.indices {
+                snap[index].removeValue(forKey: "total")
+                snap[index].removeValue(forKey: "mv")
+            }
+            document["snap"] = snap
+        }
+        guard let bytes = try? JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]) else {
+            return ""
+        }
+        return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - 场内
