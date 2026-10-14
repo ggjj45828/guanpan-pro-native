@@ -385,7 +385,15 @@ extension PortfolioStore {
         for (code, price) in quotes where !code.isEmpty && price.isFinite && price > 0 {
             guard !containsIntradayMinute(code: code, at: time) else { continue }
             let minuteTime = Date(timeIntervalSince1970: TimeInterval(minute * 60))
-            let bar = IntradayBar(code: code, timestamp: minuteTime, price: price, volume: nil, day: formatter.string(from: time))
+            // 顺手把 ETF 的实时 IOPV 记进分时点。
+            //
+            // 为什么以前取不到：腾讯的**分时接口本身不带 IOPV**，IOPV 只在快照接口的
+            // 第 78 个字段里给。所以「分时图叠加 IOPV」「分时档案里的 IOPV 线」一直是空的 ——
+            // 不是画不出来，是采集时根本没往 `IntradayBar.iopv` 里写过值。
+            // 采到的点从这一版起会带 IOPV；历史点无法凭空补出来，界面会如实说明覆盖情况。
+            var bar = IntradayBar(code: code, timestamp: minuteTime, price: price,
+                                  volume: nil, day: formatter.string(from: time))
+            if let iopv = marketIOPVs[code], iopv.isFinite, iopv > 0 { bar.iopv = iopv }
             added.append(bar)
         }
         mergeIntradayBars(added)

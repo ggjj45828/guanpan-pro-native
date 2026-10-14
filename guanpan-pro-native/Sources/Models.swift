@@ -1,6 +1,10 @@
 import Foundation
 
-struct Quote: Codable, Identifiable {
+/// `Equatable` 是给 `PortfolioStore.performQuoteRefresh` 用的：
+/// 那一轮刷新会先在副本上算好新的行情再整体赋回 `data`，而 `@Published` 是无条件发布的 ——
+/// 内容一模一样也会发一次改动通知，把整棵视图树重建一遍。有了 `==` 就能先比后写，
+/// 盘中行情没变的那几十轮刷新就不会再触发全量重绘（这是「滑动卡顿」的主因之一）。
+struct Quote: Codable, Identifiable, Equatable {
     var id: String { code }
     var code: String
     var name: String
@@ -105,7 +109,7 @@ enum MarketIndexStore {
         Entry(secid: "1.000688", tencent: "sh000688", name: "科创50"),
         Entry(secid: "100.HSI", tencent: "hkHSI", name: "恒生指数", sina: "b_HSI"),
         Entry(secid: "124.HSTECH", tencent: "hkHSTECH", name: "恒生科技"),
-        Entry(secid: "100.DJIA", tencent: "usDJI", name: "道琼斯"),
+        // 道琼斯已按用户要求下线（2026-10-14：「道琼斯删了」）。
         Entry(secid: "100.N225", tencent: nil, name: "日经225", sina: "int_nikkei"),
         Entry(secid: "100.TOPIX", tencent: nil, name: "东证TOPIX", sina: "b_TOPIX"),
         Entry(secid: "100.KS11", tencent: nil, name: "韩国KOSPI", sina: "b_KOSPI")
@@ -210,16 +214,38 @@ enum ETFDividendProjection {
         ETFDividendEvent(code: "159352", date: "2025-07-14", amountPerShare: 0.011)
     ]
 
+    /// `mergedEvents` 的缓存键与结果。
+    ///
+    /// 为什么必须有：自选页每一行、持仓页每一行、基金页每一行都会调它，
+    /// 而它每次都要「建字典 + 排序」—— 一屏十几行就是十几次 O(N log N)。
+    /// 滑动时每帧都重算，这正是「上下滑特别卡」的直接来源之一。
+    /// 事件数组只在导入/刷新分红时才变，用「条数 + 推算条数 + 首末日期 + 金额合计」当键
+    /// 就能可靠地判断「没变」，命中即直接返回上次的结果。
+    private static var cachedMergedKey = ""
+    private static var cachedMergedValue: [ETFDividendEvent] = []
+
     static func mergedEvents(_ events: [ETFDividendEvent]) -> [ETFDividendEvent] {
+        var estimatedCount = 0
+        var total = 0.0
+        for event in events {
+            if event.isEstimated == true { estimatedCount += 1 }
+            total += event.amountPerShare
+        }
+        let key = "\(events.count)|\(estimatedCount)|\(events.first?.date ?? "")|\(events.last?.date ?? "")|\(total)"
+        if key == cachedMergedKey { return cachedMergedValue }
+
         var values: [String: ETFDividendEvent] = [:]
         // Built-in verified rows are only fallbacks. Prefer a user's imported/confirmed row
         // for the same code and date so synchronization or a corrected announcement wins.
         for event in verifiedEvents + events {
-            let key = "\(event.code)|\(event.date)"
-            if let old = values[key], old.isEstimated != true && event.isEstimated == true { continue }
-            values[key] = event
+            let eventKey = "\(event.code)|\(event.date)"
+            if let old = values[eventKey], old.isEstimated != true && event.isEstimated == true { continue }
+            values[eventKey] = event
         }
-        return values.values.sorted { $0.date == $1.date ? $0.code < $1.code : $0.date < $1.date }
+        let merged = values.values.sorted { $0.date == $1.date ? $0.code < $1.code : $0.date < $1.date }
+        cachedMergedKey = key
+        cachedMergedValue = merged
+        return merged
     }
 
     /// 共享的上海时区日期格式化器。DateFormatter 建一次约毫秒级，
@@ -268,6 +294,34 @@ enum ETFDividendProjection {
             .reduce(0) { $0 + $1.amountPerShare }
         if recorded > 0 { return (recorded, .recorded) }
         return nil
+    }
+
+    /// 近 12 个月「每份分红」，**按代码联网/按行情自动算出来**的口径。
+    ///
+    /// 与 `recordedAnnualPerShare` 的区别只有一个，但这一个是决定性的：
+    /// 它把「前复权与不复权收盘价差推算出来的派息事件」（`inferredEvents`，`isEstimated == true`）
+    /// 也计进去。写死的那张 `verifiedEvents` 表会过期 —— 用户实测 159545 就是这样：
+    /// 表里只有 2026-02-11 的 0.015 和 2025-11-12 的 0.010（合计 0.025），
+    /// 而前复权价差显示 2026-05-15 还有一次 0.014 没被记上，真实合计是 0.039。
+    /// 按 1.29 的现价算，0.025 得 1.9%（= 用户看到的那个数），0.039 得 3.0%。
+    ///
+    /// `mergedEvents` 已经按 `代码|日期` 去重且**已核实记录优先**，所以同一天的推算事件
+    /// 不会和已核实记录重复计数；只有本机完全没有记录的那些派息才会被补进来。
+    static func twelveMonthPerShare(forCode code: String, events: [ETFDividendEvent], now: Date = .now)
+        -> (amount: Double, includesEstimate: Bool, count: Int, estimatedCount: Int) {
+        let cutoff = yearAgoCutoff(now: now)
+        let today = dayFormatter.string(from: now)
+        var total = 0.0
+        var count = 0
+        var estimatedCount = 0
+        for event in mergedEvents(events) {
+            guard event.code == code, event.date >= cutoff, event.date <= today else { continue }
+            guard event.amountPerShare.isFinite, event.amountPerShare > 0 else { continue }
+            total += event.amountPerShare
+            count += 1
+            if event.isEstimated == true { estimatedCount += 1 }
+        }
+        return (total, estimatedCount > 0, count, estimatedCount)
     }
 
     /// 未来 12 个月的保守试算：优先使用人工核实值；否则沿用近 12 个月

@@ -19,11 +19,20 @@ final class PortfolioStore: ObservableObject {
     @Published var fundDCAStatus = "暂无定投补记"
     @Published var isRefreshingFunds = false
     @Published var isRefreshingQuotes = false
+    /// 自动轮询的**重入保护**。故意不是 `@Published`：它每 15 秒翻两次，
+    /// 发布出去就等于每 15 秒白重建两次视图树（见 `performQuoteRefresh`）。
+    private var autoRefreshInFlight = false
     @Published private(set) var intradayArchiveStatus = "尚未补全分时档案"
     @Published private(set) var isArchivingIntraday = false
     /// 首页顶部指数条。与账本数据无关，单独缓存，不参与备份 / NAS 同步。
     @Published private(set) var indexQuotes: [MarketIndexQuote] = MarketIndexStore.load()
     @Published private(set) var isRefreshingIndices = false
+    /// 指数条自动刷新的重入保护，同样故意不发布。
+    private var autoIndexRefreshInFlight = false
+
+    /// 有没有自动轮询正在进行。**故意不是 `@Published`**：它只给「手动刷新」按钮
+    /// 用来避开自动刷新，不参与界面渲染。
+    var isAutoRefreshing: Bool { autoRefreshInFlight || autoIndexRefreshInFlight }
     @Published var nasSyncStatus = "未配置 NAS 同步"
     @Published private(set) var operationAudit: [OperationAuditRecord] = []
     @Published private(set) var isSynchronizingNAS = false
@@ -657,10 +666,16 @@ final class PortfolioStore: ObservableObject {
     /// It only updates estimated events and never converts them into confirmed income.
     func refreshETFDividendEstimates(force: Bool = false) {
         let today = MarketCalendar.isoDay(.now)
-        let key = "guanpan.native.dividendEstimate.lastRun"
+        // 键里带 v2：这次把「自选里的 ETF」也纳入自动推算，口径变了，
+        // 必须让老设备在升级后立刻重跑一次，否则要等到明天才生效。
+        let key = "guanpan.native.dividendEstimate.lastRun.v2"
         if !force, UserDefaults.standard.string(forKey: key) == today { return }
         UserDefaults.standard.set(today, forKey: key)
-        let codes = Array(Set(data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.map(\.code)))
+        // 原来只算「持有的 ETF」。用户看股息率最多的地方其实是**自选列表**，
+        // 自选里的 ETF 一直拿不到自动推算的分红事件，只能吃那张会过期的写死表。
+        let held = data.holdings.filter { $0.kind == .etf && $0.quantity > 0 }.map(\.code)
+        let watched = data.quotes.map(\.code).filter { Self.looksLikeExchangeTradedFund($0) }
+        let codes = Array(Set(held + watched))
             .filter { !ETFDividendProjection.knownNonDividendCodes.contains($0) }
         guard !codes.isEmpty else { return }
         Task {
@@ -764,10 +779,16 @@ final class PortfolioStore: ObservableObject {
     }
     func saveIntradayBars() {
         guard let url = gridBarsURL() else { return }
-        let encoder = JSONEncoder()
-        let lines = intradayBars.compactMap { try? encoder.encode($0) }
-        let raw = lines.reduce(into: Data()) { result, line in result.append(line); result.append(0x0A) }
-        try? raw.write(to: url, options: .atomic)
+        // 原来这里是「每根 bar 单独 `encoder.encode` 再拼起来」：档案有几十万根时，
+        // 等于几十万次 JSON 编码 + 几十万次 Data 追加。改成一次性编码整个数组，
+        // 再把数组两端去掉、元素间换成换行 —— 落盘格式仍是「一行一条 JSON」，
+        // `loadIntradayBars` 与 `appendIntradayBars` 的追加语义都不受影响。
+        // （必须保持逐行格式：`appendIntradayBars` 是往文件尾追加行，写成一个整数组会追加坏。）
+        guard let raw = try? JSONEncoder().encode(intradayBars) else { return }
+        guard let text = String(data: raw, encoding: .utf8), text.count >= 2 else { return }
+        let body = text.dropFirst().dropLast()
+        let lineDelimited = Data(body.replacingOccurrences(of: "},{", with: "}\n{").utf8)
+        try? lineDelimited.write(to: url, options: .atomic)
     }
     func appendIntradayBars(_ bars: [IntradayBar]) {
         guard !bars.isEmpty, let url = gridBarsURL() else { return }
@@ -1066,6 +1087,7 @@ final class PortfolioStore: ObservableObject {
         return (success, failure)
     }
     func save(label: String? = nil) {
+        cachedLatestFundNAVKey = ""   // 净值可能变了，先把「最新净值」缓存作废
         guard let raw = try? JSONEncoder().encode(data) else { return }
         let defaults = UserDefaults.standard
         if !isUndoingSave, let previous = defaults.data(forKey: key), previous != raw {
@@ -1077,6 +1099,33 @@ final class PortfolioStore: ObservableObject {
         }
         defaults.set(raw, forKey: key)
         if !applyingNASData { scheduleNASSync() }
+    }
+
+    /// `code → 最新净值点` 的缓存（v2.13.34）。
+    ///
+    /// 基金列表每一行都要问「这只基金最新净值是多少」。旧实现是每行对
+    /// `data.fundNAVHistory` 做一次 `filter + max` —— 而这份历史每只基金最多 1800 个点，
+    /// 十几只就是几万条；一屏十几行、滑动时每帧重算，等于每帧几万次字符串比较。
+    /// 这是基金页「上下滑特别卡」的主因。这里缓存一份，写盘时作废。
+    private var cachedLatestFundNAV: [String: FundNAVPoint] = [:]
+    private var cachedLatestFundNAVKey = ""
+
+    var latestFundNAVByCode: [String: FundNAVPoint] {
+        let history = data.fundNAVHistory
+        let key = "\(history.count)|\(history.last?.code ?? "")|\(history.last?.date ?? "")"
+        if key == cachedLatestFundNAVKey { return cachedLatestFundNAV }
+        var result: [String: FundNAVPoint] = [:]
+        result.reserveCapacity(64)
+        for point in history {
+            if let existing = result[point.code] {
+                if point.date > existing.date { result[point.code] = point }
+            } else {
+                result[point.code] = point
+            }
+        }
+        cachedLatestFundNAV = result
+        cachedLatestFundNAVKey = key
+        return result
     }
 
     /// 保存 AI 最近结果，不占用“撤销上一次账本修改”的位置。
@@ -1091,9 +1140,19 @@ final class PortfolioStore: ObservableObject {
     /// 最多每分钟落盘一次；用户主动保存、进入后台或退出页面时仍会保留最新状态。
     private func saveAutomaticMarketState(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastAutomaticMarketSaveAt) >= 60 else { return }
-        guard let raw = try? JSONEncoder().encode(data) else { return }
-        UserDefaults.standard.set(raw, forKey: key)
         lastAutomaticMarketSaveAt = .now
+        // **编码 + 落盘都搬到后台线程**（v2.13.34）。
+        // 这一段原来在主线程上跑：`data` 里带着 `fundNAVHistory`（每只基金最多 1800 个点，
+        // 十几只就是几万条）、全部流水、快照和分红事件，`JSONEncoder().encode(data)` 一次要
+        // 几十上百毫秒。它每 60 秒被自动刷新调用一次，正好落在「刷新」这一刻 ——
+        // 用户描述的就是「已经确认就是刷新的那一会就会卡」。
+        // `PortfolioData` 是值类型，这里拿到的是一份 COW 快照，后台编码不会读到写了一半的状态。
+        let snapshot = data
+        let storageKey = key
+        DispatchQueue.global(qos: .utility).async {
+            guard let raw = try? JSONEncoder().encode(snapshot) else { return }
+            UserDefaults.standard.set(raw, forKey: storageKey)
+        }
     }
 
     func flushAutomaticMarketState() {
@@ -1504,12 +1563,21 @@ final class PortfolioStore: ObservableObject {
     }
 
     func refreshQuotes() {
-        guard !isRefreshingQuotes else { return }
-        Task { _ = await performQuoteRefresh(captureIntraday: true) }
+        // 重入保护从 `isRefreshingQuotes` 换成这个**非发布**的标记：
+        // 自动轮询不再动 `@Published`（见 `performQuoteRefresh` 的说明），
+        // 但「同一时刻只跑一轮」的语义必须保留，所以单独用一个变量挡。
+        guard !autoRefreshInFlight, !isRefreshingQuotes else { return }
+        autoRefreshInFlight = true
+        Task {
+            _ = await performQuoteRefresh(captureIntraday: true)
+            autoRefreshInFlight = false
+        }
     }
 
     func refreshQuotesForBackground() async -> Bool {
-        guard data.quoteRefreshSeconds > 0, !isRefreshingQuotes else { return false }
+        guard data.quoteRefreshSeconds > 0, !autoRefreshInFlight, !isRefreshingQuotes else { return false }
+        autoRefreshInFlight = true
+        defer { autoRefreshInFlight = false }
         return await performQuoteRefresh(captureIntraday: false)
     }
 
@@ -1519,7 +1587,7 @@ final class PortfolioStore: ObservableObject {
     @discardableResult
     func refreshQuotesAndWait() async -> Bool {
         guard !isRefreshingQuotes else { return false }
-        return await performQuoteRefresh(captureIntraday: true)
+        return await performQuoteRefresh(captureIntraday: true, manual: true)
     }
 
     // MARK: - 首页指数条
@@ -1534,8 +1602,12 @@ final class PortfolioStore: ObservableObject {
     }
 
     func refreshIndexQuotes() {
-        guard !isRefreshingIndices else { return }
-        Task { await performIndexRefresh() }
+        guard !autoIndexRefreshInFlight, !isRefreshingIndices else { return }
+        autoIndexRefreshInFlight = true
+        Task {
+            await performIndexRefresh()
+            autoIndexRefreshInFlight = false
+        }
     }
 
     /// 指数条刷新。与个股行情分开的原因：
@@ -1547,10 +1619,12 @@ final class PortfolioStore: ObservableObject {
     /// 新浪补腾讯没有的日经与东证，东财最后兜底。三个请求分开发是有意的 ——
     /// 任一源被限流或抽风，另一边的指数照常显示，不会因为「一条请求全挂」让整排变空白。
     @discardableResult
-    func performIndexRefresh() async -> Bool {
+    func performIndexRefresh(manual: Bool = false) async -> Bool {
         guard !isRefreshingIndices else { return false }
-        isRefreshingIndices = true
-        defer { isRefreshingIndices = false }
+        // 与个股行情同理：`isRefreshingIndices` 是 `@Published`，自动轮询不发它，
+        // 免得每 15 秒为了一个转圈状态把整棵视图树重建两遍。
+        if manual { isRefreshingIndices = true }
+        defer { if manual { isRefreshingIndices = false } }
 
         async let fromTencent = fetchTencentIndexQuotes()
         async let fromSina = fetchSinaIndexQuotes()
@@ -1574,7 +1648,7 @@ final class PortfolioStore: ObservableObject {
         }
         // 一个都没解析出来说明这次请求白跑，保留上一次的值比清空更诚实。
         guard !updated.isEmpty else { return false }
-        indexQuotes = updated
+        assignIfChanged(\.indexQuotes, updated)
         MarketIndexStore.save(updated)
 
         // 顺带维护交易日历（内部一天只跑一次，见 MarketCalendar.fetchedToday）。
@@ -1719,6 +1793,15 @@ final class PortfolioStore: ObservableObject {
     }
 
     // MARK: - 指数详情：日 K 与分时
+
+    /// 场内代码长什么样：6 位数字，且前缀落在沪/深 ETF / LOF 号段
+    /// （51x / 56x / 58x 为沪市，15x / 16x / 18x 为深市）。
+    /// 用来判断「这条自选值不值得去拉前复权日线推算分红」。
+    static func looksLikeExchangeTradedFund(_ code: String) -> Bool {
+        guard code.count == 6, code.allSatisfy(\.isNumber) else { return false }
+        let prefixes = ["51", "56", "58", "15", "16", "18"]
+        return prefixes.contains { code.hasPrefix($0) }
+    }
 
     /// 东财接口的公共 token（网页版前端写死的那个，不是密钥）。
     static let eastmoneyToken = "fa5fd1943c7b386f172d6893dbfba10b"
@@ -1926,7 +2009,7 @@ final class PortfolioStore: ObservableObject {
         return parsed
     }
 
-    private func performQuoteRefresh(captureIntraday: Bool) async -> Bool {
+    private func performQuoteRefresh(captureIntraday: Bool, manual: Bool = false) async -> Bool {
         // Tencent's stock quote endpoint does not return OTC fund NAVs. Never send
         // fund codes there or present a stock quote as a fund valuation.
         let shadowCodes = data.legacyShadowArchives.filter { !$0.closed }.map(\.code)
@@ -1936,9 +2019,15 @@ final class PortfolioStore: ObservableObject {
         guard let url = URL(string: "https://qt.gtimg.cn/q=" + requestCodes.joined(separator: ",") + "&_t=" + String(Int(Date().timeIntervalSince1970))) else {
             sourceStatus = "行情请求地址无效"; return false
         }
-        sourceStatus = "正在刷新行情…"
-        isRefreshingQuotes = true
-        defer { isRefreshingQuotes = false }
+        // 自动轮询「保持安静」（v2.13.34）：`isRefreshingQuotes` 与 `sourceStatus` 只在
+        // **用户自己点的刷新**时才翻。这两个都是 `@Published`，每 15 秒各翻两次，
+        // 每次都会发一轮改动通知把整棵视图树重建 —— 这就是用户说的
+        // 「已经确认就是刷新的那一会就会卡」。自动刷新现在连这两个通知都不发。
+        if manual {
+            sourceStatus = "正在刷新行情…"
+            isRefreshingQuotes = true
+        }
+        defer { if manual { isRefreshingQuotes = false } }
         do {
             var request = URLRequest(url: url); request.timeoutInterval = 12
             let bytes: Data
@@ -2030,10 +2119,16 @@ final class PortfolioStore: ObservableObject {
             }
             // 手动覆盖价也并进这一批：单独调 `applyManualQuoteOverrides()` 会再发一轮通知。
             applyManualQuoteOverrides(to: &updated, changes: &changes)
-            data = updated
-            marketChanges = changes
-            marketPremiums = premiums
-            marketIOPVs = iopvs
+            // **值没变就不写回**（v2.13.34）。`@Published` 是无条件发布的：哪怕内容完全一样，
+            // 赋一次值也会发一轮改动通知，把整棵视图树（ContentView 上挂着几十个 sheet）重建一遍。
+            // 盘中每 15 秒刷一次，几十次「什么都没变」的刷新叠起来就是「所有页面滑动都卡」。
+            // 这里先比后写：`Quote` 已支持 `==`，持仓只看行情相关字段。
+            if marketStateChanged(from: data, to: updated) {
+                data = updated
+            }
+            assignIfChanged(\.marketChanges, changes)
+            assignIfChanged(\.marketPremiums, premiums)
+            assignIfChanged(\.marketIOPVs, iopvs)
             if Self.isRegularTradingSession(Date()) {
                 checkQuoteAlerts(using: values)
                 if captureIntraday && data.intradayCaptureEnabled {
@@ -2121,6 +2216,34 @@ final class PortfolioStore: ObservableObject {
         applyManualQuoteOverrides(to: &updated, changes: &changes)
         data = updated
         marketChanges = changes
+    }
+
+    /// 值相等就不写 `@Published`。内容相同的赋值同样会发通知、同样会让界面全量重建，
+    /// 而盘中每 15 秒一轮的行情刷新大多数情况下什么都没变。
+    @discardableResult
+    private func assignIfChanged<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<PortfolioStore, T>,
+                                               _ value: T) -> Bool {
+        guard self[keyPath: keyPath] != value else { return false }
+        self[keyPath: keyPath] = value
+        return true
+    }
+
+    /// 行情相关字段有没有实质变化。
+    ///
+    /// `PortfolioData` 不是 `Equatable`（它是个大 struct，成员太多，为了性能不整体比较），
+    /// 所以只比这一轮刷新真正会动的那些字段：自选的 `Quote`（已可 `==`）+ 持仓行情价与时间戳。
+    /// `applyManualQuoteOverrides` 改的也只是这两组字段，因此覆盖完整。
+    private func marketStateChanged(from old: PortfolioData, to new: PortfolioData) -> Bool {
+        if old.quotes != new.quotes { return true }
+        if old.holdings.count != new.holdings.count { return true }
+        for index in old.holdings.indices {
+            let before = old.holdings[index]
+            let after = new.holdings[index]
+            if before.current != after.current || before.marketUpdatedAt != after.marketUpdatedAt {
+                return true
+            }
+        }
+        return false
     }
 
     func removeQuoteAlert(_ alert: QuoteAlert) {

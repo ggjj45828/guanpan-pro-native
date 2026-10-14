@@ -236,6 +236,18 @@ func intradayAxisLabel(_ time: Date, ticks: [(time: Date, label: String)]) -> St
         ?? time.formatted(date: .omitted, time: .shortened)
 }
 
+/// 分时主图纵轴的档位（同花顺口径）。
+///
+/// 把「今日最大涨跌幅」向上取到常见的整数档（0.5% / 1% / 1.5% / 2% / 3% …），
+/// 上下限取同一个值、以昨收为中心对称铺开。这样价格线离昨收的钱数就是它的真实涨跌幅，
+/// 而不是被 Swift Charts 自适应放大成一条冲上冲下的折线。
+private func intradayPctStep(_ value: Double) -> Double {
+    let ladder: [Double] = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05,
+                            0.06, 0.08, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.75, 1.00]
+    for step in ladder where value <= step { return step }
+    return 1.00
+}
+
 /// 分时量柱涨跌配色。`prevClose` 是第一根柱的前收基准。
 /// 参数用到文件私有的 `MinuteBucket`，所以这里必须是 `private`（文件作用域 private ≡ fileprivate，同文件内可见）。
 private func intradayVolumeColor(at index: Int, in buckets: [MinuteBucket], prevClose: Double?) -> Color {
@@ -289,7 +301,20 @@ private struct IntradayMainChart: View {
     let height: CGFloat
     let lineWidth: CGFloat
 
+    @Environment(\.colorScheme) private var colorScheme
+
     private func t(_ time: Date) -> Date { intradayCompressedTime(time, compressLunch: compressLunch) }
+
+    /// 昨收线用「浅黑虚线」，现价线用「浅黄虚线」—— 两条都要在深浅两套主题下都看得见。
+    /// 纯黑 / 纯黄放到对面主题里会彻底消失，所以按 colorScheme 分别取色。
+    private var previousCloseLineColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.45) : Color.black.opacity(0.32)
+    }
+    private var currentPriceLineColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.99, green: 0.90, blue: 0.48)
+            : Color(red: 0.78, green: 0.60, blue: 0.04)
+    }
 
     var body: some View {
         Chart {
@@ -318,8 +343,14 @@ private struct IntradayMainChart: View {
                     .lineStyle(StrokeStyle(lineWidth: 0.95, dash: [4, 3]))
             }
             if showPreviousClose, let value = previousClose {
-                RuleMark(y: .value("昨收", value)).foregroundStyle(Color.secondary.opacity(0.65))
-                    .lineStyle(StrokeStyle(lineWidth: 0.7, dash: [3, 3]))
+                RuleMark(y: .value("昨收", value)).foregroundStyle(previousCloseLineColor)
+                    .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+            }
+            // 现在价：一条浅黄淡虚线横轴。分时图上「我此刻在哪个价位」是最常被找的一根线，
+            // 光有折线的末尾点不够显眼（尤其缩略看的时候）。放在最后画，保证压在其他线之上。
+            if let last = lines.last?.price, last.isFinite, last > 0 {
+                RuleMark(y: .value("现价", last)).foregroundStyle(currentPriceLineColor)
+                    .lineStyle(StrokeStyle(lineWidth: 0.95, dash: [5, 4]))
             }
         }
         .frame(height: height)
@@ -1255,9 +1286,26 @@ struct MarketChartView: View {
         var values = selectedIntradayBars.map(\.price)
         if showIntradayAverage { values += intradayAvgPoints.map(\.price) }
         if showIntradayIOPV { values += selectedDayIOPVPoints.map(\.value); if selectedDayIOPVPoints.isEmpty, let v = selectedDayIOPV { values.append(v) } }
-        if showIntradayPreviousClose, let v = intradayPrevClose { values.append(v) }
         values = values.filter { $0 > 0 && $0.isFinite }
         guard let low = values.min(), let high = values.max() else { return 0...1 }
+        // 同花顺口径：**以昨收为 0 轴**，上下限取同一个「今日最大涨跌幅」，
+        // 并向上取整到好看档位（最少 ±1%）。
+        // 旧实现在最低/最高价上各留 9% 余量、完全跟着数据走：波动只有 0.3% 的日子，
+        // 价格线也会被拉满整张图，看起来「涨得很凶」—— 用户反馈的正是这个。
+        // 取值域只用价格线与均价（IOPV 的折溢价不该参与撑开纵轴）。
+        if let previous = intradayPrevClose, previous > 0 {
+            var axisLow = low
+            var axisHigh = high
+            if showIntradayAverage {
+                let averagePrices = intradayAvgPoints.map(\.price).filter { $0 > 0 && $0.isFinite }
+                if let a = averagePrices.min() { axisLow = min(axisLow, a) }
+                if let b = averagePrices.max() { axisHigh = max(axisHigh, b) }
+            }
+            let upMove = (axisHigh - previous) / previous
+            let downMove = (previous - axisLow) / previous
+            let step = intradayPctStep(max(abs(upMove), abs(downMove)))
+            return (previous * (1 - step))...(previous * (1 + step))
+        }
         let ref = max(abs(low), abs(high), 0.0001), spread = max(high - low, ref * 0.002), pad = max(spread * 0.09, ref * 0.0006)
         return (low - pad)...(high + pad)
     }

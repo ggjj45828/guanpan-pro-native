@@ -323,17 +323,28 @@ struct DashboardView: View {
         store.signal(forCode: q.code)?.score ?? -1
     }
 
+    /// 自选卡片上的股息率。**按代码自动算**，不依赖那张写死的分红表。
+    ///
+    /// 口径：近 12 个月每份分红 ÷ 现价。优先人工填写，其次 `twelveMonthPerShare`
+    /// （已核实记录 + 前复权/不复权价差推算出来的派息，同一天不重复计数），
+    /// 最后才退到「近三年有派息年度的均值」。
+    ///
+    /// 用户实测 159545 只有 1.9% 就是因为只算了写死表里的 0.010 + 0.015 = 0.025 元/份；
+    /// 按前复权价差，2026-05-15 还有一次 0.014 元没被记上，真实是 0.039 元/份 ≈ 3.0%。
     private func watchDividendYield(_ q: Quote) -> Double? {
         guard q.price > 0 else { return nil }
         let holding = store.data.holdings.first { $0.kind == .etf && $0.code == q.code }
-        if let holding, let projection = ETFDividendProjection.annualPerShare(for: holding, events: store.data.etfDividendEvents) {
-            return projection.amount > 0 ? projection.amount / q.price * 100 : nil
+        if let holding, let manual = holding.annualDividendPerShare, manual.isFinite {
+            return manual > 0 ? manual / q.price * 100 : nil
         }
-        let cutoff = ETFDividendProjection.yearAgoCutoff()
-        let annual = ETFDividendProjection.mergedEvents(store.data.etfDividendEvents)
-            .filter { $0.code == q.code && $0.date >= cutoff && $0.isEstimated != true }
-            .reduce(0) { $0 + $1.amountPerShare }
-        return annual > 0 ? annual / q.price * 100 : nil
+        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: q.code, events: store.data.etfDividendEvents)
+        if twelve.amount > 0 { return twelve.amount / q.price * 100 }
+        if let holding,
+           let projection = ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents),
+           projection.amount > 0 {
+            return projection.amount / q.price * 100
+        }
+        return nil
     }
 
     private var intradayOpportunities: [IntradayOpportunity] {
@@ -400,12 +411,9 @@ struct DashboardView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
-                Section("账户") {
-                    accountSummaryCard
-                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 8, trailing: 12))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                }
+                // 「账户」总资产卡片在这里下线（2026-10-14 用户要求）：
+                // 资产页已经有同一张卡，首页再放一遍纯属重复，还占掉首屏一大块。
+                // 首页现在直接从指数条进「盘面环境」，信息更紧凑。
                 Section("盘面环境") {
                     if let mood = store.marketMood {
                         // marketMood.average 是小数比率（0.01 = 1%），阈值与显示都按百分数走
@@ -619,15 +627,15 @@ struct DashboardView: View {
         defer { isManuallyRefreshing = false }
         refreshFeedback.begin("正在刷新行情和指数…")
         let deadline = Date().addingTimeInterval(25)
-        while (store.isRefreshingQuotes || store.isRefreshingIndices) && Date() < deadline {
+        while (store.isRefreshingQuotes || store.isRefreshingIndices || store.isAutoRefreshing) && Date() < deadline {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        guard !store.isRefreshingQuotes && !store.isRefreshingIndices else {
+        guard !store.isRefreshingQuotes && !store.isRefreshingIndices && !store.isAutoRefreshing else {
             refreshFeedback.finish("自动行情请求仍未结束，请稍后重试", succeeded: false)
             return
         }
         let quotesOK = await store.refreshQuotesAndWait()
-        let indicesOK = await store.performIndexRefresh()
+        let indicesOK = await store.performIndexRefresh(manual: true)
         let succeeded = quotesOK && indicesOK
         let message: String
         if succeeded { message = "行情和指数已更新" }
@@ -1377,6 +1385,14 @@ struct HoldingsView: View {
         if holding.annualDividendPerShare == 0 { return nil }
         // 多语句函数体没有隐式 return，少写 `return` 会报
         // "missing return in instance method expected to return ..."。
+        if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 { return (manual, .manual) }
+        // 优先用「近 12 个月每份分红」，且把前复权价差推算出的派息也算进来。
+        // 只认写死的那张表会把股息率算低（159545 实测 1.9% vs 3.0%），
+        // 而且那张表只要漏一次派息，「已核实」和「预计」就会显示成同一个数。
+        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: store.data.etfDividendEvents)
+        if twelve.amount > 0 {
+            return (twelve.amount, twelve.includesEstimate ? .inferred : .recorded)
+        }
         return ETFDividendProjection.projectedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)
     }
 
@@ -1384,9 +1400,16 @@ struct HoldingsView: View {
         annualDividendProjection(for: holding)?.amount
     }
 
+    /// 近 12 个月的派息收入合计。
+    ///
+    /// 现在与 `etfProjectedDividendIncome` 用的是同一套分子（`annualDividendProjection`
+    /// → `twelveMonthPerShare`：已核实记录 + 前复权价差自动推算，同一天不重复计数）。
+    /// 原来这里只认「已核实记录」，而写死的那张表会过期 —— 用户实测 159545 只算到
+    /// 0.025 元/份（1.9%），漏掉推算出来的 0.014 元；而且因为另一侧又回落到同一个
+    /// 「已核实」数，卡片上「已核实派息」和「预计派息」就显示成了一模一样的两个数。
     private var etfAnnualDividendIncome: Double {
         holdings.filter { $0.kind == .etf && $0.quantity > 0 }.reduce(0) { total, holding in
-            total + holding.quantity * (ETFDividendProjection.recordedAnnualPerShare(for: holding, events: store.data.etfDividendEvents)?.amount ?? 0)
+            total + holding.quantity * (annualDividendProjection(for: holding)?.amount ?? 0)
         }
     }
 
@@ -1425,13 +1448,14 @@ struct HoldingsView: View {
             return "股息率 = 你手填的每份年分红 \(manual.num(4)) 元 ÷ 现价，不随本机记录变化。"
         }
         let source = annualDividendProjection(for: holding)?.source
-        let cutoff = ETFDividendProjection.yearAgoCutoff()
-        let recorded = ETFDividendProjection.mergedEvents(store.data.etfDividendEvents)
-            .filter { $0.code == holding.code && $0.date >= cutoff && $0.isEstimated != true }
-        let total = recorded.reduce(0) { $0 + $1.amountPerShare }
+        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: store.data.etfDividendEvents)
         let basis: String
-        if source == .recorded || source == .projected {
-            basis = "近 12 个月已核实派息 \(recorded.count) 次、合计 \(total.num(4)) 元/份"
+        if twelve.amount > 0, twelve.estimatedCount > 0 {
+            // 有自动推算的成分时必须写明白，否则用户会以为这个数是「官方公告」。
+            basis = "近 12 个月共 \(twelve.count) 次派息、合计 \(twelve.amount.num(4)) 元/份"
+                + "（其中 \(twelve.estimatedCount) 次是按前复权与不复权收盘价差自动推算的）"
+        } else if source == .recorded || source == .projected {
+            basis = "近 12 个月已核实派息 \(twelve.count) 次、合计 \(twelve.amount.num(4)) 元/份"
         } else if source == .historicalAverage {
             basis = "近 12 个月没有已核实派息，按近三年有派息年度的平均值试算"
         } else if source == .inferred {
@@ -1439,7 +1463,7 @@ struct HoldingsView: View {
         } else {
             basis = "本机已记录的分红事件合计"
         }
-        return "股息率 = \(basis) ÷ 现价。月月分红的品种若本机只记到几次，这个数就会偏低；"
+        return "股息率 = \(basis) ÷ 现价。这个分子是**按代码自动算**的（写死的历史表只作兜底），"
             + "可在「编辑持仓 → 每份年分红修正」直接填年化金额覆盖。"
     }
 
@@ -1690,8 +1714,8 @@ struct HoldingsView: View {
                     let dividendYield = value > 0 && hasETFDividendData ? dividendIncome / value * 100 : nil
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("近12个月已核实派息").scaledFont(10).foregroundStyle(.secondary)
-                            Text(hasETFDividendData ? dividendIncome.cny() : (holdings.filter { $0.kind == .etf && $0.quantity > 0 }.allSatisfy { dividendStatus(for: $0) == "不分红" } ? "不分红" : "暂无已核实派息"))
+                            Text("近12个月派息收入").scaledFont(10).foregroundStyle(.secondary)
+                            Text(hasETFDividendData ? dividendIncome.cny() : (holdings.filter { $0.kind == .etf && $0.quantity > 0 }.allSatisfy { dividendStatus(for: $0) == "不分红" } ? "不分红" : "暂无派息记录"))
                                 .scaledFont(17, weight: .bold, design: .rounded)
                                 .foregroundStyle(dividendIncome > 0 ? Color(red: 0.07, green: 0.68, blue: 0.48) : .secondary)
                         }
@@ -1964,10 +1988,10 @@ struct HoldingsView: View {
     /// 用户反馈「第二天都休市了怎么还是彩虹框」—— 彩虹是「今晚净值刚更新」的即时提示，
     /// 不是「本机存着这份净值」的状态标记，所以窗口收回到采集当天。
     private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
+        // 走 store 缓存的 `code → 最新净值点`：这里原来是每行对全量 `fundNAVHistory`
+        // 做一次 `filter + max`，一屏十几行、滑动时每帧重算，是基金页卡顿的主因。
         guard holding.kind == .fund,
-              let latest = store.data.fundNAVHistory
-                .filter({ $0.code == holding.code })
-                .max(by: { $0.date < $1.date }) else { return false }
+              let latest = store.latestFundNAVByCode[holding.code] else { return false }
         let today = MarketCalendar.isoDay(now)
         if let fetchedAt = latest.fetchedAt {
             // 采集时刻必须落在今天：昨天的净值即使本机还留着，也不再算「刚刚更新」。
