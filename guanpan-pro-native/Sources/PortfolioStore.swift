@@ -2372,7 +2372,10 @@ final class PortfolioStore: ObservableObject {
             // 字段 3 = 当日实时参考净值（字段 4 是昨日 IOPV，字段 9 是最近公布的单位净值，
             // 三个都实测比对过，别取错）。一次请求可以批量，且与腾讯完全独立。
             // 这里**只补 IOPV**，价格 / 涨跌幅 / 时间戳一律不动。
-            let stillMissingIOPV = incompleteETFCodes.filter { values[tencentSymbol($0)]?.iopv == nil }
+            // `etfCodes` 是 Set，`filter` 出来还是 Set；这里要的是数组（下游按下标拼请求），
+            // 顺手转成 Array —— 上一版直接把它交给了 `[String]` 形参，CI 报
+            // `cannot convert value of type 'Set<String>' to expected argument type '[String]'`。
+            let stillMissingIOPV = Array(incompleteETFCodes.filter { values[tencentSymbol($0)]?.iopv == nil })
             if !stillMissingIOPV.isEmpty {
                 let sinaIOPVs = await fetchSinaFundIOPVs(codes: stillMissingIOPV)
                 for code in stillMissingIOPV {

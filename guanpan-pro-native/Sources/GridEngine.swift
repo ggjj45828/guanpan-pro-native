@@ -905,6 +905,17 @@ extension PortfolioStore {
     }
 }
 
+/// 区间复盘的默认格距候选（百分比）。
+///
+/// 这 9 档是按「一格大致等于当日振幅的 1/3 ~ 1/10」铺的：太密一趟连买卖两笔费用都覆盖不了，
+/// 太稀长期下来成交太少、等于没做网格。中间两档（1.0% / 1.2%）在多数 A 股宽基 ETF 上最常用。
+///
+/// 注意：这里只能放**文件作用域的类型**，不能放到 `extension PortfolioStore` 里当存储属性 ——
+/// Swift 不允许 extension 新增存储属性；而且默认参数引用的声明必须至少和函数本身一样可见。
+enum GridRangeDefaults {
+    static let stepPercents: [Double] = [0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0]
+}
+
 /// 区间复盘里某一天的预处理结果。放在文件作用域而不是函数内，方便被多个私有方法共用。
 private struct GridRangeDaySetup {
     let day: String
