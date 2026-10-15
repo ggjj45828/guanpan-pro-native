@@ -4018,6 +4018,11 @@ final class PortfolioStore: ObservableObject {
             if linkedCash && data.cash < gross + fee { throw StoreError.insufficientCash }
             h.cost = totalCost / newQty
             h.quantity = newQty
+            // 买入即给「当下价」占位：新标的此前没被行情刷过，current 是 0，
+            // 实时盈亏会卡在 quantity×(0−成本) 这个大负数不动，直到下一轮自动刷新。
+            // 用成交价先顶上，下一轮行情刷新会覆盖成真实现价，避免「买了却看不到盈亏在动」。
+            // 已有实时价的旧持仓不动（保留更准的现价差价）。
+            if h.current <= 0 || !h.current.isFinite { h.current = price }
             if linkedCash { data.cash -= gross + fee }
         case .sell:
             guard quantity <= h.quantity + 1e-8 else { throw StoreError.insufficientShares }

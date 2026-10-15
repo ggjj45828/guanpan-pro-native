@@ -3768,12 +3768,18 @@ struct TradeEditor: View {
     }
     private func save() {
         guard let q = Double(quantity), let p = Double(price), let f = Double(fee) else { error = "请输入有效数字"; return }
-        do { try store.recordTrade(code: holding.code, kind: holding.kind, side: side, quantity: q, price: p,
-            fee: f, linkedCash: linkCash, date: tradeDate,
-            settlementDate: holding.kind == .fund ? settlementDate : nil,
-            fundRedemptionLots: estimatedQuantity == quantity && estimatedTradeDay == dayKey(tradeDate) ? estimatedRedemptionLots : nil,
-            fundFeeWasEstimated: holding.kind == .fund && side == .sell
-                && estimatedFeeValue.map { abs($0 - f) <= 0.005 } == true); dismiss() }
+        do {
+            try store.recordTrade(code: holding.code, kind: holding.kind, side: side, quantity: q, price: p,
+                fee: f, linkedCash: linkCash, date: tradeDate,
+                settlementDate: holding.kind == .fund ? settlementDate : nil,
+                fundRedemptionLots: estimatedQuantity == quantity && estimatedTradeDay == dayKey(tradeDate) ? estimatedRedemptionLots : nil,
+                fundFeeWasEstimated: holding.kind == .fund && side == .sell
+                    && estimatedFeeValue.map { abs($0 - f) <= 0.005 } == true)
+            // 入账后立即拉一次行情：新标的此前没被刷过 current=0，实时盈亏会卡住不动；
+            // 主动刷一次，最新价立刻进来，盈亏就开始跟着盘口走了（与自动刷新开关无关）。
+            Task { await store.refreshQuotesAndWait() }
+            dismiss()
+        } catch { self.error = error.localizedDescription }
         catch { self.error = error.localizedDescription }
     }
 
