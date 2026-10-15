@@ -558,8 +558,13 @@ final class PortfolioStore: ObservableObject {
         // 旧版实时点带秒，与整分钟行情会形成重复。首次载入时压成一条/分钟并重写紧凑文件。
         // 判定用「归一化后时间戳是否变化」，不再用 `Int(时间戳) % 60` —— 一旦文件里出现
         // 坏时间戳（非有限值），`Int(_:)` 会直接 trap，整个 App 在启动即闪退。
+        // 除了「分钟压平」，代码写法也要统一（老档案可能存的是 `sh510300` 这种带前缀的）。
+        // 只要发现要归一化就重写一次落盘，避免每次启动都白压一遍。
         let needsRewrite = loaded.count != intradayBars.count
-            || loaded.contains { Self.normalizedIntradayBar($0).timestamp != $0.timestamp }
+            || loaded.contains {
+                Self.normalizedIntradayBar($0).timestamp != $0.timestamp
+                    || Self.normalizedIntradayCode($0.code) != $0.code
+            }
         if needsRewrite {
             saveIntradayBars()
         }
@@ -592,18 +597,37 @@ final class PortfolioStore: ObservableObject {
         return Int(clamped / 60)
     }
 
+    /// 分时代码的统一写法：剥掉 `sh` / `sz` / `bj` 前缀、转小写。
+    ///
+    /// **为什么必须有这一道**：归档里 `IntradayBar.code` 的来源不止一处 —— 手机前台采集
+    /// 用的是账本里的纯代码（`510300`），而 NAS 归档 / 旧网页备份 / 通用解析器给的是
+    /// **带市场前缀**的写法（`sh510300`）。不统一的话，同一只标的会在档案里留下
+    /// **两套互不相认的键**：分时档案页有 `resolvedIntradayCode` 兜底，能找到带前缀那套
+    /// （所以卡片上「IOPV 已采集」显示正常）；但分时图 / 归档合并是直接拿账本纯代码去查的，
+    /// **取不到带前缀的那一套** —— 用户看到的就是「档案页明明采到了全部 IOPV，
+    /// 一打开分时图紫线就没了」。统一成纯小写后，写入与查询共用同一个键，这道裂缝就没了。
+    nonisolated static func normalizedIntradayCode(_ raw: String) -> String {
+        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for prefix in ["sh", "sz", "bj"] where code.hasPrefix(prefix) {
+            return String(code.dropFirst(prefix.count))
+        }
+        return code
+    }
+
     private static func normalizedIntradayBar(_ bar: IntradayBar) -> IntradayBar {
         var normalized = bar
+        normalized.code = Self.normalizedIntradayCode(bar.code)
         normalized.timestamp = Date(timeIntervalSince1970: TimeInterval(Self.minuteStamp(bar.timestamp) * 60))
         return normalized
     }
 
     static func intradayMinuteKey(code: String, at time: Date) -> String {
-        "\(code)-\(Self.minuteStamp(time))"
+        "\(normalizedIntradayCode(code))-\(Self.minuteStamp(time))"
     }
 
     /// 「标的 + 交易日」在索引里的键。做成静态方法是为了让调用方和存储共用同一种拼法。
-    static func codeDayKey(code: String, day: String) -> String { "\(code)|\(day)" }
+    /// 代码先过 `normalizedIntradayCode`，保证「写入」与「查询」永远落在同一个键上。
+    static func codeDayKey(code: String, day: String) -> String { "\(normalizedIntradayCode(code))|\(day)" }
 
     func containsIntradayMinute(code: String, at time: Date) -> Bool {
         // 直接查主索引：它的键就是「代码-分钟」，原来那份独立的 `Set<String>` 完全冗余。
@@ -619,7 +643,7 @@ final class PortfolioStore: ObservableObject {
 
     /// 某标的已有分时记录的交易日，新的在前。
     func intradayDays(forCode code: String) -> [String] {
-        (intradayDaySetByCode[code] ?? []).sorted(by: >)
+        (intradayDaySetByCode[Self.normalizedIntradayCode(code)] ?? []).sorted(by: >)
     }
 
     /// 某标的某交易日已保存的分时点数。
@@ -644,9 +668,9 @@ final class PortfolioStore: ObservableObject {
     /// 这里只遍历「标的数」量级的代码表做一次归一化比较，
     /// 取代以前「每只标的都把整份分钟档案扫一遍」的 O(标的 × 总点数) 写法。
     func resolvedIntradayCode(_ code: String) -> String {
-        if intradayDaySetByCode[code] != nil { return code }
-        let target = intradayCodeKey(code)
-        for candidate in intradayDaySetByCode.keys where intradayCodeKey(candidate) == target {
+        let target = Self.normalizedIntradayCode(code)
+        if intradayDaySetByCode[target] != nil { return target }
+        for candidate in intradayDaySetByCode.keys where Self.normalizedIntradayCode(candidate) == target {
             return candidate
         }
         return code
@@ -698,13 +722,8 @@ final class PortfolioStore: ObservableObject {
     ///
     /// 只在**建索引**时过滤：原始档案不动（不删数据），只是界面不再看到盘后那一段。
     static func keepsIntradaySession(code: String, timestamp: Date) -> Bool {
-        let lowered = code.lowercased()
-        let plain: String
-        if lowered.hasPrefix("sh") || lowered.hasPrefix("sz") || lowered.hasPrefix("bj") {
-            plain = String(lowered.dropFirst(2))
-        } else {
-            plain = lowered
-        }
+        // 与索引键共用同一套归一化，避免「带前缀的沪深代码被当成非沪深标的」而漏过滤。
+        let plain = normalizedIntradayCode(code)
         guard plain.count == 6, plain.allSatisfy(\.isNumber) else { return true }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
@@ -1301,11 +1320,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     private func intradayCodeKey(_ raw: String) -> String {
-        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        for prefix in ["sh", "sz", "bj"] where code.hasPrefix(prefix) {
-            return String(code.dropFirst(prefix.count))
-        }
-        return code
+        Self.normalizedIntradayCode(raw)
     }
 
     /// 只下载和解析，不触发落盘。批量归档时先收集全部标的、最后合并一次，
