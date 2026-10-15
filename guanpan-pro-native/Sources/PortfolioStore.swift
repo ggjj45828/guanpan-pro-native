@@ -1272,6 +1272,25 @@ final class PortfolioStore: ObservableObject {
                 premiums[code] = (price / iopv - 1) * 100
             }
         }
+        // 昨 IOPV 回填：腾讯 81 字段拉不到时（网络受限、深市 ETF 缺字段等），分时图的
+        // 「估算 IOPV 线」会因为缺 `navPrev` 锚点而整条画不出来（见 `estimatedIOPVSeries`）。
+        // 用档案里**上一个交易日**的最后一个 IOPV 顶上 —— 那是那天的收官估值，正是「昨 IOPV」的定义。
+        var navPrevs = marketNavPrevs
+        let priorDays = Set(bars.map(\.day)).filter { $0 < latestDay }
+        if let priorDay = priorDays.max() {
+            var priorLast: [String: (value: Double, at: Date)] = [:]
+            for bar in bars where bar.day == priorDay {
+                guard let iopv = bar.iopv, iopv.isFinite, iopv > 0 else { continue }
+                let code = intradayCodeKey(bar.code)
+                guard tracked.contains(code) else { continue }
+                if let existing = priorLast[code], existing.at >= bar.timestamp { continue }
+                priorLast[code] = (iopv, bar.timestamp)
+            }
+            for (code, item) in priorLast where navPrevs[code] == nil {
+                navPrevs[code] = item.value
+                changed = true
+            }
+        }
         // 分时图紫色 IOPV 线保险：本地最新交易日分钟线缺 IOPV 时，用本次行情刷新拿到的
         // 实时 IOPV 回填（重装后本地档案空、或 NAS 没存 IOPV 时，至少最新一日线能重新出现）。
         let liveIOPVs = marketIOPVs
@@ -1289,6 +1308,7 @@ final class PortfolioStore: ObservableObject {
         guard changed else { return }
         assignIfChanged(\.marketIOPVs, iopvs)
         assignIfChanged(\.marketPremiums, premiums)
+        assignIfChanged(\.marketNavPrevs, navPrevs)
     }
 
     /// 只在首次可用时从旧网页备份回填一次 gridhist，不迁移或覆盖账户数据；

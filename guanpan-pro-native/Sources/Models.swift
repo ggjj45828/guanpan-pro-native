@@ -93,8 +93,10 @@ enum MarketIndexStore {
     ///   （例如 `usDAX` 其实是 DAX 德国指数 ETF）。
     /// · 东方财富 `push2` 覆盖面最全，但本机出口 IP 已被风控（连续请求直接断连），
     ///   所以只能当作「有就用」的备选，不能当作主力。
-    /// · 新浪 `hq.sinajs.cn` 的 `int_nikkei` 给日经、`b_TOPIX` 给东证、`b_KOSPI` 给韩国，
-    ///   正好补上腾讯的缺口（注意 `int_topix` / `int_kospi` 是空的，必须用 `b_` 前缀）。
+    /// · 新浪 `hq.sinajs.cn` 的 `b_NKY` 给日经、`b_TOPIX` 给东证、`b_KOSPI` 给韩国，
+    ///   正好补上腾讯的缺口。**必须用 `b_` 前缀**：实测（2026-10-15）`int_nikkei` 返回的是
+    ///   `44946.64 / -0.90%` 这种陈旧错值，而 `b_NKY` 返回 `64425.73 / -4.90%`，
+    ///   与东财 `100.N225` 的 `64425.95 / -4.90%` 一致；`int_topix` / `int_kospi` 则直接是空的。
     /// 三个源**并行**取、后写的覆盖先写的：谁挂都不至于让整排空白。
     ///
     /// 台湾加权、英国富时、德国 DAX 已按用户要求下线（「太偏了」）。
@@ -110,7 +112,7 @@ enum MarketIndexStore {
         Entry(secid: "100.HSI", tencent: "hkHSI", name: "恒生指数", sina: "b_HSI"),
         Entry(secid: "124.HSTECH", tencent: "hkHSTECH", name: "恒生科技"),
         // 道琼斯已按用户要求下线（2026-10-14：「道琼斯删了」）。
-        Entry(secid: "100.N225", tencent: nil, name: "日经225", sina: "int_nikkei"),
+        Entry(secid: "100.N225", tencent: nil, name: "日经225", sina: "b_NKY"),
         Entry(secid: "100.TOPIX", tencent: nil, name: "东证TOPIX", sina: "b_TOPIX"),
         Entry(secid: "100.KS11", tencent: nil, name: "韩国KOSPI", sina: "b_KOSPI")
     ]
