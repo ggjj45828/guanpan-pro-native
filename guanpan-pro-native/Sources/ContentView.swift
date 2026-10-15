@@ -1693,14 +1693,19 @@ private func holdingFundPeriodMetric(for holding: Holding,
         percent: (pair.latest.nav / previous.nav - 1) * 100)
 }
 
-/// 这张卡要不要亮「刚更新净值」的彩虹框。
+/// 这张卡的「刚更新净值」档位（满彩 / 迟到一期 / 不亮）。
 ///
-/// 判定与「今日已更新 X/Y 只持仓基金」那条提示**同源**（都走 `isFreshFundNAV`），
+/// 判定与「今日已更新 X/Y 只持仓基金」那条提示**同源**（都走 `PortfolioStore.fundNAVFreshness`）。
 /// **只比日期、不比时刻** —— 曾写 `now >= fetchedAt`，而 `now` 是页面日期时钟、
 /// `fetchedAt` 是刷新完成那一刻，用户在页面里点刷新拿到的净值必然晚于它，于是永远不亮。
-@MainActor private func holdingIsFreshNAV(_ holding: Holding, latest: FundNAVPoint?, now: Date) -> Bool {
-    guard holding.kind == .fund, let point = latest else { return false }
-    return PortfolioStore.isFreshFundNAV(point, today: MarketCalendar.isoDay(now))
+///
+/// 两档的区别只体现在外观上（满色彩虹 vs 琥珀细描边），语义见 store 里的
+/// `FundNAVFreshness`：满彩＝「今天的净值到了」，琥珀＝「今天刚到的是昨天的净值」。
+@MainActor private func holdingNAVFreshness(_ holding: Holding,
+                                            latest: FundNAVPoint?,
+                                            now: Date) -> PortfolioStore.FundNAVFreshness {
+    guard holding.kind == .fund, let point = latest else { return .stale }
+    return PortfolioStore.fundNAVFreshness(point, today: MarketCalendar.isoDay(now))
 }
 
 /// 持仓行上的操作意图。行本身不持有任何 `@State`，动作一律回抛给列表层处理 ——
@@ -1735,7 +1740,8 @@ private struct HoldingRowCard: View {
     let navPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)]
     let latestNAVDate: String?
     let dilutedRealized: [String: Double]
-    /// 页面级的「日期时钟」，只在跨午夜时前进 —— 用它判彩虹框，不要用 `Date.now`。
+    /// 页面级的「日期时钟」，只在跨午夜时前进 —— 用它判净值新鲜度（满彩 / 琥珀两档），
+    /// 不要用 `Date.now`（后者会让每次行情刷新都把这个值推新一次）。
     let now: Date
     let onAction: (HoldingRowAction) -> Void
 
@@ -1753,7 +1759,7 @@ private struct HoldingRowCard: View {
             .accessibilityLabel(kind == .fund ? "场外基金" : "场内 ETF 或证券")
     }
 
-    /// 彩虹描边 / 彩虹色条共用的渐变。
+    /// 彩虹描边 / 彩虹色条共用的渐变（最高一档「今天的净值到了」专用）。
     private var freshNAVGradient: LinearGradient {
         LinearGradient(colors: [
             Color(red: 0.98, green: 0.30, blue: 0.42),
@@ -1763,6 +1769,14 @@ private struct HoldingRowCard: View {
             Color(red: 0.62, green: 0.40, blue: 0.96)
         ], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
+
+    /// 「迟到一期」的描边色：单色琥珀、线更细。
+    ///
+    /// 为什么不用同一套彩虹：彩虹＝「今天的净值到了」，是最高一档。第二档必须**一眼看出
+    /// 是另一回事**（今天到的是昨天的净值），所以换成单色 + 更细的线，既不抢戏也不会被
+    /// 误读成满彩。取 `CardTone.warn` 而不自己编一个黄，是为了跟全站「有出入 / 待确认」
+    /// 的琥珀语义保持一致 —— 场外基金那边本来就用它标「原因说明」。
+    private var lateArrivalTone: Color { CardTone.warn }
 
     /// 持仓行内的小统计：紧凑但不小于 10pt，一行放三个且保持可读。
     private func stat(_ title: String, _ value: String, _ tone: Double?) -> some View {
@@ -1813,7 +1827,7 @@ private struct HoldingRowCard: View {
         let annualDividend = annualProjection?.amount
         let dividendYield = annualDividend.flatMap { holding.current > 0 ? $0 / holding.current * 100 : nil }
         let premium = kind == .etf ? store.marketPremiums[holding.code] : nil
-        let highlightFreshNAV = holdingIsFreshNAV(holding, latest: store.latestFundNAVByCode[holding.code], now: now)
+        let navFreshness = holdingNAVFreshness(holding, latest: store.latestFundNAVByCode[holding.code], now: now)
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 kindBadge
@@ -1871,9 +1885,17 @@ private struct HoldingRowCard: View {
                     Text("最新净值日期：\(latest.date) · 只有一期净值，还看不出变化")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                // 「迟到一期」：今天确实刚拿到这一期净值，但它的净值日早于今天。
+                // 这是美股 / QDII 唯一能拿到反馈的一档 —— 琥珀框 + 这一句把话说完，
+                // 否则用户看到「今天更新了」却配着一张昨天的净值，会以为算错了。
+                if navFreshness == .lateArrival {
+                    Text("今天刚取到这一期净值（净值日 \(shortDay(latest.date))）· 美股 / QDII 方向本来就晚一个交易日，琥珀框表示它今天有更新")
+                        .font(.caption2).foregroundStyle(lateArrivalTone)
+                }
                 // 没亮彩虹的常见原因：这只基金的最新净值日还落后于本组其它基金
                 // （QDII 里美股、全球配置的公布节奏不同，T+1 / T+2 都可能）。
-                if let newest = latestNAVDate, latest.date < newest {
+                // 已经亮框时不说这句 —— 「今天有更新」和「还没公布」不该同时出现在同一张卡上。
+                if let newest = latestNAVDate, latest.date < newest, navFreshness == .stale {
                     Text("净值日 \(shortDay(latest.date)) · 本组已更新到 \(shortDay(newest))，这只的新净值还没公布；公布当晚卡片才会亮起")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
@@ -1890,10 +1912,21 @@ private struct HoldingRowCard: View {
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
             tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
         .overlay {
-            if highlightFreshNAV {
+            // 两档：满色彩虹（今天的净值到了）/ 琥珀细描边（今天到的是昨天的净值）。
+            // `switch` 而不是 if/else —— 三态必须写全，将来加档会漏会在这里被编译器抓住。
+            switch navFreshness {
+            case .today:
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(freshNAVGradient, lineWidth: 2.2)
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            case .lateArrival:
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(lateArrivalTone.opacity(0.85), lineWidth: 1.6)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            case .stale:
+                EmptyView()
             }
         }
         .overlay(alignment: .leading) {
@@ -1901,7 +1934,9 @@ private struct HoldingRowCard: View {
             // 变成不用读页标题就知道的事（用户反馈两页的持仓行长得一模一样）。
             // 彩虹高亮期间让位给彩虹条 —— 那时「刚更新」比「是场外」更该被看见，
             // 类别识别由常显的徽标兜底。
-            if highlightFreshNAV {
+            // 只有**满彩**那一档才顶掉左侧色条：琥珀那一档保留类别色，
+            // 让它第一眼看过去就「不像」最高一档。
+            if navFreshness == .today {
                 Capsule()
                     .fill(freshNAVGradient)
                     .frame(width: 4)
@@ -1978,11 +2013,12 @@ struct HoldingsView: View {
     /// 长按菜单删除的确认目标
     @State private var removeTarget: Holding?
     @State private var searchText = ""
-    /// 驱动“最新净值已更新”彩虹强调。窗口只到采集当天结束，所以每 60 秒推一次时钟，
+    /// 驱动“最新净值已更新”强调 —— **满色彩虹与琥珀「迟到一期」两档都靠它计时**。
+    /// 窗口只到采集当天结束，所以每 60 秒推一次时钟，
     /// 跨过午夜（本地时间）后这一分钟之内就会自动恢复普通卡片。
     @State private var fundFreshnessClock = Date.now
     /// 配合 `.task` 里的 60 秒循环：`.task` 在「App 一直在后台」时不保证重启，
-    /// 回到前台时补推一次时钟，避免昨晚更新的基金今天还亮着彩虹。
+    /// 回到前台时补推一次时钟，避免昨晚更新的基金今天还亮着框。
     @Environment(\.scenePhase) private var scenePhase
     /// 「最近基金流水」默认收起：10 笔流水加上待核对的估算费能占掉大半屏，
     /// 把持仓卡和基金工具挤到下面。展开状态记在 AppStorage 里，下次打开保持用户选择。
@@ -2242,7 +2278,7 @@ struct HoldingsView: View {
                 }
             }
             .task {
-                // 这个时钟唯一的作用是「跨过午夜后让彩虹强调自动消失」。
+                // 这个时钟唯一的作用是「跨过午夜后让净值更新强调自动熄灭」—— 两档都熄。
                 // 原来每 60 秒无条件写一次 `@State`，等于**每分钟把整页持仓行重建一遍**；
                 // 现在只在**日期真的翻篇**时才写，其余时间一次重绘都不产生。
                 while !Task.isCancelled {
@@ -2254,7 +2290,7 @@ struct HoldingsView: View {
                 }
             }
             // App 在后台跨过午夜、再回到前台时 `.task` 不保证重启，时钟会停在昨天，
-            // 于是昨晚更新的净值今天还亮着彩虹。这里补一次，只在真的翻篇时才写状态。
+            // 于是昨晚更新的净值今天还亮着框。这里补一次，只在真的翻篇时才写状态。
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
                 if MarketCalendar.isoDay(fundFreshnessClock) != MarketCalendar.isoDay(.now) {
@@ -2456,8 +2492,8 @@ struct HoldingsView: View {
         let navPairs = fundNAVPairs
         let dilutedRealized = store.dilutedRealizedSums()
         // 本页全部场外基金里最新的一个净值日。用来标出「哪只还没公布新净值」——
-        // 彩虹框只跟「这只基金自己有没有新净值」有关，落后于组内最新净值日的基金
-        // 不会、也不应该亮，这里把原因直接写在卡片上，不用用户猜。
+        // 外框只跟「这只基金自己有没有新净值」有关（满彩 / 琥珀两档），落后于组内最新净值日
+        // 且今天也没拿到新一期的基金不会亮，这里把原因直接写在卡片上，不用用户猜。
         let latestNAVDate = navPairs.values.map(\.latest.date).max()
         if isSearching && rows.isEmpty {
             Text("没有匹配「\(searchQuery)」的持仓")

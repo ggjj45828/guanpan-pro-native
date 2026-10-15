@@ -1632,32 +1632,69 @@ final class PortfolioStore: ObservableObject {
     private var cachedFundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
     private var cachedFundNAVPairsKey = ""
 
-    /// 「这份净值**业务日期**是不是今天」——持仓页的彩虹外框与净值刷新提示共用同一个口径。
+    /// 「这只场外基金今天的净值状态」——持仓页外框与净值刷新提示**共用同一个口径**。
     ///
     /// 为什么必须共用：两处一个在 store、一个在 `HoldingsView`，各写一份判断迟早会分叉，
-    /// 用户就会看到「提示说今日已更新 3 只，界面上只有 2 个彩虹框」这种自相矛盾的说法。
+    /// 用户就会看到「提示说今日已更新 3 只，界面上只有 2 个框」这种自相矛盾的说法。
     ///
-    /// **彩虹框 = 净值的业务日期就是今天**，而不是「今天采到本机」。场外基金 T+1：今天看到的
-    /// 往往是昨天的净值，那种情况不该亮框，次日翻篇自然熄灭。早期版本用「采集时刻 == 今天」
-    /// 会把「T+1 在次晨才抓到的昨日净值」误判成「今日更新」—— 表现为 14 号的净值在 15 号还
-    /// 挂着彩虹框，用户反馈的正是这个（v2.13.45 修）。代价：净值在次晨才公布的基金当天不会亮框，
-    /// 这与「今天还没拿到今天的净值」的用户认知一致。
-    static func isFreshFundNAV(_ point: FundNAVPoint, today: String) -> Bool {
-        return point.date == today
+    /// **两档**（2026-10-15 起，用户选了「分两档」方案）：
+    /// · `today`       —— 最新一期的**净值业务日期就是今天**：满色彩虹描边 + 彩虹左条。
+    /// · `lateArrival` —— 净值日**早于**今天，但**本机今天确实刚采到这一期**（`fetchedAt` 是今天）：
+    ///                    单色琥珀细描边，卡片上写明「今天刚到的是哪一天的净值」。
+    /// · `stale`       —— 没有新东西，不亮。
+    ///
+    /// **为什么要第二档**：美股 / QDII 方向的基金净值天然晚一个交易日以上才公布，
+    /// 只认「净值日 == 今天」的话，这些基金在界面上**永远不会有任何「刚更新」的反馈**
+    /// —— 用户原话「那 app 上美股永远不会有彩虹框」。
+    ///
+    /// **为什么不会退回旧毛病**：旧毛病是「14 号的净值 15 号还挂着彩虹框」，
+    /// 当时那一档与满彩长得一模一样。现在两档视觉不同、原因直接写在卡片上；
+    /// 而且第二档的寿命只有一个自然日 —— 到了次日 `fetchedAt` 不再等于当天就自动熄灭。
+    /// 也正因此，`fetchedAt` 只用来回答「什么时候到本机」，从不参与净值归属日的判断。
+    enum FundNAVFreshness: Equatable {
+        case today
+        case lateArrival
+        case stale
     }
 
-    /// 今日已拿到新净值的持仓基金数，以及分母（持仓基金总数）。
-    /// 提示文案用它与用户对账：页面上亮几个彩虹框，这里就该是几只。
-    func freshFundNAVTally(now: Date = .now) -> (updated: Int, total: Int) {
+    /// 归一化成「哪一档」。日期是 `yyyy-MM-dd`，字符串序即时间序，可以直接比大小。
+    static func fundNAVFreshness(_ point: FundNAVPoint, today: String) -> FundNAVFreshness {
+        if point.date == today { return .today }
+        guard point.date < today,
+              let fetchedAt = point.fetchedAt,
+              MarketCalendar.isoDay(fetchedAt) == today else { return .stale }
+        return .lateArrival
+    }
+
+    /// 「净值的业务日期就是今天」——只需要满彩那一档的地方调它。
+    ///
+    /// 曾经直接用「采集时刻 == 今天」，会把「T+1 在次晨才抓到的昨日净值」误判成今日更新
+    /// （14 号的净值在 15 号还亮着，v2.13.45 修）。现在这个判断只认业务日期。
+    static func isFreshFundNAV(_ point: FundNAVPoint, today: String) -> Bool {
+        fundNAVFreshness(point, today: today) == .today
+    }
+
+    /// 今天有净值反馈的持仓基金数（**两档合计**）、其中「迟到一期」的只数，以及分母（持仓基金总数）。
+    ///
+    /// 提示文案用它与用户对账：**页面上亮起几个框，这里就得是几只** ——
+    /// 所以两档都要算进去，否则那几张琥珀框会变成「多出来的」，
+    /// 正好又制造出这条口径当初要避免的自相矛盾。
+    func freshFundNAVTally(now: Date = .now) -> (updated: Int, late: Int, total: Int) {
         let codes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code))
-        guard !codes.isEmpty else { return (0, 0) }
+        guard !codes.isEmpty else { return (0, 0, 0) }
         let today = MarketCalendar.isoDay(now)
         let latest = latestFundNAVByCode
-        let updated = codes.filter { code in
-            guard let point = latest[code] else { return false }
-            return Self.isFreshFundNAV(point, today: today)
-        }.count
-        return (updated, codes.count)
+        var todayCount = 0
+        var lateCount = 0
+        for code in codes {
+            guard let point = latest[code] else { continue }
+            switch Self.fundNAVFreshness(point, today: today) {
+            case .today: todayCount += 1
+            case .lateArrival: lateCount += 1
+            case .stale: break
+            }
+        }
+        return (todayCount + lateCount, lateCount, codes.count)
     }
 
     /// 保存 AI 最近结果，不占用“撤销上一次账本修改”的位置。
@@ -3521,18 +3558,20 @@ final class PortfolioStore: ObservableObject {
             // 而不是「本次读到了几个代码」。以前写成「成功读取 8/8 个代码」，很容易被
             // 读成「8 只都更新了」—— 读取成功和净值有没有公布是两件事（净值 T+1，
             // 各基金公布时间还不同，QDII 更晚）。
-            // 主句与持仓页彩虹外框同一口径（`isFreshFundNAV`）：亮几个彩虹框就是几只；
+            // 主句与持仓页外框同一口径（`fundNAVFreshness`）：**亮起几个框，这里就是几只**；
             // 剩下的没更新时补一句原因，省得再来猜「是不是闭市所以没有」。
-            // 主句与持仓页彩虹外框同一口径（`isFreshFundNAV`）：亮几个彩虹框就是几只。
             // 这个数**只增不减**（今天更新过的基金到明天才清零），不会再出现
             // 「刚才 1 只、再刷一下变 2 只」那种让人怀疑自己看错了的跳动。
+            // 两档同时成立时要把「迟到一期」的只数说出来 —— 否则用户看到 3 个框、
+            // 其中 1 个是琥珀的，会以为提示在数错。（美股 / QDII 全靠这一档才有反馈。）
             let tally = freshFundNAVTally()
             // 只有「本轮更新到的是非持仓代码（定投计划 / 历史流水里的基金）」时才值得补一句：
             // 否则主句会显示「今日已更新 0/7」，用户会以为一只都没更新。
             let nonHoldingFresh = changedNAVCodes.subtracting(changedHoldingNAVCodes).count
             let freshNote = nonHoldingFresh > 0 ? " · 另有 \(nonHoldingFresh) 只非持仓基金也更新了" : ""
+            let lateNote = tally.late > 0 ? "（其中 \(tally.late) 只是昨日净值）" : ""
             let headNote = tally.total > 0
-                ? "今日已更新 \(tally.updated)/\(tally.total) 只持仓基金\(freshNote)"
+                ? "今日已更新 \(tally.updated)/\(tally.total) 只持仓基金\(lateNote)\(freshNote)"
                 : "没有场外持仓基金（定投计划 / 历史流水仍会取净值）"
             let t1Note = (tally.total > 0 && tally.updated < tally.total) || !failures.isEmpty
                 ? "（净值通常 T+1，晚间陆续公布）" : ""
