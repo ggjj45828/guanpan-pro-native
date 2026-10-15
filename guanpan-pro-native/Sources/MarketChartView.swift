@@ -1531,6 +1531,15 @@ struct MarketChartView: View {
         let day = shanghaiDay(first.timestamp)
         guard let start = formatter.date(from: "\(day) 09:30"),
               let end = formatter.date(from: "\(day) 15:00") else { return nil }
+        // 全球指数（日经/东证/韩国，北京时间戳 08:00–14:30）与美股指数（北京隔夜）
+        // 的分时落在 A 股 09:30–15:00 之外，强套 A 股域会把曲线裁掉大半或留大片空白。
+        // 数据自身超出该时段就改走「按数据首尾」的兜底域（见 intradayXDomain）；
+        // A 股 / 港股数据都在时段内，不会触发，行为不变。
+        if let firstBar = selectedIntradayBars.first, let lastBar = selectedIntradayBars.last {
+            let lo = intradayChartTime(firstBar.timestamp)
+            let hi = intradayChartTime(lastBar.timestamp)
+            if lo < start || hi > end { return nil }
+        }
         // 压缩午休后 15:00 会映射到 13:31，仍晚于 09:30；这里再做一次上下界保护，
         // 任何情况下都不把「下界 > 上界」的区间交给 Swift Charts（那是一定崩的）。
         let lower = min(intradayChartTime(start), intradayChartTime(end))

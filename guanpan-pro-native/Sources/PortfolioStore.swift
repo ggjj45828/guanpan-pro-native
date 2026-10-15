@@ -1180,6 +1180,10 @@ final class PortfolioStore: ObservableObject {
     /// 字典就是空的，卡片于是显示「本轮未取到」。这里把 NAS 档案里**最新交易日**的 IOPV 回填进
     /// 这两个字典的空缺位，让「NAS 已采集」真正反映到卡片上，不必每次都靠手机前台去腾讯 / 新浪现拉。
     /// 已有非空值的不覆盖（`performQuoteRefresh` 给的更准、更新）。
+    ///
+    /// 另外做一道保险：本机重装 / NAS 档案缺损导致本地分钟线（含分时图紫色 IOPV 线）丢失时，
+    /// 若这次行情刷新拿到了实时 IOPV，就把它回填进「最新交易日」分钟线里 IOPV 为空的那些点，
+    /// 让 IOPV 线至少最新一日能重新出现（历史分钟线仍需 NAS 档案里有 IOPV 才能完整恢复）。
     private func refillValuationFromArchive(_ bars: [IntradayBar]) {
         let tracked = Set(data.quotes.map(\.code) + data.holdings.map(\.code))
         guard !tracked.isEmpty else { return }
@@ -1193,21 +1197,33 @@ final class PortfolioStore: ObservableObject {
             guard tracked.contains(code) else { continue }
             latestIOPV[code] = iopv // 同日后面的点覆盖前面的，越新越准
         }
-        guard !latestIOPV.isEmpty else { return }
+        // 卡片「溢价 · IOPV」字典：用 NAS 最新交易日的 IOPV 填空缺位。
         var iopvs = marketIOPVs
         var premiums = marketPremiums
         var changed = false
-        for (code, iopv) in latestIOPV {
-            if iopvs[code] == nil {
-                iopvs[code] = iopv
-                changed = true
-                // 同时有现价就顺手补一个溢价率（现价 ÷ IOPV − 1），溢价数字也不再空着。
-                let price = data.quotes.first { $0.code == code }?.price
-                    ?? data.holdings.first { $0.code == code }?.current
-                if let price, price.isFinite, price > 0, premiums[code] == nil {
-                    premiums[code] = (price / iopv - 1) * 100
-                }
+        for (code, iopv) in latestIOPV where iopvs[code] == nil {
+            iopvs[code] = iopv
+            changed = true
+            // 同时有现价就顺手补一个溢价率（现价 ÷ IOPV − 1），溢价数字也不再空着。
+            let price = data.quotes.first { $0.code == code }?.price
+                ?? data.holdings.first { $0.code == code }?.current
+            if let price, price.isFinite, price > 0, premiums[code] == nil {
+                premiums[code] = (price / iopv - 1) * 100
             }
+        }
+        // 分时图紫色 IOPV 线保险：本地最新交易日分钟线缺 IOPV 时，用本次行情刷新拿到的
+        // 实时 IOPV 回填（重装后本地档案空、或 NAS 没存 IOPV 时，至少最新一日线能重新出现）。
+        let liveIOPVs = marketIOPVs
+        if !liveIOPVs.isEmpty {
+            var reseedBars: [IntradayBar] = []
+            for bar in intradayBars where bar.day == latestDay {
+                guard let live = liveIOPVs[intradayCodeKey(bar.code)],
+                      live.isFinite, live > 0, bar.iopv == nil else { continue }
+                var b = Self.normalizedIntradayBar(bar)
+                b.iopv = live
+                reseedBars.append(b)
+            }
+            if !reseedBars.isEmpty { mergeIntradayBars(reseedBars) }
         }
         guard changed else { return }
         assignIfChanged(\.marketIOPVs, iopvs)
@@ -1528,18 +1544,17 @@ final class PortfolioStore: ObservableObject {
     private var cachedFundNAVPairs: [String: (latest: FundNAVPoint, previous: FundNAVPoint?)] = [:]
     private var cachedFundNAVPairsKey = ""
 
-    /// 「这份净值是不是**今天**采到本机的」——持仓页的彩虹外框与净值刷新提示共用同一个口径。
+    /// 「这份净值**业务日期**是不是今天」——持仓页的彩虹外框与净值刷新提示共用同一个口径。
     ///
     /// 为什么必须共用：两处一个在 store、一个在 `HoldingsView`，各写一份判断迟早会分叉，
     /// 用户就会看到「提示说今日已更新 3 只，界面上只有 2 个彩虹框」这种自相矛盾的说法。
     ///
-    /// **只比日期、不比时刻**。曾经这里还要求 `now >= fetchedAt`，而 `now` 传进来的是页面那个
-    /// **只在跨午夜时前进**的日期时钟（初值 = 页面创建那一刻），通常早于今晚刷新才写进去的
-    /// `fetchedAt` —— 于是「进页面之后刷新拿到的净值」永远不亮框，用户反馈的
-    /// 「有的基金明明更新了却没有彩虹外框」就是它（v2.13.40 修）。
+    /// **彩虹框 = 净值的业务日期就是今天**，而不是「今天采到本机」。场外基金 T+1：今天看到的
+    /// 往往是昨天的净值，那种情况不该亮框，次日翻篇自然熄灭。早期版本用「采集时刻 == 今天」
+    /// 会把「T+1 在次晨才抓到的昨日净值」误判成「今日更新」—— 表现为 14 号的净值在 15 号还
+    /// 挂着彩虹框，用户反馈的正是这个（v2.13.45 修）。代价：净值在次晨才公布的基金当天不会亮框，
+    /// 这与「今天还没拿到今天的净值」的用户认知一致。
     static func isFreshFundNAV(_ point: FundNAVPoint, today: String) -> Bool {
-        if let fetchedAt = point.fetchedAt { return MarketCalendar.isoDay(fetchedAt) == today }
-        // 旧存档 / 导入数据没有采集时刻：退化为「净值日本身就是今天」。
         return point.date == today
     }
 
@@ -2384,12 +2399,15 @@ final class PortfolioStore: ObservableObject {
         async let fromTencent = fetchTencentIndexQuotes()
         async let fromSina = fetchSinaIndexQuotes()
         async let fromEastmoney = fetchEastmoneyIndexQuotes()
-        let (tencentQuotes, sinaQuotes, eastmoneyQuotes) = await (fromTencent, fromSina, fromEastmoney)
+        async let fromGlobal = fetchGlobalIndexQuotes()
+        let (tencentQuotes, sinaQuotes, eastmoneyQuotes, globalQuotes) = await (fromTencent, fromSina, fromEastmoney, fromGlobal)
 
-        // 按「东财 → 新浪 → 腾讯」的顺序写入，后面的覆盖前面的：
-        // 腾讯的时间戳最贴近实时，新浪次之，东财在本机常年被风控排最后。
+        // 写入顺序（后者覆盖前者）：东财 ulist → 新浪 → 腾讯 → 全球指数(trends2)。
+        // 腾讯时间戳最贴近实时；新浪次之；东财 ulist 常年被风控排倒数第二；
+        // 全球指数（日经/东证/韩国）最后写、优先级最高 —— 它们腾讯无代码、ulist 取不到，
+        // 此前只靠新浪单一源，新浪 stale 就显示陈旧值；东财 trends2 能拿到真实当前价与涨跌。
         var merged: [String: MarketIndexQuote] = [:]
-        for quote in eastmoneyQuotes + sinaQuotes + tencentQuotes { merged[quote.symbol] = quote }
+        for quote in eastmoneyQuotes + sinaQuotes + tencentQuotes + globalQuotes { merged[quote.symbol] = quote }
 
         let cached = Dictionary(indexQuotes.map { ($0.symbol, $0) }, uniquingKeysWith: { _, latest in latest })
         let receivedCurrentData = MarketIndexStore.catalog.contains { merged[$0.secid] != nil }
@@ -2591,6 +2609,63 @@ final class PortfolioStore: ObservableObject {
         }
     }
 
+    /// 全球指数（日经 225 / 东证 TOPIX / 韩国 KOSPI）的**可靠当前价 + 涨跌**。
+    ///
+    /// 这些指数腾讯没有对应代码、东财 `ulist` 常年取不到，首页指数条此前**只**靠新浪
+    /// `int_nikkei` / `b_*`（单一源）。新浪一旦 stale（实测就出现过：显示 -0.9% 而真实跌幅
+    /// 远超此数），App 就跟着显示陈旧值，且详情页分时也取不到 —— 这是「有数字却画不出线」
+    /// 与「数值不准」的共同根因。
+    ///
+    /// 这里改走东财 `trends2` + `invt=2`（device 端可达，北京时间戳）：
+    /// 取最后一分钟收盘价为当前价，用接口返回的 `preClose` 精确算出涨跌%，不再依赖新浪。
+    /// 作为首页指数条的最高优先级源，东财拿不到时仍回退到新浪。
+    private func fetchEastmoneyIndexQuote(secid: String) async -> MarketIndexQuote? {
+        guard var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/trends2/get")
+        else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "secid", value: secid),
+            URLQueryItem(name: "ut", value: Self.eastmoneyToken),
+            URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"),
+            URLQueryItem(name: "fields2", value: "f51,f52,f53,f54,f55,f56,f57,f58"),
+            URLQueryItem(name: "ndays", value: "1"),
+            URLQueryItem(name: "iscr", value: "0"),
+            URLQueryItem(name: "invt", value: "2")
+        ]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url); request.timeoutInterval = 12
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        guard let direct = try? await URLSession.shared.data(for: request),
+              (direct.1 as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: direct.0) as? [String: Any],
+              let data = root["data"] as? [String: Any],
+              let trends = data["trends"] as? [String], !trends.isEmpty else { return nil }
+        let preClose = (data["preClose"] as? NSNumber)?.doubleValue
+        let name = (data["name"] as? String) ?? MarketIndexStore.name(for: secid) ?? secid
+        guard let last = trends.last else { return nil }
+        let fields = last.split(separator: ",").map(String.init)
+        guard fields.count >= 3, let price = Double(fields[2]), price > 0 else { return nil }
+        // 最新一分钟的时间戳（北京时间），用于判断数据新鲜度。
+        let formatter = FormatCache.shanghai("yyyy-MM-dd HH:mm")
+        let stamp = formatter.date(from: String(fields[0].prefix(16)))
+        let changePct: Double
+        if let pc = preClose, pc > 0 { changePct = price / pc - 1 } else { changePct = 0 }
+        return MarketIndexQuote(symbol: secid, name: name, price: price,
+                                changePct: changePct, updatedAt: stamp)
+    }
+
+    /// 只对腾讯无代码的全球指数（日经 / 东证 / 韩国）逐个取可靠报价。
+    private func fetchGlobalIndexQuotes() async -> [MarketIndexQuote] {
+        let globalEntries = MarketIndexStore.catalog.filter { $0.tencent == nil }
+        guard !globalEntries.isEmpty else { return [] }
+        var out: [MarketIndexQuote] = []
+        for entry in globalEntries {
+            if let quote = await fetchEastmoneyIndexQuote(secid: entry.secid) {
+                out.append(quote)
+            }
+        }
+        return out
+    }
+
     // MARK: - 指数详情：日 K 与分时
 
     /// 场内代码长什么样：6 位数字，且前缀落在沪/深 ETF / LOF 号段
@@ -2710,6 +2785,12 @@ final class PortfolioStore: ObservableObject {
             let em = await fetchEastmoneyMinutes(secid: quote.symbol)
             if !em.isEmpty { sources.append(em) }
         }
+        // 全球指数（日经/东证/韩国）：腾讯无对应代码、东财常规分支正则不匹配，
+        // 走 trends2 + invt=2（device 端可达，北京时间戳）。否则详情页始终「暂无分时」。
+        if tencent == nil {
+            let em = await fetchEastmoneyMinutes(secid: quote.symbol, invt: true)
+            if !em.isEmpty { sources.append(em) }
+        }
         // 同上：拆开写，避免一行的链式计算把类型检查拖到超时。
         let mergedBars: [IntradayBar] = sources.flatMap { $0 }
         let targetDay = mergedBars.map(\.day).max()
@@ -2815,10 +2896,10 @@ final class PortfolioStore: ObservableObject {
 
     /// 东财分时。每行是「时间,开,收,高,低,成交量,成交额,均价」——
     /// **收盘价在第 3 列**（不是第 2 列），别照腾讯的字段顺序读。
-    private func fetchEastmoneyMinutes(secid: String) async -> [IntradayBar] {
+    private func fetchEastmoneyMinutes(secid: String, invt: Bool = false) async -> [IntradayBar] {
         guard var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/trends2/get")
         else { return [] }
-        components.queryItems = [
+        var items = [
             URLQueryItem(name: "secid", value: secid),
             URLQueryItem(name: "ut", value: Self.eastmoneyToken),
             URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"),
@@ -2826,6 +2907,8 @@ final class PortfolioStore: ObservableObject {
             URLQueryItem(name: "ndays", value: "1"),
             URLQueryItem(name: "iscr", value: "0")
         ]
+        if invt { items.append(URLQueryItem(name: "invt", value: "2")) }
+        components.queryItems = items
         guard let url = components.url else { return [] }
         var request = URLRequest(url: url); request.timeoutInterval = 15
         request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
