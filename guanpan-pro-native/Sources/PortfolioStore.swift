@@ -1293,12 +1293,23 @@ final class PortfolioStore: ObservableObject {
         }
         // 分时图紫色 IOPV 线保险：本地最新交易日分钟线缺 IOPV 时，用本次行情刷新拿到的
         // 实时 IOPV 回填（重装后本地档案空、或 NAS 没存 IOPV 时，至少最新一日线能重新出现）。
+        // 注意：只能用「当前 IOPV」补「最接近此刻的那一根」——单根点是诚实的兜底；
+        // 若把同一个常数刷到当天每一根分钟线，IOPV 线会被拉成一条水平直线（实测值被伪造）。
+        // NAS 采集端（修复后）已逐分钟留存真实 IOPV，正常情况下本分支不应再大面积触发。
         let liveIOPVs = marketIOPVs
         if !liveIOPVs.isEmpty {
-            var reseedBars: [IntradayBar] = []
+            // 每个 code 只取最新的一根作为回填目标，避免整日被同一个常数拉平成直线。
+            var latestByCode: [String: IntradayBar] = [:]
             for bar in intradayBars where bar.day == latestDay {
-                guard let live = liveIOPVs[intradayCodeKey(bar.code)],
-                      live.isFinite, live > 0, bar.iopv == nil else { continue }
+                let key = intradayCodeKey(bar.code)
+                guard liveIOPVs[key] != nil else { continue }
+                if let existing = latestByCode[key] {
+                    if bar.timestamp > existing.timestamp { latestByCode[key] = bar }
+                } else { latestByCode[key] = bar }
+            }
+            var reseedBars: [IntradayBar] = []
+            for (key, bar) in latestByCode {
+                guard let live = liveIOPVs[key], live.isFinite, live > 0, bar.iopv == nil else { continue }
                 var b = Self.normalizedIntradayBar(bar)
                 b.iopv = live
                 reseedBars.append(b)

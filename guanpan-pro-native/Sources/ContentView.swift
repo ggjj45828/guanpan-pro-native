@@ -1543,6 +1543,7 @@ private enum HoldingSheet: Identifiable {
     case fundCalendar
     case fundQuant
     case portfolioAdvice
+    case target(Holding)
     case archivedFund(ArchivedFundItem)
 
     var id: String {
@@ -1559,6 +1560,7 @@ private enum HoldingSheet: Identifiable {
         case .fundCalendar: return "fundCalendar"
         case .fundQuant: return "fundQuant"
         case .portfolioAdvice: return "portfolioAdvice"
+        case .target(let holding): return "target-\(holding.id)"
         case .archivedFund(let item): return "archivedFund-\(item.id)"
         }
     }
@@ -1571,6 +1573,7 @@ private enum HoldingSheet: Identifiable {
 /// 等于把刚拆掉的层数又加回去。
 private struct HoldingSheetContent: View {
     let sheet: HoldingSheet
+    @EnvironmentObject var store: PortfolioStore
 
     var body: some View {
         content.themedSheetBackground()
@@ -1603,6 +1606,9 @@ private struct HoldingSheetContent: View {
             FundQuantView()
         case .portfolioAdvice:
             PortfolioAdviceView()
+        case .target(let holding):
+            AllocationTargetEditor(holding: holding,
+                targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
         case .archivedFund(let item):
             ArchivedFundHistoryView(item: item)
         }
@@ -1709,6 +1715,7 @@ private enum HoldingRowAction {
     case showChart(Holding)
     case addWatch(Holding)
     case remove(Holding)
+    case target(Holding)
 }
 
 /// 单条持仓卡（**文件级独立类型**，HoldingsView / 全屏图表之外的所有持仓列表共用）。
@@ -1923,6 +1930,7 @@ private struct HoldingRowCard: View {
                 Button("定投") { onAction(.fundDCA(holding)) }.tint(.teal)
             } else {
                 Button("日K") { onAction(.showChart(holding)) }.tint(.indigo)
+                Button("目标") { onAction(.target(holding)) }.tint(.purple)
                 Button("提醒") { onAction(.alert(holding)) }.tint(.teal)
             }
         }
@@ -1940,7 +1948,10 @@ private struct HoldingRowCard: View {
                 Button { onAction(.fundHistory(holding)) } label: { Label("历史净值", systemImage: "chart.line.uptrend.xyaxis") }
                 Button { onAction(.fundTools(holding)) } label: { Label("基金工具", systemImage: "wrench.and.screwdriver") }
                 Button { onAction(.fundDCA(holding)) } label: { Label("定投", systemImage: "calendar.badge.plus") }
-            } else { Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") } }
+            } else {
+                Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") }
+                Button { onAction(.target(holding)) } label: { Label("目标仓位", systemImage: "target") }
+            }
             Button(role: .destructive) {
                 Haptics.heavy()
                 onAction(.remove(holding))
@@ -2496,6 +2507,7 @@ struct HoldingsView: View {
                 store.addWatch(code: holding.code, name: holding.name)
             }
         case .remove(let holding): removeTarget = holding
+        case .target(let holding): activeSheet = .target(holding)
         }
     }
 
@@ -4740,7 +4752,6 @@ struct ToolsView: View {
     @State private var shockPercent = 20
     @State private var showShockDetails = false
     @State private var showRebalanceDetails = false
-    @State private var targetEdit: Holding?
 
     /// 工具页全部弹窗的**唯一入口**。
     ///
@@ -4868,13 +4879,6 @@ struct ToolsView: View {
                 case .yearlyReview: YearlyReviewView().themedSheetBackground()
                 case .portfolioScenario: PortfolioScenarioView().themedSheetBackground()
                 }
-            }
-            // 目标仓位编辑器要带**具体持仓**，所以走 `item: $targetEdit` 这条路，
-            // 和上面那个「选功能」的 `item: $activeSheet` 是两个不同的东西，不合并。
-            .sheet(item: $targetEdit) { holding in
-                AllocationTargetEditor(holding: holding,
-                    targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
-                    .themedSheetBackground()
             }
         }
     }
