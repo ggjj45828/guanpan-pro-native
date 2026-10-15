@@ -1,5 +1,15 @@
 import Foundation
 
+/// 股息率上下文，供盘中陪伴本机规则与 AI 提示词复用。
+/// `isIncomePlay` 沿用首页「值不值得买」口径：股息率 ≥ 3% 视为「攒股息」型标的，
+/// 价格下跌会抬高实际股息率，对长期攒股息更有利（上涨则压低）。
+struct DividendContext {
+    let yieldPercent: Double
+    let annualPerShare: Double
+    let basis: Double
+    var isIncomePlay: Bool { yieldPercent >= 3 }
+}
+
 struct IntradayCompanionDecision {
     enum Level: String { case ready = "条件较匹配", wait = "等待确认", avoid = "暂不建议", invalid = "计划/数据不足" }
     var level: Level
@@ -24,6 +34,35 @@ struct IntradayCompanionDecision {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
         return f.string(from: date)
+    }
+
+    /// 标的的股息率上下文（红利 / 攒股息视角）。复用首页「值不值得买」同一套口径：
+    /// 分子 = 人工年分红 > 近 12 个月已核实派息（含前复权价差推算）> 未来 12 个月试算；
+    /// 分母 = 场内 ETF 优先 IOPV（净值），个股/其他用现价（溢价会侵蚀「按买入价算」的股息率，
+    /// 但红利策略看的是「按净值算的真实分红回报」）。仅对场内 ETF 有意义，场外基金返回 nil。
+    func dividendContext(forCode code: String) -> DividendContext? {
+        guard let holding = data.holdings.first(where: { $0.code == code && $0.kind == .etf }) else { return nil }
+        let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: code, events: data.etfDividendEvents)
+        let annual: Double
+        if let manual = holding.annualDividendPerShare, manual.isFinite, manual > 0 {
+            annual = manual
+        } else if twelve.amount > 0 {
+            annual = twelve.amount
+        } else if let projected = ETFDividendProjection.projectedAnnualPerShare(for: holding, events: data.etfDividendEvents), projected.amount > 0 {
+            annual = projected.amount
+        } else {
+            return nil
+        }
+        guard annual > 0 else { return nil }
+        let price = data.quotes.first { $0.code == code }?.price ?? holding.current
+        guard price > 0 else { return nil }
+        let basis: Double
+        if isTencentETFCode(code), let iopv = marketIOPVs[code], iopv.isFinite, iopv > 0 {
+            basis = iopv
+        } else {
+            basis = price
+        }
+        return DividendContext(yieldPercent: annual / basis * 100, annualPerShare: annual, basis: basis)
     }
 
     func saveIntradayCompanionIntent(code: String, name: String,
@@ -53,6 +92,9 @@ struct IntradayCompanionDecision {
         let weight = after / max(totalAsset, 0.01) * 100
         let limit = holding?.maxPositionPercent ?? (data.globalPositionLimitPercent > 0 ? data.globalPositionLimitPercent : data.investmentProfile.maxPositionPercent)
         if side == .buy, limit > 0, weight > limit { return .init(level: .avoid, reasons: ["买入后仓位约 \(weight.num(1))%，超过上限 \(limit.num(1))%"] ) }
+        // ---- 红利 / 攒股息视角（沿用首页「值不值得买」的股息率口径）----
+        let dividendCtx = dividendContext(forCode: code)
+        let isIncomePlay = dividendCtx?.isIncomePlay ?? false
         let profile = data.investmentProfile
         let riskName: String
         switch profile.risk {
@@ -76,6 +118,9 @@ struct IntradayCompanionDecision {
             : (alreadyIncludesDip ? declaredPreference : "\(declaredPreference)；同时喜欢抄底、偏好回调后分批布局")
         var reasons = ["画像：\(styleName) · \(riskName) · 持有周期 \(profile.horizon) · 偏好：\(dipPreference)",
                        "若按此意图成交，单标的仓位约 \(weight.num(1))%；参考上限 \(limit.num(1))%（仅作风险提示）"]
+        if let dc = dividendCtx, dc.yieldPercent > 0 {
+            reasons.append("股息率 \(dc.yieldPercent.pct(2))%（红利/攒股息视角）：你攒股息时价格下跌会抬高实际股息率、更划算，上涨则压低；本机不因此改趋势判断，但会把「跌」从单纯利空里摘出来。")
+        }
         var strength = 0
         var sellRiskSignals = 0
         var dipSetup = false
@@ -147,12 +192,32 @@ struct IntradayCompanionDecision {
             reasons.append("当日涨跌 \((change * 100).pct(2))")
             if side == .buy {
                 if change <= -0.003 && change > -0.03 { dipSetup = true; strength += 1; reasons.append("当日回落幅度可纳入分批观察") }
-                if change <= -0.03 { strength -= 2; stabilization = false; reasons.append("当日跌幅较大，先观察是否止跌，避免接住加速下跌") }
-                if change >= 0.03 { strength -= 1; reasons.append("当日涨幅较大，避免因上涨追买") }
+                if change <= -0.03 {
+                    if isIncomePlay {
+                        // 红利标的：下跌抬高股息率，对攒股息是更好买点，但不等于自动买；仍看止跌。
+                        dipSetup = true; strength += 1
+                        reasons.append("当日跌幅较大，但红利标的下跌会抬高实际股息率、对攒股息更划算；仍要先看是否止跌，不把下跌直接当买点")
+                    } else {
+                        strength -= 2; stabilization = false; reasons.append("当日跌幅较大，先观察是否止跌，避免接住加速下跌")
+                    }
+                }
+                if change >= 0.03 {
+                    if isIncomePlay {
+                        strength -= 1
+                        reasons.append("当日涨幅较大：红利标的价格涨上去会压低股息率，追涨性价比更低")
+                    } else {
+                        strength -= 1; reasons.append("当日涨幅较大，避免因上涨追买")
+                    }
+                }
             } else if change <= -0.02 {
-                strength -= 1
-                sellRiskSignals += 1
-                reasons.append("明显走弱需复核持仓风险，但不能只因下跌就卖出")
+                if isIncomePlay {
+                    // 红利标的以收息为目标，短期下跌不构成减仓理由；不计入减仓信号。
+                    reasons.append("明显走弱：但红利标的你以收息为目标，短期下跌不构成减仓理由，重点看分红是否稳定、是否需再平衡")
+                } else {
+                    strength -= 1
+                    sellRiskSignals += 1
+                    reasons.append("明显走弱需复核持仓风险，但不能只因下跌就卖出")
+                }
             }
         }
         let currentHoldingWeight = currentHoldingValue / max(totalAsset, 0.01) * 100
@@ -168,6 +233,10 @@ struct IntradayCompanionDecision {
         if side == .sell, let holding, holding.cost > 0 {
             let pnlPercent = (price / holding.cost - 1) * 100
             reasons.append("当前相对持仓成本\(pnlPercent >= 0 ? "盈利" : "浮亏")约 \(abs(pnlPercent).num(2))%；盈亏本身不单独作为卖出理由")
+        }
+        if side == .sell, isIncomePlay, let holding, let dc = dividendCtx {
+            let annualIncome = holding.quantity * dc.annualPerShare
+            reasons.append("该标的是红利品种，卖出会减少约 \(annualIncome.cny())／年的股息收入（按当前 \(holding.quantity.num(0)) 份与年分红 \(dc.annualPerShare.num(4))／份估算）；除非分红前景恶化或需再平衡，否则以收息为目的应优先持有")
         }
         let avoidText = profile.avoid.trimmingCharacters(in: .whitespacesAndNewlines)
         let holdingNameIsAvoided = holding.map { avoidText.localizedCaseInsensitiveContains($0.name) } ?? false

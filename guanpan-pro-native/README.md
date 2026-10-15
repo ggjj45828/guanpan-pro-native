@@ -1,6 +1,6 @@
-# 观盘 Pro iOS v2.13.43 build47
+# 观盘 Pro iOS v2.13.44 build48
 
-本次更新：**把 NAS 已经采集到的 IOPV 真正传到手机卡片上**。`syncNASMarketArchive` 在拉取 NAS 分时档案（含 IOPV）后，新增 `refillValuationFromArchive` —— 用 NAS 档案里**最新交易日**的 IOPV 回填自选 / 持仓卡的「溢价 · IOPV」两个字典（`marketIOPVs` / `marketPremiums`）的空缺位，并有现价时顺手补出溢价率。这样**只要打开 App 同步一次 NAS，卡片就立刻有 IOPV**，不必每次都靠手机前台去腾讯 / 新浪现拉；已有非空值不覆盖（手机自身行情刷新给的更准）。这是「手机还是更新不到 IOPV」的根因修复：卡片数字此前只由手机自己的行情刷新写入，NAS 收集的 IOPV 只喂到了分时图的紫色 IOPV 线，从没进过卡片字典。
+本次更新：**把所有 AI（盘中 AI 陪伴、账户画像、网格复盘）都带上股息率 / 攒股息视角**。新增 store 级 `dividendContext(forCode:)` 统一复用首页「值不值得买」的分红口径（人工年分红 > 近 12 月已核实派息 > 试算，场内 ETF 分母优先 IOPV），本机规则与三个大模型提示词据此给出「下跌抬高股息率、对攒股息更有利，上涨压低」的判断；红利标的卖出会提示减少未来股息收入。NAS 已采集的 IOPV 回填手机卡片已在 v2.13.43 完成。
 
 SwiftUI 原生 iPhone / iPad 工程，最低 iOS 17。旧网页与 NAS 数据空间不被覆盖。
 

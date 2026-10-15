@@ -216,7 +216,11 @@ enum PortraitEngine {
             let costPct = h.cost > 0 ? (h.current - h.cost) / h.cost * 100 : 0
             let quote = data.quotes.first { $0.code == h.code }
             let today = quote.map { "，当日 \($0.changePct >= 0 ? "+" : "")\(($0.changePct * 100).num(2))%" } ?? "，当日行情未缓存"
-            return "- \(h.name)（\(h.code)）\(h.kind == .etf ? "ETF" : "场外基金")：\(h.quantity.compactNum(4)) 份，成本 \(h.cost.num(4))，现价 \(h.current.num(4))\(today)，市值 \(h.marketValue.num(2))，浮盈亏 \(h.pnl.num(2))（\(costPct.num(2))%），占总资产 \(weight.num(1))%"
+            let dividendSuffix: String
+            if let dc = store.dividendContext(forCode: h.code), dc.yieldPercent > 0 {
+                dividendSuffix = "，股息率 \(dc.yieldPercent.pct(2))%（年分红约 \(dc.annualPerShare.num(4)) 元/份）"
+            } else { dividendSuffix = "" }
+            return "- \(h.name)（\(h.code)）\(h.kind == .etf ? "ETF" : "场外基金")：\(h.quantity.compactNum(4)) 份，成本 \(h.cost.num(4))，现价 \(h.current.num(4))\(today)，市值 \(h.marketValue.num(2))，浮盈亏 \(h.pnl.num(2))（\(costPct.num(2))%），占总资产 \(weight.num(1))%\(dividendSuffix)"
         }
         let holdingsBlock = holdingLines.isEmpty ? "（暂无持仓）" : holdingLines.joined(separator: "\n")
 
@@ -273,6 +277,8 @@ enum PortraitEngine {
         【本机统计（由上面的流水算出，仅供参考的素材，不是结论）】
         \(metricsBlock)
         （\(sampleNote)）
+
+        股息 / 攒股息视角：如果持仓里出现高股息或红利型品种（股息率≥3%，上面持仓明细已标注），在画像里要点出用户可能是「攒股息型」投资者；分析这类标的时要带入「下跌抬高股息率、上涨压低股息率」的视角，并把分红收入的稳定性当作重要维度，不要只按价差涨跌来评价它们。
 
         请按下面四段输出，用词直接、不嘲讽、不承诺收益、不编造数据：
         1. 画像：从交易风格、风险偏好、纪律性、偏好标的（能力圈）、典型行为特征五个方面给判断。每一方面都要引用上面具体的持仓或流水作为证据（写成「因为…所以判断…」）；证据不足的方面明确写「样本不足，无法判断」，不要用含糊措辞带过。

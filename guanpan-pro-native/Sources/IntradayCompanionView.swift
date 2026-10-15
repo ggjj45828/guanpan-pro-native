@@ -123,9 +123,23 @@ struct IntradayCompanionView: View {
         let effectivePreference = preference.isEmpty ? "喜欢抄底、偏好回调后分批布局"
             : (includesDipPreference ? preference : "\(preference)；同时喜欢抄底、偏好回调后分批布局")
         let profileText = "交易风格：\(profile.style)，风险偏好：\(profile.risk)，持有周期：\(profile.horizon)，单标的仓位上限：\(profile.maxPositionPercent.num(1))%；用户偏好：\(effectivePreference)；投资目标：\(profile.goal.isEmpty ? "未填写" : profile.goal)；回避项：\(profile.avoid.isEmpty ? "未填写" : profile.avoid)。\n本机交易行为统计：\(behavior.promptText)"
+        let dividendCtx = store.dividendContext(forCode: holding.code)
+        let dividendText: String
+        let dividendInstruction: String
+        if let dc = dividendCtx, dc.yieldPercent > 0 {
+            dividendText = "该标的股息率约 \(dc.yieldPercent.pct(2))%（年分红约 \(dc.annualPerShare.num(4)) 元/份），\(dc.isIncomePlay ? "属于红利/攒股息型标的" : "有一定分红")）。"
+            dividendInstruction = dc.isIncomePlay
+                ? "该标的是红利/攒股息型：请带入「下跌抬高股息率、上涨压低股息率」的视角——价格回调对攒股息是更好买点，不应单纯视为利空；若用户意图卖出，提醒卖出会减少未来股息收入，除非分红前景恶化或需再平衡，否则以收息为目的应优先持有。"
+                : "该标的虽有一定分红，但未达红利型标准（股息率<3%）；可正常按价差与趋势分析，不必特别强调股息视角。"
+        } else {
+            dividendText = "该标的暂无可用的股息率数据（非分红型或不适合用股息率评价）。"
+            dividendInstruction = "该标的无可用股息率数据，按普通价差/趋势标的分析即可。"
+        }
         let prompt = """
         用户正在考虑对 \(holding.name)（\(holding.code)）\(side == .buy ? "买入" : "卖出") \(quantity) 份，参考价 \(currentPrice.num(4))，意图金额约 \(amount.cny())。这只是情景分析，不是下单；不得用账户现金余额否定或拦截该意图。
         用户投资画像与行为：\(profileText)
+        \(dividendText)
+        \(dividendInstruction)
         本机当前判断：\(decision.title(for: side))。依据：\(decision.summary)。
         当前总资产 \(store.totalAsset.cny())，该标的现持有 \(holding.quantity.num(2)) 份、成本 \(holding.cost.num(4))。不要把交易意图金额与参考现金作可执行性校验；仓位变化只作为风险背景。
         今日本机分时样本：

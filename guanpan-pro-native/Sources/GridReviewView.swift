@@ -263,12 +263,14 @@ struct GridReviewView: View {
         let prompt: String
         if mode == .range, let report = rangeReport {
             prompt = GridReviewAdvisor.rangePrompt(report: report, history: history,
-                                                   profile: store.data.investmentProfile)
+                                                   profile: store.data.investmentProfile,
+                                                   dividendYield: store.dividendContext(forCode: code)?.yieldPercent)
         } else if let report = dayReport {
             prompt = GridReviewAdvisor.dayPrompt(report: report,
                                                  name: displayName(report.code),
                                                  experience: experience,
-                                                 profile: store.data.investmentProfile)
+                                                 profile: store.data.investmentProfile,
+                                                 dividendYield: store.dividendContext(forCode: code)?.yieldPercent)
         } else {
             return
         }

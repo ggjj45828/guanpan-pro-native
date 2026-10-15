@@ -12,7 +12,7 @@ enum GridReviewAdvisor {
 
     /// 区间（长期参数）模式的提示词。
     static func rangePrompt(report: GridRangeReport, history: [GridRangeReport],
-                            profile: InvestmentProfile) -> String {
+                            profile: InvestmentProfile, dividendYield: Double? = nil) -> String {
         let digits = report.tick < 0.005 ? 3 : 2
         let top = report.candidates.prefix(6).map { item -> String in
             "格距 \(item.stepPercent.num(2))%：日均跑赢持有 \(item.averageAlpha.directionMark())\(item.averageAlpha.cny())，"
@@ -39,6 +39,7 @@ enum GridReviewAdvisor {
         用户在做 \(report.name)（\(report.code)）的网格交易，想让你根据本机的复盘结果，给出**以后该怎么挂单**的参数建议。
         计划资金 \(report.capital.cny())，\(report.t0 ? "支持 T+0（当天买可当天卖）" : "T+1（当天买入的份额当天不能卖）")。
         用户投资画像：风格 \(profile.style)，风险偏好 \(profile.risk)，持有周期 \(profile.horizon)，单标的仓位上限 \(profile.maxPositionPercent.num(1))%，投资目标 \(profile.goal.isEmpty ? "未填写" : profile.goal)，回避项 \(profile.avoid.isEmpty ? "未填写" : profile.avoid)。
+        \(dividendYield.map { yield in "该标的是红利/高股息品种（股息率约 \(yield.pct(2))%）。做网格赚的是价差波动，但价格下跌会抬高实际股息率、对攒股息更有利；若用户以收息为主，网格低吸也能顺带降低持仓成本、提高股息率。请结合这个视角；若高股息率来自股价跌出来的（股息陷阱），请提示风险。" } ?? "")
 
         复盘区间：\(report.from) → \(report.to)
         参与统计 \(report.days.count) 个交易日，被跳过 \(skipped)，有效分钟点合计 \(report.totalPoints) 个。
@@ -70,7 +71,7 @@ enum GridReviewAdvisor {
 
     /// 单日（当日最优）模式的提示词。
     static func dayPrompt(report: GridOptimizeReport, name: String,
-                          experience: GridExperienceRecord?, profile: InvestmentProfile) -> String {
+                          experience: GridExperienceRecord?, profile: InvestmentProfile, dividendYield: Double? = nil) -> String {
         let digits = report.tick < 0.005 ? 3 : 2
         let top = report.candidates.prefix(5).map { item -> String in
             "锚 \(item.anchor.num(digits)) / 格距 \(item.step.num(digits))（\(item.stepPercent.num(2))%）："
@@ -111,6 +112,7 @@ enum GridReviewAdvisor {
 
         \(experienceText)
         用户投资画像：风格 \(profile.style)，风险偏好 \(profile.risk)，持有周期 \(profile.horizon)，单标的仓位上限 \(profile.maxPositionPercent.num(1))%。
+        \(dividendYield.map { yield in "该标的是红利/高股息品种（股息率约 \(yield.pct(2))%）。做网格赚的是价差波动，但价格下跌会抬高实际股息率、对攒股息更有利；若用户以收息为主，网格低吸也能顺带降低持仓成本、提高股息率。请结合这个视角；若高股息率来自股价跌出来的（股息陷阱），请提示风险。" } ?? "")
 
         判定口径：「跑赢持有」= 网格盈亏 − 同一时点买入后什么都不做的盈亏；这是事后拟合，用的是当天已经走完的完整分时。
 
