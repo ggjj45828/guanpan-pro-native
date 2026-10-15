@@ -3780,7 +3780,6 @@ struct TradeEditor: View {
             Task { await store.refreshQuotesAndWait() }
             dismiss()
         } catch { self.error = error.localizedDescription }
-        catch { self.error = error.localizedDescription }
     }
 
     private func estimateFundFee() {

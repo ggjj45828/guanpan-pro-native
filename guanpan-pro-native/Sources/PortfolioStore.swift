@@ -204,7 +204,17 @@ final class PortfolioStore: ObservableObject {
         guard let pct = marketChanges[holding.code], pct.isFinite,
               abs(pct) > 0.000001, (1 + pct) != 0 else { return 0 }
         let previousClose = holding.current / (1 + pct)
-        return holding.quantity * (holding.current - previousClose)
+        var pnl = holding.quantity * (holding.current - previousClose)
+        // **今天中途买 / 卖的份额不能也按「昨收 → 现在」算全天涨跌**：
+        // 今天新买的份数只从买入价起算，今天卖掉的份数按卖出价结算。
+        // 修正量 = 净买入金额 − 昨收 × 净买入份数（买入为正、卖出为负）；
+        // 举全仓当天新建的例子：份数×(现价−买入价)，正是「当天买的当日盈亏」。
+        let quoteDay = MarketCalendar.isoDay(holding.marketUpdatedAt ?? .now)
+        if let net = intradayNetTrades(day: quoteDay)["\(holding.kind.rawValue)|\(holding.code)"],
+           net.qty != 0 || net.amount != 0 {
+            pnl -= net.amount - previousClose * net.qty
+        }
+        return pnl
     }
     /// 全部持仓当日盈亏。
     ///
@@ -404,6 +414,38 @@ final class PortfolioStore: ObservableObject {
     }
     private var cachedDilutedRealized: [String: Double] = [:]
     private var cachedDilutedRealizedKey = ""
+
+    /// 某交易日内每个标的的「净买入金额 / 净买入份数」（买入为正、卖出为负），
+    /// 键为 `"类型|代码"`（类型取自流水，旧流水记作 "nil"，与 dilutedRealizedSums 同款风格）。
+    ///
+    /// 用途：把「当日盈亏」从「全部份额都按昨收算」修正为
+    /// **今天新买的份额从买入价起算、今天卖出的份额按卖出价结算**。
+    /// 不修正的话，盘中买入的 ETF 会把「昨收 → 现在」这一整天的涨幅全算进当日盈亏，
+    /// 于是出现「我明明买在 1.04、现价 1.05 只该赚 100，App 却按昨收 1.00 给我算了 500」。
+    /// 缓存 key 只看「流水条数 + 末条已实现盈亏」（流水只追加，够用）。
+    func intradayNetTrades(day: String) -> [String: (amount: Double, qty: Double)] {
+        let ledger = data.ledger
+        let key = "\(ledger.count)|\(ledger.last?.realizedPnL ?? 0)"
+        if key != cachedIntradayTradesKey {
+            var byDay: [String: [String: (amount: Double, qty: Double)]] = [:]
+            for entry in ledger {
+                let d = MarketCalendar.isoDay(entry.date)
+                let k = "\(entry.kind?.rawValue ?? "nil")|\(entry.code)"
+                let sign: Double = entry.side == .buy ? 1 : -1
+                var cur: (amount: Double, qty: Double) = byDay[d]?[k] ?? (amount: 0, qty: 0)
+                cur.amount += sign * entry.quantity * entry.price
+                cur.qty += sign * entry.quantity
+                var bucket = byDay[d] ?? [:]
+                bucket[k] = cur
+                byDay[d] = bucket
+            }
+            cachedIntradayTradesByDay = byDay
+            cachedIntradayTradesKey = key
+        }
+        return cachedIntradayTradesByDay[day] ?? [:]
+    }
+    private var cachedIntradayTradesByDay: [String: [String: (amount: Double, qty: Double)]] = [:]
+    private var cachedIntradayTradesKey = ""
 
     /// displayedCost 的预计算版本：dilutedRealizedSum 传入页面级算好的已实现盈亏合计，
     /// 避免每次调用都全量过滤流水（持仓列表每行两次，是滚动卡顿来源之一）。
