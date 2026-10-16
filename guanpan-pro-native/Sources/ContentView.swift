@@ -1543,7 +1543,6 @@ private enum HoldingSheet: Identifiable {
     case fundCalendar
     case fundQuant
     case portfolioAdvice
-    case target(Holding)
     case instrumentDetail(Holding)
     case archivedFund(ArchivedFundItem)
 
@@ -1561,7 +1560,6 @@ private enum HoldingSheet: Identifiable {
         case .fundCalendar: return "fundCalendar"
         case .fundQuant: return "fundQuant"
         case .portfolioAdvice: return "portfolioAdvice"
-        case .target(let holding): return "target-\(holding.id)"
         case .instrumentDetail(let holding): return "instrumentDetail-\(holding.id)"
         case .archivedFund(let item): return "archivedFund-\(item.id)"
         }
@@ -1608,9 +1606,6 @@ private struct HoldingSheetContent: View {
             FundQuantView()
         case .portfolioAdvice:
             PortfolioAdviceView()
-        case .target(let holding):
-            AllocationTargetEditor(holding: holding,
-                targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
         case .instrumentDetail(let holding):
             InstrumentDetailView(code: holding.code, kind: holding.kind, name: holding.name)
         case .archivedFund(let item):
@@ -1662,7 +1657,12 @@ func holdingDividendYieldNote(for holding: Holding, events: [ETFDividendEvent]) 
     let source = holdingDividendProjection(for: holding, events: events)?.source
     let twelve = ETFDividendProjection.twelveMonthPerShare(forCode: holding.code, events: events)
     let basis: String
-    if twelve.amount > 0, twelve.estimatedCount > 0 {
+    if twelve.collapsedRepeat {
+        // 除息日前后，滚动窗口会同时装进去年与今年两次年度派息；只取最近一次才是「年化」。
+        // 说明里必须写明，否则用户看到的是一次莫名其妙的翻倍（2026-10-16 就被质疑过）。
+        basis = "按最近一次派息 \(twelve.amount.num(4)) 元/份"
+            + "（近 12 个月里还有一次同期派息，属跨年度重复，不叠加）"
+    } else if twelve.amount > 0, twelve.estimatedCount > 0 {
         // 有自动推算的成分时必须写明白，否则用户会以为这个数是「官方公告」。
         basis = "近 12 个月共 \(twelve.count) 次派息、合计 \(twelve.amount.num(4)) 元/份"
             + "（其中 \(twelve.estimatedCount) 次是按前复权与不复权收盘价差自动推算的）"
@@ -1724,7 +1724,6 @@ private enum HoldingRowAction {
     case showChart(Holding)
     case addWatch(Holding)
     case remove(Holding)
-    case target(Holding)
     case instrumentDetail(Holding)
 }
 
@@ -1979,10 +1978,6 @@ private struct HoldingRowCard: View {
                 Button("日K") { onAction(.showChart(holding)) }.tint(.indigo)
                 Button("提醒") { onAction(.alert(holding)) }.tint(.teal)
             }
-            // 「目标仓位」对场内场外一视同仁：`allocationTargets` 本来就被再平衡偏离、
-            // 新增资金加仓试算、本机顾问三处消费，场外基金算出来的实际占比也一样有效。
-            // 原先只在 else 分支 → 场外基金压根没有入口（用户反馈「持仓目标没地方设」）。
-            Button("目标") { onAction(.target(holding)) }.tint(.purple)
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             Button("加自选") {
@@ -2001,7 +1996,6 @@ private struct HoldingRowCard: View {
             } else {
                 Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") }
             }
-            Button { onAction(.target(holding)) } label: { Label("目标仓位", systemImage: "target") }
             Button { onAction(.instrumentDetail(holding)) } label: { Label("明细（买卖 / 费用 / 做 T）", systemImage: "list.bullet.rectangle") }
             Button(role: .destructive) {
                 Haptics.heavy()
@@ -2559,7 +2553,6 @@ struct HoldingsView: View {
                 store.addWatch(code: holding.code, name: holding.name)
             }
         case .remove(let holding): removeTarget = holding
-        case .target(let holding): activeSheet = .target(holding)
         case .instrumentDetail(let holding): activeSheet = .instrumentDetail(holding)
         }
     }

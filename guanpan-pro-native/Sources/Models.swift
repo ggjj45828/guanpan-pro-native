@@ -298,9 +298,10 @@ enum ETFDividendProjection {
         let cutoff = yearAgoCutoff(now: now)
         let today = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "Asia/Shanghai") ?? .current, from: now)
         let todayKey = String(format: "%04d-%02d-%02d", today.year ?? 0, today.month ?? 0, today.day ?? 0)
-        let recorded = mergedEvents(events)
-            .filter { $0.code == holding.code && $0.date >= cutoff && $0.date <= todayKey && $0.isEstimated != true }
-            .reduce(0) { $0 + $1.amountPerShare }
+        let hits = mergedEvents(events).filter {
+            $0.code == holding.code && $0.date >= cutoff && $0.date <= todayKey && $0.isEstimated != true
+        }
+        let recorded = collapsingAnnualRepeat(hits).reduce(0) { $0 + $1.amountPerShare }
         if recorded > 0 { return (recorded, .recorded) }
         return nil
     }
@@ -317,20 +318,46 @@ enum ETFDividendProjection {
     /// `mergedEvents` 已经按 `代码|日期` 去重且**已核实记录优先**，所以同一天的推算事件
     /// 不会和已核实记录重复计数；只有本机完全没有记录的那些派息才会被补进来。
     static func twelveMonthPerShare(forCode code: String, events: [ETFDividendEvent], now: Date = .now)
-        -> (amount: Double, includesEstimate: Bool, count: Int, estimatedCount: Int) {
+        -> (amount: Double, includesEstimate: Bool, count: Int, estimatedCount: Int, collapsedRepeat: Bool) {
         let cutoff = yearAgoCutoff(now: now)
         let today = dayFormatter.string(from: now)
-        var total = 0.0
-        var count = 0
-        var estimatedCount = 0
+        var hits: [ETFDividendEvent] = []
         for event in mergedEvents(events) {
             guard event.code == code, event.date >= cutoff, event.date <= today else { continue }
             guard event.amountPerShare.isFinite, event.amountPerShare > 0 else { continue }
+            hits.append(event)
+        }
+        let kept = collapsingAnnualRepeat(hits)
+        var total = 0.0
+        var estimatedCount = 0
+        for event in kept {
             total += event.amountPerShare
-            count += 1
             if event.isEstimated == true { estimatedCount += 1 }
         }
-        return (total, estimatedCount > 0, count, estimatedCount)
+        return (total, estimatedCount > 0, kept.count, estimatedCount, kept.count != hits.count)
+    }
+
+    /// 把「一年派一次」的标的在除息日前后被窗口同时装进来的两次年度派息折叠成一次。
+    ///
+    /// **为什么需要**：窗口是滚动的 `[今天 − 365 天, 今天]`。只要今年除息日**早于**
+    /// 「去年除息日 + 365 天」，就会有一小段日子同时含「去年那次」和「今年这次」——
+    /// 实测 515180（红利ETF易方达，每年 10 月除息一次）2026-10-16 除息当天：
+    /// 10-15 还是 4.20%（窗口里 1 次 0.061），10-16 起变成 8.40%（窗口里 2 次 0.122），
+    /// 10-22 去年那次掉出窗口又回落 —— 用户会以为「股息被谁改高了」。
+    ///
+    /// **判据用平均间隔、不用相邻两次的间隔**：一年派一次的节奏平均间隔 ≈ 360 天；
+    /// 一年派 2~4 次的（563020 / 159545）只有 90~185 天。阈值 300 天正落在两者中间，
+    /// 既切得开跨年度重复，又不会把真正的多次派息标的误伤成一次。
+    /// 窗口只有 365 天，所以 3 条以上事件的平均间隔必然 < 183 天，实际只有「2 条」会被折叠。
+    private static func collapsingAnnualRepeat(_ events: [ETFDividendEvent]) -> [ETFDividendEvent] {
+        guard events.count >= 2 else { return events }
+        let sorted = events.sorted { $0.date < $1.date }
+        guard let first = sorted.first, let last = sorted.last,
+              let start = dayFormatter.date(from: first.date),
+              let end = dayFormatter.date(from: last.date) else { return events }
+        let averageGapDays = end.timeIntervalSince(start) / Double(sorted.count - 1) / 86_400
+        guard averageGapDays >= 300 else { return events }
+        return [last]
     }
 
     /// 未来 12 个月的保守试算：优先使用人工核实值；否则沿用近 12 个月
