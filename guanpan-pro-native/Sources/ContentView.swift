@@ -1544,6 +1544,7 @@ private enum HoldingSheet: Identifiable {
     case fundQuant
     case portfolioAdvice
     case target(Holding)
+    case instrumentDetail(Holding)
     case archivedFund(ArchivedFundItem)
 
     var id: String {
@@ -1561,6 +1562,7 @@ private enum HoldingSheet: Identifiable {
         case .fundQuant: return "fundQuant"
         case .portfolioAdvice: return "portfolioAdvice"
         case .target(let holding): return "target-\(holding.id)"
+        case .instrumentDetail(let holding): return "instrumentDetail-\(holding.id)"
         case .archivedFund(let item): return "archivedFund-\(item.id)"
         }
     }
@@ -1609,6 +1611,8 @@ private struct HoldingSheetContent: View {
         case .target(let holding):
             AllocationTargetEditor(holding: holding,
                 targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
+        case .instrumentDetail(let holding):
+            InstrumentDetailView(code: holding.code, kind: holding.kind, name: holding.name)
         case .archivedFund(let item):
             ArchivedFundHistoryView(item: item)
         }
@@ -1721,6 +1725,7 @@ private enum HoldingRowAction {
     case addWatch(Holding)
     case remove(Holding)
     case target(Holding)
+    case instrumentDetail(Holding)
 }
 
 /// 单条持仓卡（**文件级独立类型**，HoldingsView / 全屏图表之外的所有持仓列表共用）。
@@ -1909,6 +1914,9 @@ private struct HoldingRowCard: View {
                 actionButton("买入 / 卖出", icon: "arrow.left.arrow.right") { onAction(.trade(holding)) }
                 if kind == .fund { actionButton("净值", icon: "chart.line.uptrend.xyaxis") { onAction(.fundHistory(holding)) } }
                 else { actionButton("日 K", icon: "chart.xyaxis.line") { onAction(.showChart(holding)) } }
+                // 「明细」放在卡片上而不是只塞进左滑菜单：用户反馈过「功能藏在左滑里等于没有」，
+                // 这一页是他最常对着对账的地方（买入卖出 / 金额数量 / 税费 / 做 T 全在一处）。
+                actionButton("明细", icon: "list.bullet.rectangle") { onAction(.instrumentDetail(holding)) }
             }
         }
         .padding(12)
@@ -1994,6 +2002,7 @@ private struct HoldingRowCard: View {
                 Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") }
             }
             Button { onAction(.target(holding)) } label: { Label("目标仓位", systemImage: "target") }
+            Button { onAction(.instrumentDetail(holding)) } label: { Label("明细（买卖 / 费用 / 做 T）", systemImage: "list.bullet.rectangle") }
             Button(role: .destructive) {
                 Haptics.heavy()
                 onAction(.remove(holding))
@@ -2551,6 +2560,7 @@ struct HoldingsView: View {
             }
         case .remove(let holding): removeTarget = holding
         case .target(let holding): activeSheet = .target(holding)
+        case .instrumentDetail(let holding): activeSheet = .instrumentDetail(holding)
         }
     }
 
@@ -2791,6 +2801,8 @@ struct TradeLedgerManagementView: View {
     @State private var showConfirm = false
     @State private var message = ""
     @State private var searchText = ""
+    /// 点任意一行进该标的的明细 —— 从「我某一笔记错了吗」到「这只整体怎么样」不用退出重找。
+    @State private var detail: InstrumentRef?
 
     private var searchQuery: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var allRows: [LedgerEntry] { store.data.ledger.sorted { $0.date > $1.date } }
@@ -2820,6 +2832,12 @@ struct TradeLedgerManagementView: View {
                             Text(entry.affectsHoldings == false ? "导入的历史流水，不影响当前持仓和现金" : "\(entry.kind == .fund ? "场外基金" : "当前账本交易") · \(entry.linkedCash ? "联动现金" : "未联动现金")")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            detail = InstrumentRef(code: entry.code,
+                                                   kind: entry.kind ?? .etf,
+                                                   name: entry.name)
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if entry.affectsHoldings == false || (entry.kind ?? .etf) == .etf {
                                 Button("删除并重算", role: .destructive) { pending = entry; showConfirm = true }
@@ -2830,6 +2848,8 @@ struct TradeLedgerManagementView: View {
                     }
                 }
                 Section {
+                    Text("点任意一行可看这只标的的完整明细（买入卖出、金额数量、费用、做 T）。")
+                        .font(.footnote).foregroundStyle(.secondary)
                     Text("删除 ETF 账本交易会按该标的剩余流水重算份额和成本，并回滚该笔联动现金。导入的历史流水只删除记录，不改当前余额。场外基金旧交易只允许撤销最近一笔，避免破坏后续申赎、分红或定投批次。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -2856,6 +2876,10 @@ struct TradeLedgerManagementView: View {
                     pending = nil
                 }
                 Button("取消", role: .cancel) { pending = nil }
+            }
+            .sheet(item: $detail) { ref in
+                InstrumentDetailView(code: ref.code, kind: ref.kind, name: ref.name)
+                    .themedSheetBackground()
             }
         }
     }
