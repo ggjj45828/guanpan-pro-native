@@ -14,9 +14,22 @@ struct IntradayCompanionDecision {
     enum Level: String { case ready = "条件较匹配", wait = "等待确认", avoid = "暂不建议", invalid = "计划/数据不足" }
     var level: Level
     var reasons: [String]
+    /// 这笔卖出里是否含「平掉今天买入的那部分」（做 T）。
+    ///
+    /// 含则标题与结论换一套说法：做 T 与减仓是两件事，用「可评估分批减仓」去描述一笔
+    /// 已经达成的 T，正是用户抱怨「它根本不懂我在做什么」的来源。
+    var doingT = false
     var summary: String { reasons.joined(separator: "；") }
 
     func title(for side: IntradayCompanionIntent.Side) -> String {
+        if side == .sell, doingT {
+            switch level {
+            case .ready: return "这笔做 T 已达成：卖出价盖住了今日买入成本与双边费用"
+            case .wait: return "还没到做 T 的保本价，先别急着卖"
+            case .avoid: return "做 T 之外还夹着减仓，那部分暂时没有依据"
+            case .invalid: return "计划或行情数据不足，无法判断"
+            }
+        }
         switch (side, level) {
         case (.buy, .ready): return "回调与企稳条件较匹配，可考虑分批"
         case (.buy, .wait): return "先等止跌或反弹确认"
@@ -28,6 +41,81 @@ struct IntradayCompanionDecision {
         }
     }
 }
+
+/// 今天在这只标的上已经成交的买卖 —— 做 T（当日回转）判定的全部素材。
+///
+/// **为什么必须有它**：原来卖出判断只看趋势与仓位（分时均价、MA20/MA60、近 20 日区间、
+/// 当日涨跌、仓位上限），**完全不查今天有没有买过这只**。于是用户当天在低位买进、
+/// 想当日卖出（做 T）时，引擎只会说「没有足够理由支持卖出」—— 而这笔交易的目的就是
+/// 赚当天价差，趋势信号本来就不该是它的判据。用户原话：
+/// 「我今天低价买进了点，在想卖出，是不是应该考虑到做 T 这种，是不是卖出也要让 T 盈利」。
+///
+/// 这些字段全部来自**用户自己的流水**（`data.ledger`），不猜、不补。
+struct IntradayTodayTrades {
+    var buyCount = 0
+    var buyQuantity = 0.0
+    var buyAmount = 0.0        // Σ 份数 × 成交价
+    var buyFee = 0.0
+    var sellCount = 0
+    var sellQuantity = 0.0
+    var sellAmount = 0.0
+    var sellFee = 0.0
+
+    var count: Int { buyCount + sellCount }
+    var hasAny: Bool { count > 0 }
+    var totalFee: Double { buyFee + sellFee }
+
+    /// 今日买入的**含费成本价** —— 做 T 的参照成本就是它，**不是**摊薄持仓成本。
+    ///
+    /// 两者是不同的东西：持仓成本是历史加权，可能远高于/低于今天的买价，
+    /// 拿它判「这笔 T 赚没赚」会得出完全错误的结论。
+    var buyCostPerShare: Double? {
+        guard buyQuantity > 0.000_001 else { return nil }
+        return (buyAmount + buyFee) / buyQuantity
+    }
+
+    /// 今日卖出的**含费成交价**（反 T 用）。
+    var sellNetPerShare: Double? {
+        guard sellQuantity > 0.000_001 else { return nil }
+        return (sellAmount - sellFee) / sellQuantity
+    }
+
+    /// 一份人话摘要，直接上卡片与提示词。
+    func summary() -> String? {
+        guard hasAny else { return nil }
+        var parts: [String] = []
+        if buyQuantity > 0.000_001 {
+            parts.append("今日已买入 \(buyQuantity.num(0)) 份，均价 \((buyAmount / buyQuantity).num(4))"
+                         + (buyFee > 0 ? "（含费成本 \(buyCostPerShare?.num(4) ?? "—")）" : ""))
+        }
+        if sellQuantity > 0.000_001 {
+            parts.append("今日已卖出 \(sellQuantity.num(0)) 份，均价 \((sellAmount / sellQuantity).num(4))")
+        }
+        if totalFee > 0 { parts.append("累计费用 \(totalFee.cny())") }
+        return parts.joined(separator: "；")
+    }
+}
+
+/// 「想卖出的这一笔里，有多少是在平掉今天买入的那部分」以及它赚不赚。
+///
+/// 这个类型只回答一个具体问题：**按今天买入的含费成本算，现在这个价卖出去，
+/// 扣掉卖出的费用之后是赚还是亏，保本价是多少。** 它不评价趋势，也不预测后市。
+struct IntradayTSettlement {
+    /// 算作做 T 的份额（= min(拟卖出份额, 今日买入份额)）。
+    var quantity: Double
+    /// 今日买入的含费成本价。
+    var costPerShare: Double
+    /// 预估的这笔卖出费用。
+    var estimatedSellFee: Double
+    /// 卖出的保本价：含费成本 + 卖出费摊到每份。
+    var breakEvenPrice: Double
+    /// 扣掉买入费与这笔卖出费之后的净收支（元）。正数才是「这笔 T 赚了」。
+    var profit: Double
+    var isProfit: Bool { profit > 0 }
+    /// 拟卖出份额里超出今日买入的那部分 —— 那不属于做 T，属于减仓。
+    var excessQuantity: Double
+}
+
 
 @MainActor extension PortfolioStore {
     private func companionDay(_ date: Date = .now) -> String {
@@ -63,6 +151,72 @@ struct IntradayCompanionDecision {
             basis = price
         }
         return DividendContext(yieldPercent: annual / basis * 100, annualPerShare: annual, basis: basis)
+    }
+
+    /// 今天（上海时间）这只标的在**用户流水**里已经成交的买卖。
+    ///
+    /// 口径与「持仓归属」保持一致：只认真正动过持仓的场内流水
+    /// （`kind == .etf` 且 `affectsHoldings != false`）—— 导入的历史流水、
+    /// 只记现金不影响持仓的记录都不该被算成「今天我对这只动过手」。
+    func intradayTodayTrades(code: String) -> IntradayTodayTrades {
+        let today = companionDay()
+        var result = IntradayTodayTrades()
+        for entry in data.ledger where entry.code == code
+            && (entry.kind ?? .etf) == .etf
+            && (entry.affectsHoldings ?? true)
+            && companionDay(entry.date) == today {
+            let quantity = entry.quantity.isFinite ? max(0, entry.quantity) : 0
+            let amount = quantity * (entry.price.isFinite ? max(0, entry.price) : 0)
+            let fee = entry.fee.isFinite ? max(0, entry.fee) : 0
+            switch entry.side {
+            case .buy:
+                result.buyCount += 1
+                result.buyQuantity += quantity
+                result.buyAmount += amount
+                result.buyFee += fee
+            case .sell:
+                result.sellCount += 1
+                result.sellQuantity += quantity
+                result.sellAmount += amount
+                result.sellFee += fee
+            }
+        }
+        return result
+    }
+
+    /// 预估「再卖一笔」的费用。
+    ///
+    /// 优先用**今天这笔交易实际付过的费用**（同券商、同品种，最贴近真实），
+    /// 今天还没成交过就退回网格回放里的 ETF 口径（每笔 0.10 元）。
+    /// **这只是用来算「至少要涨多少才不亏」的量级**，最终以流水里的实际费用为准 ——
+    /// 文案里必须写清楚它是估算，别让用户把它当成券商的准确扣费。
+    func companionEstimatedSellFee(trades: IntradayTodayTrades) -> Double {
+        if trades.buyCount > 0, trades.buyFee > 0 {
+            return trades.buyFee / Double(trades.buyCount)
+        }
+        if trades.sellCount > 0, trades.sellFee > 0 {
+            return trades.sellFee / Double(trades.sellCount)
+        }
+        return 0.10
+    }
+
+    /// 把「想卖 \(quantity) 份 @ \(price)」拆成「平掉今日买入（做 T）」+「多余部分（减仓）」，
+    /// 并按今日买入的含费成本算出这笔 T 的净收支与保本价。今日没买过就返回 nil。
+    func intradayTSettlement(code: String, quantity: Double, price: Double,
+                             trades: IntradayTodayTrades) -> IntradayTSettlement? {
+        guard let cost = trades.buyCostPerShare, cost > 0, quantity > 0, price > 0 else { return nil }
+        let tQuantity = min(quantity, trades.buyQuantity)
+        guard tQuantity > 0 else { return nil }
+        let fee = companionEstimatedSellFee(trades: trades)
+        // 卖出得到的是净额：份数 × 价 − 卖出费。买入成本里已经把买入费摊进去了。
+        let proceeds = tQuantity * price - fee
+        let costTotal = tQuantity * cost
+        return IntradayTSettlement(quantity: tQuantity,
+                                   costPerShare: cost,
+                                   estimatedSellFee: fee,
+                                   breakEvenPrice: cost + fee / tQuantity,
+                                   profit: proceeds - costTotal,
+                                   excessQuantity: max(0, quantity - tQuantity))
     }
 
     func saveIntradayCompanionIntent(code: String, name: String,
@@ -126,6 +280,8 @@ struct IntradayCompanionDecision {
         var dipSetup = false
         var stabilization = false
         let today = companionDay()
+        // 今天在这只上已经成交过什么 —— 做 T 判定的唯一依据，全部来自用户自己的流水。
+        let trades = intradayTodayTrades(code: code)
         let minutePoints = intradayBars(code: code, day: today)
         let prices = minutePoints.map(\.price)
         if !prices.isEmpty {
@@ -255,6 +411,37 @@ struct IntradayCompanionDecision {
             reasons.append("保守风险偏好：还没企稳时不建议仅因价格低而抄底")
         }
         if side == .buy && riskName == "激进" && dipSetup && stabilization { strength += 1 }
+        // ---- 今日成交与做 T（当日回转）口径 ----
+        //
+        // 这一段解决的是一处具体的错配：**做 T 的判据是价差，不是趋势**。
+        // 用户当天买进、当天卖出，只要卖出价盖住了今日买入成本与双边费用，
+        // 这笔 T 就是成立的 —— 引擎没有理由拿「在 MA20 上方、没有减仓信号」把它否掉。
+        // 反过来，现价还在做 T 保本价之下时就诚实说「这笔 T 会亏」，
+        // 而不是含糊地回一句「没有卖出理由」（那是用户摸不着头脑的地方）。
+        var tSettlement: IntradayTSettlement?
+        if side == .sell, let s = intradayTSettlement(code: code, quantity: quantity, price: price, trades: trades) {
+            tSettlement = s
+            reasons.append("今日买入含费成本 \(s.costPerShare.num(4)) 元/份；按现价卖出 \(s.quantity.num(0)) 份，做 T 保本价约 \(s.breakEvenPrice.num(4))（卖出费按 \(s.estimatedSellFee.num(2)) 元估算，实际以你的流水为准）")
+            if s.isProfit {
+                reasons.append("这笔做 T 是赚的：扣掉买入成本与卖出费用后约 +\(s.profit.cny())")
+            } else {
+                reasons.append("这笔做 T 目前是亏的：扣掉买入成本与卖出费用后约 \(s.profit.cny())；想做成 T，要等现价回到 \(s.breakEvenPrice.num(4)) 以上")
+            }
+            if s.excessQuantity > 0.000_001 {
+                reasons.append("其中 \(s.quantity.num(0)) 份是平掉今天买入的那笔（做 T），剩下 \(s.excessQuantity.num(0)) 份属于**减仓**，那部分仍按趋势与仓位评估")
+            }
+        }
+        if side == .sell, trades.sellQuantity > 0.000_001 {
+            reasons.append("今天你已经卖出过 \(trades.sellQuantity.num(0)) 份（均价 \((trades.sellAmount / trades.sellQuantity).num(4))）；若现价低于它，买回才构成反 T，再卖是继续减仓")
+        }
+        if side == .buy, trades.buyQuantity > 0.000_001, let cost = trades.buyCostPerShare {
+            reasons.append("今天你已经买入过 \(trades.buyQuantity.num(0)) 份（含费成本 \(cost.num(4))）；再买等于在同一位置加仓，注意仓位上限与摊薄节奏")
+        }
+        if trades.hasAny, trades.totalFee > 0 {
+            let roundTrip = companionEstimatedSellFee(trades: trades) * 2
+            reasons.append("今日在这只上已产生费用 \(trades.totalFee.cny())；日内来回做 T 时，价差至少要盖住两笔费用（约 \(roundTrip.cny())）才不白做")
+        }
+
         let level: IntradayCompanionDecision.Level
         if side == .buy {
             let readyThreshold = riskName == "保守" ? 3 : (riskName == "激进" ? 1 : 2)
@@ -263,18 +450,48 @@ struct IntradayCompanionDecision {
             // 数量足够只代表账本份额校验通过。卖出建议要求至少两项相互独立的风险/仓位依据；
             // 单纯浮亏、日内下跌或用户填了卖出份额，都不会被当成卖出理由。
             let sellThreshold = (profile.style == "long" || riskName == "保守") ? 3 : 2
+            let trimLevel: IntradayCompanionDecision.Level
             if sellRiskSignals >= sellThreshold {
-                level = .ready
+                trimLevel = .ready
                 reasons.append("卖出判断来自上述多项趋势/仓位信号，仍建议按计划分批复核，不是自动下单")
             } else if sellRiskSignals == 1 {
-                level = .wait
+                trimLevel = .wait
                 reasons.append("目前只有一项减仓依据，尚不足以确认卖点")
             } else {
-                level = .avoid
+                trimLevel = .avoid
                 reasons.append("份额充足只是可卖校验通过；当前没有足够技术或仓位理由支持卖出")
             }
+            if let s = tSettlement {
+                // **做 T 那一档单独给结论**：与趋势/仓位信号互不否定。
+                if s.isProfit {
+                    reasons.append("按做 T 口径：这笔 T 已达成（保本价 \(s.breakEvenPrice.num(4))），结论不再由趋势信号决定")
+                } else {
+                    reasons.append("按做 T 口径：现价还没到保本价 \(s.breakEvenPrice.num(4))，先不急着卖；若你本来就想减仓，那是另一件事，看上面的趋势与仓位依据")
+                }
+                // 还夹带减仓的部分就取两者里**更保守**的一档 —— 做 T 成立不能顺带
+                // 给没有依据的减仓背书。全平今日买入时，结论完全由做 T 口径决定。
+                let tLevel: IntradayCompanionDecision.Level = s.isProfit ? .ready : .wait
+                level = s.excessQuantity > 0.000_001
+                    ? Self.companionConservativeLevel(tLevel, trimLevel)
+                    : tLevel
+            } else {
+                level = trimLevel
+            }
         }
-        return .init(level: level, reasons: reasons)
+        return .init(level: level, reasons: reasons, doingT: tSettlement != nil)
+    }
+
+    /// 取两档里更保守的那个（`avoid` < `wait` < `ready`）。
+    ///
+    /// 用于「做 T + 减仓混在一笔里」的情形：做 T 成立只说明**平掉今日买入的那部分**成立，
+    /// 不能给多出来的减仓份额背书。
+    static func companionConservativeLevel(_ a: IntradayCompanionDecision.Level,
+                                           _ b: IntradayCompanionDecision.Level)
+        -> IntradayCompanionDecision.Level {
+        let order: [IntradayCompanionDecision.Level] = [.avoid, .wait, .ready]
+        let ia = order.firstIndex(of: a) ?? 0
+        let ib = order.firstIndex(of: b) ?? 0
+        return order[min(ia, ib)]
     }
     func evaluateIntradayCompanions() {
         var changed = false

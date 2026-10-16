@@ -1828,6 +1828,10 @@ private struct HoldingRowCard: View {
         let dividendYield = annualDividend.flatMap { holding.current > 0 ? $0 / holding.current * 100 : nil }
         let premium = kind == .etf ? store.marketPremiums[holding.code] : nil
         let navFreshness = holdingNAVFreshness(holding, latest: store.latestFundNAVByCode[holding.code], now: now)
+        // 设过目标仓位的，把「实际 → 目标」直接并进副标题那一行：用户反馈「设了目标之后
+        // 在列表里完全看不出来」，每次都要点进去才知道自己设了多少（场内场外都一样）。
+        let allocationTarget = store.data.allocationTargets
+            .first(where: { $0.code == holding.code && $0.kind == holding.kind })?.targetPercent
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 kindBadge
@@ -1841,7 +1845,7 @@ private struct HoldingRowCard: View {
                 stat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
                 Spacer(minLength: 0)
             }
-            Text("\(holding.code) · \((holding.quantity).compactNum(4)) 份 · 成本 \((unitCost).num((kind == .fund ? 4 : 3))) · 现价 \((holding.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: holding)).pct(1))")
+            Text("\(holding.code) · \((holding.quantity).compactNum(4)) 份 · 成本 \((unitCost).num((kind == .fund ? 4 : 3))) · 现价 \((holding.current).num((kind == .fund ? 4 : 3))) · 仓位 \((store.allocationActualPercent(for: holding)).pct(1))" + (allocationTarget.map { " → 目标 \($0.pct(1))" } ?? ""))
                 .font(.caption).foregroundStyle(.secondary)
             if kind == .etf {
                 // 每行一个 `LazyVGrid(.adaptive)` 是滚动时的固定开销：adaptive 网格每次布局
@@ -1965,9 +1969,12 @@ private struct HoldingRowCard: View {
                 Button("定投") { onAction(.fundDCA(holding)) }.tint(.teal)
             } else {
                 Button("日K") { onAction(.showChart(holding)) }.tint(.indigo)
-                Button("目标") { onAction(.target(holding)) }.tint(.purple)
                 Button("提醒") { onAction(.alert(holding)) }.tint(.teal)
             }
+            // 「目标仓位」对场内场外一视同仁：`allocationTargets` 本来就被再平衡偏离、
+            // 新增资金加仓试算、本机顾问三处消费，场外基金算出来的实际占比也一样有效。
+            // 原先只在 else 分支 → 场外基金压根没有入口（用户反馈「持仓目标没地方设」）。
+            Button("目标") { onAction(.target(holding)) }.tint(.purple)
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             Button("加自选") {
@@ -1985,8 +1992,8 @@ private struct HoldingRowCard: View {
                 Button { onAction(.fundDCA(holding)) } label: { Label("定投", systemImage: "calendar.badge.plus") }
             } else {
                 Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") }
-                Button { onAction(.target(holding)) } label: { Label("目标仓位", systemImage: "target") }
             }
+            Button { onAction(.target(holding)) } label: { Label("目标仓位", systemImage: "target") }
             Button(role: .destructive) {
                 Haptics.heavy()
                 onAction(.remove(holding))
@@ -4773,21 +4780,13 @@ struct ETFIncomeCalendarView: View {
     }
 }
 
-private struct ToolShortcut: Identifiable {
-    let title: String
-    let anchor: String
-    var id: String { anchor }
-}
-
 struct ToolsView: View {
-    let initialAnchor: String?
     let title: String
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage("guanpan.native.tools.showAll") private var showAllTools = false
     @State private var shockPercent = 20
     @State private var showShockDetails = false
-    @State private var showRebalanceDetails = false
 
     /// 工具页全部弹窗的**唯一入口**。
     ///
@@ -4804,13 +4803,13 @@ struct ToolsView: View {
              tradePreview, returnSource, historicalReplay,
              intradayArchive, dataTrust, reconciliation,
              tradeLedger, monthlyReview, yearlyReview,
-             portfolioScenario
+             portfolioScenario,
+             allocationTargets
         var id: String { rawValue }
     }
     @State private var activeSheet: ToolSheet?
 
-    init(initialAnchor: String? = nil, title: String = "工具") {
-        self.initialAnchor = initialAnchor
+    init(title: String = "工具") {
         self.title = title
     }
 
@@ -4846,26 +4845,34 @@ struct ToolsView: View {
             return abs(store.allocationActualPercent(for: holding) - target) >= threshold
         }.count
     }
+    /// 「分标的仓位目标」入口的标题：已设只数 +（只有真的偏离了才追加）偏离只数。
+    /// `rebalanceBreachCount` 此前只有声明、从没被任何视图读过 —— 属于「写了但没接上」的死代码，
+    /// 页面里那个「再平衡偏离」区块也就从来没渲染出来过。这里把它接到入口标题上：
+    /// 不用点进去就能看到「有几只已经偏离目标」。
+    private var allocationTargetsTitle: String {
+        let head = "分标的仓位目标（已设 \(store.data.allocationTargets.count) 只）"
+        return rebalanceBreachCount > 0 ? "\(head) · \(rebalanceBreachCount) 只偏离" : head
+    }
 
-    private let toolAnchors: [ToolShortcut] = [
-        ToolShortcut(title: "风险", anchor: "tools-risk"),
-        ToolShortcut(title: "收益", anchor: "tools-returns"),
-        ToolShortcut(title: "目标", anchor: "tools-targets"),
-        ToolShortcut(title: "网格", anchor: "tools-grid"),
-        ToolShortcut(title: "AI", anchor: "tools-ai"),
-        ToolShortcut(title: "数据", anchor: "tools-data"),
-        ToolShortcut(title: "交易", anchor: "tools-trades"),
-        ToolShortcut(title: "基金", anchor: "tools-funds")
-    ]
     var body: some View {
         NavigationStack {
             List {
                 if title == "分析工具" {
-                    Section("风险与决策") { Button("资产穿透与分市场压力测试") { activeSheet = .portfolioAnalysis }; Button("交易前沙盘") { activeSheet = .tradePreview }; Button("账户画像") { activeSheet = .portrait } }
+                    // 「风险与决策」标题带上已触达的条数：`limitBreachCount` 原来是声明了从没被读过的
+                    // 死代码（单只仓位上限 + 均线提示两条规则），接到这里不用点进去也知道有没有事。
+                    Section(limitBreachCount > 0 ? "风险与决策 · \(limitBreachCount) 只触达仓位/均线提示" : "风险与决策") {
+                        Button("资产穿透与分市场压力测试") { activeSheet = .portfolioAnalysis }
+                        Button("交易前沙盘") { activeSheet = .tradePreview }
+                        Button("账户画像") { activeSheet = .portrait }
+                    }
                     Section("信号与数据质量") { Button("日线量化信号") { activeSheet = .quantEngine }; Button("数据可信度") { activeSheet = .dataTrust }; Button("运行账本体检") { activeSheet = .ledgerHealth }; Button("现金、盈亏与成本对账") { activeSheet = .reconciliation } }
-                    Section("持仓结构") { Button("ETF / 基金成分重叠") { activeSheet = .overlap }; Button("换仓情景试算") { activeSheet = .portfolioScenario } }
+                    Section("持仓结构") {
+                        Button(allocationTargetsTitle) { activeSheet = .allocationTargets }
+                        Button("ETF / 基金成分重叠") { activeSheet = .overlap }
+                        Button("换仓情景试算") { activeSheet = .portfolioScenario }
+                    }
                 } else {
-                    Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button("日内网格计划与回放") { activeSheet = .grid }; Button("中长期网格计划") { activeSheet = .longGridPlanner }; Button("新增资金加仓试算") { activeSheet = .addCash } }
+                    Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button("日内网格计划与回放") { activeSheet = .grid }; Button("中长期网格计划") { activeSheet = .longGridPlanner }; Button(allocationTargetsTitle) { activeSheet = .allocationTargets }; Button("新增资金加仓试算") { activeSheet = .addCash } }
                     Section("复盘") { Button("网格参数复盘（当日最优 / 长期参数）") { activeSheet = .gridReview } }
                     Section("收益与复盘") { Button("ETF 每日收益日历") { activeSheet = .etfIncomeCalendar }; Button("分红日历") { activeSheet = .dividendCalendar }; Button("收益来源拆解") { activeSheet = .returnSource }; Button("历史状态回放") { activeSheet = .historicalReplay }; Button("月度投资复盘") { activeSheet = .monthlyReview }; Button("年度账单") { activeSheet = .yearlyReview } }
                     Section("历史数据") { Button("分时采集") { activeSheet = .intradayArchive }; Button("导入券商成交") { activeSheet = .tradeCSVImport }; Button("全部交易流水") { activeSheet = .tradeLedger }; Button("基金定投回放") { activeSheet = .fundReplay } }
@@ -4914,6 +4921,7 @@ struct ToolsView: View {
                 case .monthlyReview: MonthlyReviewView().themedSheetBackground()
                 case .yearlyReview: YearlyReviewView().themedSheetBackground()
                 case .portfolioScenario: PortfolioScenarioView().themedSheetBackground()
+                case .allocationTargets: AllocationTargetsView().environmentObject(store).themedSheetBackground()
                 }
             }
         }
