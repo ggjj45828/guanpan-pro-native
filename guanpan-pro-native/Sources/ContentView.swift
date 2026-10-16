@@ -1965,17 +1965,17 @@ private struct HoldingRowCard: View {
         }
         .contentShape(Rectangle())
         // 左滑只露出工具，禁止全滑直删：持仓是高价值数据，手指多划一点不该直接删除。
-        // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
+        // 这里只留卡片上没有的入口（编辑 / 提醒 / 场外的工具与定投）。
+        // 「交易」与「日 K / 净值」卡片按钮区已经有了（见上面的 actionButton 行），
+        // 重复放在左滑里只会把菜单撑得更长、更难看清哪一个是唯一入口。
         // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("删除", role: .destructive) { onAction(.remove(holding)) }
             Button("编辑") { Haptics.tap(); onAction(.edit(holding)) }.tint(.blue)
-            Button("交易") { Haptics.tap(); onAction(.trade(holding)) }.tint(.orange)
             if kind == .fund {
                 Button("工具") { onAction(.fundTools(holding)) }.tint(.indigo)
                 Button("定投") { onAction(.fundDCA(holding)) }.tint(.teal)
             } else {
-                Button("日K") { onAction(.showChart(holding)) }.tint(.indigo)
                 Button("提醒") { onAction(.alert(holding)) }.tint(.teal)
             }
         }
@@ -1988,13 +1988,10 @@ private struct HoldingRowCard: View {
         // 长按兜底：万一设备上 swipeActions 仍被系统手势挡住，也能走到删除 / 编辑。
         .contextMenu {
             Button { onAction(.edit(holding)) } label: { Label("编辑持仓", systemImage: "pencil") }
-            Button { onAction(.trade(holding)) } label: { Label("买入 / 卖出", systemImage: "arrow.left.arrow.right") }
             if kind == .fund {
                 Button { onAction(.fundHistory(holding)) } label: { Label("历史净值", systemImage: "chart.line.uptrend.xyaxis") }
                 Button { onAction(.fundTools(holding)) } label: { Label("基金工具", systemImage: "wrench.and.screwdriver") }
                 Button { onAction(.fundDCA(holding)) } label: { Label("定投", systemImage: "calendar.badge.plus") }
-            } else {
-                Button { onAction(.showChart(holding)) } label: { Label("日 K 与指标", systemImage: "chart.xyaxis.line") }
             }
             Button { onAction(.instrumentDetail(holding)) } label: { Label("明细（买卖 / 费用 / 做 T）", systemImage: "list.bullet.rectangle") }
             Button(role: .destructive) {
