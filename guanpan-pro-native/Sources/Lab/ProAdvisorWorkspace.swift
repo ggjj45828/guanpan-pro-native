@@ -11,6 +11,7 @@ struct ProAdvisorWorkspace: View {
     @State private var sending = false
     @State private var error = ""
     @State private var planning = false
+    @FocusState private var composing: Bool
     @AppStorage("guanpan.research.monthlyCNY") private var monthly = ""
     @AppStorage("guanpan.research.planMonths") private var months = "12"
     private var scope: String { virtual ? "virtual:" + (lab.state?["id"] as? String ?? "none") : "real" }
@@ -24,8 +25,8 @@ struct ProAdvisorWorkspace: View {
                     ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
                         VStack(alignment: .leading, spacing: 12) {
                             if let split = turn.firstIndex(of: "\n") {
-                                Text(String(turn[..<split])).font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, alignment: .trailing)
-                                Text(String(turn[turn.index(after: split)...])).font(.body).lineSpacing(6).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).proSurface()
+                                Text(String(turn[..<split])).scaledFont(15, weight: .semibold).frame(maxWidth: .infinity, alignment: .trailing)
+                                Text(String(turn[turn.index(after: split)...])).scaledFont(17).lineSpacing(6).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).proSurface(tone: Color(red: 0.08, green: 0.56, blue: 0.48))
                             } else { Text(turn).textSelection(.enabled) }
                         }.id(index)
                     }
@@ -36,6 +37,7 @@ struct ProAdvisorWorkspace: View {
                 }.frame(maxWidth: 900, alignment: .leading).padding(22).frame(maxWidth: .infinity)
             }
             .background(ProStyle.background)
+            .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             .navigationTitle("私人投资顾问").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("资金计划", systemImage: "calendar.badge.plus") { planning = true } } }
@@ -61,7 +63,7 @@ struct ProAdvisorWorkspace: View {
     }
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("先把你的想法说清楚").font(.system(size: 28, weight: .semibold))
+            Text("先把你的想法说清楚").scaledFont(28, weight: .semibold)
             Text("愿意等更低价格，现金暂时不足，或想重新安排长期仓位，都可以从这里开始。")
                 .font(.body).foregroundStyle(.secondary).lineSpacing(6)
             ForEach(["新增资金怎么分阶段投入？", "先帮我检查组合风险", "红利配置需要哪些证据？"], id: \.self) { text in
@@ -73,7 +75,7 @@ struct ProAdvisorWorkspace: View {
     private var composer: some View {
         VStack(spacing: 12) {
             HStack(spacing: 12) {
-                TextField("说说你的目标、顾虑或资金安排", text: $question, axis: .vertical).lineLimit(1...5).textFieldStyle(.plain).accessibilityIdentifier("advisor.question")
+                TextField("说说你的目标、顾虑或资金安排", text: $question, axis: .vertical).lineLimit(1...5).textFieldStyle(.plain).focused($composing).accessibilityIdentifier("advisor.question")
                 Button { Task { await send() } } label: { Image(systemName: "arrow.up").font(.headline).frame(width: 40, height: 40).background(Color.accentColor, in: Circle()).foregroundStyle(.white) }
                     .disabled(sending || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityLabel("发送研究问题").accessibilityIdentifier("advisor.send")
@@ -99,6 +101,7 @@ struct ProAdvisorWorkspace: View {
     @MainActor private func send() async {
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sending, !text.isEmpty else { return }
+        composing = false
         sending = true; error = ""; defer { sending = false }
         let savedScope = scope
         do {

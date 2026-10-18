@@ -49,6 +49,6 @@ test_universe_version_cannot_silently_change (test_research_inputs.ResearchInput
 test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets (test_worker_http.WorkerHTTPIntegration.test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets) ... ok
 
 ----------------------------------------------------------------------
-Ran 49 tests in 1.667s
+Ran 49 tests in 1.842s
 
 OK

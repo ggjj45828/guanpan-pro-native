@@ -16,11 +16,13 @@ final class WorkspaceExperienceTests: XCTestCase {
     @MainActor func testFiveWorkspacesAreReachableWithoutNASInLightAndDark() {
         for style in ["light", "dark"] {
             let app = launch(style: style)
-            XCTAssertTrue(app.staticTexts["看清当下，再做决定"].waitForExistence(timeout: 15))
+            XCTAssertTrue(app.staticTexts["workspace.title"].waitForExistence(timeout: 15))
+            XCTAssertEqual(app.staticTexts["workspace.title"].label, "账户总览")
             capture(app, style + "-overview")
-            for (tab, title) in [("行情", "市场工作台"), ("AI 决策", "每个决定，都有依据"), ("量化实验室", "让策略先走一遍"), ("资产", "我的资产")] {
+            for (tab, title) in [("行情", "行情工作台"), ("AI 决策", "投资决策"), ("量化实验室", "策略实验室"), ("资产", "我的资产")] {
                 app.tabBars.buttons[tab].tap()
-                XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 10))
+                XCTAssertTrue(app.staticTexts["workspace.title"].waitForExistence(timeout: 10))
+                XCTAssertEqual(app.staticTexts["workspace.title"].label, title)
                 capture(app, style + "-" + tab)
             }
             XCTAssertFalse(app.staticTexts["场外历史"].exists)
@@ -35,7 +37,9 @@ final class WorkspaceExperienceTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 10)); field.tap(); field.typeText("risk plan")
         app.buttons["advisor.send"].tap()
         let reply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "离线规则顾问")).firstMatch
-        XCTAssertTrue(reply.waitForExistence(timeout: 15)); capture(app, "offline-advisor")
+        XCTAssertTrue(reply.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        capture(app, "offline-advisor")
         app.terminate(); app.launch()
         app.tabBars.buttons["AI 决策"].tap(); app.buttons["和私人顾问聊聊"].tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "risk plan")).firstMatch.waitForExistence(timeout: 10))

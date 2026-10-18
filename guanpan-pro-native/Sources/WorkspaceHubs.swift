@@ -7,18 +7,18 @@ struct ProOverviewView: View {
     private var value: Double { holdings.reduce(0) { $0 + $1.marketValue } }
     var body: some View {
         NavigationStack {
-            ProPage(title: "看清当下，再做决定", subtitle: "观盘 Pro · 真实账户") {
+            ProPage(title: "账户总览", subtitle: "观盘 Pro · 真实账户") {
                 VStack(alignment: .leading, spacing: 22) {
-                    Label("场内资产与现金", systemImage: "briefcase").font(.subheadline).foregroundStyle(.secondary)
-                    Text((value + store.data.cash).cny()).font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
+                    Label("场内资产与现金", systemImage: "briefcase").scaledFont(15, weight: .medium).foregroundStyle(.secondary)
+                    Text((value + store.data.cash).cny()).scaledFont(40, weight: .semibold, design: .rounded).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
                     HStack { ProMetric(title: "持仓市值", value: value.cny()); ProMetric(title: "现金", value: store.data.cash.cny()); ProMetric(title: "证券", value: "\(holdings.count) 只") }
                 }.proSurface(tone: Color(red: 0.19, green: 0.45, blue: 0.78))
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     ProSectionTitle(title: "下一步，按你的节奏")
-                    NavigationLink { ProAdvisorWorkspace() } label: { ProActionRow(title: "安排下一笔资金", detail: "结合持仓、长期目标与耐心买入偏好", icon: "arrow.up.right.circle") }
+                    NavigationLink { ProAdvisorWorkspace() } label: { ProActionRow(title: "安排下一笔资金", detail: "结合持仓、长期目标与耐心买入偏好", icon: "arrow.up.right.circle") }.tint(Color(red: 0.08, green: 0.56, blue: 0.48))
                     Divider()
-                    NavigationLink { ProLabWorkspace() } label: { ProActionRow(title: "先看模拟，再做决定", detail: "相同起点与资金流，观察不同策略的结果", icon: "point.3.connected.trianglepath.dotted") }
+                    NavigationLink { ProLabWorkspace() } label: { ProActionRow(title: "先看模拟，再做决定", detail: "相同起点与资金流，观察不同策略的结果", icon: "point.3.connected.trianglepath.dotted") }.tint(Color.purple)
                 }
                 if !holdings.isEmpty {
                     VStack(alignment: .leading, spacing: 18) {
@@ -56,14 +56,14 @@ struct ProMarketWorkspace: View {
     }
     var body: some View {
         NavigationStack {
-            ProPage(title: "市场工作台", subtitle: "价格、走势与数据时效") {
+            ProPage(title: "行情工作台", subtitle: "价格、走势与数据时效") {
                 if let q = active {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 6) { Text(q.name).font(.title2.weight(.semibold)); Text(q.code).font(.caption.monospaced()).foregroundStyle(.secondary) }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 6) {
-                                Text(q.price.num(3)).font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit()
+                                Text(q.price.num(3)).scaledFont(30, weight: .semibold, design: .rounded).monospacedDigit()
                                 Text((q.changePct * 100).num(2) + "%").font(.subheadline.monospacedDigit()).foregroundStyle(ProStyle.change(q.changePct))
                             }
                         }
@@ -109,9 +109,9 @@ struct ProMarketWorkspace: View {
 
 struct ProDecisionHubView: View {
     var body: some View {
-        NavigationStack { ProPage(title: "每个决定，都有依据", subtitle: "研究 · 计划 · 用户确认") {
+        NavigationStack { ProPage(title: "投资决策", subtitle: "研究 · 计划 · 用户确认") {
             VStack(alignment: .leading, spacing: 18) {
-                Text("先谈目标，再谈买卖").font(.title2.weight(.semibold))
+                Text("私人投资顾问").font(.title2.weight(.semibold))
                 Text("想等更低的价格，还是先安排未来资金？从你的真实持仓开始，一起把计划说清楚。").font(.body).foregroundStyle(.secondary).lineSpacing(6)
                 NavigationLink("和私人顾问聊聊") { ProAdvisorWorkspace() }.buttonStyle(.borderedProminent)
             }.proSurface(tone: Color(red: 0.08, green: 0.56, blue: 0.48))
@@ -140,10 +140,12 @@ struct ProLabWorkspace: View {
     private let titles = ["A": "持有与现金", "B": "初始比例", "C": "长期目标", "D": "再平衡", "E": "红利价值", "F": "趋势风控", "G": "AI 多因子"]
     private var orders: [[String: Any]] { lab.accounts[selected]?["orders"] as? [[String: Any]] ?? [] }
     var body: some View {
-        NavigationStack { ProPage(title: "让策略先走一遍", subtitle: "独立虚拟账户 · 相同起点与资金流") {
+        NavigationStack { ProPage(title: "策略实验室", subtitle: "独立虚拟账户 · 相同起点与资金流") {
             if lab.state == nil {
-                ProEmpty(title: "先建立一个公平的起点", detail: "复制持仓、成本、现金与时间，创建七个独立策略账户。", icon: "point.3.connected.trianglepath.dotted")
-                NavigationLink("创建数字孪生") { InvestmentLabView() }.buttonStyle(.borderedProminent)
+                VStack(spacing: 16) {
+                    ProEmpty(title: "先建立一个公平的起点", detail: "复制持仓、成本、现金与时间，创建七个独立策略账户。", icon: "point.3.connected.trianglepath.dotted")
+                    NavigationLink("创建数字孪生") { InvestmentLabView() }.buttonStyle(.borderedProminent).padding(.bottom, 8)
+                }.frame(maxWidth: .infinity).proSurface(tone: .purple)
             } else {
                 VStack(alignment: .leading, spacing: 18) {
                     ProSectionTitle(title: "策略对照", detail: "不把入金当成收益")
@@ -197,7 +199,7 @@ struct ProAssetsHubView: View {
     private var holdings: [Holding] { store.data.holdings.filter { $0.kind == .etf } }
     var body: some View {
         NavigationStack { ProPage(title: "我的资产", subtitle: "真实持仓与资金") {
-            HStack { ProMetric(title: "持仓市值", value: holdings.reduce(0) { $0 + $1.marketValue }.cny()); ProMetric(title: "现金", value: store.data.cash.cny()) }
+            HStack { ProMetric(title: "持仓市值", value: holdings.reduce(0) { $0 + $1.marketValue }.cny()); ProMetric(title: "现金", value: store.data.cash.cny()) }.proSurface(tone: .blue)
             Divider()
             VStack(spacing: 0) {
                 ProSectionTitle(title: "持仓明细", detail: "\(holdings.count) 只").padding(.bottom, 12)
@@ -230,7 +232,7 @@ struct ProHoldingWorkspace: View {
     private var current: Holding { store.data.holdings.first { $0.id == holding.id } ?? holding }
     var body: some View {
         ProPage(title: current.name, subtitle: current.code + " · 真实持仓") {
-            Text(current.marketValue.cny()).font(.system(size: 38, weight: .semibold, design: .rounded)).monospacedDigit()
+            Text(current.marketValue.cny()).scaledFont(38, weight: .semibold, design: .rounded).monospacedDigit()
             HStack { ProMetric(title: "数量", value: current.quantity.num(0)); ProMetric(title: "单位成本", value: current.cost.num(3)); ProMetric(title: "当前价格", value: current.current.num(3)) }
             Divider()
             HStack { Button("查看图表") { chart = true }.buttonStyle(.borderedProminent); Button("记录实际成交") { trade = true }.buttonStyle(.bordered) }
