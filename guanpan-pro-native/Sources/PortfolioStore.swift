@@ -571,17 +571,35 @@ final class PortfolioStore: ObservableObject {
     }
 
     func load() {
-        guard let raw = UserDefaults.standard.data(forKey: key), var value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
+        guard let raw = UserDefaults.standard.data(forKey: key) else {
+            purgeOffExchangeRecoveryData()
+            try? HistoricalFundArchive.purgeArtifacts()
+            return
+        }
+        guard var value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
+        var mayPurgeArtifacts = true
         if HistoricalFundArchive.hasHistory(value) {
             do {
-                _ = try HistoricalFundArchive.preserve(raw)
                 let cleaned = try HistoricalFundArchive.removingOffExchange(raw)
                 value = try JSONDecoder().decode(PortfolioData.self, from: cleaned)
                 UserDefaults.standard.set(cleaned, forKey: key)
-                historicalArchiveStatus = "已移除场外记录；ETF/股票、现金和共用资金流水未改动"
-            } catch { historicalArchiveStatus = "场外清理未执行：\(error.localizedDescription)；原账本未改动" }
+                historicalArchiveStatus = "正在删除场外记录及旧恢复副本"
+            } catch {
+                mayPurgeArtifacts = false
+                historicalArchiveStatus = "场外记录删除失败：\(error.localizedDescription)；原账本未改动"
+            }
         }
         data = value
+        purgeOffExchangeRecoveryData()
+        do {
+            guard mayPurgeArtifacts else { throw NSError(domain: "OffExchangeHistory", code: 1, userInfo: [NSLocalizedDescriptionKey: historicalArchiveStatus]) }
+            try HistoricalFundArchive.purgeArtifacts()
+            if historicalArchiveStatus == "正在删除场外记录及旧恢复副本" || historicalArchiveStatus == "仅保留场内 ETF/股票业务" {
+                historicalArchiveStatus = "场外历史与旧恢复副本已删除；场内资产、现金和共用流水保留"
+            }
+        } catch {
+            if mayPurgeArtifacts { historicalArchiveStatus = "旧场外恢复副本未能完全删除：\(error.localizedDescription)" }
+        }
         // 整份账本换掉了，派生缓存必须全部作废：指纹可能碰巧相同（条数与末条字段都没变），
         // 但内容已经不是同一份数据了。
         cachedLatestFundNAVKey = ""
@@ -1614,7 +1632,6 @@ final class PortfolioStore: ObservableObject {
         if HistoricalFundArchive.hasHistory(data) {
             do {
                 let original = try JSONEncoder().encode(data)
-                _ = try HistoricalFundArchive.preserve(original)
                 data = try JSONDecoder().decode(PortfolioData.self, from: HistoricalFundArchive.removingOffExchange(original))
             } catch { historicalArchiveStatus = "场外清理失败，未保存：\(error.localizedDescription)"; return }
         }
@@ -1629,13 +1646,19 @@ final class PortfolioStore: ObservableObject {
         guard let raw = try? JSONEncoder().encode(data) else { return }
         let defaults = UserDefaults.standard
         if !isUndoingSave, let previous = defaults.data(forKey: key), previous != raw {
-            defaults.set(previous, forKey: undoKey)
+            if let safePrevious = sanitizedRecoveryState(previous) { defaults.set(safePrevious, forKey: undoKey) }
+            else { defaults.removeObject(forKey: undoKey) }
             if let label, !applyingNASData {
-                operationAudit.insert(OperationAuditRecord(date: .now, label: label, state: previous), at: 0)
+                if let safePrevious = sanitizedRecoveryState(previous) {
+                    operationAudit.insert(OperationAuditRecord(date: .now, label: label, state: safePrevious), at: 0)
+                }
                 persistOperationAudit()
             }
         }
         defaults.set(raw, forKey: key)
+        purgeOffExchangeRecoveryData()
+        do { try HistoricalFundArchive.purgeArtifacts() }
+        catch { historicalArchiveStatus = "旧场外恢复副本未能完全删除：\(error.localizedDescription)" }
         if !applyingNASData, propagate { scheduleNASSync() }
         // 账本一改就排队写回网页版（6 秒防抖）。用户的操作顺序常常是
         // 「App 里记一笔 → 切到浏览器打开观盘.html → 点下载」，所以这一份必须已经在 NAS 上。
@@ -1805,7 +1828,41 @@ final class PortfolioStore: ObservableObject {
     private func loadOperationAudit() {
         guard let raw = UserDefaults.standard.data(forKey: auditKey),
               let records = try? JSONDecoder().decode([OperationAuditRecord].self, from: raw) else { return }
-        operationAudit = records
+        operationAudit = records.compactMap { record in
+            guard let safeState = sanitizedRecoveryState(record.state) else { return nil }
+            var copy = record
+            copy.state = safeState
+            return copy
+        }
+        if operationAudit.count != records.count || operationAudit.contains(where: { record in
+            guard let old = records.first(where: { $0.id == record.id }) else { return false }
+            return old.state != record.state
+        }) { persistOperationAudit() }
+    }
+
+    private func sanitizedRecoveryState(_ raw: Data) -> Data? {
+        guard let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return nil }
+        guard HistoricalFundArchive.hasHistory(value) else { return raw }
+        guard let cleaned = try? HistoricalFundArchive.removingOffExchange(raw),
+              (try? JSONDecoder().decode(PortfolioData.self, from: cleaned)) != nil else { return nil }
+        return cleaned
+    }
+
+    private func purgeOffExchangeRecoveryData() {
+        let defaults = UserDefaults.standard
+        if let previous = defaults.data(forKey: undoKey) {
+            if let safe = sanitizedRecoveryState(previous) { defaults.set(safe, forKey: undoKey) }
+            else { defaults.removeObject(forKey: undoKey) }
+        }
+        var changed = false
+        operationAudit = operationAudit.compactMap { record in
+            guard let safe = sanitizedRecoveryState(record.state) else { return nil }
+            var copy = record
+            copy.state = safe
+            if safe != record.state { changed = true }
+            return copy
+        }
+        if changed { persistOperationAudit() }
     }
 
     private func persistOperationAudit() {

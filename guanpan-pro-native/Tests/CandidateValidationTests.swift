@@ -89,11 +89,51 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(result.holdValue, 100, accuracy: 0.00001)
         XCTAssertEqual(result.strategyValue, 100, accuracy: 0.00001)
     }
-    func testArchivePreservesUnknownFieldsAndOriginalBytes() async throws {
-        let original = Data("{\"unknown-legacy\":{\"nested\":[1,2,3]},\"cash\":0}".utf8)
-        let file = try HistoricalFundArchive.preserve(original)
-        XCTAssertEqual(try Data(contentsOf: file), original)
-        XCTAssertEqual(try HistoricalFundArchive.preserve(original), file)
+    func testOffExchangeRecoveryFolderIsDeletedWithoutTouchingSiblingData() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("GuanpanReadOnlyHistory-v1")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("off exchange history".utf8).write(to: folder.appendingPathComponent("old.json"))
+        let sibling = root.appendingPathComponent("etf-market-cache.json")
+        try Data("preserve".utf8).write(to: sibling)
+        try HistoricalFundArchive.purgeArtifacts(at: folder)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+        XCTAssertEqual(try Data(contentsOf: sibling), Data("preserve".utf8))
+    }
+    @MainActor func testLoadingPurgesOffExchangeDataFromLedgerUndoAndRecoveryCopies() async throws {
+        let defaults = UserDefaults.standard
+        let mainKey = "guanpan.pro.native.portfolio.v1"
+        let undoKey = "guanpan.pro.native.portfolio.undo.v1"
+        let auditKey = "guanpan.pro.native.portfolio.audit.v1"
+        let oldMain = defaults.object(forKey: mainKey), oldUndo = defaults.object(forKey: undoKey), oldAudit = defaults.object(forKey: auditKey)
+        defer {
+            if let oldMain { defaults.set(oldMain, forKey: mainKey) } else { defaults.removeObject(forKey: mainKey) }
+            if let oldUndo { defaults.set(oldUndo, forKey: undoKey) } else { defaults.removeObject(forKey: undoKey) }
+            if let oldAudit { defaults.set(oldAudit, forKey: auditKey) } else { defaults.removeObject(forKey: auditKey) }
+            try? HistoricalFundArchive.purgeArtifacts()
+        }
+        var before = PortfolioData(); before.cash = 100
+        before.holdings = [
+            Holding(code: "000001", name: "synthetic fund", quantity: 10, cost: 1, current: 1, kind: .fund),
+            Holding(code: "159941", name: "synthetic ETF", quantity: 100, cost: 1, current: 1.1, kind: .etf)
+        ]
+        before.fundNAVHistory = [FundNAVPoint(code: "000001", date: "2026-01-01", nav: 1)]
+        before.cashFlows = [CashFlow(amount: 50, memo: "shared contribution")]
+        let bytes = try JSONEncoder().encode(before)
+        defaults.set(bytes, forKey: mainKey); defaults.set(bytes, forKey: undoKey)
+        defaults.set(try JSONEncoder().encode([OperationAuditRecord(label: "synthetic prior state", state: bytes)]), forKey: auditKey)
+        try FileManager.default.createDirectory(at: HistoricalFundArchive.directory, withIntermediateDirectories: true)
+        try bytes.write(to: HistoricalFundArchive.directory.appendingPathComponent("synthetic-recovery.json"))
+
+        let store = PortfolioStore()
+        XCTAssertEqual(store.data.holdings.map(\.code), ["159941"])
+        XCTAssertEqual(store.data.cash, 100)
+        XCTAssertEqual(store.data.cashFlows.first?.memo, "shared contribution")
+        XCTAssertTrue(store.data.fundNAVHistory.isEmpty)
+        let cleanedUndo = try JSONDecoder().decode(PortfolioData.self, from: XCTUnwrap(defaults.data(forKey: undoKey)))
+        XCTAssertFalse(HistoricalFundArchive.hasHistory(cleanedUndo))
+        XCTAssertFalse(HistoricalFundArchive.hasHistory(try JSONDecoder().decode(PortfolioData.self, from: XCTUnwrap(store.operationAudit.first).state)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: HistoricalFundArchive.directory.path))
     }
     @MainActor func testOffExchangeBusinessCannotExecuteOrMutateSyntheticLedger() async throws {
         let store = PortfolioStore()

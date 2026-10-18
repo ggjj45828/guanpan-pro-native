@@ -64,7 +64,6 @@ struct ManualAssetChannelView: View {
             let before = try await channels.assetRequest(expectedEndpoint: endpoint)
             guard fingerprint == (try lab.digest(project())) else { throw InvestmentLabStore.LabError.message("读取期间本机已变化，请重新操作") }
             let revision = before["revision"] as? Int ?? 0
-            _ = try HistoricalFundArchive.preserve(JSONEncoder().encode(portfolio.data))
             _ = try await channels.assetRequest(body: ["schemaVersion": 2, "expectedRevision": revision,
                 "requestID": UUID().uuidString, "intent": "manual", "data": data], expectedEndpoint: endpoint)
             message = "真实资产副本已上传；模拟通道未参与"; preview = nil
@@ -80,10 +79,9 @@ struct ManualAssetChannelView: View {
             let merged = try lab.call("assets.merge", [try native(), data])
             let bytes = try JSONSerialization.data(withJSONObject: merged)
             let value = try JSONDecoder().decode(PortfolioData.self, from: bytes)
-            _ = try HistoricalFundArchive.preserve(JSONEncoder().encode(portfolio.data))
             portfolio.data = value
             portfolio.save(label: "手动接收 v2 真实资产", propagate: false)
-            self.preview = nil; message = "已按确认版本应用，完整旧账本备份已保留"
+            self.preview = nil; message = "已按确认版本应用；本机账本已更新"
         } catch { message = error.localizedDescription }
     }
 }
