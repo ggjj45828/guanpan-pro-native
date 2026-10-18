@@ -50,7 +50,7 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: archive.path))
     }
-    func testConfirmedOffExchangeScrubPreservesUnrelatedPortfolioFacts() {
+    @MainActor func testConfirmedOffExchangeScrubPreservesUnrelatedPortfolioFacts() {
         var source = PortfolioData()
         source.cash = 1_234
         source.holdings = [
