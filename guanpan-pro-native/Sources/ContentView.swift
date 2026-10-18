@@ -7298,6 +7298,9 @@ struct SettingsView: View {
     /// 本机的改动不再往上推，NAS 上的版本号也不再滚动。
     @AppStorage(NASSyncService.uploadKey) private var nasUpload = true
     @State private var showExporter = false
+    @State private var showOffExchangeExporter = false
+    @State private var confirmOffExchangeCleanup = false
+    @State private var exportedOffExchangeBundle: Data?
     @State private var showImporter = false
     @State private var confirmNASDownload = false
     @State private var confirmNASUpload = false
@@ -7360,8 +7363,35 @@ struct SettingsView: View {
                 }
                 Button("取消", role: .cancel) { selectedNASVersion = nil }
             }
+            .confirmationDialog("备份文件已导出并通过完整性校验。确认后会从本机账本、撤销/审计记录及应用内恢复目录删除场外历史。NAS 不会自动删除。", isPresented: $confirmOffExchangeCleanup, titleVisibility: .visible) {
+                Button("确认删除本机场外历史", role: .destructive) {
+                    guard let exportedOffExchangeBundle else { message = "找不到已校验的备份文件。场外历史仍保留。"; return }
+                    do {
+                        try store.deleteOffExchangeHistoryAfterConfirmedExport(exportedOffExchangeBundle)
+                        self.exportedOffExchangeBundle = nil
+                        message = store.historicalArchiveStatus
+                    } catch { message = error.localizedDescription }
+                }
+                Button("暂不删除", role: .cancel) { exportedOffExchangeBundle = nil }
+            }
             .fileExporter(isPresented: $showExporter, document: PortfolioBackup(data: store.data, intradayBars: store.intradayBars, dailyBars: store.dailyBars.values.flatMap { $0 }), contentType: .json, defaultFilename: "观盘Pro原生备份") { result in
                 handleExportResult(result)
+            }
+            .fileExporter(isPresented: $showOffExchangeExporter,
+                          document: OffExchangeHistoryBackupDocument(bytes: (try? store.prepareOffExchangeHistoryExport()) ?? Data()),
+                          contentType: .json, defaultFilename: "观盘Pro场外历史归档") { result in
+                switch result {
+                case .success(let url):
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    guard let bytes = try? Data(contentsOf: url), HistoricalFundArchive.verifyExportBundle(bytes) else {
+                        message = "导出文件无法读取或完整性校验失败。原场外记录仍保留。"
+                        return
+                    }
+                    exportedOffExchangeBundle = bytes
+                    confirmOffExchangeCleanup = true
+                case .failure(let error): message = "备份导出失败，原场外记录仍保留：\(error.localizedDescription)"
+                }
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
                 handleImportResult(result)
@@ -7608,6 +7638,17 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var dataSection: some View {
+        if store.hasOffExchangeHistoryToClean {
+            Section("一次性清理旧场外记录") {
+                Text(store.historicalArchiveStatus)
+                Button("先导出并校验备份，再确认清理") {
+                    do { _ = try store.prepareOffExchangeHistoryExport(); showOffExchangeExporter = true }
+                    catch { message = error.localizedDescription }
+                }
+                Text("只有本机检测到旧场外记录时才显示。导出文件通过校验后会再次询问；确认后，软件内的场外持仓、流水、撤销/审计副本和归档都会删除。此操作不会自动改动 NAS。完成后本入口消失。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
         Section("数据备份") {
             Button("导出 JSON 备份") { showExporter = true }
             Button("导入 JSON 备份") { showImporter = true }
@@ -8028,6 +8069,22 @@ struct PortfolioBackup: FileDocument {
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: try JSONEncoder().encode(NativeBackupEnvelope(data: data, intradayBars: intradayBars, dailyBars: dailyBars)))
+    }
+}
+
+struct OffExchangeHistoryBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var bytes: Data
+    init(bytes: Data) { self.bytes = bytes }
+    init(configuration: ReadConfiguration) throws {
+        guard let contents = configuration.file.regularFileContents,
+              HistoricalFundArchive.verifyExportBundle(contents) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        bytes = contents
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: bytes)
     }
 }
 

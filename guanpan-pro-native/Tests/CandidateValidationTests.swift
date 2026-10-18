@@ -17,8 +17,10 @@ final class CandidateValidationTests: XCTestCase {
     }
     func testOffExchangeCleanupPreservesCashMarketHoldingsAndUnknownFields() throws {
         let original = Data("{\"cash\":1234,\"holdings\":[{\"kind\":\"fund\",\"code\":\"001\"},{\"kind\":\"etf\",\"code\":\"159941\",\"quantity\":100}],\"ledger\":[{\"kind\":\"fund\"},{\"kind\":\"etf\"},{\"memo\":\"shared\"}],\"fundNAVHistory\":[1],\"unknown\":{\"keep\":true},\"cashFlows\":[1]}".utf8)
+        let archiveRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: archiveRoot) }
         XCTAssertThrowsError(try HistoricalFundArchive.removingOffExchange(original))
-        let cleaned = try HistoricalFundArchive.removingOffExchange(original, userConfirmedArchive: true)
+        let cleaned = try HistoricalFundArchive.removingOffExchange(original, userConfirmedArchive: true, archiveRoot: archiveRoot)
         let obj = try JSONSerialization.jsonObject(with: cleaned) as! [String: Any]
         XCTAssertEqual(obj["cash"] as? Int, 1234)
         XCTAssertEqual((obj["holdings"] as? [[String: Any]])?.count, 1)
@@ -26,6 +28,48 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(obj["cashFlows"] as? [Int], [1])
         XCTAssertEqual((obj["unknown"] as? [String: Bool])?["keep"], true)
         XCTAssertTrue((obj["fundNAVHistory"] as? [Int])?.isEmpty == true)
+    }
+    func testOffExchangeExportMustBeCompleteAndVerifiedBeforeLocalDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let recovery = root.appendingPathComponent("recovery", isDirectory: true)
+        let archive = root.appendingPathComponent("archive", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try Data("original fund snapshot".utf8).write(to: recovery.appendingPathComponent("undo.json"))
+        _ = try HistoricalFundArchive.archiveBytes(Data("ledger bytes".utf8), label: "ledger", at: archive)
+        _ = try HistoricalFundArchive.archiveBytes(Data("undo bytes".utf8), label: "undo", at: archive)
+        let exported = try HistoricalFundArchive.makeExportBundle(at: archive)
+        XCTAssertTrue(HistoricalFundArchive.verifyExportBundle(exported, archiveRoot: archive))
+        var incomplete = exported; incomplete.append(Data("tamper".utf8))
+        XCTAssertFalse(HistoricalFundArchive.verifyExportBundle(incomplete, archiveRoot: archive))
+        XCTAssertThrowsError(try HistoricalFundArchive.deleteLocalArchivesAfterVerifiedExport(incomplete, archiveRoot: archive, recoveryRoot: recovery))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
+        try HistoricalFundArchive.deleteLocalArchivesAfterVerifiedExport(exported, archiveRoot: archive, recoveryRoot: recovery)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archive.path))
+    }
+    func testConfirmedOffExchangeScrubPreservesUnrelatedPortfolioFacts() {
+        var source = PortfolioData()
+        source.cash = 1_234
+        source.holdings = [
+            Holding(code: "001234", name: "synthetic fund", quantity: 5, cost: 2, current: 2.1, kind: .fund),
+            Holding(code: "159941", name: "synthetic ETF", quantity: 100, cost: 1, current: 1.1, kind: .etf)
+        ]
+        source.fundNAVHistory = [FundNAVPoint(code: "001234", date: "2026-01-01", nav: 2)]
+        source.fundTransactions = [FundTransaction(code: "001234", name: "synthetic fund", side: .buy,
+            requestDate: "2026-01-01", effectiveDate: "2026-01-02", quantity: 5, nav: 2,
+            amount: 10, fee: 0, realizedPnL: 0, status: .confirmed, isBackfill: false,
+            dividendMode: nil, linkedCash: true)]
+        source.cashFlows = [CashFlow(amount: 50, memo: "shared contribution")]
+        let clean = PortfolioStore.withoutOffExchangeHistory(source)
+        XCTAssertEqual(clean.cash, 1_234)
+        XCTAssertEqual(clean.holdings.map(\.code), ["159941"])
+        XCTAssertTrue(clean.fundNAVHistory.isEmpty)
+        XCTAssertTrue(clean.fundTransactions.isEmpty)
+        XCTAssertEqual(clean.cashFlows.map(\.memo), ["shared contribution"])
+        XCTAssertEqual(source.holdings.count, 2, "cleanup must operate on a copy")
     }
     @MainActor func testConversationRestoresScopesAndDoesNotOverwriteAnotherView() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("chat.json")

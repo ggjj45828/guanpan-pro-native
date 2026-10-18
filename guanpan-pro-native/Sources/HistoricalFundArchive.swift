@@ -32,6 +32,78 @@ enum HistoricalFundArchive {
         }
         return destination
     }
+    private struct ExportEntry: Codable {
+        var name: String
+        var bytes: Data
+        var sha256: String
+    }
+    private struct ExportBundle: Codable {
+        var formatVersion: Int
+        var createdAt: Date
+        var entries: [ExportEntry]
+    }
+    /// Builds a portable one-time export from all verified local archive snapshots.
+    static func makeExportBundle(at root: URL? = nil) throws -> Data {
+        let manager = FileManager.default
+        let archiveRoot = root ?? permanentArchiveDirectory
+        guard manager.fileExists(atPath: archiveRoot.path),
+              let files = manager.enumerator(at: archiveRoot, includingPropertiesForKeys: [.isRegularFileKey]) else {
+            throw NSError(domain: "HistoricalFundArchive", code: 8,
+                          userInfo: [NSLocalizedDescriptionKey: "没有可导出的已归档场外历史"])
+        }
+        var entries: [ExportEntry] = []
+        for case let file as URL in files {
+            guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            let bytes = try Data(contentsOf: file)
+            entries.append(ExportEntry(name: file.lastPathComponent, bytes: bytes, sha256: digest(bytes)))
+        }
+        guard !entries.isEmpty else {
+            throw NSError(domain: "HistoricalFundArchive", code: 8,
+                          userInfo: [NSLocalizedDescriptionKey: "没有可导出的已归档场外历史"])
+        }
+        entries.sort { $0.name < $1.name }
+        return try JSONEncoder().encode(ExportBundle(formatVersion: 1, createdAt: .now, entries: entries))
+    }
+    /// Re-reads the exported file and checks every archived source blob before deletion.
+    static func verifyExportBundle(_ raw: Data, archiveRoot root: URL? = nil) -> Bool {
+        guard let bundle = try? JSONDecoder().decode(ExportBundle.self, from: raw),
+              bundle.formatVersion == 1, !bundle.entries.isEmpty else { return false }
+        guard bundle.entries.allSatisfy({ digest($0.bytes) == $0.sha256 }) else { return false }
+        guard let current = try? archiveInventory(at: root), current.count == bundle.entries.count else { return false }
+        let exported = Dictionary(bundle.entries.map { ($0.name, $0.sha256) }, uniquingKeysWith: { first, _ in first })
+        return current.allSatisfy { exported[$0.name] == $0.sha256 }
+    }
+    static func deleteLocalArchivesAfterVerifiedExport(_ raw: Data, archiveRoot: URL? = nil, recoveryRoot: URL? = nil) throws {
+        guard verifyExportBundle(raw, archiveRoot: archiveRoot) else {
+            throw NSError(domain: "HistoricalFundArchive", code: 9,
+                          userInfo: [NSLocalizedDescriptionKey: "备份文件校验失败；本机原始数据仍保留"])
+        }
+        let manager = FileManager.default
+        for folder in [recoveryRoot ?? directory, archiveRoot ?? permanentArchiveDirectory] where manager.fileExists(atPath: folder.path) {
+            try manager.removeItem(at: folder)
+        }
+    }
+    static func removePreviouslyConfirmedLocalArchives() throws {
+        let manager = FileManager.default
+        for folder in [directory, permanentArchiveDirectory] where manager.fileExists(atPath: folder.path) {
+            try manager.removeItem(at: folder)
+        }
+    }
+    private static func digest(_ bytes: Data) -> String {
+        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+    private static func archiveInventory(at root: URL? = nil) throws -> [(name: String, sha256: String)] {
+        let manager = FileManager.default
+        let archiveRoot = root ?? permanentArchiveDirectory
+        guard manager.fileExists(atPath: archiveRoot.path),
+              let files = manager.enumerator(at: archiveRoot, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        var items: [(String, String)] = []
+        for case let file as URL in files {
+            guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            items.append((file.lastPathComponent, digest(try Data(contentsOf: file)))
+        }
+        return items.sorted { $0.0 < $1.0 }
+    }
     /// Copies every old recovery artifact to the permanent archive and verifies each copy.
     static func archiveLegacyArtifacts(at folder: URL? = nil, into root: URL? = nil) throws {
         let source = folder ?? directory
@@ -69,12 +141,12 @@ enum HistoricalFundArchive {
     }
     /// Cleanup requires explicit confirmation after the user has verified the
     /// exported archive. Merely starting or saving the app never calls this.
-    static func removingOffExchange(_ raw: Data, userConfirmedArchive: Bool = false) throws -> Data {
+    static func removingOffExchange(_ raw: Data, userConfirmedArchive: Bool = false, archiveRoot: URL? = nil) throws -> Data {
         guard userConfirmedArchive else {
             throw NSError(domain: "HistoricalFundArchive", code: 7,
                           userInfo: [NSLocalizedDescriptionKey: "请先确认归档备份可读取，再清理场外历史"])
         }
-        _ = try archiveBytes(raw, label: "before-explicit-ledger-removal")
+        _ = try archiveBytes(raw, label: "before-explicit-ledger-removal", at: archiveRoot)
         guard var document = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
             throw NSError(domain: "HistoricalFundArchive", code: 2)
         }

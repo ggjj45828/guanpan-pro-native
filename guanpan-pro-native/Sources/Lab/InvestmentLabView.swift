@@ -29,6 +29,24 @@ struct InvestmentLabView: View {
     @State private var error = ""
     private let names = ["A": "持有与现金", "B": "初始比例新增", "C": "长期目标新增", "D": "定期再平衡",
                          "E": "红利价值规则", "F": "趋势风控规则", "G": "本机多因子自主模拟"]
+    private let fullNames = [
+        "A": "原持仓不卖，新增资金留现金",
+        "B": "原持仓不卖，新增资金按原比例买入",
+        "C": "原持仓不卖，新增资金按长期目标仓位买入",
+        "D": "定期再平衡，可卖出虚拟持仓",
+        "E": "红利价值与估值驱动调仓",
+        "F": "趋势与风险控制，卖出后按规则回补",
+        "G": "AI 多因子自主模拟交易"
+    ]
+    private let descriptions = [
+        "A": "后续入金全部留作现金，作为不追加买入的对照。",
+        "B": "后续入金按建立实验时的原持仓比例买入；原始持仓不卖。",
+        "C": "后续入金按你确认的长期目标比例买入；原始持仓不卖。",
+        "D": "按设定周期调回目标比例；可以卖出虚拟持仓。",
+        "E": "参考股息、估值、分红稳定性和现金流质量；基本面数据不足时不下结论。",
+        "F": "按趋势与风险条件减仓或卖出，再按规则回补；不是短期预测保证。",
+        "G": "用本机可用的多因子规则生成虚拟交易；尚未验证为实时自主 AI 交易员。"
+    ]
     private var holdings: [Holding] { portfolio.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 } }
     private var isLight: Bool { AppTheme.palette(for: portfolio.resolvedAppearance).isLight }
     private var now: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
@@ -37,6 +55,14 @@ struct InvestmentLabView: View {
         List {
             Section("开发验证版 · 独立实验账本") {
                 Text("模拟交易与真实持仓隔离。A–G 使用可解释规则和同一资金流；盘口缺失就等待。当前 iOS 版本仍需编译与真机验收。")
+                DisclosureGroup("A–G 分别是什么？") {
+                    ForEach(Array(fullNames.keys).sorted(), id: \.self) { key in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(key) · \(fullNames[key] ?? key)").font(.subheadline.weight(.semibold))
+                            Text(descriptions[key] ?? "").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 3)
+                    }
+                }
                 Text(lab.message).font(.footnote)
                 if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(CardTone.warn) }
             }.plainCard(isLight: isLight)
@@ -70,7 +96,8 @@ struct InvestmentLabView: View {
                 Section("策略对照账户") {
                     ForEach(Array(names.keys).sorted(), id: \.self) { key in
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("\(key) · \(names[key] ?? key)").font(.headline)
+                            Text("\(key) · \(fullNames[key] ?? names[key] ?? key)").font(.headline)
+                            Text(descriptions[key] ?? "").font(.caption).foregroundStyle(.secondary)
                             Text("虚拟现金 ¥\(InvestmentLabStore.yuan(lab.accounts[key]?["cash"]))")
                             Text(performance(key)).font(.caption).foregroundStyle(.secondary)
                         }
