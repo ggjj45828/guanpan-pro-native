@@ -36,9 +36,18 @@ test_runtime_normalized_feed_publishes_only_market_channel (test_market_data.Mar
 test_snapshot_with_evidence_and_no_invented_book (test_market_data.MarketTests.test_snapshot_with_evidence_and_no_invented_book) ... ok
 test_unregistered_symbol_not_imported_by_minute_bridge (test_market_data.MarketTests.test_unregistered_symbol_not_imported_by_minute_bridge) ... ok
 test_verified_daily_backup_does_not_overwrite_an_existing_backup (test_market_data.MarketTests.test_verified_daily_backup_does_not_overwrite_an_existing_backup) ... ok
+test_announced_future_dividend_is_visible_but_future_quote_is_not_accepted (test_research_inputs.ResearchInputTests.test_announced_future_dividend_is_visible_but_future_quote_is_not_accepted) ... ok
+test_annual_factors_have_explainable_units_and_full_inputs (test_research_inputs.ResearchInputTests.test_annual_factors_have_explainable_units_and_full_inputs) ... ok
+test_full_market_requires_explicit_manifest_and_fresh_data_coverage (test_research_inputs.ResearchInputTests.test_full_market_requires_explicit_manifest_and_fresh_data_coverage) ... ok
+test_future_reports_and_valuations_do_not_enter_factors (test_research_inputs.ResearchInputTests.test_future_reports_and_valuations_do_not_enter_factors) ... ok
+test_invalid_factor_and_future_publication_are_rejected (test_research_inputs.ResearchInputTests.test_invalid_factor_and_future_publication_are_rejected) ... ok
+test_missing_annuals_and_etf_company_eps_are_never_fabricated (test_research_inputs.ResearchInputTests.test_missing_annuals_and_etf_company_eps_are_never_fabricated) ... ok
+test_offline_bundle_produces_factors_and_paged_research_without_real_db (test_research_inputs.ResearchInputTests.test_offline_bundle_produces_factors_and_paged_research_without_real_db) ... ok
+test_universe_is_independent_of_holdings_and_survives_restart (test_research_inputs.ResearchInputTests.test_universe_is_independent_of_holdings_and_survives_restart) ... ok
+test_universe_version_cannot_silently_change (test_research_inputs.ResearchInputTests.test_universe_version_cannot_silently_change) ... ok
 test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets (test_worker_http.WorkerHTTPIntegration.test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets) ... ok
 
 ----------------------------------------------------------------------
-Ran 39 tests in 1.551s
+Ran 48 tests in 1.607s
 
 OK

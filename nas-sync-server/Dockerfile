@@ -3,7 +3,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data PORT=8787
 WORKDIR /app
 COPY server.py /app/server.py
 COPY channel_store.py /app/channel_store.py
-COPY market_data.py market_runtime.py /app/
+COPY market_data.py market_runtime.py market_universe.py fundamentals.py /app/
 COPY web /app/web
 RUN addgroup -S app && adduser -S -G app app && mkdir -p /data && chown -R app:app /app /data
 USER app

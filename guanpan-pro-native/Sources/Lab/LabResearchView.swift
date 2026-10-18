@@ -8,19 +8,25 @@ struct LabResearchView: View {
     @State private var monthly = "3000"
     @State private var months = "12"
     @State private var response = ""
-    @State private var conversation: [String] = []
+    @StateObject private var dialogue = ResearchConversationStore()
+    @State private var useVirtual = false
     @State private var researchText = ""
     @State private var onlineBusy = false
     @State private var onlineReply = ""
     @State private var proposalText = ""
     @State private var proposalHash = ""
     private var now: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+    private var conversationScope: String { useVirtual ? "virtual:" + (lab.state?["id"] as? String ?? "none") : "real" }
+    private var conversation: [String] { dialogue.histories[conversationScope] ?? [] }
     var body: some View {
         List {
             Section("私人研究 · 本机可解释规则") {
                 Text("此页为离线规则顾问与多因子研究，不伪装成大语言模型。现金不足不会停止研究。在线模型入口继续使用原配置，由你主动发起。")
                     .font(.caption).foregroundStyle(.secondary)
                 TextField("研究问题与偏好", text: $question, axis: .vertical)
+                Toggle("研究独立虚拟账户", isOn: $useVirtual).disabled(lab.state == nil)
+                Text(useVirtual ? "当前使用虚拟实验账户；不会修改真实资产。" : "当前使用本机最新真实 ETF/股票资产的临时研究副本。")
+                    .font(.caption).foregroundStyle(.secondary)
                 TextField("每月未来可投入金额（元）", text: $monthly).keyboardType(.decimalPad)
                 TextField("规划月数", text: $months).keyboardType(.numberPad)
                 Button("结合账户和未来资金研究") { advise() }
@@ -32,6 +38,7 @@ struct LabResearchView: View {
                 if !onlineReply.isEmpty { Text(onlineReply).textSelection(.enabled) }
             }
             Section("对话与规则记忆") {
+                if !dialogue.errorMessage.isEmpty { Text(dialogue.errorMessage).foregroundStyle(.red) }
                 ForEach(Array(conversation.enumerated()), id: \.offset) { row in Text(row.element).font(.caption) }
                 Button("将当前偏好记入独立实验") {
                     lab.action(["type": "memory", "id": UUID().uuidString, "at": now, "text": question])
@@ -58,40 +65,8 @@ struct LabResearchView: View {
         }
         .scrollContentBackground(.hidden).background(.clear).navigationTitle("投资研究与资金安排")
     }
-    private func inputs() throws -> (state: [String: Any], data: [String: Any]) {
-        var state = lab.state
-        if state == nil {
-            // A temporary research copy only, no implicit persisted virtual account creation.
-            let positions = try portfolio.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 && portfolio.isTencentETFCode($0.code) }.map { h -> [String: Any] in
-                guard h.quantity.isFinite, h.quantity.rounded() == h.quantity, h.quantity < 100_000_000 else { throw InvestmentLabStore.LabError.message("研究份额无效") }
-                return ["symbol": h.code, "asset": "etf", "quantity": Int(h.quantity), "cost": try InvestmentLabStore.units(h.cost, allowNegative: true),
-                    "price": try InvestmentLabStore.units(h.current), "tick": 10, "lot": 100, "tPlusOne": true]
-            }
-            state = try lab.call("create", [["at": now, "cash": try InvestmentLabStore.units(portfolio.data.cash), "positions": positions], UUID().uuidString]) as? [String: Any]
-        }
-        guard let state else { throw InvestmentLabStore.LabError.message("账户数据不可用") }
-        if let quality = channels.marketDocument?["quality"] as? [String: Any], let data = quality["researchSnapshot"] as? [String: Any] {
-            return (state, data)
-        }
-        let held = portfolio.data.holdings.filter { $0.kind == .etf }
-        let seed = state["seed"] as? [String: Any] ?? [:]
-        let definitions = seed["positions"] as? [[String: Any]] ?? []
-        let formatter = ISO8601DateFormatter()
-        let instruments = definitions.map { p -> [String: Any] in
-            let symbol = p["symbol"] as? String ?? ""
-            var row: [String: Any] = ["symbol": symbol, "asset": p["asset"] ?? "etf", "source": "iOS 本机缓存", "evidenceIDs": ["local:\(symbol)"]]
-            if let h = held.first(where: { $0.code == symbol }), let stamp = h.marketUpdatedAt,
-               h.current.isFinite, h.current > 0, let price = try? InvestmentLabStore.units(h.current) {
-                row["quote"] = ["at": Int64(stamp.timeIntervalSince1970 * 1000), "price": price]
-            }
-            row["bars"] = (portfolio.dailyBars[symbol] ?? []).compactMap { b -> [String: Any]? in
-                guard let close = try? InvestmentLabStore.units(b.close), let date = formatter.date(from: b.date + "T15:00:00+08:00") else { return nil }
-                let at = Int64(date.timeIntervalSince1970 * 1000)
-                return ["at": at, "availableAt": at, "close": close]
-            }
-            return row
-        }
-        return (state, ["asOf": now, "scope": "local-confirmed-instruments", "instruments": instruments])
+    private func inputs(forceVirtual: Bool = false) throws -> (state: [String: Any], data: [String: Any]) {
+        try ResearchInputBuilder.make(portfolio: portfolio, lab: lab, channels: channels, at: now, useVirtual: useVirtual, forceVirtual: forceVirtual)
     }
     private func advise() {
         do {
@@ -99,12 +74,12 @@ struct LabResearchView: View {
             let input = try inputs()
             let result = try lab.call("research.advisor", [input.state, input.data, now, question, ["monthly": try InvestmentLabStore.units(value), "months": count]]) as? [String: Any]
             response = result?["text"] as? String ?? "暂无研究结果"
-            conversation.append("你：\(question)\n离线顾问：\(response)")
+            dialogue.append("你：\(question)\n离线顾问：\(response)", scope: conversationScope)
         } catch { response = error.localizedDescription }
     }
     private func scan() {
         do {
-            let input = try inputs()
+            let input = try inputs(forceVirtual: lab.state != nil)
             var sections: [String] = []
             for code in ["A", "B", "C", "D", "E", "F", "G"] {
                 let result = try lab.call("research.research", [input.state, code, input.data, now]) as? [String: Any] ?? [:]
@@ -130,9 +105,10 @@ struct LabResearchView: View {
     private func askOnline(proposal: Bool) async {
         guard !onlineBusy else { return }; onlineBusy = true; defer { onlineBusy = false }
         do {
-            let input = try inputs()
+            let input = try inputs(forceVirtual: proposal)
+            let replyScope = conversationScope
             if proposal { guard let state = lab.state else { return }; proposalHash = try lab.digest(state) }
-            let bytes = try JSONSerialization.data(withJSONObject: ["state": input.state, "market": input.data,
+            let bytes = try JSONSerialization.data(withJSONObject: ["state": input.state, "market": input.data, "at": now,
                 "futureFunding": ["monthlyYuan": monthly, "months": months], "question": question,
                 "conversation": Array(conversation.suffix(8))], options: [.sortedKeys])
             var prompt = "你是观盘 Pro 私人投资研究顾问。只研究 ETF/股票。现金不足也要研究长期目标和未来资金。用户愿意等待较低限价。不得编造证据或执行真实交易。区分事实、推断和缺失数据，允许对话澄清并由用户确认目标。\n" + String(decoding: bytes, as: UTF8.self)
@@ -141,7 +117,7 @@ struct LabResearchView: View {
             }
             let reply = try await AIAnalysisService.chat(config: portfolio.data.aiAnalysisConfig, prompt: prompt)
             if proposal { proposalText = reply; onlineReply = "模型提案已收到，等待本机核验。" }
-            else { onlineReply = reply; conversation.append("你：\(question)\n在线模型：\(reply)") }
+            else { onlineReply = reply; dialogue.append("你：\(question)\n在线模型：\(reply)", scope: replyScope) }
         } catch { onlineReply = error.localizedDescription }
     }
     private func approveProposal() {
@@ -149,7 +125,7 @@ struct LabResearchView: View {
             guard let state = lab.state, proposalHash == (try lab.digest(state)) else {
                 throw InvestmentLabStore.LabError.message("实验已变化，请重新研究，未写入任何订单")
             }
-            let input = try inputs()
+            let input = try inputs(forceVirtual: true)
             let result = try lab.call("research.reviewModel", [state, input.data, proposalText, now]) as? [String: Any] ?? [:]
             guard let next = result["state"] as? [String: Any] else { return }
             let accepted = result["accepted"] as? [Any] ?? [], rejected = result["rejected"] as? [[String: Any]] ?? []

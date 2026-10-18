@@ -13,6 +13,9 @@ from decimal import Decimal,ROUND_HALF_UP
 from urllib.parse import urlparse,parse_qs
 from market_data import MarketArchive
 from channel_store import ChannelError
+from market_universe import UniverseStore,validate_manifest
+from market_data import valid
+from fundamentals import derive
 
 def units(value):
     number=Decimal(str(value))
@@ -38,10 +41,38 @@ def configured_book(fields,definition,at,available,volume_multiplier):
 class MarketRuntime:
     def __init__(self,channels,archive,http_get=None,fetch_daily=None):
         self.channels=channels;self.archive=archive;self.lock=threading.Lock();self.last_error=None
-        self.http_get=http_get;self.fetch_daily=fetch_daily;self.last_daily={};self.last_quote={}
-    def definitions(self):
+        self.http_get=http_get;self.fetch_daily=fetch_daily;self.last_daily={};self.last_quote={};self.daily_attempt={};self.cursor=0
+        self.universe=UniverseStore(archive)
+    def definitions(self,include_universe=False):
         lab=(self.channels.get('quant').get('data')or{}).get('lab')or{}
-        return [p for p in [*(lab.get('seed')or{}).get('positions',[]),*(lab.get('catalog')or{}).values()] if p.get('asset') in ('etf','stock')]
+        rows=[p for p in [*(lab.get('seed')or{}).get('positions',[]),*(lab.get('catalog')or{}).values()] if p.get('asset') in ('etf','stock')]
+        if include_universe:rows+=((self.universe.get(int(time.time()*1000))or{}).get('instruments',[]))
+        return list({p['symbol']:p for p in rows}.values())
+    def ingest_bundle(self,body,now=None):
+        now=int(time.time()*1000)if now is None else now
+        if not isinstance(body,dict)or not isinstance(body.get('records'),list):raise ChannelError(422,'invalid_market_bundle')
+        if not isinstance(body.get('financials',[]),list):raise ChannelError(422,'invalid_financial_bundle')
+        records=list(body['records'])
+        for bundle in body.get('financials',[]):
+            factors=derive(bundle,now)
+            records.append(dict(symbol=bundle['symbol'],asset='stock',kind='fundamentals',at=now,availableAt=now,source=bundle['source'],data=factors))
+        for record in records:
+            valid(record)
+            if record['availableAt']>now:raise ChannelError(422,'future_market_evidence')
+        if 'universe'in body:
+            validate_manifest(body['universe'],now)
+            old=self.universe.get(body['universe']['asOf'])
+            if old and old['asOf']==body['universe']['asOf']and old!=body['universe']:raise ChannelError(409,'universe_version_is_immutable')
+        result=self.ingest(records,now)
+        if 'universe'in body:self.universe.put(body['universe'],now)
+        return result
+    def research_page(self,offset,limit,now):
+        if type(offset)is not int or offset<0 or type(limit)is not int or not 1<=limit<=100:raise ChannelError(422,'invalid_research_page')
+        manifest=self.universe.get(now)
+        rows=(manifest or {}).get('instruments',[])
+        data=self.archive.snapshot(rows[offset:offset+limit],now)
+        return dict(ok=True,offset=offset,nextOffset=offset+limit if offset+limit<len(rows)else None,
+            coverage=self.universe.coverage(now),research=data)
     def ingest_minutes(self,code,bars,now=None):
         now=int(time.time()*1000) if now is None else now
         p=next((p for p in self.definitions() if p['symbol'].lower().removeprefix('sh').removeprefix('sz').removeprefix('bj')==code.lower().removeprefix('sh').removeprefix('sz').removeprefix('bj')),None)
@@ -64,7 +95,10 @@ class MarketRuntime:
     def collect_registered(self,now=None):
         now=int(time.time()*1000)if now is None else now
         errors=[]
-        for p in self.definitions():
+        definitions=self.definitions(include_universe=True)
+        batch=(definitions+definitions)[self.cursor:self.cursor+20]if len(definitions)>20 else definitions
+        self.cursor=(self.cursor+len(batch))%len(definitions)if definitions else 0
+        for p in batch:
             try:self._collect_one(p,now)
             except Exception:errors.append('registered source failed for '+str(p.get('symbol','unknown')))
         return errors
@@ -94,7 +128,8 @@ class MarketRuntime:
                     if multiplier:
                         try:self.ingest([configured_book(fields,p,at,now,int(multiplier))],now)
                         except (ValueError,IndexError,ChannelError):self.last_error='book validation failed; no fabricated liquidity'
-        if self.fetch_daily and now-self.last_daily.get(code,0)>=6*3600000:
+        if self.fetch_daily and now-self.last_daily.get(code,0)>=6*3600000 and now-self.daily_attempt.get(code,0)>=60000:
+            self.daily_attempt[code]=now
             raw,_=self.fetch_daily({'code':symbol,'n':'640','period':'day','fq':'qfq'})
             text=raw.decode('utf-8',errors='replace');body=json.loads(text[text.find('{'):text.rfind('}')+1])
             entry=(body.get('data')or{}).get(symbol)or{}
@@ -133,8 +168,7 @@ class MarketRuntime:
                     if len(raw)>16*1024*1024:raise ValueError('feed too large')
                     return json.loads(raw)
         body=fetch(url,token)
-        if not isinstance(body,dict)or not isinstance(body.get('records'),list):raise ValueError('normalized feed contract mismatch')
-        return self.ingest(body['records'],now)
+        return self.ingest_bundle(body,now)
     def backup_daily(self,now=None):
         import hashlib
         now=int(time.time()*1000)if now is None else now
@@ -170,7 +204,12 @@ def route(handler,method,path):
         runtime=handler.server.market_runtime
         if method=='POST' and path=='/api/v2/market/ingest':
             if int(handler.headers.get('Content-Length','0'))>16*1024*1024:raise ChannelError(413,'market_batch_too_large')
-            body=handler.read_body();result=runtime.ingest(body.get('records'))
+            body=handler.read_body();result=runtime.ingest_bundle(body)
+        elif method=='GET'and path=='/api/v2/market/research-page':
+            q=parse_qs(urlparse(handler.path).query)
+            result=runtime.research_page(int(q.get('offset',['0'])[0]),int(q.get('limit',['50'])[0]),int(time.time()*1000))
+        elif method=='GET'and path=='/api/v2/market/universe':
+            result={'ok':True,'coverage':runtime.universe.coverage(int(time.time()*1000))}
         elif method=='GET'and path=='/api/v2/market/records':
             q=parse_qs(urlparse(handler.path).query)
             result={'ok':True,'records':runtime.archive.query(q.get('symbol',[''])[0],q.get('kind',[''])[0],start=int(q.get('start',['0'])[0]),end=int(q.get('end',[str(2**63-1)])[0]),limit=int(q.get('limit',['1000'])[0]),before=int(q['before'][0])if 'before'in q else None)}

@@ -22,6 +22,16 @@ struct GuanpanProApp: App {
         UINavigationBar.appearance().backgroundColor = .clear
 
         let store = PortfolioStore()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1", ProcessInfo.processInfo.environment["GUANPAN_UI_FIXTURE"] == "1" {
+            store.data = PortfolioData()
+            store.data.appearance = ProcessInfo.processInfo.environment["GUANPAN_UI_STYLE"] == "dark" ? .dark : .light
+            store.data.cash = 3200
+            store.data.holdings = [Holding(code: "159941", name: "纳指 ETF · 测试数据", quantity: 100, cost: 1.2, current: 1.3, kind: .etf, marketUpdatedAt: .now)]
+            store.data.quotes = [Quote(code: "159941", name: "纳指 ETF · 测试数据", price: 1.3, changePct: 0.01, updatedAt: .now)]
+            store.intradayBars = (0..<30).map { n in IntradayBar(code: "159941", timestamp: Date().addingTimeInterval(Double(n - 30) * 60), price: 1.25 + Double(n) * 0.0015, volume: nil, day: "2026-10-19", iopv: n % 3 == 0 ? 1.24 + Double(n) * 0.0015 : nil) }
+        }
+        #endif
         _store = StateObject(wrappedValue: store)
         // Background fetch can launch the process without first showing a view.
         // Register the already-loaded store here so the delegate can refresh it.

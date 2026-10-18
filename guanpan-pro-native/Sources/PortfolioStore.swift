@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class PortfolioStore: ObservableObject {
     @Published var data = PortfolioData()
-    @Published private(set) var historicalArchiveStatus = "场外业务已停止；历史记录保留"
+    @Published private(set) var historicalArchiveStatus = "仅保留场内 ETF/股票业务"
     @Published var intradayBars: [IntradayBar] = []
     @Published var dailyBars: [String: [DailyBar]] = [:]
     @Published var sourceStatus = "等待刷新"
@@ -571,10 +571,15 @@ final class PortfolioStore: ObservableObject {
     }
 
     func load() {
-        guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
+        guard let raw = UserDefaults.standard.data(forKey: key), var value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
         if HistoricalFundArchive.hasHistory(value) {
-            do { _ = try HistoricalFundArchive.preserve(raw); historicalArchiveStatus = "场外历史已按原字节备份并保留，只读" }
-            catch { historicalArchiveStatus = "历史备份失败：\(error.localizedDescription)；原账本未删除，请导出备份" }
+            do {
+                _ = try HistoricalFundArchive.preserve(raw)
+                let cleaned = try HistoricalFundArchive.removingOffExchange(raw)
+                value = try JSONDecoder().decode(PortfolioData.self, from: cleaned)
+                UserDefaults.standard.set(cleaned, forKey: key)
+                historicalArchiveStatus = "已移除场外记录；ETF/股票、现金和共用资金流水未改动"
+            } catch { historicalArchiveStatus = "场外清理未执行：\(error.localizedDescription)；原账本未改动" }
         }
         data = value
         // 整份账本换掉了，派生缓存必须全部作废：指纹可能碰巧相同（条数与末条字段都没变），
@@ -1606,6 +1611,13 @@ final class PortfolioStore: ObservableObject {
     ///   只有「自动记录当日快照」那种**纯估值刷新**才传 `false` —— 用户明确要求
     ///   「日内的持仓盈亏这些两边都会自动变，不需要实时同步，浪费穿透流量」。
     func save(label: String? = nil, propagate: Bool = true) {
+        if HistoricalFundArchive.hasHistory(data) {
+            do {
+                let original = try JSONEncoder().encode(data)
+                _ = try HistoricalFundArchive.preserve(original)
+                data = try JSONDecoder().decode(PortfolioData.self, from: HistoricalFundArchive.removingOffExchange(original))
+            } catch { historicalArchiveStatus = "场外清理失败，未保存：\(error.localizedDescription)"; return }
+        }
         // 账本一改，几个跟账本内容绑定的派生缓存全部作废。
         // 只靠指纹（条数 / 末条字段）不够：撤销、改中间某一条都可能让条数与末条都不变，
         // 但内容已经不同了 —— 那样界面会一直显示旧值。宁可多算一次。

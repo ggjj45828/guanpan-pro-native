@@ -27,8 +27,7 @@ final class LabChannelCoordinator: ObservableObject {
 
     private func url(_ channel: String) throws -> URL {
         let base = UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? ""
-        guard var components = URLComponents(string: base), ["http", "https"].contains(components.scheme ?? ""),
-              components.host != nil, components.user == nil, components.password == nil else {
+        guard var components = URLComponents(url: try NASSyncService.normalizedBaseURL(base), resolvingAgainstBaseURL: false) else {
             throw InvestmentLabStore.LabError.message("请先在原设置中配置 NAS 地址")
         }
         components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -45,9 +44,13 @@ final class LabChannelCoordinator: ObservableObject {
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
         let (bytes, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse,
-              let result = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+        guard let http = response as? HTTPURLResponse else {
             throw InvestmentLabStore.LabError.message("NAS 响应格式无效")
+        }
+        if http.statusCode == 404 { throw InvestmentLabStore.LabError.message("NAS 未开放独立三通道接口（404）；请更新 NAS 服务或检查代理路径。本机功能仍可使用，未改动真实资产。") }
+        if http.statusCode == 401 { throw InvestmentLabStore.LabError.message("NAS 口令不匹配（401），请核对设置") }
+        guard let result = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+            throw InvestmentLabStore.LabError.message("NAS 返回的不是同步 JSON（HTTP \(http.statusCode)），请检查地址是否指向网页或代理错误页")
         }
         guard http.statusCode == 200, result["ok"] as? Bool == true else {
             throw InvestmentLabStore.LabError.message(http.statusCode == 409 ? "版本冲突，已暂停覆盖" : "NAS 未提供 v2 通道或请求失败（\(http.statusCode)）")

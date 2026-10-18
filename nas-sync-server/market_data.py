@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import closing,nullcontext
 from pathlib import Path
 from channel_store import ChannelError, canonical
 
@@ -17,13 +17,21 @@ def valid(record):
         raise ChannelError(422,'unsupported_market_record')
     if not isinstance(record.get('symbol'),str) or not record['symbol'] or len(record['symbol'])>30:
         raise ChannelError(422,'invalid_market_symbol')
-    if type(record.get('at')) is not int or record['at']<=0 or type(record.get('availableAt')) is not int or record['availableAt']<record['at']:
+    if type(record.get('at')) is not int or record['at']<=0 or type(record.get('availableAt')) is not int or record['availableAt']<=0 or (record['kind']!='dividend'and record['availableAt']<record['at']):
         raise ChannelError(422,'invalid_market_timestamps')
     if not isinstance(record.get('source'),str) or not record['source'] or not isinstance(record.get('data'),dict):
         raise ChannelError(422,'source_and_data_required')
     r=record['data']
+    if record['kind']=='dividend':
+        if any(type(r.get(k))is not int or r[k]<0 for k in ('publishedAt','recordAt','paymentAt','netPerShare'))or not r['publishedAt']<=record['availableAt']<=r['recordAt']<r['paymentAt']or record['at']!=r['recordAt']:
+            raise ChannelError(422,'invalid_announced_dividend')
+        if not isinstance(r.get('id'),str)or not __import__('re').fullmatch(r'[A-Za-z0-9_.:-]{1,100}',r['id']):raise ChannelError(422,'invalid_dividend_id')
+    if record['kind']=='fundamentals':
+        for key in ('dividendYield','valuationPercentile','dividendStability','cashFlowQuality'):
+            if key in r and(type(r[key])not in(int,float)or not math.isfinite(r[key])or not 0<=r[key]<=1):raise ChannelError(422,'invalid_fundamental_factor')
+        if 'publishedAt'in r and(type(r['publishedAt'])is not int or r['publishedAt']>record['availableAt']):raise ChannelError(422,'invalid_fundamental_publication')
     if record['kind'] in ('quote','intraday') and 'price' not in r:raise ChannelError(422,'price_required')
-    for key in ('price','close','open','high','low','iopv'):
+    for key in ('price','close','open','high','low','iopv','previousClose'):
         if key in r and (type(r[key]) is not int or r[key]<=0):raise ChannelError(422,'invalid_market_price_units')
     if record['kind']=='daily':
         if not all(k in r for k in ('open','high','low','close')) or not r['low']<=min(r['open'],r['close'])<=max(r['open'],r['close'])<=r['high']:
@@ -32,7 +40,7 @@ def valid(record):
         if r.get('quantityUnit')!='shares':raise ChannelError(422,'book_quantity_unit_must_be_confirmed_shares')
         for side in ('bids','asks'):
             if not isinstance(r.get(side),list) or len(r[side])>5:raise ChannelError(422,'invalid_book')
-            if any(type(x.get('price')) is not int or x['price']<=0 or type(x.get('quantity')) is not int or x['quantity']<0 for x in r[side]):raise ChannelError(422,'invalid_depth')
+            if any(not isinstance(x,dict)or type(x.get('price')) is not int or x['price']<=0 or type(x.get('quantity')) is not int or x['quantity']<0 for x in r[side]):raise ChannelError(422,'invalid_depth')
         if r['bids'] and r['asks'] and max(l['price'] for l in r['bids'])>=min(l['price'] for l in r['asks']):raise ChannelError(422,'crossed_book')
     try:canonical(record)
     except (TypeError,ValueError):raise ChannelError(422,'nonfinite_market_data') from None
@@ -71,9 +79,9 @@ class MarketArchive:
                 db.commit()
             except BaseException:db.rollback();raise
         return dict(ok=True,inserted=inserted,unchanged=unchanged)
-    def query(self,symbol,kind,start=0,end=2**63-1,limit=1000,before=None):
+    def query(self,symbol,kind,start=0,end=2**63-1,limit=1000,before=None,_db=None):
         if kind not in KINDS or type(limit) is not int or not 1<=limit<=10000:raise ChannelError(422,'invalid_market_query')
-        with closing(self.connect()) as db:
+        with (nullcontext(_db)if _db is not None else closing(self.connect())) as db:
             rows=db.execute('SELECT payload FROM records WHERE symbol=? AND kind=? AND at>=? AND at<=? AND available<=? ORDER BY at DESC LIMIT ?',
                 (symbol,kind,start,end,before if before is not None else 2**63-1,limit)).fetchall()
             # Include prior versions that were actually available at the queried time.
@@ -84,18 +92,19 @@ class MarketArchive:
         for r in sorted(values,key=lambda r:r['availableAt']):by_time[r['at']]=r
         return sorted(by_time.values(),key=lambda r:r['at'])[-limit:]
     def snapshot(self,definitions,now):
-        instruments=[];books=[]
+        instruments=[];books=[];dividends=[]
         for p in definitions:
             symbol=p['symbol'];item=dict(symbol=symbol,asset=p['asset'],bars=[],evidenceIDs=[],source='NAS-v2-archive')
-            for r in self.query(symbol,'daily',limit=640,before=now):item['bars'].append(dict(at=r['at'],availableAt=r['availableAt'],**r['data']))
+            for r in self.query(symbol,'daily',limit=640,before=now):item['bars'].append(dict(r['data'],at=r['at'],availableAt=r['availableAt']))
             q=self.query(symbol,'quote',limit=1,before=now)
-            if q:item['quote']=dict(at=q[-1]['at'],**q[-1]['data']);item['evidenceIDs'].append(f"quote:{symbol}:{q[-1]['at']}")
+            if q:item['quote']=dict(q[-1]['data'],at=q[-1]['at']);item['evidenceIDs'].append(f"quote:{symbol}:{q[-1]['at']}")
             f=self.query(symbol,'fundamentals',limit=1,before=now)
-            if f:item['fundamentals']=dict(publishedAt=f[-1]['availableAt'],**f[-1]['data']);item['evidenceIDs'].append(f"fundamentals:{symbol}:{f[-1]['availableAt']}")
+            if f:item['fundamentals']=dict(f[-1]['data'],publishedAt=f[-1]['availableAt']);item['evidenceIDs'].append(f"fundamentals:{symbol}:{f[-1]['availableAt']}")
+            for r in self.query(symbol,'dividend',limit=1000,before=now):dividends.append(dict(r['data'],symbol=symbol,source=r['source']))
             for r in self.query(symbol,'book',limit=1,before=now):
                 b=dict(r['data'],id=f"book:{symbol}:{r['at']}",symbol=symbol,at=r['at'],source=r['source']);books.append(b)
             instruments.append(item)
-        return dict(asOf=now,scope='registered-etf-stock',instruments=instruments,books=books)
+        return dict(asOf=now,scope='registered-etf-stock',instruments=instruments,books=books,dividendEvents=dividends)
     def enqueue_gap(self,symbol,kind,start,end):
         if kind not in KINDS or type(start) is not int or type(end) is not int or start>=end:raise ChannelError(422,'invalid_gap')
         key=f'{symbol}:{kind}:{start}:{end}'

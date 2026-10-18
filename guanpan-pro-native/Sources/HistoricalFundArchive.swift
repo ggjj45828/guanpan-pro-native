@@ -28,4 +28,21 @@ enum HistoricalFundArchive {
         !data.fundNAVHistory.isEmpty || !data.fundDCAPlans.isEmpty || !data.fundFeePolicies.isEmpty ||
         data.ledger.contains { $0.kind == .fund }
     }
+    /// Explicitly requested removal of off-exchange records. Cash and shared
+    /// snapshots/flows retain their original facts; a deletion is not a sale.
+    static func removingOffExchange(_ raw: Data) throws -> Data {
+        guard var document = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+            throw NSError(domain: "HistoricalFundArchive", code: 2)
+        }
+        for field in ["holdings", "ledger", "allocationTargets", "tradePlans"] {
+            if let rows = document[field] as? [[String: Any]] {
+                document[field] = rows.filter { $0["kind"] as? String != "fund" }
+            }
+        }
+        for field in ["fundNAVHistory", "fundTransactions", "fundConstituentSnapshots", "fundFeePolicies", "fundDCAPlans"] {
+            if document[field] != nil { document[field] = [] as [String] }
+        }
+        document["automaticFundNAVRefreshEnabled"] = false
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+    }
 }

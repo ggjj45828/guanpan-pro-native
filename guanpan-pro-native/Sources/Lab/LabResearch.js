@@ -78,7 +78,7 @@
       if(code==='A')return {...output,summary:'原持仓不卖，新增资金留现金'};
       if(code==='C'&&!state.targets){output.warnings.push('长期目标仓位尚未获用户确认');return output;}
       const prices=Object.fromEntries(items.filter(i=>i.quote).map(i=>[i.symbol,i.quote.price]));
-      if(!a.positions.every(p=>prices[p.symbol])){output.warnings.push('配置建议缺少行情');return output;}
+      if(!a.positions.every(p=>qty(p)===0&&!state.targets?.[p.symbol]||prices[p.symbol])){output.warnings.push('配置建议缺少行情');return output;}
       raw=C.proposals(state,code,at,prices).proposals;
     }else{
       let ranked=items.map(i=>({i,score:score(i,code==='E'?'dividendValue':'multifactor')}))
@@ -292,6 +292,7 @@
       note:'固定当前权重、共同历史日期的经验分位；不是未来损失上限，未保证相关性稳定。'};
   }
   function reviewModel(state,data,text,at,config={}){
+    ok(state.researchOnly!==true,'真实资产研究副本不能写入模拟或真实订单');
     C.validate(state);const items=evidence(data,at),firewall=risk(state,'G',items,config);
     ok(!firewall.blocked,'缺少组合估值，不能批准模型订单');
     const json=JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));
@@ -299,6 +300,7 @@
     let next=copy(state);const accepted=[],rejected=[];
     for(const [n,d]of json.decisions.entries()){
       try{
+        ok(d&&typeof d==='object'&&!Array.isArray(d),'模型订单必须是对象');
         const item=items.find(i=>i.symbol===d.symbol),p=next.accounts.G.positions.find(p=>p.symbol===d.symbol);
         ok(item&&p&&item.health.fresh&&!item.halted&&score(item).available,'标的缺少当前多因子证据');
         ok(typeof d.reason==='string'&&d.reason.length>0&&d.reason.length<2000,'缺少建议依据');
@@ -316,7 +318,7 @@
           quantity:d.quantity,limit:d.limit,at,expiresAt:d.expiresAt,session:new Date(at+8*3600000).toISOString().slice(0,10),
           evidence:{model:String(json.model||'configured-online-model'),reason:d.reason,evidenceIDs:d.evidenceIDs,quoteAt:item.quote.at},reassess:'到期或证据失效后重新研究'};
         next=C.dispatch(next,order);accepted.push(order);
-      }catch(e){rejected.push({symbol:d.symbol||'',reason:e.message});}
+      }catch(e){rejected.push({symbol:d?.symbol||'',reason:e.message});}
     }
     return {state:next,accepted,rejected,model:String(json.model||'configured-online-model'),realTrades:false};
   }

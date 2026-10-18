@@ -2,6 +2,59 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 const C=require('../guanpan-pro-native/Sources/Lab/LabCore.js'),R=require('../guanpan-pro-native/Sources/Lab/LabResearch.js');
 const W=require('../nas-sync-server/lab-worker.cjs');
 const T=Date.parse('2026-10-19T02:00:00Z'),DAY=86400000;
+function model(decisions){return JSON.stringify({schemaVersion:1,model:'synthetic-test',decisions});}
+function decision(extra={}){return {symbol:'510300',side:'buy',quantity:100,limit:9900,expiresAt:T+DAY,evidenceIDs:['fixture:quote'],reason:'synthetic evidence',...extra};}
+test('model proposal creates only virtual G orders and preserves original caller',()=>{
+ const s=state(),before=JSON.stringify(s),r=R.reviewModel(s,data(),model([decision()]),T+10000);
+ assert.equal(r.accepted.length,1);assert.equal(r.realTrades,false);assert.equal(JSON.stringify(s),before);
+ assert.equal(r.state.accounts.A.orders.length,0);assert.equal(r.state.accounts.G.orders.length,1);
+ assert.deepEqual(r.state.seed,s.seed);
+});
+test('model review rejects fabricated evidence, stale data, null orders and invalid quantities',()=>{
+ const cases=[decision({evidenceIDs:['invented']}),null,decision({quantity:-100}),decision({symbol:'999999'}),decision({expiresAt:T})];
+ for(const row of cases){const r=R.reviewModel(state(),data(),model([row]),T+10000);assert.equal(r.accepted.length,0);assert.equal(r.rejected.length,1);}
+ const d=data();d.instruments[0].quote.at=T-900000;assert.equal(R.reviewModel(state(),d,model([decision()]),T+10000).accepted.length,0);
+});
+test('model review accumulates pending exposure and protects cash reserve',()=>{
+ const r=R.reviewModel(state(),data(),model([decision({quantity:300}),decision({quantity:300})]),T+10000);
+ assert.equal(r.accepted.length,1);assert.equal(r.rejected.length,1);
+ assert.equal(R.reviewModel(state(),data(),model([decision()]),T+10000,{minCash:.95}).accepted.length,0);
+ const s=state();s.researchOnly=true;assert.throws(()=>R.reviewModel(s,data(),model([decision()]),T+10000),/研究副本/);
+});
+test('T+0 allows same-day AI acquisitions to be sold, T+1 prevents it',()=>{
+ for(const tPlusOne of [false,true]){
+  let s=C.dispatch(state(),{type:'tradingRule',symbol:'510300',id:'confirmed',at:T,tPlusOne});
+  s=C.dispatch(s,{type:'salePolicy',account:'G',value:'aiOnly'});
+  s=C.dispatch(s,{type:'order',account:'G',id:'buy',symbol:'510300',side:'buy',quantity:100,limit:10000,at:T+1000,expiresAt:T+DAY,session:'2026-10-19',origin:'ai'});
+  s=C.dispatch(s,{type:'book',account:'G',book:book(),at:T+20000});
+  const sell={type:'order',account:'G',id:'sell',symbol:'510300',side:'sell',quantity:100,limit:9800,at:T+21000,expiresAt:T+DAY,session:'2026-10-19'};
+  if(tPlusOne)assert.throws(()=>C.dispatch(s,sell),/未交收/);
+  else {s=C.dispatch(s,sell);const b={...book(T+22000),id:'new-sell-book'};s=C.dispatch(s,{type:'book',account:'G',book:b,at:T+22000});assert.equal(s.accounts.G.fills.length,2);}
+ }
+});
+test('trading rule correction preserves seed and rejects pending orders',()=>{
+ const s=state(),next=C.dispatch(s,{type:'tradingRule',symbol:'510300',id:'t0',at:T,tPlusOne:false});
+ assert.deepEqual(next.seed,s.seed);assert.equal(next.ruleChanges.length,1);assert.ok(Object.values(next.accounts).every(a=>a.positions[0].tPlusOne===false));
+ const pending=C.dispatch(s,{type:'order',account:'A',id:'pending',symbol:'510300',side:'buy',quantity:100,limit:9900,at:T+1,expiresAt:T+DAY,session:'2026-10-19'});
+ assert.throws(()=>C.dispatch(pending,{type:'tradingRule',symbol:'510300',id:'t0',at:T+2,tPlusOne:false}),/撤销/);
+});
+test('scheduled virtual funding requires explicit enablement and never runs twice',()=>{
+ let s=C.dispatch(state(),{type:'plan',month:'2026-10',amount:10000,paused:false,executeAt:T+10000});
+ assert.equal(W.cycle({data:{lab:s}},{data:{}},T+20000).changed,false);
+ s=C.dispatch(s,{type:'fundingSchedule',enabled:true});
+ const first=W.cycle({data:{lab:s}},{data:{}},T+20000);assert.equal(first.data.lab.accounts.A.cash,s.accounts.A.cash+10000);
+ const second=W.cycle({data:first.data},{data:{}},T+21000);assert.equal(second.changed,false);
+ assert.ok(Object.values(second.data.lab.accounts).every(a=>a.flows.length===1));
+});
+test('announced dividend catches up with historical record-day quantity and is not capital',()=>{
+ let s=C.dispatch(state(),{type:'order',account:'G',id:'buy',symbol:'510300',side:'buy',quantity:100,limit:10000,at:T+1000,expiresAt:T+DAY,session:'2026-10-19'});
+ s=C.dispatch(s,{type:'book',account:'G',book:book(),at:T+20000});
+ const event={id:'dividend:test',symbol:'510300',recordAt:T+5000,paymentAt:T+25000,publishedAt:T-1,netPerShare:10};
+ const m={data:{quality:{researchSnapshot:{dividendEvents:[event]}}}},result=W.cycle({data:{lab:s}},m,T+30000);
+ assert.equal(result.data.lab.dividendRecords[event.id].entitlements.G,100);
+ assert.equal(result.data.lab.accounts.G.incomes[0].amount,1000);assert.equal(result.data.lab.accounts.G.flows.length,0);
+ assert.equal(W.cycle({data:result.data},m,T+31000).changed,false);
+});
 function state(cash=10000000){return C.create({at:T,cash,positions:[{symbol:'510300',asset:'etf',quantity:100,cost:10000,price:10000,tick:10,lot:100,tPlusOne:false}]},'research-test');}
 function data(at=T+10000){return {asOf:at,scope:'registered-etf-stock',instruments:[{symbol:'510300',asset:'etf',source:'synthetic',quote:{at,price:10000},
   bars:Array.from({length:65},(_,i)=>({at:T-(65-i)*DAY,availableAt:T-(65-i)*DAY+1,close:8000+i*30})),

@@ -6,6 +6,22 @@ function cycle(quant,market,now){
   const data=JSON.parse(JSON.stringify(quant.data||{}));if(!data.lab)return {data,changed:false,status:'no-laboratory'};
   let state=data.lab;C.validate(state);const start=JSON.stringify(state),diagnostics=[];let traded=false;
   if(Object.values(state.accounts).some(a=>a.lastAt>now))throw Error('laboratory clock is ahead of NAS; no mutation');
+  const month=new Date(now+8*3600000).toISOString().slice(0,7);
+  if(state.fundingSchedule?.enabled===true)for(const [m,p]of Object.entries(state.monthlyPlan||{})){
+    if(p.paused||p.amount<=0||!Number.isSafeInteger(p.executeAt)||p.executeAt>now||state.flowIDs.includes('monthly:'+m))continue;
+    if(m!==month){diagnostics.push({month:m,error:'missed funding month; explicit manual confirmation required'});continue;}
+    state=C.dispatch(state,{type:'executePlan',month:m,at:now});traded=true;
+  }
+  for(const d of market.data?.quality?.researchSnapshot?.dividendEvents||[]){
+    if(d.publishedAt>now||d.recordAt>now||d.recordAt<=state.seed.at)continue;
+    if(!state.accounts.A.positions.some(p=>p.symbol===d.symbol))continue;
+    try{
+      if(!state.dividendRecords?.[d.id])state=C.dispatch(state,{...d,type:'recordDividend',at:now});
+    }catch(e){diagnostics.push({dividend:d.id,error:e.message});}
+  }
+  for(const [id,d]of Object.entries(state.dividendRecords||{}))if(!d.paid&&d.paymentAt<=now){
+    state=C.dispatch(state,{type:'dividend',id,at:now});traded=true;
+  }
   for(const account of Object.keys(state.accounts))if(state.accounts[account].orders.some(o=>['waiting','partial'].includes(o.status)&&o.expiresAt<=now))state=C.dispatch(state,{type:'expire',account,at:now});
   for(const b of (market.data?.books||[])){
     if(!Number.isSafeInteger(b.at)||now-b.at>5000||b.at>now)continue;
@@ -33,7 +49,7 @@ function cycle(quant,market,now){
       executor.lastValuationSourceAt=sourceAt;
     }
   }
-  const changed=JSON.stringify(state)!==start||reviewed;
+  const changed=JSON.stringify(state)!==start||reviewed||JSON.stringify(executor.diagnostics||[])!==JSON.stringify(diagnostics);
   if(changed){data.lab=state;data.executor={...executor,lastCycleAt:now,model:'NAS-virtual-executor-v1',diagnostics};}
   return {data,changed,status:diagnostics.length?'processed-with-diagnostics':'processed',diagnostics};
 }

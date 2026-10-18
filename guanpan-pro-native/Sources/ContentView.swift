@@ -98,6 +98,7 @@ struct ContentView: View {
             if let document = channels.marketDocument { store.applyV2MarketDocument(document) }
         }
         .onChange(of: scenePhase) { _, phase in
+            if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
             if phase == .active {
                 store.configureNASSync()
                 store.refreshQuotes()
@@ -145,9 +146,9 @@ struct ContentView: View {
     @ViewBuilder private var phoneTabRoot: some View {
         TabView {
             ProOverviewView().tabItem { Label("总览", systemImage: "square.grid.2x2") }
-            DashboardView().tabItem { Label("行情", systemImage: "chart.xyaxis.line") }
+            ProMarketWorkspace().tabItem { Label("行情", systemImage: "chart.xyaxis.line") }
             ProDecisionHubView().tabItem { Label("AI 决策", systemImage: "sparkles") }
-            NavigationStack { InvestmentLabView() }.tabItem { Label("量化实验室", systemImage: "flask") }
+            ProLabWorkspace().tabItem { Label("量化实验室", systemImage: "flask") }
             ProAssetsHubView().tabItem { Label("资产", systemImage: "briefcase.fill") }
         }
         .scrollContentBackground(.hidden)
@@ -180,9 +181,9 @@ struct ContentView: View {
         // 侧栏未选中（iPad 上偶发）时回落到自选，不要显示空白详情栏
         switch padTab ?? .overview {
         case .overview: ProOverviewView()
-        case .market: DashboardView()
+        case .market: ProMarketWorkspace()
         case .decisions: ProDecisionHubView()
-        case .laboratory: NavigationStack { InvestmentLabView() }
+        case .laboratory: ProLabWorkspace()
         case .assets: ProAssetsHubView()
         }
     }
@@ -2303,6 +2304,7 @@ struct HoldingsView: View {
             // App 在后台跨过午夜、再回到前台时 `.task` 不保证重启，时钟会停在昨天，
             // 于是昨晚更新的净值今天还亮着框。这里补一次，只在真的翻篇时才写状态。
             .onChange(of: scenePhase) { _, phase in
+            if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
                 guard phase == .active else { return }
                 if MarketCalendar.isoDay(fundFreshnessClock) != MarketCalendar.isoDay(.now) {
                     fundFreshnessClock = .now
@@ -7563,9 +7565,6 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary).disabled(store.data.quoteRefreshSeconds == 0)
             Toggle("自动保存每日分时", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
             Text("前台刷新时记录实时点，并每 30 分钟至多补全一次自选和场内持仓的最近交易日整日分时；旧日期持续保留，可在“工具－分时采集”查看。这份档案也是「工具－复盘」的原料。")
-                .font(.footnote).foregroundStyle(.secondary)
-            Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
-            Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
                 .font(.footnote).foregroundStyle(.secondary)
             Toggle("允许系统安排后台刷新", isOn: $backgroundRefreshEnabled)
             Text("前台按设置间隔刷新；后台刷新由 iOS 自主安排，时间和频率不保证。后台只尝试更新行情并触发已授权的本地价格提醒，不采集分时、不运行影子盘，也不刷新基金净值。")

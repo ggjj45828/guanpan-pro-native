@@ -13,11 +13,13 @@ struct InvestmentLabView: View {
     @State private var specifyFlowDate = false
     @State private var newSymbol = ""
     @State private var newAsset = "etf"
-    @State private var newTPlusOne = true
+    @State private var newRule = "unknown"
     @State private var isWithdrawal = false
     @State private var month = String(MarketCalendar.isoDay(.now).prefix(7))
     @State private var monthlyAmount = ""
     @State private var paused = false
+    @State private var schedulePlan = false
+    @State private var scheduledDate = Date()
     @State private var account = "G"
     @State private var symbol = ""
     @State private var side = "buy"
@@ -54,12 +56,14 @@ struct InvestmentLabView: View {
                 Section("登记目标配置中的新证券") {
                     TextField("ETF / 股票代码", text: $newSymbol)
                     Picker("证券类型", selection: $newAsset) { Text("ETF").tag("etf"); Text("股票").tag("stock") }
-                    Toggle("买入后下一交易日才能卖", isOn: $newTPlusOne)
+                    Picker("回转交易规则", selection: $newRule) {
+                        Text("请选择").tag("unknown"); Text("T+0 · 当日可卖").tag("t0"); Text("T+1 · 后续交易日可卖").tag("t1")
+                    }
                     Button("确认交易规则并登记，不创建持仓") {
                         lab.action(["type": "instrument", "at": now, "definition": ["symbol": newSymbol,
                             "asset": newAsset, "quantity": 0, "cost": 0, "price": 1,
-                            "tick": newAsset == "etf" ? 10 : 100, "lot": 100, "tPlusOne": newTPlusOne]])
-                    }
+                            "tick": newAsset == "etf" ? 10 : 100, "lot": 100, "tPlusOne": newRule == "t1"]])
+                    }.disabled(newRule == "unknown")
                     Text("规则登记不会生成行情价格或改变初始快照。参考价仍须来自后续有效行情。特殊证券交易单位请先核实，当前界面按 100 股整手登记。")
                         .font(.caption).foregroundStyle(.secondary)
                 }.plainCard(isLight: isLight)
@@ -85,9 +89,12 @@ struct InvestmentLabView: View {
                     TextField("月份 YYYY-MM", text: $month)
                     TextField("本月金额（元）", text: $monthlyAmount).keyboardType(.decimalPad)
                     Toggle("暂停本月入金", isOn: $paused)
+                    Toggle("指定虚拟入金时间", isOn: $schedulePlan)
+                    if schedulePlan { DatePicker("计划时间", selection: $scheduledDate) }
                     Button("保存本月安排") { savePlan() }
+                    Toggle("允许 NAS 按计划记入虚拟资金", isOn: Binding(get: { (lab.state?["fundingSchedule"] as? [String: Any])?["enabled"] as? Bool ?? false }, set: { lab.action(["type": "fundingSchedule", "enabled": $0]) }))
                     Button("执行当前月份入金") { lab.action(["type": "executePlan", "month": month, "at": now]) }
-                    Text("计划不会在后台假定到账；执行时核对月份，避免重复记录。")
+                    Text("自动记账仅影响七个虚拟账户，不代表真实资金到账；错过整月的安排会提示核对，不倒填资金时间。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.plainCard(isLight: isLight)
                 orderSection
@@ -123,7 +130,11 @@ struct InvestmentLabView: View {
                     Picker("实验类型", selection: Binding(get: { kinds[h.code] ?? "unknown" }, set: { kinds[h.code] = $0 })) {
                         Text("待确认").tag("unknown"); Text("ETF").tag("etf"); Text("股票").tag("stock"); Text("排除本实验").tag("exclude")
                     }
-                    Toggle("买入后下一交易日才能卖出", isOn: Binding(get: { tPlusOne[h.code] ?? true }, set: { tPlusOne[h.code] = $0 }))
+                    Picker("回转交易规则", selection: Binding(get: { tPlusOne[h.code].map { $0 ? "t1" : "t0" } ?? "unknown" }, set: { value in
+                        if value == "unknown" { tPlusOne.removeValue(forKey: h.code) } else { tPlusOne[h.code] = value == "t1" }
+                    })) {
+                        Text("待确认").tag("unknown"); Text("T+0 · 当日可卖").tag("t0"); Text("T+1 · 后续交易日可卖").tag("t1")
+                    }
                 }
             }
             Text("快照将复制数量、单位成本、现金和创建时间；估值使用当前本机价格，可能为缓存。场外历史数据保留于原账本，不进入实验。")
@@ -189,12 +200,13 @@ struct InvestmentLabView: View {
                 let kind = kinds[h.code] ?? "unknown"
                 guard kind != "unknown" else { throw InvestmentLabStore.LabError.message("请确认每只证券类型或排除") }
                 if kind == "exclude" { continue }
+                guard let sellNextDay = tPlusOne[h.code] else { throw InvestmentLabStore.LabError.message("请确认 \(h.code) 的 T+0/T+1 规则；美股跨境 ETF 不能统一设为 T+1") }
                 guard h.quantity.isFinite, h.quantity.rounded() == h.quantity, h.quantity <= 100_000_000 else {
                     throw InvestmentLabStore.LabError.message("初始数量须为有效整数股")
                 }
                 positions.append(["symbol": h.code, "asset": kind, "quantity": Int64(h.quantity),
                     "cost": try InvestmentLabStore.units(h.cost, allowNegative: true), "price": try InvestmentLabStore.units(h.current),
-                    "tick": kind == "etf" ? 10 : 100, "lot": 100, "tPlusOne": tPlusOne[h.code] ?? true])
+                    "tick": kind == "etf" ? 10 : 100, "lot": 100, "tPlusOne": sellNextDay])
             }
             let closures = Array(MarketCalendar.mainlandClosures2026.union(portfolio.data.customMarketHolidays))
             lab.create(snapshot: ["at": now, "cash": try InvestmentLabStore.units(portfolio.data.cash), "positions": positions,
@@ -224,7 +236,9 @@ struct InvestmentLabView: View {
     private func savePlan() {
         do {
             guard let value = Double(monthlyAmount) else { throw InvestmentLabStore.LabError.message("请输入月度金额") }
-            lab.action(["type": "plan", "month": month, "amount": try InvestmentLabStore.units(value), "paused": paused])
+            var action: [String: Any] = ["type": "plan", "month": month, "amount": try InvestmentLabStore.units(value), "paused": paused]
+            if schedulePlan { action["executeAt"] = Int64(scheduledDate.timeIntervalSince1970 * 1000) }
+            lab.action(action)
             error = ""
         } catch { self.error = error.localizedDescription }
     }
