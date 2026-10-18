@@ -1961,6 +1961,11 @@ final class PortfolioStore: ObservableObject {
         value.fundFeePolicies = []
         value.fundDCAPlans = []
         value.automaticFundNAVRefreshEnabled = false
+        // Account/portrait narratives can contain old off-exchange positions;
+        // clear those summaries and only remove instrument notes for fund codes.
+        value.savedAccountAIAnalysis = nil
+        value.savedPortraitAIAnalysis = nil
+        for code in fundCodes { value.savedInstrumentAIAnalyses.removeValue(forKey: code) }
         return value
     }
 

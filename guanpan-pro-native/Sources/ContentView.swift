@@ -7368,7 +7368,7 @@ struct SettingsView: View {
                 }
                 Button("取消", role: .cancel) { selectedNASVersion = nil }
             }
-            .confirmationDialog("备份文件已导出并通过完整性校验。确认后会删除本机场外明细、恢复副本和应用内归档；账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。NAS 不会自动删除。", isPresented: $confirmOffExchangeCleanup, titleVisibility: .visible) {
+            .confirmationDialog("备份文件已导出并通过完整性校验。确认后会删除本机场外明细、相关分析与恢复副本及应用内归档；账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。NAS 不会自动删除。", isPresented: $confirmOffExchangeCleanup, titleVisibility: .visible) {
                 Button("确认删除本机场外历史", role: .destructive) {
                     guard let exportedOffExchangeBundle else { message = "找不到已校验的备份文件。场外历史仍保留。"; return }
                     do {
@@ -7650,7 +7650,7 @@ struct SettingsView: View {
                     do { _ = try store.prepareOffExchangeHistoryExport(); showOffExchangeExporter = true }
                     catch { message = error.localizedDescription }
                 }
-                Text("只有本机检测到旧场外记录时才显示。导出文件通过校验后会再次询问；确认后，软件内的场外持仓、流水、撤销/审计副本和归档都会删除。账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。此操作不会自动改动 NAS。完成后本入口消失。")
+                Text("只有本机检测到旧场外记录时才显示。导出文件通过校验后会再次询问；确认后，软件内的场外持仓、流水、相关 AI 分析、撤销/审计副本和归档都会删除。账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。此操作不会自动改动 NAS。完成后本入口消失。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

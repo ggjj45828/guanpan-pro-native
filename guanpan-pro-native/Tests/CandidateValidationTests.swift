@@ -73,6 +73,11 @@ final class CandidateValidationTests: XCTestCase {
             amount: 10, fee: 0, realizedPnL: 0, status: .confirmed, isBackfill: false,
             dividendMode: nil, linkedCash: true)]
         source.cashFlows = [CashFlow(amount: 50, memo: "shared contribution")]
+        source.savedAccountAIAnalysis = SavedAIAnalysis(text: "synthetic combined account report")
+        source.savedInstrumentAIAnalyses = [
+            "001234": SavedAIAnalysis(text: "synthetic fund report"),
+            "159941": SavedAIAnalysis(text: "synthetic ETF report")
+        ]
         let clean = PortfolioStore.withoutOffExchangeHistory(source)
         XCTAssertEqual(clean.cash, 1_234)
         XCTAssertEqual(clean.holdings.map(\.code), ["159941"])
@@ -81,6 +86,9 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(clean.ledger.map(\.code), ["159941"], "legacy untyped fund rows should be removed by known fund code")
         XCTAssertEqual(clean.allocationTargets.map(\.code), ["159941"])
         XCTAssertEqual(clean.cashFlows.map(\.memo), ["shared contribution"])
+        XCTAssertNil(clean.savedAccountAIAnalysis)
+        XCTAssertNil(clean.savedInstrumentAIAnalyses["001234"])
+        XCTAssertNotNil(clean.savedInstrumentAIAnalyses["159941"])
         XCTAssertEqual(source.holdings.count, 2, "cleanup must operate on a copy")
     }
     @MainActor func testConversationRestoresScopesAndDoesNotOverwriteAnotherView() async throws {
