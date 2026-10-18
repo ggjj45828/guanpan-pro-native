@@ -1,7 +1,6 @@
 services:
   guanpan-nas-sync:
     image: python:3.12-alpine
-    container_name: guanpan-nas-sync
     restart: unless-stopped
     working_dir: /app
     command: ["python", "-u", "/app/server.py"]
