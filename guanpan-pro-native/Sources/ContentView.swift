@@ -4013,22 +4013,7 @@ struct AssetsView: View {
                                 : "--",
                             dayTone: dayTone)
                         assetComposition
-                        MetricGrid(columns: 3, cells: [
-                            MetricCell(title: "持仓市值", value: (store.totalMarketValue).cny()),
-                            MetricCell(title: "参考现金", value: (store.data.cash).cny()),
-                            MetricCell(title: "仓位", value: (store.positionPercent).pct(1)),
-                            MetricCell(title: "持仓浮盈", value: (store.totalPnL).cny(), toneValue: store.totalPnL),
-                            MetricCell(title: "盈亏比例", value: store.totalPnLRate.map { $0.pct(2) } ?? "--", toneValue: store.totalPnL),
-                            MetricCell(title: "总成本", value: (store.totalCost).cny()),
-                            MetricCell(title: "当日盈亏", value: store.hasDayPnLGross ? (store.dayPnLGross).cny() : "--",
-                                      toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
-                            MetricCell(title: "当日幅度", value: store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--",
-                                      toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
-                            MetricCell(title: "已实现盈亏", value: (store.realizedPnL).cny(), toneValue: store.realizedPnL),
-                            MetricCell(title: "ETF / 证券", value: (store.marketValue(of: .etf)).cny()),
-                            MetricCell(title: "场外基金", value: (store.marketValue(of: .fund)).cny()),
-                            MetricCell(title: "累计净转入", value: netDeposit.cny(), toneValue: netDeposit)
-                        ])
+                        MetricGrid(columns: 3, cells: accountMetricCells)
                         Text("累计净转入 = 现金流记录里转入与转出相抵后的净额，只统计你手动记录过的流水。")
                             .scaledFont(10).foregroundStyle(.secondary)
                         Button("记录现金转入 / 转出") { showCashFlow = true }
@@ -4361,6 +4346,27 @@ struct AssetsView: View {
 
     /// 现金流记录里转入与转出相抵后的净额。没有记录时是 0，不臆测。
     private var netDeposit: Double { store.data.cashFlows.reduce(0) { $0 + $1.amount } }
+    private var accountMetricCells: [MetricCell] {
+        var cells = [
+            MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
+            MetricCell(title: "参考现金", value: store.data.cash.cny()),
+            MetricCell(title: "仓位", value: store.positionPercent.pct(1)),
+            MetricCell(title: "持仓浮盈", value: store.totalPnL.cny(), toneValue: store.totalPnL),
+            MetricCell(title: "盈亏比例", value: store.totalPnLRate.map { $0.pct(2) } ?? "--", toneValue: store.totalPnL),
+            MetricCell(title: "总成本", value: store.totalCost.cny()),
+            MetricCell(title: "当日盈亏", value: store.hasDayPnLGross ? store.dayPnLGross.cny() : "--",
+                       toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
+            MetricCell(title: "当日幅度", value: store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--",
+                       toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
+            MetricCell(title: "已实现盈亏", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
+            MetricCell(title: "ETF / 证券", value: store.marketValue(of: .etf).cny())
+        ]
+        if store.data.holdings.contains(where: { $0.kind == .fund && $0.quantity > 0 }) {
+            cells.append(MetricCell(title: "场外基金", value: store.marketValue(of: .fund).cny()))
+        }
+        cells.append(MetricCell(title: "累计净转入", value: netDeposit.cny(), toneValue: netDeposit))
+        return cells
+    }
 
     /// 主题深浅决定卡片色的透明度档位。
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
@@ -4395,7 +4401,7 @@ struct AssetsView: View {
             .frame(height: 9)
             HStack(spacing: 12) {
                 legend(Color(red: 0.22, green: 0.53, blue: 0.90), "ETF/证券", etf / total)
-                legend(Color(red: 0.55, green: 0.42, blue: 0.90), "场外基金", fund / total)
+                if fund > 0 { legend(Color(red: 0.55, green: 0.42, blue: 0.90), "场外基金", fund / total) }
                 legend(Color(red: 0.15, green: 0.75, blue: 0.62), "现金", cash / total)
             }
         }
@@ -5424,7 +5430,7 @@ struct ETFOverlapView: View {
         NavigationStack {
             List {
                 Section("覆盖情况") {
-                    LabeledContent("持有 ETF / 场外基金", value: "\(etfs.count) / \(store.data.holdings.filter { $0.kind == .fund }.count) 只")
+                    LabeledContent("持有 ETF", value: "\(etfs.count) 只")
                     LabeledContent("已有快照", value: "\(covered.count + store.data.fundConstituentSnapshots.count) 只")
                     LabeledContent("前十大对应市值", value: (coveredWeight).cny())
                     LabeledContent("重复成分敞口合计", value: (duplicates.reduce(0) { $0 + $1.exposure }).cny())
@@ -7362,7 +7368,7 @@ struct SettingsView: View {
                 }
                 Button("取消", role: .cancel) { selectedNASVersion = nil }
             }
-            .confirmationDialog("备份文件已导出并通过完整性校验。确认后会从本机账本、撤销/审计记录及应用内恢复目录删除场外历史。NAS 不会自动删除。", isPresented: $confirmOffExchangeCleanup, titleVisibility: .visible) {
+            .confirmationDialog("备份文件已导出并通过完整性校验。确认后会删除本机场外明细、恢复副本和应用内归档；账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。NAS 不会自动删除。", isPresented: $confirmOffExchangeCleanup, titleVisibility: .visible) {
                 Button("确认删除本机场外历史", role: .destructive) {
                     guard let exportedOffExchangeBundle else { message = "找不到已校验的备份文件。场外历史仍保留。"; return }
                     do {
@@ -7644,7 +7650,7 @@ struct SettingsView: View {
                     do { _ = try store.prepareOffExchangeHistoryExport(); showOffExchangeExporter = true }
                     catch { message = error.localizedDescription }
                 }
-                Text("只有本机检测到旧场外记录时才显示。导出文件通过校验后会再次询问；确认后，软件内的场外持仓、流水、撤销/审计副本和归档都会删除。此操作不会自动改动 NAS。完成后本入口消失。")
+                Text("只有本机检测到旧场外记录时才显示。导出文件通过校验后会再次询问；确认后，软件内的场外持仓、流水、撤销/审计副本和归档都会删除。账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。此操作不会自动改动 NAS。完成后本入口消失。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

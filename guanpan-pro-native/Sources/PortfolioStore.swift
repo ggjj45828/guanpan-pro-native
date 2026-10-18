@@ -1939,7 +1939,7 @@ final class PortfolioStore: ObservableObject {
         offExchangeArchiveVerificationFailed = false
         do {
             try HistoricalFundArchive.deleteLocalArchivesAfterVerifiedExport(exportedBundle)
-            historicalArchiveStatus = "已从本机删除场外记录及恢复副本。NAS 端尚未清理，请单独核对。"
+            historicalArchiveStatus = "已从本机删除场外明细及恢复副本；总资产快照和共用流水保留。NAS 端尚未清理，请单独核对。"
         } catch {
             historicalArchiveStatus = "账本中的场外记录已清理，但应用内备份目录清理失败：\(error.localizedDescription)"
             throw error

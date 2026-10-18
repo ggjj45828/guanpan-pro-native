@@ -58,6 +58,16 @@ final class CandidateValidationTests: XCTestCase {
             Holding(code: "159941", name: "synthetic ETF", quantity: 100, cost: 1, current: 1.1, kind: .etf)
         ]
         source.fundNAVHistory = [FundNAVPoint(code: "001234", date: "2026-01-01", nav: 2)]
+        source.ledger = [
+            LedgerEntry(code: "001234", name: "legacy fund trade", side: .buy, quantity: 5, price: 2,
+                        fee: 0, realizedPnL: 0, linkedCash: true),
+            LedgerEntry(code: "159941", name: "ETF trade", side: .buy, quantity: 100, price: 1,
+                        fee: 0, realizedPnL: 0, linkedCash: true, kind: .etf)
+        ]
+        source.allocationTargets = [
+            AllocationTarget(code: "001234", name: "synthetic fund", kind: .fund, targetPercent: 20),
+            AllocationTarget(code: "159941", name: "synthetic ETF", kind: .etf, targetPercent: 80)
+        ]
         source.fundTransactions = [FundTransaction(code: "001234", name: "synthetic fund", side: .buy,
             requestDate: "2026-01-01", effectiveDate: "2026-01-02", quantity: 5, nav: 2,
             amount: 10, fee: 0, realizedPnL: 0, status: .confirmed, isBackfill: false,
@@ -68,6 +78,8 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(clean.holdings.map(\.code), ["159941"])
         XCTAssertTrue(clean.fundNAVHistory.isEmpty)
         XCTAssertTrue(clean.fundTransactions.isEmpty)
+        XCTAssertEqual(clean.ledger.map(\.code), ["159941"], "legacy untyped fund rows should be removed by known fund code")
+        XCTAssertEqual(clean.allocationTargets.map(\.code), ["159941"])
         XCTAssertEqual(clean.cashFlows.map(\.memo), ["shared contribution"])
         XCTAssertEqual(source.holdings.count, 2, "cleanup must operate on a copy")
     }
