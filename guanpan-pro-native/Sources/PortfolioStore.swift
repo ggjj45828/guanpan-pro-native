@@ -5,7 +5,8 @@ import SwiftUI
 @MainActor
 final class PortfolioStore: ObservableObject {
     @Published var data = PortfolioData()
-    @Published private(set) var historicalArchiveStatus = "仅保留场内 ETF/股票业务"
+    @Published private(set) var historicalArchiveStatus = "场外历史保留；场外业务入口已停用"
+    private var offExchangeArchiveVerificationFailed = false
     @Published var intradayBars: [IntradayBar] = []
     @Published var dailyBars: [String: [DailyBar]] = [:]
     @Published var sourceStatus = "等待刷新"
@@ -571,35 +572,25 @@ final class PortfolioStore: ObservableObject {
     }
 
     func load() {
+        do {
+            try archiveOffExchangeSnapshots()
+            offExchangeArchiveVerificationFailed = false
+        } catch {
+            offExchangeArchiveVerificationFailed = true
+            historicalArchiveStatus = "场外历史归档未通过校验，原记录保留且不会自动清理：\(error.localizedDescription)"
+        }
         guard let raw = UserDefaults.standard.data(forKey: key) else {
-            purgeOffExchangeRecoveryData()
-            try? HistoricalFundArchive.purgeArtifacts()
+            // There may still be history in undo/audit or the old recovery directory.
+            // These are archived above and remain untouched until the user confirms a verified backup.
             return
         }
         guard var value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
-        var mayPurgeArtifacts = true
         if HistoricalFundArchive.hasHistory(value) {
-            do {
-                let cleaned = try HistoricalFundArchive.removingOffExchange(raw)
-                value = try JSONDecoder().decode(PortfolioData.self, from: cleaned)
-                UserDefaults.standard.set(cleaned, forKey: key)
-                historicalArchiveStatus = "正在删除场外记录及旧恢复副本"
-            } catch {
-                mayPurgeArtifacts = false
-                historicalArchiveStatus = "场外记录删除失败：\(error.localizedDescription)；原账本未改动"
+            if !offExchangeArchiveVerificationFailed {
+                historicalArchiveStatus = "场外历史已归档校验并保留；场外业务已停用。确认备份有效后才可清理活动账本记录。"
             }
         }
         data = value
-        purgeOffExchangeRecoveryData()
-        do {
-            guard mayPurgeArtifacts else { throw NSError(domain: "OffExchangeHistory", code: 1, userInfo: [NSLocalizedDescriptionKey: historicalArchiveStatus]) }
-            try HistoricalFundArchive.purgeArtifacts()
-            if historicalArchiveStatus == "正在删除场外记录及旧恢复副本" || historicalArchiveStatus == "仅保留场内 ETF/股票业务" {
-                historicalArchiveStatus = "场外历史与旧恢复副本已删除；场内资产、现金和共用流水保留"
-            }
-        } catch {
-            if mayPurgeArtifacts { historicalArchiveStatus = "旧场外恢复副本未能完全删除：\(error.localizedDescription)" }
-        }
         // 整份账本换掉了，派生缓存必须全部作废：指纹可能碰巧相同（条数与末条字段都没变），
         // 但内容已经不是同一份数据了。
         cachedLatestFundNAVKey = ""
@@ -1629,11 +1620,14 @@ final class PortfolioStore: ObservableObject {
     ///   只有「自动记录当日快照」那种**纯估值刷新**才传 `false` —— 用户明确要求
     ///   「日内的持仓盈亏这些两边都会自动变，不需要实时同步，浪费穿透流量」。
     func save(label: String? = nil, propagate: Bool = true) {
-        if HistoricalFundArchive.hasHistory(data) {
-            do {
-                let original = try JSONEncoder().encode(data)
-                data = try JSONDecoder().decode(PortfolioData.self, from: HistoricalFundArchive.removingOffExchange(original))
-            } catch { historicalArchiveStatus = "场外清理失败，未保存：\(error.localizedDescription)"; return }
+        do {
+            // Keep full pre-migration bytes before overwriting any active, undo or audit copy.
+            try archiveOffExchangeSnapshots(currentData: try JSONEncoder().encode(data))
+            offExchangeArchiveVerificationFailed = false
+        } catch {
+            offExchangeArchiveVerificationFailed = true
+            historicalArchiveStatus = "场外历史归档未通过校验，本次保存已停止以保护原始记录：\(error.localizedDescription)"
+            return
         }
         // 账本一改，几个跟账本内容绑定的派生缓存全部作废。
         // 只靠指纹（条数 / 末条字段）不够：撤销、改中间某一条都可能让条数与末条都不变，
@@ -1646,19 +1640,19 @@ final class PortfolioStore: ObservableObject {
         guard let raw = try? JSONEncoder().encode(data) else { return }
         let defaults = UserDefaults.standard
         if !isUndoingSave, let previous = defaults.data(forKey: key), previous != raw {
-            if let safePrevious = sanitizedRecoveryState(previous) { defaults.set(safePrevious, forKey: undoKey) }
+            if let safePrevious = validRecoveryState(previous) { defaults.set(safePrevious, forKey: undoKey) }
             else { defaults.removeObject(forKey: undoKey) }
             if let label, !applyingNASData {
-                if let safePrevious = sanitizedRecoveryState(previous) {
+                if let safePrevious = validRecoveryState(previous) {
                     operationAudit.insert(OperationAuditRecord(date: .now, label: label, state: safePrevious), at: 0)
                 }
                 persistOperationAudit()
             }
         }
         defaults.set(raw, forKey: key)
-        purgeOffExchangeRecoveryData()
-        do { try HistoricalFundArchive.purgeArtifacts() }
-        catch { historicalArchiveStatus = "旧场外恢复副本未能完全删除：\(error.localizedDescription)" }
+        if HistoricalFundArchive.hasHistory(data), !offExchangeArchiveVerificationFailed {
+            historicalArchiveStatus = "场外历史已归档校验并保留；场外业务已停用。确认备份有效后才可清理活动账本记录。"
+        }
         if !applyingNASData, propagate { scheduleNASSync() }
         // 账本一改就排队写回网页版（6 秒防抖）。用户的操作顺序常常是
         // 「App 里记一笔 → 切到浏览器打开观盘.html → 点下载」，所以这一份必须已经在 NAS 上。
@@ -1828,41 +1822,36 @@ final class PortfolioStore: ObservableObject {
     private func loadOperationAudit() {
         guard let raw = UserDefaults.standard.data(forKey: auditKey),
               let records = try? JSONDecoder().decode([OperationAuditRecord].self, from: raw) else { return }
-        operationAudit = records.compactMap { record in
-            guard let safeState = sanitizedRecoveryState(record.state) else { return nil }
-            var copy = record
-            copy.state = safeState
-            return copy
-        }
-        if operationAudit.count != records.count || operationAudit.contains(where: { record in
-            guard let old = records.first(where: { $0.id == record.id }) else { return false }
-            return old.state != record.state
-        }) { persistOperationAudit() }
+        operationAudit = records
     }
 
-    private func sanitizedRecoveryState(_ raw: Data) -> Data? {
-        guard let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return nil }
-        guard HistoricalFundArchive.hasHistory(value) else { return raw }
-        guard let cleaned = try? HistoricalFundArchive.removingOffExchange(raw),
-              (try? JSONDecoder().decode(PortfolioData.self, from: cleaned)) != nil else { return nil }
-        return cleaned
-    }
-
-    private func purgeOffExchangeRecoveryData() {
+    /// Archive every old off-exchange-bearing copy before any normal save can replace it.
+    /// Each archive is byte-verified by HistoricalFundArchive.archiveBytes; no source is deleted.
+    private func archiveOffExchangeSnapshots(currentData: Data? = nil) throws {
         let defaults = UserDefaults.standard
-        if let previous = defaults.data(forKey: undoKey) {
-            if let safe = sanitizedRecoveryState(previous) { defaults.set(safe, forKey: undoKey) }
-            else { defaults.removeObject(forKey: undoKey) }
+        func archiveLedgerIfNeeded(_ bytes: Data?, label: String) throws {
+            guard let bytes,
+                  let value = try? JSONDecoder().decode(PortfolioData.self, from: bytes),
+                  HistoricalFundArchive.hasHistory(value) else { return }
+            _ = try HistoricalFundArchive.archiveBytes(bytes, label: label)
         }
-        var changed = false
-        operationAudit = operationAudit.compactMap { record in
-            guard let safe = sanitizedRecoveryState(record.state) else { return nil }
-            var copy = record
-            copy.state = safe
-            if safe != record.state { changed = true }
-            return copy
+        try archiveLedgerIfNeeded(defaults.data(forKey: key), label: "persisted-ledger")
+        try archiveLedgerIfNeeded(currentData, label: "active-ledger")
+        if let undo = defaults.data(forKey: undoKey),
+           let value = try? JSONDecoder().decode(PortfolioData.self, from: undo), HistoricalFundArchive.hasHistory(value) {
+            _ = try HistoricalFundArchive.archiveBytes(undo, label: "undo-snapshot")
         }
-        if changed { persistOperationAudit() }
+        if let audit = defaults.data(forKey: auditKey),
+           let records = try? JSONDecoder().decode([OperationAuditRecord].self, from: audit),
+           records.contains(where: { (try? JSONDecoder().decode(PortfolioData.self, from: $0.state)).map(HistoricalFundArchive.hasHistory) == true }) {
+            _ = try HistoricalFundArchive.archiveBytes(audit, label: "operation-audit")
+        }
+        try HistoricalFundArchive.archiveLegacyArtifacts()
+    }
+
+    private func validRecoveryState(_ raw: Data) -> Data? {
+        guard (try? JSONDecoder().decode(PortfolioData.self, from: raw)) != nil else { return nil }
+        return raw
     }
 
     private func persistOperationAudit() {

@@ -1,5 +1,5 @@
 {
-  "timestampUTC": "2026-10-18T13:43:57.432812+00:00",
+  "timestampUTC": "2026-10-18T14:03:40.782049+00:00",
   "platform": "Windows-11-10.0.26200-SP0",
   "python": "3.12.14",
   "node": "v24.19.0",
@@ -11,7 +11,7 @@
     },
     {
       "name": "nas-channels",
-      "exitCode": 0,
+      "exitCode": 1,
       "log": "nas-channels.log"
     },
     {
