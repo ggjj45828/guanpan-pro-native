@@ -44,6 +44,7 @@ final class LabChannelCoordinator: ObservableObject {
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
         let (bytes, response) = try await URLSession.shared.data(for: req)
+        guard req.url == (try url(channel)) else { throw InvestmentLabStore.LabError.message("NAS 地址已变化，本次结果未应用") }
         guard let http = response as? HTTPURLResponse else {
             throw InvestmentLabStore.LabError.message("NAS 响应格式无效")
         }
@@ -116,9 +117,11 @@ final class LabChannelCoordinator: ObservableObject {
             if let syncedHash { defaults.set(syncedHash, forKey: baselineKey); defaults.set(endpointBefore, forKey: endpointKey) }
         } catch { quant.text = "暂停/离线 · \(error.localizedDescription)"; quant.progress = 0 }
     }
-    func assetRequest(body: [String: Any]? = nil) async throws -> [String: Any] {
+    func assetEndpoint() throws -> String { try url("assets").absoluteString }
+    func assetRequest(body: [String: Any]? = nil, expectedEndpoint: String? = nil) async throws -> [String: Any] {
         assets.text = "用户手动操作中…"; assets.progress = 0.2
         do {
+            if let expectedEndpoint, expectedEndpoint != (try assetEndpoint()) { throw InvestmentLabStore.LabError.message("NAS 地址已变化，请重新预览资产") }
             let result = try await request("assets", body: body)
             assets.revision = result["revision"] as? Int ?? 0
             assets.progress = 1; assets.text = body == nil ? "已读取真实资产预览" : "真实资产副本已上传"

@@ -132,8 +132,8 @@ final class PortfolioStore: ObservableObject {
                   let ms = q["at"] as? NSNumber, units.doubleValue.isFinite, units.doubleValue > 0 else { continue }
             let price = units.doubleValue / 10000
             let at = Date(timeIntervalSince1970: ms.doubleValue / 1000)
-            let previousAt = (data.holdings.first { $0.code == code && $0.kind == .etf })?.marketUpdatedAt
-                ?? (data.quotes.first { $0.code == code })?.updatedAt ?? .distantPast
+            let previousAt = max((data.holdings.first { $0.code == code && $0.kind == .etf })?.marketUpdatedAt ?? .distantPast,
+                                 (data.quotes.first { $0.code == code })?.updatedAt ?? .distantPast)
             guard at <= Date().addingTimeInterval(2), at >= previousAt else { continue }
             if let i = data.holdings.firstIndex(where: { $0.code == code && $0.kind == .etf }) {
                 data.holdings[i].current = price; data.holdings[i].marketUpdatedAt = at

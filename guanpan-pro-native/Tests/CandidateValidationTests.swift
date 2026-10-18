@@ -43,6 +43,16 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(input.state["researchOnly"] as? Bool, true)
         XCTAssertEqual(store.data.cash, 1234)
     }
+    @MainActor func testOlderNASQuoteCannotOverwriteNewerLocalQuote() async throws {
+        let store = PortfolioStore(); store.data = PortfolioData()
+        let now = Date()
+        store.data.holdings = [Holding(code: "159941", name: "fixture", quantity: 100, cost: 1, current: 1.5, kind: .etf, marketUpdatedAt: now.addingTimeInterval(-60))]
+        store.data.quotes = [Quote(code: "159941", name: "fixture", price: 1.6, changePct: 0, updatedAt: now)]
+        store.applyV2MarketDocument(["quotes": [["symbol": "159941", "price": 12_000, "at": now.addingTimeInterval(-30).timeIntervalSince1970 * 1000]]])
+        XCTAssertEqual(store.data.quotes[0].price, 1.6)
+        XCTAssertEqual(store.data.holdings[0].current, 1.5)
+        XCTAssertEqual(store.data.holdings[0].quantity, 100)
+    }
     @MainActor func testAppleJavaScriptCoreLoadsAllBundledModules() async throws {
         let runtime = InvestmentLabStore()
         let native: [String: Any] = ["cash": 100.01, "holdings": [], "ledger": [], "cashFlows": []]

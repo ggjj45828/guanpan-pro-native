@@ -6,6 +6,7 @@ struct ManualAssetChannelView: View {
     @EnvironmentObject private var channels: LabChannelCoordinator
     @State private var preview: [String: Any]?
     @State private var localHash = ""
+    @State private var previewEndpoint = ""
     @State private var message = "真实资产仅手动操作，首次同步不会自动覆盖任何一端。"
     @State private var showUpload = false
     @State private var showApply = false
@@ -22,7 +23,7 @@ struct ManualAssetChannelView: View {
                         Button("备份本机后，应用此 NAS 版本") { showApply = true }
                     }
                 }
-                Text("不接收行情、策略或模拟交易。场外历史和本机行情缓存保留；双端变化或预览过期时暂停。")
+                Text("不接收行情、策略或模拟交易。NAS 地址、任一端数据或预览版本变化时暂停。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -48,29 +49,31 @@ struct ManualAssetChannelView: View {
     }
     private func read() async {
         do {
+            let endpoint = try channels.assetEndpoint()
             let stamp = try lab.digest(project())
-            let remote = try await channels.assetRequest()
+            let remote = try await channels.assetRequest(expectedEndpoint: endpoint)
             guard stamp == (try lab.digest(project())) else { throw InvestmentLabStore.LabError.message("本机真实资产已变化，请重新预览") }
-            preview = remote; localHash = stamp; message = "已读取预览，尚未应用"
+            preview = remote; localHash = stamp; previewEndpoint = endpoint; message = "已读取预览，尚未应用"
         } catch { message = error.localizedDescription }
     }
     private func upload() async {
         do {
+            let endpoint = try channels.assetEndpoint()
             let data = try project(Int64(Date().timeIntervalSince1970 * 1000))
             let fingerprint = try lab.digest(project())
-            let before = try await channels.assetRequest()
+            let before = try await channels.assetRequest(expectedEndpoint: endpoint)
             guard fingerprint == (try lab.digest(project())) else { throw InvestmentLabStore.LabError.message("读取期间本机已变化，请重新操作") }
             let revision = before["revision"] as? Int ?? 0
             _ = try HistoricalFundArchive.preserve(JSONEncoder().encode(portfolio.data))
             _ = try await channels.assetRequest(body: ["schemaVersion": 2, "expectedRevision": revision,
-                "requestID": UUID().uuidString, "intent": "manual", "data": data])
+                "requestID": UUID().uuidString, "intent": "manual", "data": data], expectedEndpoint: endpoint)
             message = "真实资产副本已上传；模拟通道未参与"; preview = nil
         } catch { message = error.localizedDescription }
     }
     private func apply() async {
         do {
             guard let preview, let data = preview["data"] as? [String: Any] else { return }
-            let latest = try await channels.assetRequest()
+            let latest = try await channels.assetRequest(expectedEndpoint: previewEndpoint)
             guard latest["revision"] as? Int == preview["revision"] as? Int,
                   latest["digest"] as? String == preview["digest"] as? String,
                   localHash == (try lab.digest(project())) else { throw InvestmentLabStore.LabError.message("任一端已变化，请重新预览；没有覆盖") }
