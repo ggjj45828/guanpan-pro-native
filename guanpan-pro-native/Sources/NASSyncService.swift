@@ -47,7 +47,9 @@ private struct NASFundNAVArchiveResponse: Decodable {
 enum NASSyncService {
     static let urlKey = "guanpan.native.nas.url"
     static let tokenKey = "guanpan.native.nas.token"
-    static let automaticKey = "guanpan.native.nas.automatic"
+    // New opt-in key: old mixed-sync preference must not silently enable real-asset writes.
+    // The old value is preserved in UserDefaults, but deliberately not adopted.
+    static let automaticKey = "guanpan.native.nas.assets.automaticOptIn.v2"
     static let revisionKey = "guanpan.native.nas.revision"
     static let fingerprintKey = "guanpan.native.nas.fingerprint"
     /// 「同时写回网页版账本」开关（设备本地设置，不随账本同步）。
@@ -345,7 +347,7 @@ enum NASSyncService {
     /// 把整份网页账本写回 `/api/data`（网页版协议：`{tok, data}`）。
     /// 返回 NAS 报告的新版本号；服务器不给就返回 0。
     @discardableResult
-    static func putWebLedger(base: String, token: String, payload: [String: Any]) async throws -> Int {
+    static func putWebLedger(base: String, token: String, payload: [String: Any], expectedRevision: Int? = nil) async throws -> Int {
         let url = try webLedgerURL(base: base)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -355,7 +357,8 @@ enum NASSyncService {
             // 两种鉴权都带上：新服务认 Bearer，旧服务认 body 里的 tok。
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let body: [String: Any] = ["tok": token, "data": payload]
+        var body: [String: Any] = ["tok": token, "data": payload]
+        if let expectedRevision { body["expectedRevision"] = expectedRevision }
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
         let (bytes, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NASSyncError.invalidResponse }

@@ -5,6 +5,8 @@ import UIKit
 struct GuanpanProApp: App {
     @UIApplicationDelegateAdaptor(GuanpanAppDelegate.self) private var appDelegate
     @StateObject private var store: PortfolioStore
+    @StateObject private var lab = InvestmentLabStore()
+    @StateObject private var channels = LabChannelCoordinator()
     /// App 内字号倍率（配合系统动态字号）。放在 App 入口是为了让 sheet / fullScreenCover 也能继承。
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
 
@@ -23,13 +25,17 @@ struct GuanpanProApp: App {
         _store = StateObject(wrappedValue: store)
         // Background fetch can launch the process without first showing a view.
         // Register the already-loaded store here so the delegate can refresh it.
-        BackgroundQuoteRefresh.configure(store: store)
+        if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] != "1" {
+            BackgroundQuoteRefresh.configure(store: store)
+        }
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(lab)
+                .environmentObject(channels)
                 .environment(\.appAppearance, store.resolvedAppearance)
                 .preferredColorScheme(store.effectiveColorScheme)
                 .tint(store.effectiveAccentColor)

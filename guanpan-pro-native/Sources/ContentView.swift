@@ -17,47 +17,39 @@ extension View {
 
 /// iPad / 横屏宽视图下的分栏入口。iPhone 仍走底部 TabView。
 enum PadTab: String, CaseIterable, Identifiable {
-    case watchlist
-    case holdings
-    case funds
-    case assets
-    case more
-
+    case overview, market, decisions, laboratory, assets
     var id: String { rawValue }
-
     var title: String {
         switch self {
-        case .watchlist: return "自选"
-        // 底部标签与 iPad 侧栏统一叫「证券」（2026-10-14 用户选定）：
-        // 这一页装的是场内标的 —— ETF / LOF / 股票 / 可转债，叫「股票」名不副实，
-        // 叫「持仓」又和右边的基金页重复。右边保持「基金」，两个标签正好成对。
-        case .holdings: return "证券"
-        case .funds: return "基金"
+        case .overview: return "总览"
+        case .market: return "行情"
+        case .decisions: return "AI 决策"
+        case .laboratory: return "量化实验室"
         case .assets: return "资产"
-        case .more: return "更多"
         }
     }
-
     var icon: String {
         switch self {
-        case .watchlist: return "chart.xyaxis.line"
-        case .holdings: return "briefcase.fill"
-        case .funds: return "building.columns.fill"
-        case .assets: return "chart.pie.fill"
-        case .more: return "ellipsis.circle.fill"
+        case .overview: return "square.grid.2x2"
+        case .market: return "chart.xyaxis.line"
+        case .decisions: return "sparkles"
+        case .laboratory: return "flask"
+        case .assets: return "briefcase.fill"
         }
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject var store: PortfolioStore
+    @EnvironmentObject private var lab: InvestmentLabStore
+    @EnvironmentObject private var channels: LabChannelCoordinator
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
     /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
-    @State private var padTab: PadTab? = .watchlist
+    @State private var padTab: PadTab? = .overview
     /// 定时自动切换深浅时，需要一个随时间推进的驱动器，否则计划时间到了也不会变。
     @State private var themeTick = 0
     private let themeTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -75,6 +67,8 @@ struct ContentView: View {
         .appFontScale(CGFloat(fontScale))
         .environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
         .onAppear {
+            if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
+            if let cached = channels.marketDocument { store.applyV2MarketDocument(cached) }
             store.configureNASSync()
             // 首次进入就主动拉一次行情和指数；后续是否按间隔继续刷新由设置决定。
             // 这条自动刷新不驱动任何手动刷新按钮的转圈状态。
@@ -92,6 +86,16 @@ struct ContentView: View {
                 // 关掉「自动同步」或「自动上传」时，它在内部直接返回，不会动 NAS。
                 await store.writeBackWebLedgerIfEnabled()
             }
+        }
+        .task {
+            if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
+            while !Task.isCancelled {
+                if scenePhase == .active { await channels.refresh(lab: lab) }
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
+        .onChange(of: channels.market.revision) { _, _ in
+            if let document = channels.marketDocument { store.applyV2MarketDocument(document) }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -140,11 +144,11 @@ struct ContentView: View {
 
     @ViewBuilder private var phoneTabRoot: some View {
         TabView {
-            DashboardView().tabItem { Label("自选", systemImage: "chart.xyaxis.line") }
-            HoldingsView(kind: .etf).tabItem { Label("证券", systemImage: "briefcase.fill") }
-            HoldingsView(kind: .fund).tabItem { Label("基金", systemImage: "building.columns.fill") }
-            AssetsView().tabItem { Label("资产", systemImage: "chart.pie.fill") }
-            MoreHubView().tabItem { Label("更多", systemImage: "ellipsis.circle.fill") }
+            ProOverviewView().tabItem { Label("总览", systemImage: "square.grid.2x2") }
+            DashboardView().tabItem { Label("行情", systemImage: "chart.xyaxis.line") }
+            ProDecisionHubView().tabItem { Label("AI 决策", systemImage: "sparkles") }
+            NavigationStack { InvestmentLabView() }.tabItem { Label("量化实验室", systemImage: "flask") }
+            ProAssetsHubView().tabItem { Label("资产", systemImage: "briefcase.fill") }
         }
         .scrollContentBackground(.hidden)
         .background(.clear)
@@ -174,12 +178,12 @@ struct ContentView: View {
 
     @ViewBuilder private var padDetail: some View {
         // 侧栏未选中（iPad 上偶发）时回落到自选，不要显示空白详情栏
-        switch padTab ?? .watchlist {
-        case .watchlist: DashboardView()
-        case .holdings: HoldingsView(kind: .etf)
-        case .funds: HoldingsView(kind: .fund)
-        case .assets: AssetsView()
-        case .more: MoreHubView()
+        switch padTab ?? .overview {
+        case .overview: ProOverviewView()
+        case .market: DashboardView()
+        case .decisions: ProDecisionHubView()
+        case .laboratory: NavigationStack { InvestmentLabView() }
+        case .assets: ProAssetsHubView()
         }
     }
 
@@ -4889,7 +4893,7 @@ struct ToolsView: View {
                     Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button("日内网格计划与回放") { activeSheet = .grid }; Button("中长期网格计划") { activeSheet = .longGridPlanner }; Button(allocationTargetsTitle) { activeSheet = .allocationTargets }; Button("新增资金加仓试算") { activeSheet = .addCash } }
                     Section("复盘") { Button("网格参数复盘（当日最优 / 长期参数）") { activeSheet = .gridReview } }
                     Section("收益与复盘") { Button("ETF 每日收益日历") { activeSheet = .etfIncomeCalendar }; Button("分红日历") { activeSheet = .dividendCalendar }; Button("收益来源拆解") { activeSheet = .returnSource }; Button("历史状态回放") { activeSheet = .historicalReplay }; Button("月度投资复盘") { activeSheet = .monthlyReview }; Button("年度账单") { activeSheet = .yearlyReview } }
-                    Section("历史数据") { Button("分时采集") { activeSheet = .intradayArchive }; Button("导入券商成交") { activeSheet = .tradeCSVImport }; Button("全部交易流水") { activeSheet = .tradeLedger }; Button("基金定投回放") { activeSheet = .fundReplay } }
+                    Section("历史数据") { Button("分时采集") { activeSheet = .intradayArchive }; Button("导入券商成交") { activeSheet = .tradeCSVImport }; Button("全部交易流水") { activeSheet = .tradeLedger } }
                 }
             }
         .scrollContentBackground(.hidden)
@@ -7649,7 +7653,9 @@ struct SettingsView: View {
                 Text("免口令服务器保持空白即可。已有口令只用于兼容你主动配置了 SYNC_TOKEN 的旧服务器。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Toggle("自动同步", isOn: $nasAutoSync)
+            Toggle("真实账本自动同步（默认关闭 · 旧协议）", isOn: $nasAutoSync)
+            Text("升级后默认手动同步真实资产。行情与 AI 量化独立通道状态见投资数字孪生实验室；旧协议仍会携带完整账本和缓存。")
+                .font(.footnote).foregroundStyle(.secondary)
             // 第二层开关：只收不发。用户要的就是「NAS 收集的数据自动到我手机上，
             // 而不是一直往上同步，版本还一直变化」。
             Toggle("自动上传本机改动", isOn: $nasUpload)

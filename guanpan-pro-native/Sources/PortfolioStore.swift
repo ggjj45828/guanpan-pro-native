@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class PortfolioStore: ObservableObject {
     @Published var data = PortfolioData()
+    @Published private(set) var historicalArchiveStatus = "场外业务已停止；历史记录保留"
     @Published var intradayBars: [IntradayBar] = []
     @Published var dailyBars: [String: [DailyBar]] = [:]
     @Published var sourceStatus = "等待刷新"
@@ -124,6 +125,63 @@ final class PortfolioStore: ObservableObject {
     ///
     /// 注意：`signal(forCode:)` 用的是未过滤的原始日线（历史行为，别改），
     /// 视图一律走这里。
+    /// Market-only merge: no quantity, cost, cash or trade ledger mutations.
+    func applyV2MarketDocument(_ document: [String: Any]) {
+        for q in document["quotes"] as? [[String: Any]] ?? [] {
+            guard let code = q["symbol"] as? String, let units = q["price"] as? NSNumber,
+                  let ms = q["at"] as? NSNumber, units.doubleValue.isFinite, units.doubleValue > 0 else { continue }
+            let price = units.doubleValue / 10000
+            let at = Date(timeIntervalSince1970: ms.doubleValue / 1000)
+            let previousAt = (data.holdings.first { $0.code == code && $0.kind == .etf })?.marketUpdatedAt
+                ?? (data.quotes.first { $0.code == code })?.updatedAt ?? .distantPast
+            guard at <= Date().addingTimeInterval(2), at >= previousAt else { continue }
+            if let i = data.holdings.firstIndex(where: { $0.code == code && $0.kind == .etf }) {
+                data.holdings[i].current = price; data.holdings[i].marketUpdatedAt = at
+            }
+            if let i = data.quotes.firstIndex(where: { $0.code == code }),
+               let prev = q["previousClose"] as? NSNumber, prev.doubleValue > 0 {
+                data.quotes[i].price = price
+                data.quotes[i].changePct = price / (prev.doubleValue / 10000) - 1
+                data.quotes[i].updatedAt = at
+            }
+            if let value = q["iopv"] as? NSNumber, value.doubleValue.isFinite, value.doubleValue > 0 {
+                marketIOPVs[code] = value.doubleValue / 10000
+            }
+        }
+        let bars = (document["intraday"] as? [[String: Any]] ?? []).compactMap { row -> IntradayBar? in
+            guard let code = row["symbol"] as? String, let ms = row["at"] as? NSNumber,
+                  let value = row["price"] as? NSNumber, value.doubleValue.isFinite, value.doubleValue > 0 else { return nil }
+            let date = Date(timeIntervalSince1970: ms.doubleValue / 1000)
+            guard date <= .now else { return nil }
+            let iopv = (row["iopv"] as? NSNumber).flatMap { value -> Double? in
+                value.doubleValue.isFinite && value.doubleValue > 0 ? value.doubleValue / 10000 : nil
+            }
+            return IntradayBar(code: code, timestamp: date, price: value.doubleValue / 10000,
+                               volume: nil, day: MarketCalendar.isoDay(date), iopv: iopv)
+        }
+        if !bars.isEmpty { mergeIntradayBars(bars) }
+        let quality = document["quality"] as? [String: Any] ?? [:]
+        let snapshot = quality["researchSnapshot"] as? [String: Any] ?? [:]
+        for item in snapshot["instruments"] as? [[String: Any]] ?? [] {
+            guard let code = item["symbol"] as? String, let daily = item["bars"] as? [[String: Any]] else { continue }
+            var byDay = Dictionary((dailyBars[code] ?? []).map { ($0.date, $0) }, uniquingKeysWith: { _, new in new })
+            for row in daily {
+                guard let ms = row["at"] as? NSNumber, let o = row["open"] as? NSNumber, let c = row["close"] as? NSNumber,
+                      let h = row["high"] as? NSNumber, let l = row["low"] as? NSNumber,
+                      [o,c,h,l].allSatisfy({ $0.doubleValue.isFinite && $0.doubleValue > 0 }) else { continue }
+                let date = Date(timeIntervalSince1970: ms.doubleValue / 1000)
+                guard date <= .now else { continue }
+                let day = MarketCalendar.isoDay(date)
+                let volume = (row["volume"] as? NSNumber)?.doubleValue ?? byDay[day]?.volume ?? 0
+                byDay[day] = DailyBar(code: code, date: day, open: o.doubleValue / 10000, close: c.doubleValue / 10000,
+                    high: h.doubleValue / 10000, low: l.doubleValue / 10000, volume: volume)
+            }
+            dailyBars[code] = byDay.values.sorted { $0.date < $1.date }
+            normalizedDailyBarsCache.removeValue(forKey: code)
+        }
+        invalidateSignalCache(); saveDailyBars()
+    }
+
     func normalizedDailyBars(forCode code: String) -> [DailyBar] {
         let source = dailyBars[code] ?? []
         let key = "\(source.count)|\(source.first?.date ?? "")|\(source.last?.date ?? "")"
@@ -514,6 +572,10 @@ final class PortfolioStore: ObservableObject {
 
     func load() {
         guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
+        if HistoricalFundArchive.hasHistory(value) {
+            do { _ = try HistoricalFundArchive.preserve(raw); historicalArchiveStatus = "场外历史已按原字节备份并保留，只读" }
+            catch { historicalArchiveStatus = "历史备份失败：\(error.localizedDescription)；原账本未删除，请导出备份" }
+        }
         data = value
         // 整份账本换掉了，派生缓存必须全部作废：指纹可能碰巧相同（条数与末条字段都没变），
         // 但内容已经不是同一份数据了。
@@ -2164,6 +2226,8 @@ final class PortfolioStore: ObservableObject {
             return false
         }
         let local = makeNASDocument()
+        let localData = data
+        let writtenFingerprint = WebLedgerWriter.ledgerFingerprint(of: localData)
         // ① 空账本保护
         guard hasNASUserData(local) else {
             assignIfChanged(\.webLedgerStatus, "本机账本为空，已跳过写回（不会去清空网页版）")
@@ -2172,7 +2236,14 @@ final class PortfolioStore: ObservableObject {
         let token = NASCredentialStore.load() ?? ""
         do {
             // ② 先读回现有那份：读不到就放弃，不做整份重建
-            let existing = try await NASSyncService.webLedger(base: url, token: token)
+            let webSnapshot = try await NASSyncService.legacyBackup(base: url, token: token)
+            let existing: [String: Any]?
+            if let bytes = webSnapshot.data {
+                guard let decoded = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+                    throw NASSyncError.invalidResponse
+                }
+                existing = decoded
+            } else { existing = nil }
             // ③ 写回前留一份原样备份
             if let existing,
                let raw = try? JSONSerialization.data(withJSONObject: existing, options: [.fragmentsAllowed]) {
@@ -2180,8 +2251,9 @@ final class PortfolioStore: ObservableObject {
                 defaults.set(Date(), forKey: NASSyncService.webLedgerBackupDateKey)
             }
             // ④ 只替换账本字段
-            let document = WebLedgerWriter.document(from: data, merging: existing)
-            let revision = try await NASSyncService.putWebLedger(base: url, token: token, payload: document)
+            let document = WebLedgerWriter.document(from: localData, merging: existing)
+            let revision = try await NASSyncService.putWebLedger(base: url, token: token, payload: document,
+                                                               expectedRevision: webSnapshot.revision)
             // ⑤ 写完立刻读回来核对。
             //
             // 用户的要求是「数据要准确，不能乱来」——只说一句「已写回」不足以让人放心，
@@ -2190,6 +2262,10 @@ final class PortfolioStore: ObservableObject {
             // 只比最显眼的几个数（现金 / 自选 / 场内持仓 / 流水 / 场外持仓），不一致就明说。
             let readBack = try? await NASSyncService.webLedger(base: url, token: token)
             let verification = Self.webLedgerConsistencyNote(written: document, readBack: readBack)
+            guard let readBack, NSDictionary(dictionary: document).isEqual(NSDictionary(dictionary: readBack)) else {
+                assignIfChanged(\.webLedgerStatus, "写回后完整内容未核验一致；未标记同步成功，请保留备份并核对。\(verification)")
+                return false
+            }
             let etfCount = data.holdings.filter { $0.kind == .etf }.count
             let fundCount = data.holdings.filter { $0.kind == .fund }.count
             let stamp = Date.now.formatted(date: .omitted, time: .shortened)
@@ -2199,7 +2275,7 @@ final class PortfolioStore: ObservableObject {
                 + "流水 \(data.ledger.count) 笔 · 版本 \(revision) · \(stamp)\(verification)")
             // 成功之后才记指纹。失败（NAS 不可达、读不回、版本冲突…）时不能记，
             // 否则会被当成「这份内容已经写过了」，之后再也不补。
-            lastWebLedgerWrittenFingerprint = WebLedgerWriter.ledgerFingerprint(of: data)
+            lastWebLedgerWrittenFingerprint = writtenFingerprint
             return true
         } catch {
             assignIfChanged(\.webLedgerStatus, "写回失败：\(error.localizedDescription)")
@@ -2420,6 +2496,7 @@ final class PortfolioStore: ObservableObject {
     /// 添加场外基金时按六位代码识别基金名称，并顺带返回最近已公布净值。
     /// 与净值刷新保持同一数据源和 NAS 回退链路，避免出现“添加时查不到、保存后刷新却能查到”。
     func lookupFundInfo(code rawCode: String) async throws -> (name: String, nav: Double?)? {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard code.count == 6, code.allSatisfy(\.isNumber) else { return nil }
         let cachedName = data.holdings.first(where: { $0.kind == .fund && $0.code == code && !$0.name.isEmpty })?.name
@@ -3414,6 +3491,7 @@ final class PortfolioStore: ObservableObject {
     /// 这里等它真正跑完，下拉转圈才不会一闪而过。轮询 0.2s，最多等 30s。
     @discardableResult
     func refreshFundNAVsAndWait() async -> Bool {
+        guard HistoricalFundArchive.businessEnabled else { return false }
         guard !isRefreshingFunds else { return false }
         refreshFundNAVs()
         let deadline = Date().addingTimeInterval(30)
@@ -3424,6 +3502,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func refreshFundNAVs() {
+        guard HistoricalFundArchive.businessEnabled else { return }
         guard !isRefreshingFunds else { return }
         // 定投计划的代码也要抓净值：计划刚建好时往往还没有持仓和流水，
         // 不抓就永远没有已公布净值，processAutomaticDCA 也就一期都补不进去。
@@ -3586,6 +3665,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func refreshFundConstituents() {
+        guard HistoricalFundArchive.businessEnabled else { return }
         guard !isRefreshingFundHoldings else { return }
         let funds = data.holdings.filter { $0.kind == .fund && $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) }
         guard !funds.isEmpty else { fundHoldingsStatus = "没有场外基金持仓"; return }
@@ -3638,6 +3718,7 @@ final class PortfolioStore: ObservableObject {
 
     @discardableResult
     func refreshFundConstituentsAndWait() async -> Bool {
+        guard HistoricalFundArchive.businessEnabled else { return false }
         guard !isRefreshingFundHoldings else { return false }
         refreshFundConstituents()
         let deadline = Date().addingTimeInterval(90)
@@ -3694,6 +3775,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func maybeRefreshFundNAVsAfterMarketClose() {
+        guard HistoricalFundArchive.businessEnabled else { return }
         guard data.automaticFundNAVRefreshEnabled,
               data.holdings.contains(where: { $0.kind == .fund }) else { return }
         var calendar = Calendar(identifier: .gregorian)
@@ -3896,7 +3978,7 @@ final class PortfolioStore: ObservableObject {
         formatter.dateFormat = digits.count == 14 ? "yyyyMMddHHmmss" : "yyyyMMddHHmm"
         return formatter.date(from: digits)
     }
-    func addHolding(_ holding: Holding) { data.holdings.append(holding); save(label: "新增持仓") }
+    func addHolding(_ holding: Holding) { guard holding.kind != .fund else { return }; data.holdings.append(holding); save(label: "新增持仓") }
     func allocationActualPercent(for holding: Holding) -> Double {
         guard totalAsset > 0, totalAsset.isFinite else { return 0 }
         return holding.marketValue / totalAsset * 100
@@ -3914,12 +3996,14 @@ final class PortfolioStore: ObservableObject {
         save(label: "删除目标仓位")
     }
     func removeHolding(_ holding: Holding) {
+        guard holding.kind != .fund else { return }
         data.holdings.removeAll { $0.code == holding.code && $0.kind == holding.kind }
         if holding.kind == .fund { data.fundDCAPlans.removeAll { $0.code == holding.code } }
         save(label: "删除持仓")
     }
 
     func removeArchivedFundHistory(code: String) {
+        guard HistoricalFundArchive.businessEnabled else { return }
         guard !data.holdings.contains(where: { $0.code == code && $0.kind == .fund }) else { return }
         data.fundTransactions.removeAll { $0.code == code }
         data.ledger.removeAll { $0.code == code && $0.kind == .fund }
@@ -3930,6 +4014,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func upsertHolding(_ holding: Holding, oldCode: String? = nil) {
+        guard holding.kind != .fund else { return }
         if let oldCode, let i = data.holdings.firstIndex(where: { $0.code == oldCode && $0.kind == holding.kind }) {
             data.holdings[i] = holding
             if holding.kind == .fund, oldCode != holding.code {
@@ -3943,6 +4028,7 @@ final class PortfolioStore: ObservableObject {
 
     func addDCAPlan(code: String, name: String, amount: Double, feeRatePercent: Double,
                     frequency: FundDCAPlan.Frequency, weekday: Int, monthDay: Int) throws {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         guard code.count == 6, code.allSatisfy(\.isNumber), amount.isFinite, amount > 0,
               feeRatePercent.isFinite, (0...5).contains(feeRatePercent),
               (1...7).contains(weekday), (1...28).contains(monthDay) else {
@@ -3970,6 +4056,7 @@ final class PortfolioStore: ObservableObject {
     /// 改参数只影响后续期次，已记批次不重算、不删除，enabled 状态不变。
     func updateDCAPlan(id: UUID, amount: Double, feeRatePercent: Double,
                        frequency: FundDCAPlan.Frequency, weekday: Int, monthDay: Int) throws {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         guard amount.isFinite, amount > 0, feeRatePercent.isFinite, (0...5).contains(feeRatePercent),
               (1...7).contains(weekday), (1...28).contains(monthDay),
               let index = data.fundDCAPlans.firstIndex(where: { $0.id == id }) else {
@@ -3989,11 +4076,13 @@ final class PortfolioStore: ObservableObject {
     }
 
     func removeDCAPlan(_ plan: FundDCAPlan) {
+        guard HistoricalFundArchive.businessEnabled else { return }
         data.fundDCAPlans.removeAll { $0.id == plan.id }
         save(label: "删除定投计划")
     }
 
     func setDCAPlan(_ plan: FundDCAPlan, enabled: Bool) {
+        guard HistoricalFundArchive.businessEnabled else { return }
         guard let index = data.fundDCAPlans.firstIndex(where: { $0.id == plan.id }) else { return }
         data.fundDCAPlans[index].enabled = enabled
         save(label: enabled ? "恢复定投计划" : "暂停定投计划")
@@ -4003,6 +4092,7 @@ final class PortfolioStore: ObservableObject {
     /// NAV exists. It never touches reference cash and never places an order.
     @discardableResult
     func processAutomaticDCA() -> Int {
+        guard HistoricalFundArchive.businessEnabled else { return 0 }
         var booked = 0
         for index in data.fundDCAPlans.indices where data.fundDCAPlans[index].enabled {
             let plan = data.fundDCAPlans[index]
@@ -4131,6 +4221,7 @@ final class PortfolioStore: ObservableObject {
                      fee: Double, linkedCash: Bool, date: Date = .now, settlementDate: Date? = nil,
                      fundRedemptionLots: [FundLotRedemption]? = nil,
                      fundFeeWasEstimated: Bool = false) throws {
+        guard kind != .fund else { throw StoreError.offExchangeArchived }
         guard quantity > 0, price > 0, fee >= 0, quantity.isFinite, price.isFinite, fee.isFinite,
               let i = data.holdings.firstIndex(where: { $0.code == code && $0.kind == kind }) else { throw StoreError.invalidTrade }
         var h = data.holdings[i]
@@ -4180,6 +4271,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func undoLatestTrade() throws {
+        guard data.ledger.last?.kind != .fund else { throw StoreError.offExchangeArchived }
         guard let trade = data.ledger.last, trade.affectsHoldings != false,
               let holdingIndex = data.holdings.firstIndex(where: { $0.code == trade.code && $0.kind == (trade.kind ?? .etf) }) else {
             throw StoreError.noUndoableTrade
@@ -4233,6 +4325,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func confirmFundRedemptionFee(transactionID: UUID, actualFee: Double) throws {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         guard let index = data.fundTransactions.firstIndex(where: { $0.id == transactionID }) else {
             throw StoreError.invalidFundFeeCorrection
         }
@@ -4272,6 +4365,7 @@ final class PortfolioStore: ObservableObject {
     func deleteLedgerEntry(_ id: UUID) throws {
         guard let targetIndex = data.ledger.firstIndex(where: { $0.id == id }) else { throw StoreError.noUndoableTrade }
         let target = data.ledger[targetIndex]
+        guard target.kind != .fund else { throw StoreError.offExchangeArchived }
         guard target.affectsHoldings != false else {
             data.ledger.remove(at: targetIndex)
             save(label: "删除导入的历史流水")
@@ -4558,6 +4652,7 @@ final class PortfolioStore: ObservableObject {
     }
 
     func recordFundBackfill(code: String, date: Date, quantity: Double) throws {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         // 只有存在真实成交流水（已确认的卖出 / 红利再投）能解释当前份额时，才允许补录历史起点。
         // 若某只基金只是手工录入、没有任何买卖流水， inferredBackfillShares 会等于当前份额，
         // 进而凭空生成一条“早已持有”的买入记录，得到看似精确但不可靠的旧快照——此种情况明确跳过。
@@ -4586,6 +4681,7 @@ final class PortfolioStore: ObservableObject {
     func recordFundDividend(code: String, date: Date, amount: Double,
                             mode: FundTransaction.DividendMode, nav: Double,
                             linkCash: Bool) throws {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         guard amount.isFinite, amount > 0,
               let index = data.holdings.firstIndex(where: { $0.code == code && $0.kind == .fund }) else {
             throw StoreError.invalidDividend
@@ -4649,9 +4745,11 @@ final class PortfolioStore: ObservableObject {
 }
 
 enum StoreError: LocalizedError {
+    case offExchangeArchived
     case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidManualSnapshot, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, duplicateDCAPlan(String, String)
     var errorDescription: String? {
         switch self {
+        case .offExchangeArchived: return "场外业务已停止，历史数据只读保留。"
         case .invalidTrade: return "请检查份额、价格、费用和标的。"
         case .insufficientShares: return "卖出份额不能超过当前持仓。"
         case .insufficientCash: return "参考现金不足，不能记录这笔现金联动买入。"

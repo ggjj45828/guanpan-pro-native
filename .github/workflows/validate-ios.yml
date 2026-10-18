@@ -1,0 +1,42 @@
+name: Validate iOS candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  simulator-validation:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GUANPAN_TESTING: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate project
+        working-directory: guanpan-pro-native
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Select an available iPhone simulator
+        run: |
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          python3 - <<'PY'
+          import json, os
+          devices=json.load(open(os.environ['RUNNER_TEMP']+'/devices.json'))['devices']
+          candidates=[d for key,rows in devices.items() if 'iOS' in key for d in rows if d.get('isAvailable') and 'iPhone' in d['name']]
+          if not candidates: raise SystemExit('No available iOS simulator')
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('SIMULATOR_ID='+candidates[0]['udid']+'\n')
+          PY
+      - name: Run application compile and Apple runtime tests
+        run: |
+          xcodebuild test -project guanpan-pro-native/GuanpanProNative.xcodeproj \
+            -scheme GuanpanProValidation -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/GuanpanValidation.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-validation-results
+          path: ${{ runner.temp }}/GuanpanValidation.xcresult
+          if-no-files-found: warn

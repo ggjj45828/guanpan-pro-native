@@ -111,6 +111,16 @@ struct QuantitativeEngineView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("投资数字孪生实验室") {
+                    NavigationLink {
+                        InvestmentLabView()
+                    } label: {
+                        Label("独立虚拟账户与限价实验", systemImage: "flask")
+                    }
+                    Text("开发验证版：真实持仓只读复制，模拟账本独立保存；完整策略及实时盘口接入待完成。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .plainCard(isLight: isLight)
                 Section {
                     Button {
                         Task { await manuallyScan() }
