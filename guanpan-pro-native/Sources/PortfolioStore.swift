@@ -3996,7 +3996,10 @@ final class PortfolioStore: ObservableObject {
         return holding.marketValue / totalAsset * 100
     }
     func saveAllocationTarget(for holding: Holding, percent: Double) throws {
+        guard holding.kind == .etf else { throw StoreError.offExchangeArchived }
         guard percent.isFinite, (0...100).contains(percent) else { throw StoreError.invalidAllocationTarget }
+        let other = data.allocationTargets.filter { $0.kind == .etf && $0.code != holding.code }.reduce(0) { $0 + $1.targetPercent }
+        guard other.isFinite, other >= 0, other + percent <= 100.0000001 else { throw StoreError.invalidAllocationTarget }
         let target = AllocationTarget(code: holding.code, name: holding.name, kind: holding.kind, targetPercent: percent)
         if let i = data.allocationTargets.firstIndex(where: { $0.code == holding.code && $0.kind == holding.kind }) {
             data.allocationTargets[i] = target
@@ -4776,7 +4779,7 @@ enum StoreError: LocalizedError {
         case .invalidManualSnapshot: return "请输入有效日期（YYYY-MM-DD）和不小于 0 的总资产金额。"
         case .invalidFundFeePolicy: return "费率档位无效：请设置从 0 天开始的费率档，天数不能重复，费率须在 0% 到 100% 之间。"
         case .invalidFundFeeCorrection: return "这笔赎回不存在、已经核对，或实际费用超出赎回总额。"
-        case .invalidAllocationTarget: return "目标仓位需在 0% 到 100% 之间。"
+        case .invalidAllocationTarget: return "单项目标需在 0% 到 100% 之间，全部目标合计不能超过 100%。"
         case .invalidImportedLedger: return "无法安全计算成交流水：请导入包含完整买入起点的历史记录，并检查卖出数量是否超过此前买入。"
         case .duplicateDCAPlan(let amount, let startDate):
             return "该基金已有一个生效中的定投计划（每期 \(amount)，开始于 \(startDate)）。同一基金同时只能有一个生效计划；重新打开本页会直接改成修改它，也可先在「定投执行记录」里暂停或删除旧计划。"

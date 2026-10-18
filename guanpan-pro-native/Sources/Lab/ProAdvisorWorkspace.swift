@@ -11,7 +11,7 @@ struct ProAdvisorWorkspace: View {
     @State private var sending = false
     @State private var error = ""
     @State private var planning = false
-    @AppStorage("guanpan.research.monthlyCNY") private var monthly = "3000"
+    @AppStorage("guanpan.research.monthlyCNY") private var monthly = ""
     @AppStorage("guanpan.research.planMonths") private var months = "12"
     private var scope: String { virtual ? "virtual:" + (lab.state?["id"] as? String ?? "none") : "real" }
     private var turns: [String] { dialogue.histories[scope] ?? [] }
@@ -53,7 +53,7 @@ struct ProAdvisorWorkspace: View {
                     Button("虚拟实验研究") { virtual = true }.disabled(lab.state == nil)
                 } label: { Text("切换").font(.caption) }.disabled(sending)
             }
-            Text("每月计划 \(monthly) 元 · \(months) 个月 · \(online ? "已配置在线模型" : "离线规则研究")")
+            Text((monthly.isEmpty ? "未来资金尚未设置" : "每月计划 \(monthly) 元 · \(months) 个月") + " · " + (online ? "已配置在线模型" : "离线规则研究"))
                 .font(.caption).foregroundStyle(.secondary)
             Text("研究不会执行真实交易。虚拟账户与真实资产的对话分别保存。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -67,7 +67,7 @@ struct ProAdvisorWorkspace: View {
             ForEach(["新增资金怎么分阶段投入？", "先帮我检查组合风险", "红利配置需要哪些证据？"], id: \.self) { text in
                 Button { question = text } label: { HStack { Text(text); Spacer(); Image(systemName: "arrow.up.left") }.font(.subheadline).padding(.vertical, 10) }
             }
-            NavigationLink("查看并调整长期目标") { AllocationTargetsView() }.font(.subheadline)
+            NavigationLink("查看并调整长期目标") { ProAllocationWorkspace() }.font(.subheadline)
         }.padding(.vertical, 20)
     }
     private var composer: some View {
@@ -102,7 +102,7 @@ struct ProAdvisorWorkspace: View {
         sending = true; error = ""; defer { sending = false }
         let savedScope = scope
         do {
-            guard let amount = Double(monthly), amount.isFinite, amount >= 0, let count = Int(months), (0...600).contains(count) else { throw InvestmentLabStore.LabError.message("请先检查资金计划中的金额和月数") }
+            guard let amount = monthly.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : Double(monthly), amount.isFinite, amount >= 0, let count = Int(months), (0...600).contains(count) else { throw InvestmentLabStore.LabError.message("请先检查资金计划中的金额和月数") }
             let at = Int64(Date().timeIntervalSince1970 * 1000)
             let input = try ResearchInputBuilder.make(portfolio: portfolio, lab: lab, channels: channels, at: at, useVirtual: virtual)
             let future: [String: Any] = ["monthly": try InvestmentLabStore.units(amount), "months": count]
@@ -120,3 +120,4 @@ struct ProAdvisorWorkspace: View {
         } catch { self.error = error.localizedDescription }
     }
 }
+

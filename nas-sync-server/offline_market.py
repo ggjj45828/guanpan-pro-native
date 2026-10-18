@@ -19,6 +19,7 @@ def main():
     if now>int(time.time()*1000)or now<=0:parser.error('as-of time must not be in the future')
     if args.input.stat().st_size>16*1024*1024:parser.error('bundle exceeds 16 MiB; split into batches')
     if args.report.resolve()==args.input.resolve():parser.error('report must not overwrite the input bundle')
+    if args.report.exists()or args.report.suffix.lower()in('.sqlite3','.sqlite','.db')or args.report.name.endswith(('-wal','-shm')):parser.error('choose a new JSON report path; existing files and databases are never overwritten')
     runtime=MarketRuntime(ChannelStore(args.data_dir/'channels-v2.sqlite3'),MarketArchive(args.data_dir/'market-v2.sqlite3'))
     result=runtime.ingest_bundle(json.loads(args.input.read_text(encoding='utf-8-sig')),now)
     report=dict(ingest=result,page=runtime.research_page(args.offset,args.limit,now),realAssetsReadOrWritten=False)

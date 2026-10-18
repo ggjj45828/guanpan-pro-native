@@ -48,6 +48,7 @@ def valid(record):
 class MarketArchive:
     def __init__(self,path):
         self.path=Path(path)
+        self.generation=0
         if self.path.name=='sync.sqlite3':raise ValueError('market archive must be separate')
     def connect(self):
         self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -78,6 +79,7 @@ class MarketArchive:
                     db.execute('INSERT INTO records VALUES(?,?,?,?,?,?) ON CONFLICT(symbol,kind,at) DO UPDATE SET available=excluded.available,digest=excluded.digest,payload=excluded.payload',(*args,r['availableAt'],digest,text));inserted+=1
                 db.commit()
             except BaseException:db.rollback();raise
+        if inserted:self.generation+=1
         return dict(ok=True,inserted=inserted,unchanged=unchanged)
     def query(self,symbol,kind,start=0,end=2**63-1,limit=1000,before=None,_db=None):
         if kind not in KINDS or type(limit) is not int or not 1<=limit<=10000:raise ChannelError(422,'invalid_market_query')

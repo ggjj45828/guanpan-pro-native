@@ -118,6 +118,22 @@ final class LabChannelCoordinator: ObservableObject {
         } catch { quant.text = "暂停/离线 · \(error.localizedDescription)"; quant.progress = 0 }
     }
     func assetEndpoint() throws -> String { try url("assets").absoluteString }
+    func researchPage(offset: Int, at: Int64) async throws -> [String: Any] {
+        let base = UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? ""
+        let root = try NASSyncService.normalizedBaseURL(base)
+        var components = URLComponents(url: root.appendingPathComponent("api/v2/market/research-page"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "50"), URLQueryItem(name: "at", value: String(at))]
+        guard let endpoint = components.url else { throw InvestmentLabStore.LabError.message("NAS 地址无效") }
+        var req = URLRequest(url: endpoint); req.timeoutInterval = 30
+        if let token = NASCredentialStore.load(), !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let (bytes, response) = try await URLSession.shared.data(for: req)
+        guard root == (try NASSyncService.normalizedBaseURL(UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? "")) else { throw InvestmentLabStore.LabError.message("NAS 地址已变化，扫描已停止") }
+        guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count <= 16 * 1024 * 1024,
+              let page = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any], page["ok"] as? Bool == true else {
+            throw InvestmentLabStore.LabError.message("NAS 未提供证券池研究接口或响应无效；可先导入离线研究文件")
+        }
+        return page
+    }
     func assetRequest(body: [String: Any]? = nil, expectedEndpoint: String? = nil) async throws -> [String: Any] {
         assets.text = "用户手动操作中…"; assets.progress = 0.2
         do {

@@ -181,7 +181,7 @@
   function radar(data,at){
     const items=evidence(data,at);
     return {at,coverage:{count:items.length,scope:data.scope||'provided-universe',isFullMarket:data.scope==='full-market'&&data.universeComplete===true},
-      ranked:items.map(i=>({symbol:i.symbol,...score(i),health:i.health,trap:i.trap,source:i.source})).sort((a,b)=>(b.score??-1)-(a.score??-1))};
+      ranked:items.map(i=>({symbol:i.symbol,...score(i),health:i.health,trap:i.trap,source:i.source,quoteAt:i.quote?.at??null,evidenceIDs:i.evidenceIDs})).sort((a,b)=>(b.score??-1)-(a.score??-1))};
   }
   function stress(state,code,prices,shocks,exposures={}){
     const a=state.accounts[code];ok(a,'账户不存在');
@@ -226,7 +226,8 @@
       autoPromoted:false,method:'offline-parameter-search-v1',note:'只按训练期选候选，验证期只报告；标签收益须由无前视的独立流程提供，成本未包含时不能当净收益。'};
   }
   function advisor(state,data,at,question,future={}){
-    const items=evidence(data,at),f=risk(state,'A',items,{});
+    const max=state.investmentProfile?.maxPositionPercent;
+    const items=evidence(data,at),f=risk(state,'A',items,{maxWeight:finite(max)&&max>0&&max<=100?max/100:.4});
     const monthly=future.monthly??0,months=future.months??12;
     ok(Number.isSafeInteger(monthly)&&monthly>=0&&Number.isSafeInteger(months)&&months>=0&&months<=600,'未来资金计划无效');
     const cash=state.accounts.A.cash;
@@ -234,7 +235,8 @@
     if(f.blocked)priorities.push('先补齐持仓行情，再确认目标仓位。');
     else if(f.breaches.length)priorities.push('集中度超出规则：'+f.breaches.map(b=>b.symbol).join('、')+'；新增资金优先分散。');
     if(!cash)priorities.push('当前现金为零仍可研究；未来入金到账前不提交虚拟买单。');
-    priorities.push(state.targets?'目标仓位已有用户确认；按可投入资金分阶段复核。':'先调整并确认长期目标仓位，C 策略尚不自动配置。');
+    priorities.push(state.targets?'目标仓位已有用户确认；按可投入资金分阶段复核。':state.allocationTargets?.length?'长期目标已保存；将其用于模拟前还需确认证券规则并导入 C 策略。':'先调整并确认长期目标仓位，C 策略尚不自动配置。');
+    if(state.investmentProfile?.goal)priorities.push('你的目标：'+state.investmentProfile.goal);
     const remembered=(state.memory||[]).map(m=>m.text).slice(-20);
     if(remembered.length)priorities.push('已记录偏好：'+remembered.join('；')+'。自然语言偏好不自动改写已确认仓位。');
     if(/红利|分红/.test(String(question)))priorities.push(items.some(i=>i.f)?'红利研究同时核对估值、分红稳定性与现金流，避开高股息陷阱。':'缺少时点可用的分红与估值证据，暂不对红利标的排序。');

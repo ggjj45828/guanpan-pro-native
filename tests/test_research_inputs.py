@@ -1,4 +1,4 @@
-import unittest,tempfile,sys
+import unittest,tempfile,sys,subprocess,json,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'nas-sync-server'))
 from fundamentals import derive
@@ -62,3 +62,15 @@ class ResearchInputTests(unittest.TestCase):
   for data in [{'cashFlowQuality':2},{'publishedAt':T+1},{'dividendYield':float('nan')}]:
    row=dict(symbol='510300',asset='etf',kind='fundamentals',at=T,availableAt=T,source='synthetic',data=data)
    with self.assertRaises(ChannelError):self.archive.ingest([row],T)
+ def test_offline_cli_runs_without_network_and_preserves_legacy_database_bytes(self):
+  at=int(time.time()*1000)-1000
+  legacy=self.root/'sync.sqlite3';legacy.write_bytes(b'private legacy fixture - must never open')
+  bundle=self.root/'input.json';report=self.root/'report.json'
+  m=manifest();m['asOf']=at
+  record=dict(symbol='510300',asset='etf',kind='quote',at=at,availableAt=at,source='synthetic',data={'price':10000})
+  bundle.write_text(json.dumps({'records':[record],'universe':m}),encoding='utf-8')
+  script=Path(__file__).resolve().parents[1]/'nas-sync-server/offline_market.py'
+  result=subprocess.run([sys.executable,str(script),'--input',str(bundle),'--data-dir',str(self.root),'--report',str(report),'--at',str(at)],capture_output=True,text=True)
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.assertFalse(json.loads(report.read_text())['realAssetsReadOrWritten'])
+  self.assertEqual(legacy.read_bytes(),b'private legacy fixture - must never open')

@@ -1,5 +1,5 @@
 """Explicit provider universe, independent of holdings. Never invent completeness."""
-import json,re
+import json,re,time
 from contextlib import closing
 from channel_store import ChannelError,canonical
 
@@ -16,11 +16,12 @@ def validate_manifest(value,now):
     canonical(value)
 
 class UniverseStore:
-    def __init__(self,archive):self.archive=archive
+    def __init__(self,archive):self.archive=archive;self._coverage_cache={}
     def _connect(self):
         db=self.archive.connect();db.execute('CREATE TABLE IF NOT EXISTS universe_history(as_of INTEGER PRIMARY KEY,payload TEXT NOT NULL)');return db
     def put(self,value,now):
         validate_manifest(value,now)
+        self._coverage_cache={}
         with closing(self._connect())as db:
             old=db.execute('SELECT payload FROM universe_history WHERE as_of=?',(value['asOf'],)).fetchone()
             if old and old[0]!=canonical(value):raise ChannelError(409,'universe_version_is_immutable')
@@ -32,6 +33,8 @@ class UniverseStore:
     def coverage(self,at):
         value=self.get(at)
         if not value:return {'scope':'unconfigured','isFullMarket':False,'expected':None,'registered':0,'freshQuotes':0,'fundamentals':0}
+        key=(at,value['asOf'],self.archive.generation);cached=self._coverage_cache.get(key)
+        if cached and time.monotonic()-cached[0]<30:return dict(cached[1])
         quoted=factors=0
         with closing(self.archive.connect())as db:
             for p in value['instruments']:
@@ -39,5 +42,8 @@ class UniverseStore:
                 quoted+=bool(rows and 0<=at-rows[-1]['at']<=300000)
                 rows=self.archive.query(p['symbol'],'fundamentals',limit=1,before=at,_db=db)
                 factors+=bool(rows and all(k in rows[-1]['data']for k in ('dividendYield','valuationPercentile','dividendStability','cashFlowQuality')))
-        return dict(scope=value['scope'],source=value['source'],asOf=value['asOf'],expected=value['expectedCount'],registered=len(value['instruments']),freshQuotes=quoted,fundamentals=factors,
+        result=dict(scope=value['scope'],source=value['source'],asOf=value['asOf'],expected=value['expectedCount'],registered=len(value['instruments']),freshQuotes=quoted,fundamentals=factors,
             isFullMarket=value['scope']=='full-market'and quoted==value['expectedCount'])
+        if len(self._coverage_cache)>=16:self._coverage_cache.clear()
+        self._coverage_cache[key]=(time.monotonic(),result)
+        return result

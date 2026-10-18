@@ -43,11 +43,12 @@ test_future_reports_and_valuations_do_not_enter_factors (test_research_inputs.Re
 test_invalid_factor_and_future_publication_are_rejected (test_research_inputs.ResearchInputTests.test_invalid_factor_and_future_publication_are_rejected) ... ok
 test_missing_annuals_and_etf_company_eps_are_never_fabricated (test_research_inputs.ResearchInputTests.test_missing_annuals_and_etf_company_eps_are_never_fabricated) ... ok
 test_offline_bundle_produces_factors_and_paged_research_without_real_db (test_research_inputs.ResearchInputTests.test_offline_bundle_produces_factors_and_paged_research_without_real_db) ... ok
+test_offline_cli_runs_without_network_and_preserves_legacy_database_bytes (test_research_inputs.ResearchInputTests.test_offline_cli_runs_without_network_and_preserves_legacy_database_bytes) ... ok
 test_universe_is_independent_of_holdings_and_survives_restart (test_research_inputs.ResearchInputTests.test_universe_is_independent_of_holdings_and_survives_restart) ... ok
 test_universe_version_cannot_silently_change (test_research_inputs.ResearchInputTests.test_universe_version_cannot_silently_change) ... ok
 test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets (test_worker_http.WorkerHTTPIntegration.test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets) ... ok
 
 ----------------------------------------------------------------------
-Ran 48 tests in 1.607s
+Ran 49 tests in 1.667s
 
 OK

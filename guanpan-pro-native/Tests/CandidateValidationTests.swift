@@ -53,6 +53,25 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(store.data.holdings[0].current, 1.5)
         XCTAssertEqual(store.data.holdings[0].quantity, 100)
     }
+    @MainActor func testFreshLocalResearchQuoteKeepsNASFundamentalsAndBars() async throws {
+        let old: [String: Any] = ["symbol": "159941", "quote": ["at": 10, "price": 10000], "fundamentals": ["publishedAt": 1], "bars": [["at": 5, "availableAt": 6, "close": 9000]]]
+        let local: [String: Any] = ["symbol": "159941", "quote": ["at": 20, "price": 11000], "bars": [["at": 5, "availableAt": 30, "close": 8000]]]
+        let merged = ResearchInputBuilder.merge(remote: ["instruments": [old]], local: [local], at: 30)
+        let row = try XCTUnwrap((merged["instruments"] as? [[String: Any]])?.first)
+        XCTAssertEqual((row["quote"] as? [String: Any])?["price"] as? Int, 11000)
+        XCTAssertNotNil(row["fundamentals"])
+        XCTAssertEqual((row["bars"] as? [[String: Any]])?.first?["close"] as? Int, 9000)
+        XCTAssertEqual(merged["universeComplete"] as? Bool, false)
+    }
+    @MainActor func testFutureAllocationDoesNotCreateRealHoldingAndTotalCannotExceed100() async throws {
+        let store = PortfolioStore(); store.data = PortfolioData(); store.data.cash = 0
+        let first = Holding(code: "159941", name: "future", quantity: 0, cost: 0, current: 0, kind: .etf)
+        try store.saveAllocationTarget(for: first, percent: 60)
+        let second = Holding(code: "510300", name: "future two", quantity: 0, cost: 0, current: 0, kind: .etf)
+        XCTAssertThrowsError(try store.saveAllocationTarget(for: second, percent: 50))
+        XCTAssertTrue(store.data.holdings.isEmpty); XCTAssertEqual(store.data.cash, 0)
+        XCTAssertEqual(store.data.allocationTargets.count, 1)
+    }
     @MainActor func testAppleJavaScriptCoreLoadsAllBundledModules() async throws {
         let runtime = InvestmentLabStore()
         let native: [String: Any] = ["cash": 100.01, "holdings": [], "ledger": [], "cashFlows": []]

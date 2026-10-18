@@ -5,7 +5,7 @@ struct LabResearchView: View {
     @EnvironmentObject private var lab: InvestmentLabStore
     @EnvironmentObject private var channels: LabChannelCoordinator
     @State private var question = "愿意等更低价格，如何安排未来资金？"
-    @State private var monthly = "3000"
+    @State private var monthly = ""
     @State private var months = "12"
     @State private var response = ""
     @StateObject private var dialogue = ResearchConversationStore()
@@ -70,7 +70,7 @@ struct LabResearchView: View {
     }
     private func advise() {
         do {
-            guard let value = Double(monthly), let count = Int(months) else { throw InvestmentLabStore.LabError.message("请检查未来资金计划") }
+            guard let value = monthly.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : Double(monthly), let count = Int(months) else { throw InvestmentLabStore.LabError.message("请检查未来资金计划") }
             let input = try inputs()
             let result = try lab.call("research.advisor", [input.state, input.data, now, question, ["monthly": try InvestmentLabStore.units(value), "months": count]]) as? [String: Any]
             response = result?["text"] as? String ?? "暂无研究结果"

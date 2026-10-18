@@ -207,7 +207,9 @@ def route(handler,method,path):
             body=handler.read_body();result=runtime.ingest_bundle(body)
         elif method=='GET'and path=='/api/v2/market/research-page':
             q=parse_qs(urlparse(handler.path).query)
-            result=runtime.research_page(int(q.get('offset',['0'])[0]),int(q.get('limit',['50'])[0]),int(time.time()*1000))
+            now=int(time.time()*1000);at=int(q.get('at',[str(now)])[0])
+            if at<=0 or at>now:raise ChannelError(422,'invalid_research_time')
+            result=runtime.research_page(int(q.get('offset',['0'])[0]),int(q.get('limit',['50'])[0]),at)
         elif method=='GET'and path=='/api/v2/market/universe':
             result={'ok':True,'coverage':runtime.universe.coverage(int(time.time()*1000))}
         elif method=='GET'and path=='/api/v2/market/records':

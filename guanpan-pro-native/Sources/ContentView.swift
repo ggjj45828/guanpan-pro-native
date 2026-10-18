@@ -4941,7 +4941,7 @@ struct ToolsView: View {
                 case .monthlyReview: MonthlyReviewView().themedSheetBackground()
                 case .yearlyReview: YearlyReviewView().themedSheetBackground()
                 case .portfolioScenario: PortfolioScenarioView().themedSheetBackground()
-                case .allocationTargets: AllocationTargetsView().environmentObject(store).themedSheetBackground()
+                case .allocationTargets: ProAllocationWorkspace().environmentObject(store).themedSheetBackground()
                 }
             }
         }
@@ -8030,3 +8030,4 @@ struct PortfolioBackup: FileDocument {
         FileWrapper(regularFileWithContents: try JSONEncoder().encode(NativeBackupEnvelope(data: data, intradayBars: intradayBars, dailyBars: dailyBars)))
     }
 }
+

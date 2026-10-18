@@ -117,13 +117,15 @@ struct ProDecisionHubView: View {
             }.proSurface(tone: Color(red: 0.08, green: 0.56, blue: 0.48))
             Divider()
             VStack(spacing: 0) {
-                NavigationLink { AllocationTargetsView() } label: { ProActionRow(title: "长期目标", detail: "调整并确认目标仓位", icon: "target") }
+                NavigationLink { ProAllocationWorkspace() } label: { ProActionRow(title: "长期目标", detail: "调整并确认目标仓位", icon: "target") }
                 Divider()
                 NavigationLink { TradePlansView() } label: { ProActionRow(title: "耐心交易计划", detail: "价格、分档、有效期与重新评估", icon: "clock.badge.checkmark") }
                 Divider()
                 NavigationLink { PortfolioAdviceView() } label: { ProActionRow(title: "组合风险", detail: "现金缓冲与集中度", icon: "shield.lefthalf.filled") }
                 Divider()
                 NavigationLink { LabResearchView() } label: { ProActionRow(title: "查看研究证据", detail: "因子、数据覆盖和策略依据", icon: "text.magnifyingglass") }
+                Divider()
+                NavigationLink { ProOpportunityRadarView() } label: { ProActionRow(title: "机会雷达", detail: "独立证券池与离线研究文件", icon: "scope") }
             }
             Text("真实证券交易始终由你决定。").font(.caption).foregroundStyle(.secondary)
         } }
@@ -268,3 +270,4 @@ struct ProSettingsWorkspace: View {
         }
     }
 }
+
