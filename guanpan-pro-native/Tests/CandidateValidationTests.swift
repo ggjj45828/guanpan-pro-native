@@ -2,6 +2,13 @@ import XCTest
 @testable import GuanpanProNative
 
 final class CandidateValidationTests: XCTestCase {
+    func testEyeCareThemeUsesARealLightPaletteAndDistinctMutedAccent() {
+        let palette = AppTheme.palette(for: .eyeCare)
+        XCTAssertTrue(palette.isLight)
+        XCTAssertNotEqual(AppAppearance.eyeCare.accentColor, AppAppearance.light.accentColor)
+        XCTAssertEqual(AppAppearance.eyeCare.colorScheme, .light)
+        XCTAssertEqual(AppAppearance.eyeCare.title, "护眼暖绿")
+    }
     func testNASAddressNormalizationKeepsProxyPrefixWithoutDuplicatingAPI() throws {
         XCTAssertEqual(try NASSyncService.endpoint(base: "http://nas.local:8788/api/native/data").absoluteString, "http://nas.local:8788/api/native/data")
         XCTAssertEqual(try NASSyncService.endpoint(base: "https://nas.example/proxy/api/data?ignored=1").absoluteString, "https://nas.example/proxy/api/native/data")
