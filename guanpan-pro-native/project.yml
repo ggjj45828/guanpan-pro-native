@@ -85,6 +85,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.validation
         GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/观盘 Pro.app/观盘 Pro"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   GuanpanProValidation:
     build:
