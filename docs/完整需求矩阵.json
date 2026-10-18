@@ -939,7 +939,7 @@
     "group": "验收",
     "requirement": "iOS 实际编译与测试",
     "status": "部分完成",
-    "evidence": "候选 Apple CI 通过 17 项单元测试与 2 项 UI 测试；Release IPA 构建成功；未签名且未真机安装。",
+    "evidence": "最终候选 Apple CI 通过 17 项单元测试与 2 项 UI 测试（run 39137597497）；Release IPA 构建成功（run 39137608063），未签名且未真机安装。",
     "next_step": "真机安装和清理 UI 导出确认流程验收",
     "priority": "P0",
     "implementation_state": "见证据与后续步骤",
