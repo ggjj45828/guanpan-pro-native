@@ -7480,7 +7480,7 @@ struct SettingsView: View {
     }
 
     private var allThemes: [AppAppearance] {
-        [.system, .dark, .oled, .blue, .green, .purple, .sakura, .cyber, .amber, .coffee, .graphite, .light, .paper, .mint]
+        [.system, .dark, .oled, .blue, .green, .purple, .sakura, .cyber, .amber, .coffee, .graphite, .light, .paper, .mint, .eyeCare]
     }
 
     /// 主题预览卡：直接画出该主题的底色渐变 + 强调色 + 深浅标记，选中加边框。

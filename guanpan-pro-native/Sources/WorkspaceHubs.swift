@@ -9,16 +9,15 @@ struct ProOverviewView: View {
         NavigationStack {
             ProPage(title: "账户总览", subtitle: "观盘 Pro · 真实账户") {
                 VStack(alignment: .leading, spacing: 22) {
-                    Label("场内资产与现金", systemImage: "briefcase").scaledFont(15, weight: .medium).foregroundStyle(.secondary)
+                    Label("账户总额（持仓市值 + 现金）", systemImage: "briefcase.fill").scaledFont(15, weight: .medium).foregroundStyle(.secondary)
                     Text((value + store.data.cash).cny()).scaledFont(40, weight: .semibold, design: .rounded).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
                     HStack { ProMetric(title: "持仓市值", value: value.cny()); ProMetric(title: "现金", value: store.data.cash.cny()); ProMetric(title: "证券", value: "\(holdings.count) 只") }
                 }.proSurface(tone: Color(red: 0.19, green: 0.45, blue: 0.78))
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     ProSectionTitle(title: "下一步，按你的节奏")
-                    NavigationLink { ProAdvisorWorkspace() } label: { ProActionRow(title: "安排下一笔资金", detail: "结合持仓、长期目标与耐心买入偏好", icon: "arrow.up.right.circle") }.tint(Color(red: 0.08, green: 0.56, blue: 0.48))
-                    Divider()
-                    NavigationLink { ProLabWorkspace() } label: { ProActionRow(title: "先看模拟，再做决定", detail: "相同起点与资金流，观察不同策略的结果", icon: "point.3.connected.trianglepath.dotted") }.tint(Color.purple)
+                    NavigationLink { ProAdvisorWorkspace() } label: { ProActionRow(title: "安排下一笔资金", detail: "填写目标与可投入金额，先得到分阶段计划", icon: "arrow.up.right.circle.fill", tone: Color(red: 0.08, green: 0.56, blue: 0.48)) }.proSurface(tone: Color(red: 0.08, green: 0.56, blue: 0.48))
+                    NavigationLink { ProLabWorkspace() } label: { ProActionRow(title: "比较不同做法", detail: "用独立虚拟账户试算；不会改变真实持仓", icon: "point.3.connected.trianglepath.dotted", tone: .purple) }.proSurface(tone: .purple)
                 }
                 if !holdings.isEmpty {
                     VStack(alignment: .leading, spacing: 18) {
@@ -126,7 +125,7 @@ struct ProDecisionHubView: View {
                 NavigationLink { LabResearchView() } label: { ProActionRow(title: "查看研究证据", detail: "因子、数据覆盖和策略依据", icon: "text.magnifyingglass") }
                 Divider()
                 NavigationLink { ProOpportunityRadarView() } label: { ProActionRow(title: "机会雷达", detail: "独立证券池与离线研究文件", icon: "scope") }
-            }
+            }.proSurface(tone: Color(red: 0.13, green: 0.56, blue: 0.50))
             Text("真实证券交易始终由你决定。").font(.caption).foregroundStyle(.secondary)
         } }
     }
@@ -254,8 +253,9 @@ struct ProSettingsWorkspace: View {
             VStack(alignment: .leading, spacing: 16) {
                 ProSectionTitle(title: "外观")
                 Picker("显示模式", selection: Binding(get: { store.data.appearance }, set: { store.data.appearance = $0; store.save(propagate: false) })) {
-                    Text("跟随系统").tag(AppAppearance.system); Text("浅色").tag(AppAppearance.light); Text("深色").tag(AppAppearance.dark)
-                }.pickerStyle(.segmented)
+                    Text("跟随系统").tag(AppAppearance.system); Text("浅色").tag(AppAppearance.light); Text("深色").tag(AppAppearance.dark); Text("护眼").tag(AppAppearance.eyeCare)
+                }.pickerStyle(.menu)
+                Text("护眼模式使用暖米色底和柔和绿，降低冷白背景的刺激。").font(.caption).foregroundStyle(.secondary)
                 Stepper("文字大小 \(Int(scale * 100))%", value: $scale, in: 0.85...1.4, step: 0.05)
             }
             Divider()

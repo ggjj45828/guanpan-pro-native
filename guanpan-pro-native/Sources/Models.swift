@@ -442,7 +442,7 @@ struct AllocationTarget: Codable, Identifiable {
 }
 
 enum AppAppearance: String, Codable {
-    case system, dark, oled, light, blue, green, purple, sakura, cyber, amber, paper, mint, coffee, graphite
+    case system, dark, oled, light, blue, green, purple, sakura, cyber, amber, paper, mint, coffee, graphite, eyeCare
 }
 enum CostAccountingMode: String, Codable { case weightedAverage, diluted }
 enum DailyPnLMode: String, Codable, CaseIterable, Identifiable {

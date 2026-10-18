@@ -443,6 +443,7 @@ struct IntradayMainChart: View {
     /// 它原来叫 `iopvFallback`（一个 Double，什么都不画），现在换成真正能画的一条线。
     let estimatedIOPV: [IntradayLine]
     let previousClose: Double?
+    var holdingCost: Double? = nil
     let showAverage: Bool
     let showIOPV: Bool
     let showPreviousClose: Bool
@@ -478,7 +479,7 @@ struct IntradayMainChart: View {
     }
 
     init(lines: [IntradayLine], average: [IntradayLine], iopv: [IntradayLine],
-         estimatedIOPV: [IntradayLine], previousClose: Double?, showAverage: Bool,
+         estimatedIOPV: [IntradayLine], previousClose: Double?, holdingCost: Double? = nil, showAverage: Bool,
          showIOPV: Bool, showPreviousClose: Bool, lineColor: Color,
          xDomain: ClosedRange<Date>, yDomain: ClosedRange<Double>,
          ticks: [(time: Date, label: String)], compressLunch: Bool,
@@ -490,6 +491,7 @@ struct IntradayMainChart: View {
         self.iopv = iopv
         self.estimatedIOPV = estimatedIOPV
         self.previousClose = previousClose
+        self.holdingCost = holdingCost
         self.showAverage = showAverage
         self.showIOPV = showIOPV
         self.showPreviousClose = showPreviousClose
@@ -575,6 +577,17 @@ struct IntradayMainChart: View {
             if showPreviousClose, let value = previousClose {
                 RuleMark(y: .value("昨收", value)).foregroundStyle(previousCloseLineColor)
                     .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+            }
+            if let cost = holdingCost, cost.isFinite, cost > 0 {
+                RuleMark(y: .value("当前持仓成本", cost)).foregroundStyle(Color(red: 0.72, green: 0.34, blue: 0.12))
+                    .lineStyle(StrokeStyle(lineWidth: 1.35, dash: [7, 4]))
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text("成本 \(cost, format: .number.precision(.fractionLength(3)))")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.58, green: 0.25, blue: 0.08))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color(red: 1.0, green: 0.91, blue: 0.76).opacity(0.9), in: Capsule())
+                    }
             }
             ForEach(tradeMarkers) { trade in
                 PointMark(x: .value("交易时间", t(trade.time)), y: .value("成交价", trade.price))
@@ -815,6 +828,7 @@ private struct IntradayPanelView: View {
     let iopv: [IntradayLine]
     let estimatedIOPV: [IntradayLine]
     let previousClose: Double?
+    var holdingCost: Double? = nil
     let macdPoints: [MinuteMACDPoint]
     let volumeBuckets: [MinuteBucket]
     let volumePrevClose: Double?
@@ -851,7 +865,7 @@ private struct IntradayPanelView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 7) {
                 IntradayMainChart(lines: lines, average: average, iopv: iopv,
-                    estimatedIOPV: estimatedIOPV, previousClose: previousClose,
+                    estimatedIOPV: estimatedIOPV, previousClose: previousClose, holdingCost: holdingCost,
                     showAverage: showAverage, showIOPV: showIOPV, showPreviousClose: showPreviousClose,
                     lineColor: lineColor, xDomain: xDomain, yDomain: priceYDomain,
                     ticks: ticks, compressLunch: compressLunch, height: mainHeight, lineWidth: lineWidth)
@@ -919,6 +933,7 @@ private struct DailyCandleChart: View {
     let selectedDate: String?
     let selectedClose: Double?
     let accentColor: Color
+    let holdingCost: Double?
     let yDomain: ClosedRange<Double>
     let bodyWidth: CGFloat
     let onSelect: (String) -> Void
@@ -939,6 +954,18 @@ private struct DailyCandleChart: View {
                               yEnd: .value("收盘", highBody + pad),
                               width: .fixed(bodyWidth))
                     .foregroundStyle(candleColor)
+            }
+            if let cost = holdingCost, cost.isFinite, cost > 0 {
+                RuleMark(y: .value("当前持仓成本", cost))
+                    .foregroundStyle(Color(red: 0.72, green: 0.34, blue: 0.12))
+                    .lineStyle(StrokeStyle(lineWidth: 1.35, dash: [7, 4]))
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text("成本 \(cost, format: .number.precision(.fractionLength(3)))")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.58, green: 0.25, blue: 0.08))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color(red: 1.0, green: 0.91, blue: 0.76).opacity(0.9), in: Capsule())
+                    }
             }
             ForEach(markers) { marker in
                 let color = marker.side == .buy ? ChartPalette.buyMark : ChartPalette.sellMark
@@ -1593,6 +1620,8 @@ struct MarketChartView: View {
         // 所以只在**不够的那一侧单侧补足**，能不动另一侧就不动 ——
         // 这样 IOPV 关闭时的纵轴与旧版完全一致，不会因为纳入 IOPV 就把价格线压成一条平线。
         var visible = selectedIntradayBars.map(\.price)
+        let holdingCost = holding.costOverride ?? holding.cost
+        if selectedChartPeriod == .intraday, holdingCost.isFinite, holdingCost > 0 { visible.append(holdingCost) }
         if showIntradayAverage { visible += intradayAvgPoints.map(\.price) }
         var all = visible
         if showIntradayIOPV {
@@ -2399,6 +2428,10 @@ struct MarketChartView: View {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
+        let cost = holding.costOverride ?? holding.cost
+        if cost.isFinite, cost > 0 {
+            low = min(low, cost); high = max(high, cost)
+        }
         for window in [5, 10, 20, 60, 250] where maVisible.contains(window) {
             let source = average(window, source: bars, full: full)
             for point in source {
@@ -2535,6 +2568,7 @@ struct MarketChartView: View {
                         selectedDate: selectedDailyDate,
                         selectedClose: selectedDailyBar?.close,
                         accentColor: store.effectiveAccentColor,
+                        holdingCost: holding.costOverride ?? holding.cost,
                         yDomain: yDomain(for: zoomedPeriodBars, full: periodAllBars),
                         bodyWidth: bodyWidth,
                         onSelect: { selectedDailyDate = $0 })
@@ -2719,6 +2753,7 @@ struct MarketChartView: View {
             showAverage: showIntradayAverage,
             showIOPV: showIntradayIOPV,
             showPreviousClose: showIntradayPreviousClose,
+            holdingCost: selectedChartPeriod == .intraday ? (holding.costOverride ?? holding.cost) : nil,
             subchart: intradaySubchart,
             mainHeight: 300,
             subHeight: 165,
