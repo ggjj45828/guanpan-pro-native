@@ -89,6 +89,16 @@ enum HistoricalFundArchive {
             try manager.removeItem(at: folder)
         }
     }
+    static var hasLocalArchiveFiles: Bool {
+        let manager = FileManager.default
+        for folder in [directory, permanentArchiveDirectory] where manager.fileExists(atPath: folder.path) {
+            guard let files = manager.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
+            for case let file as URL in files {
+                if (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true { return true }
+            }
+        }
+        return false
+    }
     private static func digest(_ bytes: Data) -> String {
         SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }
@@ -97,12 +107,12 @@ enum HistoricalFundArchive {
         let archiveRoot = root ?? permanentArchiveDirectory
         guard manager.fileExists(atPath: archiveRoot.path),
               let files = manager.enumerator(at: archiveRoot, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
-        var items: [(String, String)] = []
+        var items: [(name: String, sha256: String)] = []
         for case let file as URL in files {
             guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
-            items.append((file.lastPathComponent, digest(try Data(contentsOf: file)))
+            items.append((name: file.lastPathComponent, sha256: digest(try Data(contentsOf: file))))
         }
-        return items.sorted { $0.0 < $1.0 }
+        return items.sorted { $0.name < $1.name }
     }
     /// Copies every old recovery artifact to the permanent archive and verifies each copy.
     static func archiveLegacyArtifacts(at folder: URL? = nil, into root: URL? = nil) throws {
@@ -123,20 +133,23 @@ enum HistoricalFundArchive {
     }
     /// Deletion is intentionally opt-in and refuses to run unless the caller has obtained
     /// an explicit user confirmation after verifying the permanent archive.
-    static func purgeArtifacts(at folder: URL? = nil, userConfirmedArchive: Bool = false) throws {
+    static func purgeArtifacts(at folder: URL? = nil, userConfirmedArchive: Bool = false, archiveRoot: URL? = nil) throws {
         let target = folder ?? directory
         guard FileManager.default.fileExists(atPath: target.path) else { return }
         guard userConfirmedArchive else {
             throw NSError(domain: "HistoricalFundArchive", code: 6,
                           userInfo: [NSLocalizedDescriptionKey: "未取得用户确认；原始场外数据保留"])
         }
-        try archiveLegacyArtifacts(at: target)
+        try archiveLegacyArtifacts(at: target, into: archiveRoot)
         try FileManager.default.removeItem(at: target)
     }
     static func hasHistory(_ data: PortfolioData) -> Bool {
-        data.holdings.contains { $0.kind == .fund } || !data.fundTransactions.isEmpty ||
+        let fundCodes = Set(data.holdings.filter { $0.kind == .fund }.map(\.code)
+            + data.fundTransactions.map(\.code) + data.fundNAVHistory.map(\.code) + data.fundDCAPlans.map(\.code))
+        return data.holdings.contains { $0.kind == .fund } || !data.fundTransactions.isEmpty ||
         !data.fundNAVHistory.isEmpty || !data.fundDCAPlans.isEmpty || !data.fundFeePolicies.isEmpty ||
         !data.fundConstituentSnapshots.isEmpty || data.ledger.contains { $0.kind == .fund } ||
+        data.ledger.contains { $0.kind == nil && fundCodes.contains($0.code) } ||
         data.allocationTargets.contains { $0.kind == .fund } || data.tradePlans.contains { $0.kind == .fund }
     }
     /// Cleanup requires explicit confirmation after the user has verified the

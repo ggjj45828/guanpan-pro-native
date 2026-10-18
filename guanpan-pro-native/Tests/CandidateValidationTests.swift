@@ -155,7 +155,7 @@ final class CandidateValidationTests: XCTestCase {
         try HistoricalFundArchive.archiveLegacyArtifacts(at: folder, into: root.appendingPathComponent("verified-archive"))
         let archived = try XCTUnwrap(FileManager.default.enumerator(at: root.appendingPathComponent("verified-archive"), includingPropertiesForKeys: nil)?.allObjects as? [URL]).first
         XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(archived)), Data("off exchange history".utf8))
-        try HistoricalFundArchive.purgeArtifacts(at: folder, userConfirmedArchive: true)
+        try HistoricalFundArchive.purgeArtifacts(at: folder, userConfirmedArchive: true, archiveRoot: root.appendingPathComponent("verified-archive"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
         XCTAssertEqual(try Data(contentsOf: sibling), Data("preserve".utf8))
     }

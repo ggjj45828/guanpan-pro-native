@@ -1234,7 +1234,6 @@ struct MoreHubView: View {
                 Section("账户状态") {
                     LabeledContent("自选", value: "\(store.data.quotes.count) 只")
                     LabeledContent("场内持仓", value: "\(store.data.holdings.filter { $0.kind == .etf }.count) 只")
-                    LabeledContent("场外基金", value: "\(store.data.holdings.filter { $0.kind == .fund }.count) 只")
                     Label(store.nasSyncStatus, systemImage: "externaldrive.fill")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

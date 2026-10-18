@@ -577,6 +577,8 @@ final class PortfolioStore: ObservableObject {
         if defaults.bool(forKey: offExchangeRemovedKey) {
             offExchangeArchiveVerificationFailed = false
             try? HistoricalFundArchive.removePreviouslyConfirmedLocalArchives()
+            defaults.removeObject(forKey: NASSyncService.webLedgerBackupKey)
+            defaults.removeObject(forKey: NASSyncService.webLedgerBackupDateKey)
         } else {
             do {
                 try archiveOffExchangeSnapshots()
@@ -585,6 +587,9 @@ final class PortfolioStore: ObservableObject {
                 offExchangeArchiveVerificationFailed = true
                 historicalArchiveStatus = "场外历史备份准备失败，原记录保留：\(error.localizedDescription)"
             }
+        }
+        if hasOffExchangeHistoryToClean, historicalArchiveStatus.isEmpty {
+            historicalArchiveStatus = "检测到旧场外记录或恢复副本。请在数据与同步中完成一次性备份和确认清理。"
         }
         guard let raw = defaults.data(forKey: key) else {
             // There may still be history in undo/audit or the old recovery directory.
@@ -1877,6 +1882,9 @@ final class PortfolioStore: ObservableObject {
            records.contains(where: { (try? JSONDecoder().decode(PortfolioData.self, from: $0.state)).map(HistoricalFundArchive.hasHistory) == true }) {
             _ = try HistoricalFundArchive.archiveBytes(audit, label: "operation-audit")
         }
+        if let previousWebLedger = defaults.data(forKey: NASSyncService.webLedgerBackupKey), !previousWebLedger.isEmpty {
+            _ = try HistoricalFundArchive.archiveBytes(previousWebLedger, label: "web-ledger-restore-copy")
+        }
         try HistoricalFundArchive.archiveLegacyArtifacts()
     }
 
@@ -1886,7 +1894,16 @@ final class PortfolioStore: ObservableObject {
         return try? JSONEncoder().encode(Self.withoutOffExchangeHistory(decoded))
     }
 
-    var hasOffExchangeHistoryToClean: Bool { HistoricalFundArchive.hasHistory(data) }
+    var hasOffExchangeHistoryToClean: Bool {
+        if HistoricalFundArchive.hasHistory(data) || HistoricalFundArchive.hasLocalArchiveFiles { return true }
+        let defaults = UserDefaults.standard
+        if let raw = defaults.data(forKey: undoKey),
+           let value = try? JSONDecoder().decode(PortfolioData.self, from: raw), HistoricalFundArchive.hasHistory(value) { return true }
+        if let raw = defaults.data(forKey: auditKey),
+           let records = try? JSONDecoder().decode([OperationAuditRecord].self, from: raw),
+           records.contains(where: { (try? JSONDecoder().decode(PortfolioData.self, from: $0.state)).map(HistoricalFundArchive.hasHistory) == true }) { return true }
+        return defaults.data(forKey: NASSyncService.webLedgerBackupKey) != nil
+    }
 
     func prepareOffExchangeHistoryExport() throws -> Data {
         guard !offExchangeArchiveVerificationFailed else {
@@ -1914,6 +1931,8 @@ final class PortfolioStore: ObservableObject {
         defaults.set(cleanBytes, forKey: key)
         if let undo { defaults.set(undo, forKey: undoKey) } else { defaults.removeObject(forKey: undoKey) }
         defaults.set(auditBytes, forKey: auditKey)
+        defaults.removeObject(forKey: NASSyncService.webLedgerBackupKey)
+        defaults.removeObject(forKey: NASSyncService.webLedgerBackupDateKey)
         operationAudit = cleanedAudit
         data = cleaned
         defaults.set(true, forKey: offExchangeRemovedKey)
@@ -1930,8 +1949,10 @@ final class PortfolioStore: ObservableObject {
 
     static func withoutOffExchangeHistory(_ source: PortfolioData) -> PortfolioData {
         var value = source
+        let fundCodes = Set(source.holdings.filter { $0.kind == .fund }.map(\.code)
+            + source.fundTransactions.map(\.code) + source.fundNAVHistory.map(\.code) + source.fundDCAPlans.map(\.code))
         value.holdings.removeAll { $0.kind == .fund }
-        value.ledger.removeAll { $0.kind == .fund }
+        value.ledger.removeAll { $0.kind == .fund || ($0.kind == nil && fundCodes.contains($0.code)) }
         value.allocationTargets.removeAll { $0.kind == .fund }
         value.tradePlans.removeAll { $0.kind == .fund }
         value.fundNAVHistory = []
@@ -4909,7 +4930,7 @@ enum StoreError: LocalizedError {
     case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidManualSnapshot, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, duplicateDCAPlan(String, String)
     var errorDescription: String? {
         switch self {
-        case .offExchangeArchived: return "场外业务已停止，历史数据只读保留。"
+        case .offExchangeArchived: return "场外基金业务已停用；检测到旧记录时可在数据与同步中完成一次性备份和确认清理。"
         case .invalidTrade: return "请检查份额、价格、费用和标的。"
         case .insufficientShares: return "卖出份额不能超过当前持仓。"
         case .insufficientCash: return "参考现金不足，不能记录这笔现金联动买入。"
