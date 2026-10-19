@@ -1,0 +1,81 @@
+name: Guanpan Next native iOS
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'GuanpanNext-native-source.zip'
+      - '.github/workflows/guanpan-next-ios.yml'
+jobs:
+  build-test-simulator:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand isolated native source
+        run: unzip -q GuanpanNext-native-source.zip -d .
+      - name: Run isolated NAS service tests
+        working-directory: GuanpanNext/server
+        run: python3 -m unittest discover -s tests -v
+      - name: Select Xcode and install XcodeGen
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          brew install xcodegen
+          xcodegen --version
+      - name: Generate Xcode project
+        working-directory: GuanpanNext/ios
+        run: xcodegen generate
+      - name: Run Swift core tests
+        working-directory: GuanpanNext/ios
+        run: swift test --parallel
+      - name: Build and test iPhone Air and iPhone 17 simulators
+        working-directory: GuanpanNext/ios
+        run: |
+          mkdir -p build
+          xcodebuild test \
+            -project GuanpanNext.xcodeproj \
+            -scheme GuanpanNext \
+            -destination 'platform=iOS Simulator,name=iPhone Air' \
+            -resultBundlePath build/GuanpanNext-iPhone-Air.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+          xcodebuild test \
+            -project GuanpanNext.xcodeproj \
+            -scheme GuanpanNext \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -resultBundlePath build/GuanpanNext-iPhone-17.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Build unsigned device app and package IPA
+        working-directory: GuanpanNext/ios
+        run: |
+          xcodebuild build \
+            -project GuanpanNext.xcodeproj \
+            -scheme GuanpanNext \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/Device \
+            CODE_SIGNING_ALLOWED=NO
+          mkdir -p build/Package/Payload
+          cp -R build/Device/Build/Products/Release-iphoneos/GuanpanNext.app build/Package/Payload/
+          ditto -c -k --sequesterRsrc --keepParent build/Package/Payload build/GuanpanNext-unsigned.ipa
+      - name: Export iPhone Air simulator screenshots
+        if: always()
+        working-directory: GuanpanNext/ios
+        run: xcrun xcresulttool export attachments --path build/GuanpanNext-iPhone-Air.xcresult --output-path build/simulator-screenshots
+      - name: Export iPhone 17 simulator screenshots
+        if: always()
+        working-directory: GuanpanNext/ios
+        run: xcrun xcresulttool export attachments --path build/GuanpanNext-iPhone-17.xcresult --output-path build/iphone-17-screenshots
+      - name: Preserve build, test, screenshots, and IPA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guanpan-next-ios-build-evidence
+          path: |
+            GuanpanNext/ios/build/GuanpanNext-iPhone-Air.xcresult
+            GuanpanNext/ios/build/GuanpanNext-iPhone-17.xcresult
+            GuanpanNext/ios/build/simulator-screenshots
+            GuanpanNext/ios/build/iphone-17-screenshots
+            GuanpanNext/ios/build/Build/Products/Debug-iphonesimulator/GuanpanNext.app
+            GuanpanNext/ios/build/GuanpanNext-unsigned.ipa
+          if-no-files-found: warn
+          retention-days: 30
