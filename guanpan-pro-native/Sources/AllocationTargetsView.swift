@@ -48,48 +48,37 @@ struct AllocationTargetsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    WorkspacePageIntro(title: "让仓位回到目标", subtitle: "实际持有与目标配置，并排核对", icon: "scope", tone: WorkspaceTone.teal)
+                    MetricGrid(columns: 3, cells: [
+                        MetricCell(title: "已设目标", value: "\(configuredCount)/\(rows.count) 只"),
+                        MetricCell(title: "超过偏离阈值", value: "\(breachCount) 只"),
+                        MetricCell(title: "提醒阈值", value: "±\(threshold.num(0))%")
+                    ]).cardSurface(tone: breachCount > 0 ? CardTone.warn : WorkspaceTone.teal)
+                    WorkspaceFeatureActions(features: [.addCash, .portfolioScenario])
                     if rows.isEmpty {
-                        ContentUnavailableView("还没有持仓", systemImage: "tray",
-                                               description: Text("先在「证券」或「场外基金」里添加持仓，再回来设目标。"))
+                        ContentUnavailableView("暂无可配置的持仓", systemImage: "chart.pie", description: Text("录入证券持仓后，在这里逐项设置目标比例。"))
                     }
                     ForEach(rows) { holding in
-                        Button { editing = holding } label: { row(holding) }
-                            .buttonStyle(.plain)
+                        Button { editing = holding } label: {
+                            VStack(alignment: .leading, spacing: 12) {
+                                row(holding)
+                                let actual = store.allocationActualPercent(for: holding)
+                                ProgressView(value: min(100, max(0, actual)), total: 100).tint(WorkspaceTone.teal)
+                                HStack { Text("查看并调整目标"); Spacer(); Image(systemName: "chevron.right") }
+                                    .font(.caption).foregroundStyle(WorkspaceTone.teal)
+                            }.cardSurface(tone: WorkspaceTone.teal)
+                        }.buttonStyle(.plain)
                     }
-                } header: {
-                    HStack {
-                        Text("分标的仓位目标")
-                        Spacer()
-                        Text("已设 \(configuredCount)/\(rows.count) 只")
-                    }
-                } footer: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if breachCount > 0 {
-                            Text("有 \(breachCount) 只偏离目标超过 ±\(threshold.num(0))%。")
-                                .foregroundStyle(CardTone.warn)
-                        }
-                        Text("「实际」= 该标的市值 ÷ 总资产（含现金）。点任意一行即可设置或修改，设成 0 = 明确不打算持有。")
-                        Text("目标只用于对照、「新增资金加仓试算」和本机顾问的偏离提示，**不会**改你的持仓或现金，也不会自动下单。")
-                    }
-                    .font(.footnote)
+                    Text("实际仓位以含现金的总资产为分母。目标为 0 表示不计划持有；目标设置不修改真实持仓或现金，试算与交易计划仍由你确认。旧场外记录保留，不自动删除。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }.padding(18).frame(maxWidth: 820).frame(maxWidth: .infinity)
+            }.navigationTitle("目标仓位").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+                .sheet(item: $editing) { holding in
+                    AllocationTargetEditor(holding: holding, targetPercent: target(for: holding)).themedSheetBackground()
                 }
-            }
-            .scrollContentBackground(.hidden)
-            .listStyle(.plain)
-            .appListLayout()
-            .listRowBackground(Color.clear)
-            .background(.clear)
-            .navigationTitle("仓位目标")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .sheet(item: $editing) { holding in
-                AllocationTargetEditor(holding: holding, targetPercent: target(for: holding))
-                    .themedSheetBackground()
-            }
         }
     }
 

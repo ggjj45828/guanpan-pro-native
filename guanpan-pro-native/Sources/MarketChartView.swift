@@ -456,6 +456,7 @@ struct IntradayMainChart: View {
     var selection: Binding<Date?>? = nil
     var selectionLabel: String? = nil
     var tradeMarkers: [IntradayChartTradeMarker] = []
+    var costBasis: Double? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -484,7 +485,7 @@ struct IntradayMainChart: View {
          ticks: [(time: Date, label: String)], compressLunch: Bool,
          height: CGFloat, lineWidth: CGFloat,
          selection: Binding<Date?>? = nil, selectionLabel: String? = nil,
-         tradeMarkers: [IntradayChartTradeMarker] = []) {
+         tradeMarkers: [IntradayChartTradeMarker] = [], costBasis: Double? = nil) {
         self.lines = lines
         self.average = average
         self.iopv = iopv
@@ -503,6 +504,14 @@ struct IntradayMainChart: View {
         self.selection = selection
         self.selectionLabel = selectionLabel
         self.tradeMarkers = tradeMarkers
+        self.costBasis = costBasis
+    }
+
+    private var costYDomain: ClosedRange<Double> {
+        guard let cost = costBasis, cost.isFinite, cost > 0 else { return yDomain }
+        if yDomain.contains(cost) { return yDomain }
+        let expanded = CostOverlayDomain.including(cost, in: yDomain)
+        return symmetricIntradayYDomain(low: expanded.lowerBound, high: expanded.upperBound, previous: previousClose) ?? expanded
     }
 
     private func t(_ time: Date) -> Date { intradayCompressedTime(time, compressLunch: compressLunch) }
@@ -572,6 +581,14 @@ struct IntradayMainChart: View {
                                                lineJoin: .round, dash: [4, 3]))
                 }
             }
+            if let cost = costBasis, cost.isFinite, cost > 0 {
+                RuleMark(y: .value("持仓成本", cost))
+                    .foregroundStyle(CardTone.accent)
+                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("成本 \(cost.num(4))").font(.caption2).foregroundStyle(CardTone.accent)
+                    }
+            }
             if showPreviousClose, let value = previousClose {
                 RuleMark(y: .value("昨收", value)).foregroundStyle(previousCloseLineColor)
                     .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
@@ -603,7 +620,7 @@ struct IntradayMainChart: View {
         }
         .frame(height: height)
         .chartXScale(domain: xDomain)
-        .chartYScale(domain: yDomain)
+        .chartYScale(domain: costYDomain)
         .chartXAxis {
             if compressLunch, !ticks.isEmpty {
                 AxisMarks(values: ticks.map { $0.time }) { value in
@@ -846,6 +863,7 @@ private struct IntradayPanelView: View {
     let onTogglePreviousClose: () -> Void
     let onSelectSubchart: (IntradaySubchart) -> Void
     let onToggleVolumeMA: (Int) -> Void
+    var costBasis: Double? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -854,7 +872,7 @@ private struct IntradayPanelView: View {
                     estimatedIOPV: estimatedIOPV, previousClose: previousClose,
                     showAverage: showAverage, showIOPV: showIOPV, showPreviousClose: showPreviousClose,
                     lineColor: lineColor, xDomain: xDomain, yDomain: priceYDomain,
-                    ticks: ticks, compressLunch: compressLunch, height: mainHeight, lineWidth: lineWidth)
+                    ticks: ticks, compressLunch: compressLunch, height: mainHeight, lineWidth: lineWidth, costBasis: costBasis)
                 if showsSubchartPicker {
                     Picker("分时副图", selection: Binding(get: { subchart }, set: { onSelectSubchart($0) })) {
                         ForEach(IntradaySubchart.allCases) { item in Text(item.rawValue).tag(item) }
@@ -922,9 +940,18 @@ private struct DailyCandleChart: View {
     let yDomain: ClosedRange<Double>
     let bodyWidth: CGFloat
     let onSelect: (String) -> Void
+    var costBasis: Double? = nil
 
     var body: some View {
         Chart {
+            if let cost = costBasis, cost.isFinite, cost > 0 {
+                RuleMark(y: .value("账本成本", cost))
+                    .foregroundStyle(CardTone.accent)
+                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("账本成本 \(cost.num(4))").font(.caption2).foregroundStyle(CardTone.accent)
+                    }
+            }
             ForEach(visible) { bar in
                 let candleColor = bar.close >= bar.open ? Color.red : Color.green
                 let lowBody = min(bar.open, bar.close)
@@ -974,7 +1001,7 @@ private struct DailyCandleChart: View {
             }
         }
         // Y 轴显式跟随可见窗口：捏合/拖动后上下界立即重算（含均线），不再是一整段区间
-        .chartYScale(domain: yDomain)
+        .chartYScale(domain: CostOverlayDomain.including(costBasis, in: yDomain))
         // X 轴按月抽稀：不再逐根显示日期，标签互相压叠又看不清
         .chartXAxis {
             AxisMarks(values: xAxisDates(visible)) { value in
@@ -1174,6 +1201,7 @@ struct MarketChartView: View {
         nonmutating set { dailySubChartRaw = newValue.rawValue }
     }
     @State private var intradaySubchart: IntradaySubchart = .macd
+    @AppStorage("guanpan.native.chart.showCost") private var showCost = true
     @State private var showIntradayAverage = IntradayVisibility.showAverage
     @State private var showIntradayIOPV = IntradayVisibility.showIOPV
     @State private var showIntradayPreviousClose = IntradayVisibility.showPreviousClose
@@ -1833,7 +1861,7 @@ struct MarketChartView: View {
                     if holding.quantity > 0 {
                         HStack(spacing: 10) {
                             quoteMetric("持有份额", "\(holding.quantity.compactNum(2))份")
-                            quoteMetric("持仓成本", holding.cost.num(3))
+                            quoteMetric("持仓成本", (displayedHoldingCost ?? store.displayedCost(for: holding)).num(4))
                             quoteMetric("持仓浮盈", holding.pnl.cny())
                                 .foregroundStyle(PnLColor.of(holding.pnl))
                         }
@@ -1941,7 +1969,7 @@ struct MarketChartView: View {
                                 volumeUnavailableHint: "所选分时记录没有成交量列；导入含 volume 列的 CSV 后可查看分时量。",
                                 onToggleAverage: {}, onToggleIOPV: {}, onTogglePreviousClose: {},
                                 onSelectSubchart: { intradaySubchart = $0 },
-                                onToggleVolumeMA: { _ in })
+                                onToggleVolumeMA: { _ in }, costBasis: displayedHoldingCost)
                             Text("按本机已保存的分时点聚合；仅显示 \(selectedIntradayDay)，缺失分钟不会补造。")
                                 .font(.footnote).foregroundStyle(.secondary)
                         } else {
@@ -1951,6 +1979,13 @@ struct MarketChartView: View {
                         dailyChartSection
                     } else {
                         ContentUnavailableView("暂无\(selectedChartPeriod.rawValue)", systemImage: "chart.xyaxis.line", description: Text("联网获取历史行情，或在备份中导入已有日线缓存。"))
+                    }
+                    if store.data.holdings.contains(where: { $0.kind == .etf && $0.code == holding.code && $0.quantity > 0 }) {
+                        Toggle("显示持仓成本虚线", isOn: $showCost).tint(CardTone.accent)
+                        if showCost && selectedChartPeriod != .intraday && selectedChartPeriod != .minute30 && selectedChartPeriod != .minute60 {
+                            Text("成本为当前账本口径；历史 K 线为前复权价格，除权前区间不可直接视为历史盈亏。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     if !message.isEmpty { Text(message).font(.footnote).foregroundStyle(.secondary) }
                     Button { Task { await manuallyRefreshDaily() } } label: {
@@ -2537,7 +2572,7 @@ struct MarketChartView: View {
                         accentColor: store.effectiveAccentColor,
                         yDomain: yDomain(for: zoomedPeriodBars, full: periodAllBars),
                         bodyWidth: bodyWidth,
-                        onSelect: { selectedDailyDate = $0 })
+                        onSelect: { selectedDailyDate = $0 }, costBasis: displayedHoldingCost)
                         .frame(height: candleHeight)
                     DailySubChartTabs(selection: dailySubChart,
                         accentColor: store.effectiveAccentColor,
@@ -2696,6 +2731,15 @@ struct MarketChartView: View {
     /// 分时面板。**这里只组装参数，绘制实体全在文件级独立视图里** ——
     /// 原因见文件顶部那段注释：视图类型嵌套过深时，运行时解析类型名会递归几十层而栈溢出，
     /// 表现就是「点开自选卡片 / 日 K 瞬间闪退」。
+    private var displayedHoldingCost: Double? {
+        // Resolve the live holding, since sheet input may be a copied watchlist item.
+        guard showCost, let live = store.data.holdings.first(where: {
+            $0.kind == .etf && $0.code == holding.code && $0.quantity > 0
+        }) else { return nil }
+        let cost = store.displayedCost(for: live)
+        return cost.isFinite && cost > 0 ? cost : nil
+    }
+
     private var intradayPanel: some View {
         IntradayPanelView(
             lines: selectedIntradayBars.map { IntradayLine(time: $0.timestamp, price: $0.price) },
@@ -2733,7 +2777,7 @@ struct MarketChartView: View {
             onToggleVolumeMA: { period in
                 if intradayVolumeMAs.contains(period) { intradayVolumeMAs.remove(period) } else { intradayVolumeMAs.insert(period) }
                 IntradayVisibility.write(volumeMAs: intradayVolumeMAs)
-            })
+            }, costBasis: displayedHoldingCost)
     }
 
     /// 已打开的量均线序列（没开的周期不计算）。

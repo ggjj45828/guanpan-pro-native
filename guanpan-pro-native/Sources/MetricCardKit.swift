@@ -90,6 +90,7 @@ private struct CardSurfaceModifier: ViewModifier {
 /// 保证卡片在纯配色背景上仍能立起来。
 private struct CardPanelBackgroundModifier: ViewModifier {
     @Environment(\.appAppearance) private var appearance
+    @Environment(\.colorScheme) private var colorScheme
     let cornerRadius: CGFloat
     let fallback: Color
     /// 非 nil 时给卡片上色（网页版 .sum / .ai / .gauge 那类彩色区块）。
@@ -100,7 +101,7 @@ private struct CardPanelBackgroundModifier: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         // 用 AnyShapeStyle 统一两条分支的类型：Swift 的 opaque return type 要求
         // 函数体所有 return 的底层类型一致，直接返回 LinearGradient / Color 会编译失败。
-        let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
+        let theme = AppTheme.palette(for: AppAppearance.resolved(appearance, colorScheme: colorScheme))
         let strokeStyle: AnyShapeStyle
         let strokeWidth: CGFloat
         if let tone {
@@ -111,11 +112,10 @@ private struct CardPanelBackgroundModifier: ViewModifier {
             strokeWidth = 0.5
         }
         return content
-            .background(shape.fill(theme.surface))
-            .overlay {
+            .background {
+                shape.fill(theme.surface)
                 if let tone {
-                    shape.fill(tone.opacity(theme.isLight ? 0.12 : 0.18))
-                        .allowsHitTesting(false)
+                    shape.fill(tone.opacity(theme.isLight ? 0.08 : 0.13))
                 }
             }
             .overlay(shape.strokeBorder(strokeStyle, lineWidth: strokeWidth).allowsHitTesting(false))

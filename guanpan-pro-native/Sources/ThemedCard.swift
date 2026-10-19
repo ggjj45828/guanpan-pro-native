@@ -31,10 +31,10 @@ enum CardTone {
 
 /// 全 App 共用的版式尺寸。把卡片、间距和触控高度集中管理，避免不同页面越改越散。
 enum AppLayout {
-    static let cardRadius: CGFloat = 16
-    static let cardPadding: CGFloat = 12
-    static let rowVerticalInset: CGFloat = 6
-    static let pageHorizontalInset: CGFloat = 12
+    static let cardRadius: CGFloat = 20
+    static let cardPadding: CGFloat = 16
+    static let rowVerticalInset: CGFloat = 10
+    static let pageHorizontalInset: CGFloat = 16
     /// Apple 平台常用的最低触控高度；文字可以紧凑，但按钮不能难点。
     static let minimumTapHeight: CGFloat = 44
 }
@@ -44,9 +44,10 @@ struct ToneCardBackground: View {
     let tone: Color?
     let isLight: Bool
     @Environment(\.appAppearance) private var appearance
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
+        let theme = AppTheme.palette(for: AppAppearance.resolved(appearance, colorScheme: colorScheme))
         let shape = RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
         Group {
             if let tone {
@@ -88,7 +89,7 @@ extension View {
     func appListLayout() -> some View {
         environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
             .listStyle(.plain)
-            .listSectionSpacing(.compact)
+            .listSectionSpacing(16)
     }
 
     /// 列表行里的按钮改成**整行可点**。

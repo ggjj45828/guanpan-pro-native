@@ -62,6 +62,7 @@ private struct ArchivePriceChart: View {
     let compressLunch: Bool
     let showAverage: Bool
     let showIOPV: Bool
+    var costBasis: Double? = nil
     @State private var selectedTime: Date?
 
     private func chartTime(_ time: Date) -> Date {
@@ -98,7 +99,7 @@ private struct ArchivePriceChart: View {
             lineWidth: 1.15,
             selection: $selectedTime,
             selectionLabel: selectionLabel.isEmpty ? nil : selectionLabel,
-            tradeMarkers: tradeMarkers
+            tradeMarkers: tradeMarkers, costBasis: costBasis
         )
     }
 }
@@ -109,6 +110,7 @@ struct IntradayArchiveView: View {
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("guanpan.native.chart.showCost") private var showCost = true
     @State private var selectedCode = ""
     @State private var selectedDay = ""
     @State private var subchart: Subchart = .volume
@@ -453,6 +455,9 @@ struct IntradayArchiveView: View {
                 }
 
                 priceChart
+                if archiveCostBasis != nil || showCost == false {
+                    Toggle("显示当前持仓成本（非历史成本）", isOn: $showCost).tint(CardTone.accent)
+                }
 
                 HStack(spacing: 8) {
                     archiveLegendChip(title: "价格", color: priceLineColor, isOn: true, available: true, action: nil)
@@ -526,6 +531,14 @@ struct IntradayArchiveView: View {
 
     /// 只组装参数；**选择态与绘图实体都在 `ArchivePriceChart` 里**（见那里的说明：
     /// 把选择态留在本视图会让每一次拖动都重算整页的重活）。
+    private var archiveCostBasis: Double? {
+        guard showCost, let h = store.data.holdings.first(where: {
+            $0.kind == .etf && archiveNormalizedCode($0.code) == archiveNormalizedCode(selectedCode) && $0.quantity > 0
+        }) else { return nil }
+        let cost = store.displayedCost(for: h)
+        return cost.isFinite && cost > 0 ? cost : nil
+    }
+
     private var priceChart: some View {
         ArchivePriceChart(
             bars: bars,
@@ -542,7 +555,8 @@ struct IntradayArchiveView: View {
             ticks: chartAxisTicks,
             compressLunch: compressLunchBreak,
             showAverage: showAverageLine,
-            showIOPV: showIOPVLine
+            showIOPV: showIOPVLine,
+            costBasis: archiveCostBasis
         )
         // 换交易日 = 换一张图：整体重建，选择线随之复位。
         .id("\(resolvedCode)|\(selectedDay)")

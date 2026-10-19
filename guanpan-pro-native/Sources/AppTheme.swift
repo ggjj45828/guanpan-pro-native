@@ -90,9 +90,10 @@ extension EnvironmentValues {
 /// 留下默认的不透明白底 —— 深色主题下就是一条刺眼的白边。
 struct ThemedSheetBackground: View {
     @Environment(\.appAppearance) private var appearance
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        AppTheme.palette(for: appearance).gradient
+        AppTheme.palette(for: AppAppearance.resolved(appearance, colorScheme: colorScheme)).gradient
             .ignoresSafeArea()
     }
 }
@@ -112,9 +113,10 @@ extension View {
 /// 会报 `cannot find 'appAppearance' in scope`，整个工程编译不过。
 private struct ThemedSheetBackgroundModifier: ViewModifier {
     @Environment(\.appAppearance) private var appearance
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
-        let surface = AppTheme.palette(for: AppAppearance.resolved(appearance)).surface
+        let surface = AppTheme.palette(for: AppAppearance.resolved(appearance, colorScheme: colorScheme)).surface
         return content
             .background { ThemedSheetBackground() }
             .toolbarBackground(surface, for: .navigationBar)
@@ -136,6 +138,11 @@ extension AppAppearance {
     /// 都先过这一层解析，不要直接拿 `store.appearance` 去取 palette。
     ///
     /// 注意：设置页的主题预览卡**不能**用它 —— 那里要如实画出 `.system` 这一档本身。
+    static func resolved(_ appearance: AppAppearance, colorScheme: ColorScheme) -> AppAppearance {
+        guard appearance == .system else { return appearance }
+        return colorScheme == .light ? .light : .dark
+    }
+
     static func resolved(_ appearance: AppAppearance) -> AppAppearance {
         guard appearance == .system else { return appearance }
         return UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
