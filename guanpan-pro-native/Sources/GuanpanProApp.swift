@@ -68,7 +68,6 @@ struct GuanpanProApp: App {
                 .environmentObject(researchEngine)
                 .environmentObject(channels)
                 .environment(\.appAppearance, store.resolvedAppearance)
-                .preferredColorScheme(store.effectiveColorScheme)
                 .tint(store.effectiveAccentColor)
                 .appFontScale(CGFloat(fontScale))
         }
