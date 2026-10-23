@@ -8,6 +8,7 @@ private struct FundOpenLot {
 @MainActor
 extension PortfolioStore {
     func saveFundFeePolicy(code: String, name: String, bands: [FundFeeBand], sellMode: FundSellMode = .fifo) throws {
+        guard HistoricalFundArchive.businessEnabled else { throw StoreError.offExchangeArchived }
         let sorted = bands.sorted { $0.minimumHoldingDays < $1.minimumHoldingDays }
         guard !code.isEmpty, (1...10).contains(sorted.count), sorted.first?.minimumHoldingDays == 0,
               Set(sorted.map(\.minimumHoldingDays)).count == sorted.count,
