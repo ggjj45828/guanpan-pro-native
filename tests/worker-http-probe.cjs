@@ -20,7 +20,6 @@ function research(at){
 async function main(){
  const lab=C.create({at:T,cash:10000000,positions:[{symbol:'510300',asset:'etf',
   quantity:100,cost:10000,price:10000,tick:10,lot:100,tPlusOne:false}]},'http-probe');
- const originalLab=JSON.stringify(lab);
  await req('assets',{schemaVersion:2,expectedRevision:0,requestID:'actual',intent:'manual',
   data:{cash:7770000,holdings:[],ledger:[]}});
  const originalAsset=await req('assets');
@@ -33,7 +32,7 @@ async function main(){
  let quant=await req('quant');
  assert.equal(quant.data.opportunityScan.opportunities.length,1);
  assert.equal(quant.data.opportunityScan.action,'screen-only');
- assert.equal(JSON.stringify(quant.data.lab),originalLab);
+ assert.deepEqual(quant.data.lab,lab);
  assert.equal(quant.data.preferences.preserve,true);
  const firstRevision=quant.revision;
  const repeat=await W.tick({base,token,owner:'restarted-worker',now:()=>T+2100});
@@ -45,7 +44,7 @@ async function main(){
  assert.equal(later.status,'screened');
  quant=await req('quant');
  assert.equal(quant.data.opportunityScan.opportunities.length,1);
- assert.equal(JSON.stringify(quant.data.lab),originalLab);
+ assert.deepEqual(quant.data.lab,lab);
  assert.deepEqual(await req('assets'),originalAsset);
  console.log('PASS: local HTTP -> lease -> research-only scan -> restart -> CAS; real assets and legacy lab untouched');
 }
