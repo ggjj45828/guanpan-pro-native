@@ -83,20 +83,26 @@ struct VisualHoldingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Label("持仓总览", systemImage: "square.stack.3d.up")
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme == .modern || theme == .dashboard ? .white : .primary)
                 Text((value + store.data.cash).cny())
                     .font(.system(size: theme == .dashboard ? 30 : 34, weight: .bold, design: .rounded))
                     .monospacedDigit().lineLimit(1).minimumScaleFactor(0.55)
+                    .foregroundStyle(theme == .modern || theme == .dashboard ? .white : .primary)
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("持仓市值").font(.caption).foregroundStyle(.secondary)
+                        Text("持仓市值").font(.caption)
+                            .foregroundStyle(theme == .modern || theme == .dashboard ? .white.opacity(0.78) : .secondary)
                         Text(value.cny()).font(.subheadline.weight(.semibold)).monospacedDigit()
                             .lineLimit(1).minimumScaleFactor(0.7)
+                            .foregroundStyle(theme == .modern || theme == .dashboard ? .white : .primary)
                     }
                     Spacer(minLength: 4)
                     VStack(alignment: .trailing, spacing: 3) {
-                        Text("参考现金").font(.caption).foregroundStyle(.secondary)
+                        Text("参考现金").font(.caption)
+                            .foregroundStyle(theme == .modern || theme == .dashboard ? .white.opacity(0.78) : .secondary)
                         Text(store.data.cash.cny()).font(.subheadline.weight(.semibold)).monospacedDigit()
                             .lineLimit(1).minimumScaleFactor(0.7)
+                            .foregroundStyle(theme == .modern || theme == .dashboard ? .white : .primary)
                     }
                 }
             }
