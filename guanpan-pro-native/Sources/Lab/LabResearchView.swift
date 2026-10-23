@@ -32,12 +32,14 @@ struct LabResearchView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }.toneCard(CardTone.warn, isLight: isLight)
             }
-            Section("真实持仓 · 统一指导") {
+            Section {
                 NavigationLink("逐只核对 ETF 交易规则与可卖份额") { ETFTradingRuleView() }
+                    .listRowBackground(tokens.surface)
                 if decisionRows.isEmpty {
                     Text("暂无可核实的真实持仓指导。请检查持仓、行情时间和 NAS 数据。")
                         .foregroundStyle(.secondary)
                         .toneCard(CardTone.warn, isLight: isLight)
+                        .listRowBackground(Color.clear)
                 }
                 ForEach(decisionRows.indices, id: \.self) { index in
                     ThemePanel(tone: tone(for: decisionRows[index]["action"] as? String ?? "").opacity(
@@ -48,6 +50,11 @@ struct LabResearchView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
+            } header: {
+                Text("真实持仓 · 统一指导")
+                    .foregroundStyle(tokens.secondary)
+                    .textCase(nil)
+                    .listRowBackground(tokens.background)
             }
             Section("手机 AI · 补充解释") {
                 Text("本机规则先形成唯一判断。在线模型只解释同一份真实持仓和行情快照，不能自行编造限价或相反指令。")
@@ -150,7 +157,8 @@ struct LabResearchView: View {
         case .eastern:
             heroSection {
                 ZStack(alignment: .trailing) {
-                    LandscapeDecoration(color: Color(red: 0.76, green: 0.48, blue: 0.14)).frame(height: 160)
+                    LandscapeDecoration(color: Color(red: 0.76, green: 0.48, blue: 0.14))
+                        .frame(height: 160).opacity(0.24)
                     VStack(alignment: .leading, spacing: 9) {
                         Label("观盘手册 · 今日批注", systemImage: "sun.max.fill")
                             .font(.headline).foregroundStyle(Color(red: 0.55, green: 0.32, blue: 0.09))
@@ -200,7 +208,8 @@ struct LabResearchView: View {
         case .magazine:
             heroSection {
                 ZStack(alignment: .trailing) {
-                    LandscapeDecoration(color: Color(red: 0.73, green: 0.33, blue: 0.38)).frame(height: 168)
+                    LandscapeDecoration(color: Color(red: 0.73, green: 0.33, blue: 0.38))
+                        .frame(height: 168).opacity(0.24)
                     VStack(alignment: .leading, spacing: 7) {
                         Text(Date.now.formatted(.dateTime.month(.wide).day().weekday(.wide)))
                             .font(.caption.weight(.semibold)).foregroundStyle(Color(red: 0.59, green: 0.29, blue: 0.30))
@@ -228,7 +237,7 @@ struct LabResearchView: View {
                             Text("覆盖").font(.caption).foregroundStyle(.secondary)
                             Text("\(decisionRows.count)").font(.system(size: 30, weight: .bold, design: .rounded))
                             Text("只真实持仓").font(.caption)
-                            scanButton
+                            compactScanButton
                         }.frame(width: 112, alignment: .leading).padding(13)
                             .background(tokens.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
                     }
@@ -240,9 +249,20 @@ struct LabResearchView: View {
         Button("重新检查", systemImage: "arrow.clockwise") { scan() }
             .buttonStyle(.bordered).tint(visualTheme == .dashboard || visualTheme == .modern ? .white : tokens.accent)
     }
+    private var compactScanButton: some View {
+        Button { scan() } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.headline.weight(.semibold))
+                .frame(width: 40, height: 40)
+        }
+        .buttonStyle(.bordered)
+        .tint(tokens.accent)
+        .accessibilityLabel("重新检查")
+    }
     private func heroSection<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         Section { content()
             .foregroundStyle(visualTheme == .dashboard || visualTheme == .modern ? .white : .primary)
+            .clipShape(RoundedRectangle(cornerRadius: tokens.corner, style: .continuous))
             .background(LinearGradient(colors: heroColors, startPoint: .topLeading, endPoint: .bottomTrailing),
                         in: RoundedRectangle(cornerRadius: tokens.corner))
         }
