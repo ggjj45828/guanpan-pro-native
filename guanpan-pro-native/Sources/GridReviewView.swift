@@ -132,20 +132,20 @@ struct GridReviewView: View {
                         )
                     }
                 }
-                Section("让大模型给建议") {
+                Section("AI 复盘解读") {
                     Button {
                         Task { await askAI() }
                     } label: {
                         HStack {
                             Image(systemName: "sparkles")
-                            Text(adviceBusy ? "正在分析…" : "根据这次复盘给以后的挂单建议")
+                            Text(adviceBusy ? "正在分析…" : "解释本机计算的历史结果")
                                 .scaledFont(14, weight: .semibold)
                             Spacer()
                         }
                     }
                     .disabled(adviceBusy || !hasReport)
                     if !hasKey {
-                        Text("还没配 API 密钥。到「设置 → AI 分析」里填一个，本机已算好的回放结果会一起发过去。")
+                        Text("还没配 API 密钥。配置后只会解释本机已算好的回放结果，不会生成当前交易指令。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if !advice.isEmpty {
@@ -158,8 +158,7 @@ struct GridReviewView: View {
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("发给模型的是本机算出来的回放结果（候选表、胜出参数、逐日明细、本机历史记录），"
-                        + "不是原始分时；模型只做解读与取舍，不参与选参。")
+                    Text("发给模型的是本机算出来的回放结果（候选表、历史参数、逐日明细），不是原始分时；它只解释历史证据，当前操作建议统一由「AI 今日指导」给出。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
