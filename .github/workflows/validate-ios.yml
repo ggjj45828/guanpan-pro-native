@@ -47,6 +47,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          name: ios-theme-screenshots
+          path: ${{ runner.temp }}/experience-screenshots
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
           name: ios-validation-results
           path: |
             ${{ runner.temp }}/GuanpanValidation.xcresult

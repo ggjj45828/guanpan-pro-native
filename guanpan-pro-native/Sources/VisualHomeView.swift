@@ -217,10 +217,11 @@ struct VisualHomeView: View {
             ThemePanel(tone: tokens.hero) {
                 VStack(alignment: .leading, spacing: 9) {
                     Label("今日市场观察", systemImage: "sun.max.fill").font(.headline)
-                    Text("市场 \(mood)。\(headline)")
+                    Text("市场 \(mood)。\(newsSummary)。")
                         .font(.subheadline).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            heroCard
             indexRow(includeNAS: false)
             sectionTitle("今日重点机会")
             featuredHoldings(vertical: true, illustrated: true)
