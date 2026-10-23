@@ -13,7 +13,7 @@
 - NAS 研究只接收新鲜快照，分钟路径、VWAP覆盖与统计窗口不满足要求时会停止输出具体做T/网格价格。
 - 旧 NAS 网页中的模拟网格用户入口和后台影子撮合已停用；为兼容旧本地数据，其遗留模拟代码和数据字段尚未物理删除。
 - Node 测试 86/86 通过；Python 行情、研究输入和通道存储 53/53 通过；NAS 网页内联 JavaScript 语法检查通过；`git diff --check` 通过。
-- 当前本地提交为 `10e936d`（`Continue real-holdings advisor and theme validation`）。推送 GitHub 时网络连接失败，远端未确认收到提交，Actions 尚未为该提交运行。
+- 当前本地提交为 `351ccdf`（`Continue real-holdings advisor and theme validation`）。推送 GitHub 时网络连接失败，远端未确认收到提交，Actions 尚未为该提交运行。
 
 ## 尚未验收
 
