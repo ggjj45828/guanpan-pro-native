@@ -142,7 +142,12 @@ final class PortfolioStore: ObservableObject {
             let at = Date(timeIntervalSince1970: ms.doubleValue / 1000)
             let previousAt = max((data.holdings.first { $0.code == code && $0.kind == .etf })?.marketUpdatedAt ?? .distantPast,
                                  (data.quotes.first { $0.code == code })?.updatedAt ?? .distantPast)
-            guard at <= Date().addingTimeInterval(2), at > previousAt else { continue }
+            // NAS timestamps are transported in milliseconds, while locally-created
+            // Date values can retain sub-millisecond precision. Treat values within
+            // one millisecond as the same timestamp so a lower-priority feed cannot
+            // win due only to floating-point conversion rounding.
+            guard at <= Date().addingTimeInterval(2),
+                  at.timeIntervalSince(previousAt) > 0.001 else { continue }
             if let i = data.holdings.firstIndex(where: { $0.code == code && $0.kind == .etf }) {
                 data.holdings[i].current = price; data.holdings[i].marketUpdatedAt = at
             }
