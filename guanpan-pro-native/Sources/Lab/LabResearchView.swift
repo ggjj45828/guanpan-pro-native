@@ -504,18 +504,8 @@ struct LabResearchView: View {
         return expiry > displayNow.timeIntervalSince1970 * 1000
     }
     private func observedRoundTrip(_ entries: [LedgerEntry]) -> String? {
-        let buys = entries.filter { $0.side == .buy }
-        let sells = entries.filter { $0.side == .sell }
-        let buyShares = buys.reduce(0) { $0 + $1.quantity }
-        let sellShares = sells.reduce(0) { $0 + $1.quantity }
-        let matched = min(buyShares, sellShares)
-        guard matched > 0, buyShares > 0, sellShares > 0 else { return nil }
-        let buyAverage = buys.reduce(0) { $0 + $1.quantity * $1.price } / buyShares
-        let sellAverage = sells.reduce(0) { $0 + $1.quantity * $1.price } / sellShares
-        let fees = buys.reduce(0) { $0 + $1.fee } * matched / buyShares
-            + sells.reduce(0) { $0 + $1.fee } * matched / sellShares
-        let net = (sellAverage - buyAverage) * matched - fees
-        return "已记录的买卖两腿匹配 \(matched.num(0)) 份，观察净价差 \(net.cny())；以真实流水计算，不含未匹配份额。"
+        guard let result = InvestorProfileEngine.matchedDecisionTrades(entries) else { return nil }
+        return "已按时间顺序匹配真实买卖流水 \(result.quantity.num(0)) 份，观察净价差 \(result.net.cny())；费用按部分成交比例分摊，未匹配份额不计入。"
     }
     private func planLifecycle(_ record: AdvisorDecisionRecord) -> String? {
         guard let saved = record.evidenceSnapshotJSON?.data(using: .utf8),

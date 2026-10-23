@@ -54,10 +54,13 @@ final class CandidateValidationTests: XCTestCase {
     func testTemporaryPauseAndObservedStrategyRequireRealDecisionAndLedgerLinks() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let decisions = (0..<3).map { index in
-            AdvisorDecisionRecord(createdAt: now.addingTimeInterval(-Double(index) * 86_400),
+            let created = now.addingTimeInterval(-Double(index) * 86_400)
+            var decision = AdvisorDecisionRecord(createdAt: created,
                 symbol: "159001", name: "真实ETF", action: "反T候选", reason: "样本",
                 marketRegime: "宽幅震荡", quoteAt: now, dataSource: "测试样本",
                 intradaySessions: 60, nasAvailable: true, changeReason: "")
+            decision.evidenceSnapshotJSON = "{\"plan\":{\"type\":\"reverseT\",\"quantity\":100,\"sellLimitYuan\":1,\"validUntil\":\(Int(created.addingTimeInterval(3600).timeIntervalSince1970 * 1000))}}"
+            return decision
         }
         let ledger = (0..<3).map { index in
             LedgerEntry(date: now.addingTimeInterval(-Double(index) * 86_400),
@@ -78,6 +81,27 @@ final class CandidateValidationTests: XCTestCase {
             decisions: decisions, snapshots: [], now: now.addingTimeInterval(2 * 86_400))
         XCTAssertNil(revoked.attributes.first { $0.id == "pause:159001" })
         XCTAssertNil(revoked.attributes.first { $0.id == "observedStrategyExecution" })
+    }
+    func testProfileDoesNotLearnPlanExecutionFromUncoveredBrokerFill() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var decision = AdvisorDecisionRecord(createdAt: now,
+            symbol: "159001", name: "真实ETF", action: "反T候选", reason: "样本",
+            marketRegime: "宽幅震荡", quoteAt: now, dataSource: "测试样本",
+            intradaySessions: 60, nasAvailable: true, changeReason: "")
+        decision.evidenceSnapshotJSON = "{\"plan\":{\"type\":\"reverseT\",\"quantity\":100,\"sellLimitYuan\":1.1,\"validUntil\":\(Int(now.addingTimeInterval(3600).timeIntervalSince1970 * 1000))}}"
+        let fill = LedgerEntry(date: now.addingTimeInterval(60), code: "159001", name: "真实ETF",
+            side: .sell, quantity: 100, price: 1, fee: 0.1, realizedPnL: 0,
+            linkedCash: true, kind: .etf)
+        XCTAssertFalse(InvestorProfileEngine.tradeMatchesCandidate(fill, decision: decision))
+        let earlier = LedgerEntry(date: now.addingTimeInterval(-1), code: "159001", name: "真实ETF",
+            side: .sell, quantity: 100, price: 1.2, fee: 0.1, realizedPnL: 0,
+            linkedCash: true, kind: .etf)
+        XCTAssertFalse(InvestorProfileEngine.tradeMatchesCandidate(earlier, decision: decision))
+        var profile = DynamicInvestorProfile()
+        profile.realTradeLinks = [AdvisorRealTradeLink(decisionID: decision.id, ledgerID: fill.id)]
+        let learned = InvestorProfileEngine.refresh(profile, ledger: [fill],
+            decisions: [decision], snapshots: [], now: now.addingTimeInterval(120))
+        XCTAssertNil(learned.attributes.first { $0.id == "observedStrategyExecution" })
     }
     func testOldAdvisorDecisionStillDecodesWithoutNewEvidenceFields() throws {
         let record = AdvisorDecisionRecord(symbol: "510300", name: "旧判断",
@@ -407,5 +431,26 @@ final class CandidateValidationTests: XCTestCase {
         XCTAssertEqual(store.data.cash, 1000, accuracy: 0.000001)
         XCTAssertTrue(store.data.dynamicInvestorProfile.realTradeLinks.isEmpty)
         XCTAssertTrue(store.data.ledger.isEmpty)
+    }
+
+    func testDecisionTradeReviewMatchesPartialFillsChronologicallyAndAllocatesFees() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let entries = [
+            LedgerEntry(date: start, code: "510300", name: "真实ETF", side: .buy,
+                        quantity: 100, price: 1, fee: 0.1, realizedPnL: 0,
+                        linkedCash: true, kind: .etf),
+            LedgerEntry(date: start.addingTimeInterval(60), code: "510300", name: "真实ETF", side: .sell,
+                        quantity: 50, price: 1.1, fee: 0.1, realizedPnL: 0,
+                        linkedCash: true, kind: .etf),
+            LedgerEntry(date: start.addingTimeInterval(120), code: "510300", name: "真实ETF", side: .buy,
+                        quantity: 100, price: 0.9, fee: 0.1, realizedPnL: 0,
+                        linkedCash: true, kind: .etf),
+            LedgerEntry(date: start.addingTimeInterval(180), code: "510300", name: "真实ETF", side: .sell,
+                        quantity: 100, price: 1.2, fee: 0.1, realizedPnL: 0,
+                        linkedCash: true, kind: .etf)
+        ]
+        let result = InvestorProfileEngine.matchedDecisionTrades(entries)
+        XCTAssertEqual(result?.quantity ?? .nan, 150, accuracy: 0.000001)
+        XCTAssertEqual(result?.net ?? .nan, 29.65, accuracy: 0.000001)
     }
 }

@@ -426,7 +426,7 @@ struct ProHoldingWorkspace: View {
                 HStack(spacing: 10) { Button("查看图表") { chart = true }.buttonStyle(.borderedProminent); Button("记录实际成交") { trade = true }.buttonStyle(.bordered) }
             }.proSurface(tone: ProStyle.change(current.pnl))
             VStack(spacing: 0) {
-                NavigationLink { DayGridView() } label: { ProActionRow(title: "网格研究与复盘", detail: "行情与交易参数分析", icon: "square.grid.3x3") }
+                NavigationLink { LabResearchView() } label: { ProActionRow(title: "AI 今日指导", detail: "真实持仓 · 做T、网格、持有或不交易", icon: "sparkles") }
                 Divider()
                 Button { edit = true } label: { ProActionRow(title: "核对持仓资料", detail: "调整名称、份额和成本", icon: "pencil") }
             }.proSurface(tone: .teal)

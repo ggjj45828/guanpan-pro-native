@@ -3,6 +3,77 @@ import Foundation
 /// Learns only from confirmed ledger entries and feedback tied to saved AI decisions.
 /// A profile can reorder suitable opportunities; it never creates a market signal or relaxes a safety gate.
 enum InvestorProfileEngine {
+    /// A linked broker fill counts as executing a candidate only when the saved
+    /// point-in-time plan actually covered its side, size, limit and time.
+    static func tradeMatchesCandidate(_ trade: LedgerEntry, decision: AdvisorDecisionRecord) -> Bool {
+        guard trade.code == decision.symbol, trade.affectsHoldings != false,
+              trade.date >= decision.createdAt,
+              let raw = decision.evidenceSnapshotJSON?.data(using: .utf8),
+              let snapshot = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              let plan = snapshot["plan"] as? [String: Any],
+              let expiry = (plan["validUntil"] as? NSNumber)?.doubleValue,
+              expiry.isFinite, trade.date.timeIntervalSince1970 * 1000 <= expiry,
+              trade.quantity.isFinite, trade.quantity > 0,
+              trade.price.isFinite, trade.price > 0 else { return false }
+        func covers(_ expectedSide: LedgerEntry.Side, _ key: String, _ size: Double) -> Bool {
+            guard trade.side == expectedSide, size.isFinite, size > 0,
+                  trade.quantity <= size + 0.000001,
+                  let limit = (plan[key] as? NSNumber)?.doubleValue,
+                  limit.isFinite, limit > 0 else { return false }
+            return expectedSide == .buy ? trade.price <= limit + 0.000001
+                : trade.price + 0.000001 >= limit
+        }
+        switch (plan["type"] as? String) ?? "" {
+        case "reverseT" where decision.action == "反T候选":
+            return covers(.sell, "sellLimitYuan", (plan["quantity"] as? NSNumber)?.doubleValue ?? 0)
+        case "positiveT" where decision.action == "正T候选":
+            return covers(.buy, "buyLimitYuan", (plan["quantity"] as? NSNumber)?.doubleValue ?? 0)
+        case "grid" where decision.action == "网格候选":
+            let bands = plan["bands"] as? [[String: Any]] ?? []
+            return bands.contains { band in
+                let size = (band["quantity"] as? NSNumber)?.doubleValue ?? 0
+                guard size.isFinite, size > 0, trade.quantity <= size + 0.000001 else { return false }
+                let key = trade.side == .buy ? "buyLimitYuan" : "sellLimitYuan"
+                guard let limit = (band[key] as? NSNumber)?.doubleValue,
+                      limit.isFinite, limit > 0 else { return false }
+                return trade.side == .buy ? trade.price <= limit + 0.000001
+                    : trade.price + 0.000001 >= limit
+            }
+        default: return false
+        }
+    }
+
+    /// Reviews only confirmed ledger entries linked to one saved decision.
+    /// FIFO matching keeps partial fills and fees attached to the quantities that actually matched.
+    static func matchedDecisionTrades(_ entries: [LedgerEntry]) -> (quantity: Double, net: Double)? {
+        var pending: [(side: LedgerEntry.Side, quantity: Double, price: Double, feePerShare: Double)] = []
+        var matched = 0.0
+        var net = 0.0
+        for entry in entries.sorted(by: { $0.date < $1.date }) where
+            entry.quantity.isFinite && entry.quantity > 0 && entry.price.isFinite && entry.price > 0 &&
+            entry.fee.isFinite && entry.fee >= 0 {
+            var remaining = entry.quantity
+            while remaining > 0.000001, let first = pending.first, first.side != entry.side {
+                let amount = min(remaining, first.quantity)
+                let buyPrice = first.side == .buy ? first.price : entry.price
+                let sellPrice = first.side == .sell ? first.price : entry.price
+                net += (sellPrice - buyPrice) * amount
+                    - first.feePerShare * amount - entry.fee / entry.quantity * amount
+                matched += amount
+                remaining -= amount
+                let pendingRemainder = first.quantity - amount
+                pending.removeFirst()
+                if pendingRemainder > 0.000001 {
+                    pending.insert((first.side, pendingRemainder, first.price, first.feePerShare), at: 0)
+                }
+            }
+            if remaining > 0.000001 {
+                pending.append((entry.side, remaining, entry.price, entry.fee / entry.quantity))
+            }
+        }
+        return matched > 0 ? (matched, net) : nil
+    }
+
     static func refresh(_ profile: DynamicInvestorProfile, ledger: [LedgerEntry],
                         decisions: [AdvisorDecisionRecord], snapshots: [PortfolioSnapshot],
                         now: Date = .now) -> DynamicInvestorProfile {
@@ -83,8 +154,8 @@ enum InvestorProfileEngine {
         let ledgerByID = Dictionary(uniqueKeysWithValues: trades.map { ($0.id, $0) })
         let executed = Set(profile.realTradeLinks.compactMap { link -> UUID? in
             guard let decision = decisionByID[link.decisionID],
-                  let trade = ledgerByID[link.ledgerID], trade.code == decision.symbol,
-                  decision.action.contains("T候选") || decision.action == "网格候选" else { return nil }
+                  let trade = ledgerByID[link.ledgerID],
+                  tradeMatchesCandidate(trade, decision: decision) else { return nil }
             return decision.id
         })
         if executed.count < 3 {
@@ -93,7 +164,7 @@ enum InvestorProfileEngine {
             upsert("observedStrategyExecution", value: "曾实际执行短线候选",
                    confidence: min(0.8, 0.45 + Double(executed.count) * 0.04),
                    count: executed.count,
-                   reason: "至少\(executed.count)次不同AI做T/网格判断关联了仍存在的券商真实流水；只描述行为，不代表以后应频繁交易。",
+                   reason: "至少\(executed.count)次不同AI做T/网格候选在有效期内关联了方向、份额及限价相符的券商真实流水；只描述行为，不代表以后应频繁交易。",
                    into: &result, now: now)
         }
         return result

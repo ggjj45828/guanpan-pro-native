@@ -4509,7 +4509,10 @@ final class PortfolioStore: ObservableObject {
                   data.tradePlans[planIndex].side == side else { throw StoreError.invalidTrade }
         }
         if let advisorDecisionID {
-            guard data.advisorDecisionRecords.contains(where: { $0.id == advisorDecisionID && $0.symbol == code }) else {
+            guard let decision = data.advisorDecisionRecords.first(where: {
+                $0.id == advisorDecisionID && $0.symbol == code
+            }), date >= decision.createdAt,
+                date <= Date.now.addingTimeInterval(120) else {
                 throw StoreError.invalidTrade
             }
         }

@@ -4926,9 +4926,8 @@ struct ToolsView: View {
     /// 发布一次行情更新 —— 每次发布都要把这 25 层 modifier 重新求值一遍。
     /// 合并成一个 `item` 之后只剩一层，且天然保证同一时刻只有一个弹窗。
     private enum ToolSheet: String, Identifiable {
-        case grid, longGridPlanner, gridReview,
-             portrait, ledgerHealth,
-             tradePlans, overlap, addCash,
+        case portrait, ledgerHealth,
+             tradePlans, overlap,
              fundReplay, quantEngine, tradeCSVImport,
              etfIncomeCalendar, dividendCalendar, portfolioAnalysis,
              tradePreview, returnSource, historicalReplay,
@@ -5001,8 +5000,7 @@ struct ToolsView: View {
                         Button("ETF / 基金成分重叠") { activeSheet = .overlap }
                     }
                 } else {
-                    Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button("日内网格计划与回放") { activeSheet = .grid }; Button("中长期网格计划") { activeSheet = .longGridPlanner }; Button(allocationTargetsTitle) { activeSheet = .allocationTargets }; Button("新增资金加仓试算") { activeSheet = .addCash } }
-                    Section("复盘") { Button("网格参数复盘（当日最优 / 长期参数）") { activeSheet = .gridReview } }
+                    Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button(allocationTargetsTitle) { activeSheet = .allocationTargets } }
                     Section("收益与复盘") { Button("ETF 每日收益日历") { activeSheet = .etfIncomeCalendar }; Button("分红日历") { activeSheet = .dividendCalendar }; Button("收益来源拆解") { activeSheet = .returnSource }; Button("历史状态回放") { activeSheet = .historicalReplay }; Button("月度投资复盘") { activeSheet = .monthlyReview }; Button("年度账单") { activeSheet = .yearlyReview } }
                     Section("历史数据") { Button("分时采集") { activeSheet = .intradayArchive }; Button("导入券商成交") { activeSheet = .tradeCSVImport }; Button("全部交易流水") { activeSheet = .tradeLedger } }
                 }
@@ -5025,14 +5023,10 @@ struct ToolsView: View {
             // 重建抢主线程。合并后只剩 1 层，同一时刻也本来就只可能有一个工具弹窗。
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
-                case .grid: DayGridView().themedSheetBackground()
-                case .longGridPlanner: StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
-                case .gridReview: GridReviewView().environmentObject(store).themedSheetBackground()
                 case .portrait: AccountPortraitView().themedSheetBackground()
                 case .ledgerHealth: LedgerHealthView().themedSheetBackground()
                 case .tradePlans: TradePlansView().themedSheetBackground()
                 case .overlap: ETFOverlapView().themedSheetBackground()
-                case .addCash: AddCashSimulationView().themedSheetBackground()
                 case .fundReplay: FundDCAReplayView().themedSheetBackground()
                 case .quantEngine: QuantitativeEngineView().themedSheetBackground()
                 case .tradeCSVImport: TradeCSVImportView().themedSheetBackground()
@@ -5960,7 +5954,8 @@ private struct TradePlanFillEditor: View {
                     TextField("实际成交价", text: $price).keyboardType(.decimalPad)
                     TextField("实际手续费", text: $fee).keyboardType(.decimalPad)
                     Toggle("联动本程序参考现金", isOn: $linkedCash)
-                    DatePicker("成交日期", selection: $tradeDate, displayedComponents: .date)
+                    DatePicker("实际成交时间", selection: $tradeDate,
+                        displayedComponents: [.date, .hourAndMinute])
                     if let judgement = latestAIJudgement {
                         Toggle("关联最近一次AI判断", isOn: $linkAIJudgement)
                         Text("\(judgement.action) · \(judgement.createdAt.formatted(date: .abbreviated, time: .shortened))")
