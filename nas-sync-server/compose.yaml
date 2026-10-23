@@ -1,0 +1,49 @@
+services:
+  guanpan-nas-sync:
+    image: guanpan-nas-sync-v2:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      # 旧服务器若仍占用 8787，用 8788；旧的已停可改回 "8787:8787"
+      - "8788:8787"
+    volumes:
+      - v2-data:/data
+    environment:
+      PORT: "8787"
+      DATA_DIR: "/data"
+      # 同步口令：留空 = 免口令（仅局域网自用）。
+      # 若要设口令，填在这里，App 与网页版都填同一个。
+      # 注意：行情代理和 /api/ping 始终免口令，口令只保护同步数据。
+      SYNC_TOKEN: "${SYNC_TOKEN:-}"
+      # 上游行情超时（秒）。家里网慢可调到 20。
+      UPSTREAM_TIMEOUT: "12"
+      V2_UPSTREAM_ENABLED: "${V2_UPSTREAM_ENABLED:-1}"
+      V2_FEED_URL: "${V2_FEED_URL:-}"
+      V2_FEED_TOKEN: "${V2_FEED_TOKEN:-}"
+      V2_BOOK_VOLUME_MULTIPLIER: "${V2_BOOK_VOLUME_MULTIPLIER:-}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/ping', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+  guanpan-lab-worker:
+    image: guanpan-lab-worker-v2:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      - guanpan-nas-sync
+    environment:
+      SYNC_URL: "http://guanpan-nas-sync:8787"
+      SYNC_TOKEN: "${SYNC_TOKEN:-}"
+      LAB_CORE_DIR: "/core"
+      LAB_POLL_MS: "2000"
+
+volumes:
+  v2-data:
+    name: guanpan-nas-v2-update-data

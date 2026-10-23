@@ -237,7 +237,7 @@ struct IndexDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .cardSurface()
+        .cardSurface(tone: CardTone.ok)
     }
 
     private var intradayAxis: some View {
@@ -413,7 +413,7 @@ struct IndexDetailView: View {
         let ma60 = movingAverage(closes, period: 60).last ?? nil
         return VStack(alignment: .leading, spacing: 8) {
             Text("均线位置").scaledFont(11, weight: .medium)
-            HStack(spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
                 maCell("MA5", ma5)
                 maCell("MA10", ma10)
                 maCell("MA20", ma20)
@@ -425,7 +425,7 @@ struct IndexDetailView: View {
             }
         }
         .padding(12)
-        .cardSurface()
+        .cardSurface(tone: CardTone.accent)
     }
 
     private func maCell(_ title: String, _ value: Double?) -> some View {
