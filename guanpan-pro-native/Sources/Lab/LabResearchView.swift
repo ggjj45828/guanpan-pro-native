@@ -858,7 +858,7 @@ private struct AdvisorActualFillView: View {
     private func save() {
         guard checkedBrokerReport, let shares = Double(quantity), let actualPrice = Double(price),
               let actualFee = Double(fee), shares > 0, actualPrice > 0, actualFee >= 0,
-              tradeAt >= candidate.decisionCreatedAt.addingTimeInterval(-60),
+              tradeAt >= candidate.decisionCreatedAt,
               tradeAt <= Date.now.addingTimeInterval(120) else {
             error = "请按券商回报填写有效份额、成交价和手续费。"; return
         }

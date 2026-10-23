@@ -2875,6 +2875,8 @@ struct MarketChartView: View {
         MarketCalendar.isoDay(date)
     }
 
+}
+
 // MARK: - 图表共用配色与宽度
 
 /// 均线配色单一数据源。日 K 主图从这里取，避免两处配色漂移。
