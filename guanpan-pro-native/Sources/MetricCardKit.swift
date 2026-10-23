@@ -114,7 +114,10 @@ private struct CardPanelBackgroundModifier: ViewModifier {
             .background(shape.fill(theme.surface))
             .overlay {
                 if let tone {
-                    shape.fill(tone.opacity(theme.isLight ? 0.12 : 0.18))
+                    shape.fill(LinearGradient(colors: [
+                        tone.opacity(theme.isLight ? 0.17 : 0.23),
+                        tone.opacity(theme.isLight ? 0.08 : 0.13)
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing))
                         .allowsHitTesting(false)
                 }
             }
