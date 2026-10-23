@@ -3431,7 +3431,7 @@ final class PortfolioStore: ObservableObject {
             }
             var usedEastmoneyFallback = false
             if !needsIndependentQuote.isEmpty {
-                let independent = await fetchEastmoneyQuotes(codes: needsIndependentQuote)
+                let independent = await fetchEastmoneyQuotes(codes: needsIndependentQuote.sorted())
                 for code in needsIndependentQuote {
                     guard let fallback = independent[code], fallback.price > 0 else { continue }
                     if Self.isRegularTradingSession(.now), !Self.isFreshQuote(fallback.timestamp, now: .now) { continue }
