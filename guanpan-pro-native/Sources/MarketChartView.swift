@@ -443,6 +443,7 @@ struct IntradayMainChart: View {
     /// 它原来叫 `iopvFallback`（一个 Double，什么都不画），现在换成真正能画的一条线。
     let estimatedIOPV: [IntradayLine]
     let previousClose: Double?
+    var holdingCost: Double? = nil
     let showAverage: Bool
     let showIOPV: Bool
     let showPreviousClose: Bool
@@ -478,7 +479,7 @@ struct IntradayMainChart: View {
     }
 
     init(lines: [IntradayLine], average: [IntradayLine], iopv: [IntradayLine],
-         estimatedIOPV: [IntradayLine], previousClose: Double?, showAverage: Bool,
+         estimatedIOPV: [IntradayLine], previousClose: Double?, holdingCost: Double? = nil, showAverage: Bool,
          showIOPV: Bool, showPreviousClose: Bool, lineColor: Color,
          xDomain: ClosedRange<Date>, yDomain: ClosedRange<Double>,
          ticks: [(time: Date, label: String)], compressLunch: Bool,
@@ -490,6 +491,7 @@ struct IntradayMainChart: View {
         self.iopv = iopv
         self.estimatedIOPV = estimatedIOPV
         self.previousClose = previousClose
+        self.holdingCost = holdingCost
         self.showAverage = showAverage
         self.showIOPV = showIOPV
         self.showPreviousClose = showPreviousClose
@@ -575,6 +577,17 @@ struct IntradayMainChart: View {
             if showPreviousClose, let value = previousClose {
                 RuleMark(y: .value("昨收", value)).foregroundStyle(previousCloseLineColor)
                     .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+            }
+            if let cost = holdingCost, cost.isFinite, cost > 0 {
+                RuleMark(y: .value("当前持仓成本", cost)).foregroundStyle(Color(red: 0.72, green: 0.34, blue: 0.12))
+                    .lineStyle(StrokeStyle(lineWidth: 1.35, dash: [7, 4]))
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text("成本 \(cost, format: .number.precision(.fractionLength(3)))")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.58, green: 0.25, blue: 0.08))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color(red: 1.0, green: 0.91, blue: 0.76).opacity(0.9), in: Capsule())
+                    }
             }
             ForEach(tradeMarkers) { trade in
                 PointMark(x: .value("交易时间", t(trade.time)), y: .value("成交价", trade.price))
@@ -815,6 +828,7 @@ private struct IntradayPanelView: View {
     let iopv: [IntradayLine]
     let estimatedIOPV: [IntradayLine]
     let previousClose: Double?
+    var holdingCost: Double? = nil
     let macdPoints: [MinuteMACDPoint]
     let volumeBuckets: [MinuteBucket]
     let volumePrevClose: Double?
@@ -851,7 +865,7 @@ private struct IntradayPanelView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 7) {
                 IntradayMainChart(lines: lines, average: average, iopv: iopv,
-                    estimatedIOPV: estimatedIOPV, previousClose: previousClose,
+                    estimatedIOPV: estimatedIOPV, previousClose: previousClose, holdingCost: holdingCost,
                     showAverage: showAverage, showIOPV: showIOPV, showPreviousClose: showPreviousClose,
                     lineColor: lineColor, xDomain: xDomain, yDomain: priceYDomain,
                     ticks: ticks, compressLunch: compressLunch, height: mainHeight, lineWidth: lineWidth)
@@ -919,6 +933,7 @@ private struct DailyCandleChart: View {
     let selectedDate: String?
     let selectedClose: Double?
     let accentColor: Color
+    let holdingCost: Double?
     let yDomain: ClosedRange<Double>
     let bodyWidth: CGFloat
     let onSelect: (String) -> Void
@@ -939,6 +954,18 @@ private struct DailyCandleChart: View {
                               yEnd: .value("收盘", highBody + pad),
                               width: .fixed(bodyWidth))
                     .foregroundStyle(candleColor)
+            }
+            if let cost = holdingCost, cost.isFinite, cost > 0 {
+                RuleMark(y: .value("当前持仓成本", cost))
+                    .foregroundStyle(Color(red: 0.72, green: 0.34, blue: 0.12))
+                    .lineStyle(StrokeStyle(lineWidth: 1.35, dash: [7, 4]))
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text("成本 \(cost, format: .number.precision(.fractionLength(3)))")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.58, green: 0.25, blue: 0.08))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color(red: 1.0, green: 0.91, blue: 0.76).opacity(0.9), in: Capsule())
+                    }
             }
             ForEach(markers) { marker in
                 let color = marker.side == .buy ? ChartPalette.buyMark : ChartPalette.sellMark
@@ -1178,15 +1205,8 @@ struct MarketChartView: View {
     @State private var showIntradayIOPV = IntradayVisibility.showIOPV
     @State private var showIntradayPreviousClose = IntradayVisibility.showPreviousClose
     @State private var intradayVolumeMAs = IntradayVisibility.volumeMAs
-    @State private var showInstrumentAI = false
+    @State private var showUnifiedAdvisor = false
     @State private var showIntradayCompanion = false
-    @State private var instrumentAIResult = ""
-    @State private var instrumentAIMessage = ""
-    @State private var instrumentAIBusy = false
-    /// AI 建议一键转计划时的预填载体（同时充当 sheet 开关）。
-    @State private var planPrefill: AISuggestion?
-    @State private var handledSuggestionIDs: Set<UUID> = []
-    @State private var suggestionNote = ""
     @State private var isLoading = false
     @State private var isManuallyUpdatingDaily = false
     @State private var isFetchingMinute = false
@@ -1593,6 +1613,8 @@ struct MarketChartView: View {
         // 所以只在**不够的那一侧单侧补足**，能不动另一侧就不动 ——
         // 这样 IOPV 关闭时的纵轴与旧版完全一致，不会因为纳入 IOPV 就把价格线压成一条平线。
         var visible = selectedIntradayBars.map(\.price)
+        let holdingCost = holding.costOverride ?? holding.cost
+        if selectedChartPeriod == .intraday, holdingCost.isFinite, holdingCost > 0 { visible.append(holdingCost) }
         if showIntradayAverage { visible += intradayAvgPoints.map(\.price) }
         var all = visible
         if showIntradayIOPV {
@@ -1961,16 +1983,11 @@ struct MarketChartView: View {
                     }.disabled(isManuallyUpdatingDaily)
                     Text("数据：腾讯前复权日线。MA5/20/60、RSI14、MACD、区间分位与最大回撤由本机计算，仅作历史描述，不是价格预测或估值。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button {
-                        if let saved = store.data.savedInstrumentAIAnalyses[holding.code] {
-                            instrumentAIResult = saved.text
-                        }
-                        showInstrumentAI = true
-                    } label: {
-                        Label("AI 分析此标的", systemImage: "sparkles")
-                    }.disabled(!AIAnalysisService.hasSavedAPIKey)
-                    if !AIAnalysisService.hasSavedAPIKey { Text("先在 AI 页面保存接口和 API 密钥；单标的分析会把该标的行情、持仓、历史日线、历史支撑压力参考及所选交易日已有分时点发送给模型。")
-                        .font(.footnote).foregroundStyle(.secondary) }
+                    Button { showUnifiedAdvisor = true } label: {
+                        Label("查看统一 AI 今日指导", systemImage: "sparkles")
+                    }
+                    Text("最终策略建议统一由 AI 今日指导生成；这里不再单独调用大模型给出另一套买卖结论。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("\(holding.name) · \(holding.code)") }
                 Section {
                   DisclosureGroup(isExpanded: $showIntradayHistory) {
@@ -2197,67 +2214,9 @@ struct MarketChartView: View {
                     .accessibilityHidden(true)
             }
             .sheet(isPresented: $showIntradayCompanion) { IntradayCompanionView(holding: holding).themedSheetBackground() }
-            .sheet(isPresented: $showInstrumentAI) {
-                NavigationStack {
-                    List {
-                        if instrumentAIBusy { ProgressView("正在分析此标的…") }
-                        if !instrumentAIMessage.isEmpty { Text(instrumentAIMessage).foregroundStyle(.secondary) }
-                        if !instrumentAIResult.isEmpty {
-                            // 展示剥掉机器可读段的人话版本；解析仍读完整原文。
-                            Section("分析结果") {
-                                if let saved = store.data.savedInstrumentAIAnalyses[holding.code] {
-                                    Label("上次成功分析：\(saved.updatedAt.formatted(date: .abbreviated, time: .shortened))",
-                                          systemImage: "clock.arrow.circlepath")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                AIFormattedResultView(text: AISuggestionParser.displayText(instrumentAIResult),
-                                                      accent: store.effectiveAccentColor)
-                            }
-                        }
-                        if !instrumentAISuggestions.isEmpty {
-                            Section("可执行建议（\(instrumentAISuggestions.count) 条）") {
-                                ForEach(instrumentAISuggestions) { suggestion in
-                                    instrumentSuggestionRow(suggestion)
-                                }
-                                if !suggestionNote.isEmpty {
-                                    Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
-                                }
-                            }
-                            .toneCard(CardTone.accent, isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
-                        }
-                        Text("只依据本机现有行情、日线/支撑压力参考和所选交易日已有分时点生成分析；缺少的数据不会补造。模型输出可能有误，不构成买卖指令。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .navigationTitle("\(holding.name) · AI 分析")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .scrollContentBackground(.hidden)
-                    .listStyle(.plain)
-                    .appListLayout()
-                    .background(.clear)
+            .sheet(isPresented: $showUnifiedAdvisor) {
+                NavigationStack { LabResearchView() }
                     .themedSheetBackground()
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            if !instrumentAIResult.isEmpty {
-                                Button(instrumentAIBusy ? "分析中…" : "重新分析") { Task { await analyzeInstrument() } }
-                                    .disabled(instrumentAIBusy)
-                            }
-                        }
-                        ToolbarItem(placement: .confirmationAction) { Button("关闭") { showInstrumentAI = false } }
-                    }
-                    .task {
-                        if instrumentAIResult.isEmpty { await analyzeInstrument() }
-                    }
-                    .sheet(item: $planPrefill) { suggestion in
-                        TradePlanEditor(prefill: suggestion, onSave: { plan in
-                            store.data.tradePlans.append(plan)
-                            store.save(label: "AI 建议转交易计划")
-                            handledSuggestionIDs.insert(suggestion.id)
-                            suggestionNote = "已存入「交易计划与复盘」，到复盘日期前都可以修改或取消。"
-                        })
-                        .themedSheetBackground()
-                    }
-                }
-                .themedSheetBackground()
             }
             .onAppear {
                 if selectedIntradayDay.isEmpty { selectedIntradayDay = intradayDays.first ?? "" }
@@ -2399,6 +2358,10 @@ struct MarketChartView: View {
         guard !bars.isEmpty else { return 0...1 }
         var low = bars.map(\.low).min() ?? 0
         var high = bars.map(\.high).max() ?? 1
+        let cost = holding.costOverride ?? holding.cost
+        if cost.isFinite, cost > 0 {
+            low = min(low, cost); high = max(high, cost)
+        }
         for window in [5, 10, 20, 60, 250] where maVisible.contains(window) {
             let source = average(window, source: bars, full: full)
             for point in source {
@@ -2535,6 +2498,7 @@ struct MarketChartView: View {
                         selectedDate: selectedDailyDate,
                         selectedClose: selectedDailyBar?.close,
                         accentColor: store.effectiveAccentColor,
+                        holdingCost: holding.costOverride ?? holding.cost,
                         yDomain: yDomain(for: zoomedPeriodBars, full: periodAllBars),
                         bodyWidth: bodyWidth,
                         onSelect: { selectedDailyDate = $0 })
@@ -2703,6 +2667,7 @@ struct MarketChartView: View {
             iopv: selectedDayIOPVPoints.map { IntradayLine(time: $0.timestamp, price: $0.value) },
             estimatedIOPV: estimatedIOPVLine,
             previousClose: intradayPrevClose,
+            holdingCost: selectedChartPeriod == .intraday ? (holding.costOverride ?? holding.cost) : nil,
             macdPoints: minuteMACD,
             volumeBuckets: minuteBuckets,
             volumePrevClose: intradayPrevClose,
@@ -2909,100 +2874,6 @@ struct MarketChartView: View {
     private func shanghaiDay(_ date: Date) -> String {
         MarketCalendar.isoDay(date)
     }
-
-    @MainActor private func analyzeInstrument() async {
-        guard !instrumentAIBusy else { return }
-        instrumentAIBusy = true
-        instrumentAIMessage = ""
-        defer { instrumentAIBusy = false }
-        let quote = store.data.quotes.first(where: { $0.code == holding.code })
-        let actualHolding = store.data.holdings.first(where: { $0.code == holding.code && $0.kind == .etf }) ?? holding
-        do {
-            let result = try await AIAnalysisService.analyzeInstrument(
-                config: store.data.aiAnalysisConfig, holding: actualHolding, quote: quote, bars: allBars,
-                intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText,
-                profile: store.data.investmentProfile, totalAsset: store.totalAsset)
-            instrumentAIResult = result
-            store.data.savedInstrumentAIAnalyses[holding.code] = SavedAIAnalysis(text: result)
-            store.saveAIAnalysisCache()
-            // 只有新结果成功返回后，上一轮建议的处理状态才作废。
-            handledSuggestionIDs.removeAll()
-            suggestionNote = ""
-        } catch {
-            instrumentAIMessage = "分析失败：\(error.localizedDescription)\(instrumentAIResult.isEmpty ? "" : "；已保留上次成功结果。")"
-        }
-    }
-
-    // MARK: - AI 可执行建议 → 计划 / 提醒
-
-    private var instrumentAISuggestions: [AISuggestion] {
-        AISuggestionParser.parse(instrumentAIResult)
-    }
-
-    /// 单条建议的展示与两个落地动作。与组合分析页同一套口径（买=红、卖=绿）。
-    private func instrumentSuggestionRow(_ suggestion: AISuggestion) -> some View {
-        let tone: Color = suggestion.side == .buy ? PnLColor.up : PnLColor.down
-        let handled = handledSuggestionIDs.contains(suggestion.id)
-        let light = AppTheme.palette(for: store.resolvedAppearance).isLight
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(suggestion.side.label)
-                    .scaledFont(11, weight: .semibold)
-                    .foregroundStyle(tone)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(tone.opacity(light ? 0.14 : 0.24), in: Capsule())
-                Text(suggestion.displayName)
-                    .scaledFont(14, weight: .semibold)
-                    .lineLimit(1).minimumScaleFactor(0.8)
-                Spacer(minLength: 4)
-                if handled {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(CardTone.ok)
-                        .accessibilityLabel("已处理")
-                }
-            }
-            if let price = suggestion.price {
-                Text("参考价 \(price.num(3))").scaledFont(12).monospacedDigit().foregroundStyle(.secondary)
-            }
-            if !suggestion.reason.isEmpty { Text(suggestion.reason).font(.footnote) }
-            HStack(spacing: 10) {
-                Button("存入计划记录") {
-                    Haptics.tap()
-                    planPrefill = suggestion
-                }
-                .buttonStyle(.bordered)
-                .disabled(handled)
-                Button("设为价格提醒") { createInstrumentAlert(from: suggestion) }
-                    .buttonStyle(.bordered)
-                    // 场外基金不走实时行情，提醒永远不会触发 —— 与其建一条哑的，不如不给按。
-                    .disabled(handled || suggestion.price == nil || holding.kind == .fund)
-            }
-            .font(.caption)
-            if holding.kind == .fund {
-                Text("场外基金按净值成交，没有实时价格提醒；可以转成计划记录，到净值公布后自己核对。")
-                    .scaledFont(11).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 3)
-    }
-
-    /// 个股页提醒：买入等回落到参考价（below），卖出等涨到参考价（above）。
-    /// 这里只用「参考价」而不用目标价/失效价 —— 单标的页给出的第一个价位就是它建议的动手点。
-    private func createInstrumentAlert(from suggestion: AISuggestion) {
-        guard let target = suggestion.price else { return }
-        let direction: QuoteAlert.Direction = suggestion.side == .buy ? .below : .above
-        do {
-            try store.addQuoteAlert(code: suggestion.code,
-                                    name: suggestion.displayName,
-                                    target: target,
-                                    direction: direction)
-            handledSuggestionIDs.insert(suggestion.id)
-            suggestionNote = "已添加价格提醒：\(suggestion.displayName) \(direction == .below ? "跌到" : "涨到") \(target.num(3)) 时通知（一次性，触发后需手动重启）。"
-        } catch {
-            suggestionNote = error.localizedDescription
-        }
-    }
-}
 
 // MARK: - 图表共用配色与宽度
 
