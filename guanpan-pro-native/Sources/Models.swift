@@ -442,7 +442,7 @@ struct AllocationTarget: Codable, Identifiable {
 }
 
 enum AppAppearance: String, Codable {
-    case system, dark, oled, light, blue, green, purple, sakura, cyber, amber, paper, mint, coffee, graphite
+    case system, dark, oled, light, blue, green, purple, sakura, cyber, amber, paper, mint, coffee, graphite, eyeCare
 }
 enum CostAccountingMode: String, Codable { case weightedAverage, diluted }
 enum DailyPnLMode: String, Codable, CaseIterable, Identifiable {
@@ -509,6 +509,117 @@ struct TradePlan: Codable, Identifiable {
     var actualPrice: Double?
     var actualAmount: Double?
     var review: String
+    /// Only a confirmed broker fill may link a candidate plan to the real ledger.
+    var linkedLedgerID: UUID? = nil
+}
+
+/// A recorded judgement about a real holding. It contains no fictitious order or balance.
+struct AdvisorDecisionRecord: Codable, Identifiable {
+    var id: UUID = UUID()
+    var createdAt: Date = .now
+    var symbol: String
+    var name: String
+    var action: String
+    var reason: String
+    var marketRegime: String
+    var quoteAt: Date?
+    var dataSource: String
+    var intradaySessions: Int
+    var nasAvailable: Bool
+    var changeReason: String
+    /// Compact point-in-time evidence. Historical records do not read today's account as if it were past data.
+    var evidenceSnapshotJSON: String? = nil
+    var planIdentity: String? = nil
+}
+
+enum ProfileEvidenceSource: String, Codable { case explicit, learned, temporary }
+
+struct InvestorProfileAttribute: Codable, Identifiable {
+    var id: String
+    var value: String
+    var confidence: Double
+    var source: ProfileEvidenceSource
+    var sampleCount: Int
+    var reason: String
+    var updatedAt: Date
+    var locked: Bool
+}
+
+enum AdvisorFeedbackKind: String, Codable, CaseIterable, Identifiable {
+    case suitable, aggressivePrice, smallSpread, highRisk, preferHold, notNow
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .suitable: return "这个机会适合我"
+        case .aggressivePrice: return "价格太激进"
+        case .smallSpread: return "价差太小"
+        case .highRisk: return "风险太高"
+        case .preferHold: return "我想继续持有"
+        case .notNow: return "暂时不想交易"
+        }
+    }
+}
+
+struct AdvisorFeedback: Codable, Identifiable {
+    var id: UUID = UUID()
+    var decisionID: UUID
+    var symbol: String
+    var kind: AdvisorFeedbackKind
+    var createdAt: Date = .now
+}
+
+struct AdvisorRealTradeLink: Codable, Identifiable {
+    var id: UUID = UUID()
+    var decisionID: UUID
+    var ledgerID: UUID
+    var linkedAt: Date = .now
+}
+
+enum HoldingRole: String, Codable { case core, tactical }
+
+struct HoldingProfileRule: Codable, Identifiable {
+    var id: String { symbol }
+    var symbol: String
+    var role: HoldingRole
+    var updatedAt: Date = .now
+}
+
+struct DynamicInvestorProfile: Codable {
+    var attributes: [InvestorProfileAttribute] = []
+    var feedback: [AdvisorFeedback] = []
+    var holdingRules: [HoldingProfileRule] = []
+    var realTradeLinks: [AdvisorRealTradeLink] = []
+    /// A rejected inference stays suppressed until there is fresh, additional evidence.
+    var rejectedEvidenceCounts: [String: Int] = [:]
+
+    private enum CodingKeys: String, CodingKey {
+        case attributes, feedback, holdingRules, realTradeLinks, rejectedEvidenceCounts
+    }
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        attributes = try c.decodeIfPresent([InvestorProfileAttribute].self, forKey: .attributes) ?? []
+        feedback = try c.decodeIfPresent([AdvisorFeedback].self, forKey: .feedback) ?? []
+        holdingRules = try c.decodeIfPresent([HoldingProfileRule].self, forKey: .holdingRules) ?? []
+        realTradeLinks = try c.decodeIfPresent([AdvisorRealTradeLink].self, forKey: .realTradeLinks) ?? []
+        rejectedEvidenceCounts = try c.decodeIfPresent([String: Int].self, forKey: .rejectedEvidenceCounts) ?? [:]
+    }
+}
+
+/// Manually confirmed broker/exchange rules for a real ETF, never inferred from its name.
+struct ETFTradeRule: Codable, Identifiable {
+    enum Settlement: String, Codable { case sameDay, nextDay }
+    var id: String { symbol }
+    var symbol: String
+    var settlement: Settlement
+    var lotSize: Int
+    var tickYuan: Double
+    var feePerFillYuan: Double
+    var confirmedAt: Date
+    var confirmationSource: String
+    /// Broker-displayed sellable balance is a separate, short-lived account fact.
+    var brokerSellableShares: Double?
+    var sellableCheckedAt: Date?
 }
 
 struct PortfolioSnapshot: Codable, Identifiable {
@@ -1001,6 +1112,9 @@ struct PortfolioData: Codable {
     var rebalanceAlertThreshold = 5
     var investmentProfile = InvestmentProfile()
     var tradePlans: [TradePlan] = []
+    var advisorDecisionRecords: [AdvisorDecisionRecord] = []
+    var dynamicInvestorProfile = DynamicInvestorProfile()
+    var etfTradeRules: [ETFTradeRule] = []
     /// User-maintained exchange closure dates (YYYY-MM-DD); synced with the portfolio.
     var customMarketHolidays: [String] = []
     /// 自定义强调色名（空串 = 跟随主题自带强调色）。
@@ -1009,7 +1123,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, intradayCompanionIntents, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, advisorDecisionRecords, dynamicInvestorProfile, etfTradeRules, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -1056,6 +1170,9 @@ struct PortfolioData: Codable {
         rebalanceAlertThreshold = min(20, max(1, try c.decodeIfPresent(Int.self, forKey: .rebalanceAlertThreshold) ?? 5))
         investmentProfile = try c.decodeIfPresent(InvestmentProfile.self, forKey: .investmentProfile) ?? InvestmentProfile()
         tradePlans = try c.decodeIfPresent([TradePlan].self, forKey: .tradePlans) ?? []
+        advisorDecisionRecords = try c.decodeIfPresent([AdvisorDecisionRecord].self, forKey: .advisorDecisionRecords) ?? []
+        dynamicInvestorProfile = try c.decodeIfPresent(DynamicInvestorProfile.self, forKey: .dynamicInvestorProfile) ?? DynamicInvestorProfile()
+        etfTradeRules = try c.decodeIfPresent([ETFTradeRule].self, forKey: .etfTradeRules) ?? []
         customMarketHolidays = Array(Set(try c.decodeIfPresent([String].self, forKey: .customMarketHolidays) ?? [])).sorted()
     }
 }

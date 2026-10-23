@@ -295,12 +295,9 @@ struct AccountPortraitView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @State private var portrait: AccountPortrait?
-    @State private var aiResult = ""
-    @State private var aiBusy = false
     @State private var message = ""
     @State private var savedMessage = ""
 
-    private var keySaved: Bool { AIAnalysisService.hasSavedAPIKey }
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
@@ -312,7 +309,6 @@ struct AccountPortraitView: View {
                     metricsSection(p)
                     conclusionsSection(p)
                     if p.sampleSize > 0 { suggestionSection(p) }
-                    aiSection(p)
                 } else {
                     Section {
                         ContentUnavailableView("暂无画像", systemImage: "person.crop.circle.badge.questionmark",
@@ -322,7 +318,7 @@ struct AccountPortraitView: View {
                 }
                 if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) }.plainCard(isLight: isLight) }
                 Section {
-                    Text("画像只描述你已经发生的行为，不预测市场，也不构成投资建议。所有计算在本机完成；只有你主动点「让大模型生成我的画像」时，上面那些持仓、流水与行情材料才会发送到你配置的接口。")
+                    Text("画像根据真实持仓、真实成交和你的明确反馈更新，只描述已发生的行为，不预测市场，也不单独生成交易建议。最终操作结论统一由「AI 今日指导」给出。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -338,9 +334,6 @@ struct AccountPortraitView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .onAppear {
                 recompute()
-                if aiResult.isEmpty, let saved = store.data.savedPortraitAIAnalysis {
-                    aiResult = saved.text
-                }
             }
         }
     }
@@ -433,60 +426,11 @@ struct AccountPortraitView: View {
                 store.data.investmentProfile = profile
                 store.save(label: "写入智能画像推断的偏好")
                 Haptics.success()
-                savedMessage = "已写入。AI 账户分析会按这份偏好发送请求，你随时可以在那里改回来。"
+                savedMessage = "已写入。AI 今日指导会将这份偏好作为同一决策上下文的一部分。"
             }
             if !savedMessage.isEmpty { Text(savedMessage).font(.footnote).foregroundStyle(.secondary) }
         }
         .plainCard(isLight: isLight)
-    }
-
-    @ViewBuilder private func aiSection(_ p: AccountPortrait) -> some View {
-        Section {
-            Label("AI 生成画像与建议（可选）", systemImage: "sparkles").font(.headline)
-            Text("把持仓、交易流水和行情变化交给大模型，由它自己推断你是什么类型的投资者、存在什么问题、接下来怎么做。上面「系统观察」是本机规则算的，这里是大模型独立生成的，两者不一致时以证据更具体的一方为准。")
-                .font(.footnote).foregroundStyle(.secondary)
-            if keySaved {
-                Button {
-                    Task { await runAI(p) }
-                } label: {
-                    HStack {
-                        if aiBusy { ProgressView().padding(.trailing, 4) }
-                        Text(aiBusy ? "正在生成…" : "让大模型生成我的画像")
-                    }
-                }.disabled(aiBusy)
-            } else {
-                Text("还没有配置 API 密钥。到「更多 → AI 账户分析」里填好接口与密钥后，这里就能让大模型基于同样的原始数据自己生成画像与建议。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            if !aiResult.isEmpty {
-                if let saved = store.data.savedPortraitAIAnalysis {
-                    Label("上次成功分析：\(saved.updatedAt.formatted(date: .abbreviated, time: .shortened))",
-                          systemImage: "clock.arrow.circlepath")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                AIFormattedResultView(text: aiResult, accent: store.effectiveAccentColor)
-            }
-            if !aiResult.isEmpty {
-                Text("模型输出可能有误。画像描述的是历史行为，不代表未来收益。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-        }
-        .toneCard(store.effectiveAccentColor, isLight: isLight)
-    }
-
-    @MainActor private func runAI(_ p: AccountPortrait) async {
-        aiBusy = true; message = ""
-        defer { aiBusy = false }
-        do {
-            let result = try await AIAnalysisService.chat(
-                config: store.data.aiAnalysisConfig,
-                prompt: PortraitEngine.portraitPrompt(p, store: store))
-            aiResult = result
-            store.data.savedPortraitAIAnalysis = SavedAIAnalysis(text: result)
-            store.saveAIAnalysisCache()
-        } catch {
-            message = "分析失败：\(error.localizedDescription)\(aiResult.isEmpty ? "" : "；已保留上次成功结果。")"
-        }
     }
 
     private func styleName(_ raw: String) -> String {
