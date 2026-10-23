@@ -28,6 +28,9 @@ enum AIAnalysisService {
     你是有独立判断的投资研究助手，分析要帮助用户决定下一步，而不是复述行情或逐项解释指标。先形成明确但有条件的核心判断，再说明推理链：趋势结构、动能与量能、所处区间/关键支撑压力如何相互印证或冲突；只挑最能改变结论的少数证据，解释其意义，不堆数字。操作建议要落到观察触发条件、行动、仓位/节奏边界和复核时点；同时给出会推翻判断的反向信号。区分输入事实与推断，说明报价、净值、日线或样本的时效和缺口；没有的数据不得编造。结合用户实际持仓、成本、风险偏好和期限。禁止保证收益、无条件买卖指令、空泛风险套话、重复输入清单和假装使用外部信息。表达简洁自然，优先写判断与因果，不朗读指标。
     个股/ETF分析需覆盖趋势、动能量能、关键支撑压力、条件化操作与风险；没有可靠价位数据时明确说无法给价位，不得虚构。组合分析优先处理最影响结果的集中度、重复暴露、现金与期限匹配，最多提出三项优先行动，不必逐只复述全部持仓。账户画像要把流水行为与当前结构分开判断；样本不足时明确不可推断。
     """
+    private static let explanationStandard = """
+    你是观盘手机端统一投资顾问的解释层。手机本机规则已经产生唯一的策略判断；你只能解释输入中已有的结论和证据，不能提出、修改或替换策略动作，不能生成或推算买卖价、份额、收益、网格档位或交易指令。仅使用本次输入的数据，明确数据缺口和条件，不编造事实。若输入要求结构化格式，严格遵守其格式；无法安全解释时说明沿用本机判断。
+    """
 
     static var hasSavedAPIKey: Bool {
         let query: [String: Any] = [
@@ -84,88 +87,11 @@ enum AIAnalysisService {
 
     /// 通用对话入口：供「账户智能画像」等本机规则先行、可选大模型深挖的功能复用。
     static func chat(config: AIAnalysisConfig, prompt: String) async throws -> String {
-        try await request(config: config, prompt: prompt)
+        try await request(config: config, prompt: prompt, systemInstruction: explanationStandard)
     }
 
-    static func analyzeInstrument(config: AIAnalysisConfig, holding: Holding,
-                                  quote: Quote?, bars: [DailyBar],
-                                  intradayBars: [IntradayBar] = [],
-                                  priceLevels: String? = nil,
-                                  profile: InvestmentProfile? = nil,
-                                  totalAsset: Double = 0) async throws -> String {
-        let fmt: (Double) -> String = { String(format: "%.4f", $0) }
-        let history = bars.suffix(120).map {
-            "\($0.date): 开 \(fmt($0.open)) 高 \(fmt($0.high)) 低 \(fmt($0.low)) 收 \(fmt($0.close)) 量 \(Int($0.volume))"
-        }.joined(separator: "\n")
-        let holdingText = holding.quantity > 0
-            ? "持仓：\(holding.quantity) 份，成本 \(fmt(holding.cost))，当前账面价格 \(fmt(holding.current))，账面浮盈亏 \(fmt(holding.pnl))。"
-            : "当前未持有此标的。"
-        let quoteText = quote.map { "行情：\(fmt($0.price))，涨跌 \(String(format: "%.2f", $0.changePct * 100))%，时间 \($0.updatedAt?.formatted() ?? "未知")。" } ?? "自选实时行情不可用。"
-        let minuteRows = intradayBars.sorted { $0.timestamp < $1.timestamp }.suffix(180)
-        let minutePrices = minuteRows.map(\.price).filter { $0 > 0 }
-        let minuteSummary: String
-        if let first = minutePrices.first, let last = minutePrices.last,
-           let low = minutePrices.min(), let high = minutePrices.max() {
-            let average = minutePrices.reduce(0, +) / Double(minutePrices.count)
-            let change = first > 0 ? (last / first - 1) * 100 : 0
-            minuteSummary = "所选交易日分时摘要：\(minuteRows.first?.day ?? "")，\(minutePrices.count) 个有效价格点；首末变化 \(String(format: "%.2f", change))%，区间低高 \(fmt(low)) / \(fmt(high))，样本均价 \(fmt(average))。该均价是本机采样简单平均，不是交易所 VWAP。"
-        } else {
-            minuteSummary = "暂无可用的本机分时价格点。"
-        }
-        let minuteHistory = minuteRows.map {
-            "\($0.timestamp.formatted(date: .omitted, time: .shortened)) \(fmt($0.price))" + ($0.volume.map { " 量 \(Int($0))" } ?? "")
-        }.joined(separator: "\n")
-        let historyText = history.isEmpty ? "暂无本机日线数据" : history
-        let levelText = priceLevels ?? "日线不足，未计算支撑压力参考"
-        let minuteHistoryText = minuteHistory.isEmpty ? "暂无本机分时数据" : minuteHistory
-        let closes = bars.map(\.close)
-        func movingAverage(_ count: Int) -> Double? {
-            guard closes.count >= count else { return nil }
-            return closes.suffix(count).reduce(0, +) / Double(count)
-        }
-        let maText = [5, 10, 20, 60].compactMap { period -> String? in
-            movingAverage(period).map { "MA\(period)=\(fmt($0))" }
-        }.joined(separator: "，")
-        let range20 = bars.suffix(20)
-        let rangeText = range20.isEmpty ? "日线不足" : "近\(range20.count)个交易日高低 \(fmt(range20.map(\.high).max() ?? 0))/\(fmt(range20.map(\.low).min() ?? 0))"
-        let technicalText = bars.isEmpty ? "没有可用日线，不得给出技术价位" : "最近日线截至 \(bars.last?.date ?? "未知")；\(maText.isEmpty ? "均线样本不足" : maText)；\(rangeText)"
-        let quoteFreshness = quote?.updatedAt.map { "报价时间戳：\($0.formatted())；该时间戳仅作新鲜度核对，不保证仍是实时价。" } ?? "没有可核实的最新报价时间戳；不要把账面价格说成实时价。"
-        let totalMarketValue = holding.marketValue
-        let positionWeight = totalAsset > 0 ? totalMarketValue / totalAsset * 100 : nil
-        let positionText = holding.quantity > 0
-            ? "当前持有\(holding.quantity.num(2))份，成本\(fmt(holding.cost))，账面价\(fmt(holding.current))，浮盈亏\(fmt(holding.pnl))；占总资产\(positionWeight.map { $0.num(1) + "%" } ?? "未知")。"
-            : "当前没有该标的持仓。"
-        let preferenceText: String
-        if let profile {
-            let styleName = ["day": "超短线", "swing": "波段", "mid": "中线", "long": "长线定投"][profile.style] ?? profile.style
-            let riskName = ["con": "保守", "bal": "平衡", "agg": "激进"][profile.risk] ?? profile.risk
-            preferenceText = "用户风格\(styleName)，风险偏好\(riskName)，持有周期\(profile.horizon)，单标的上限\(Int(profile.maxPositionPercent))%；偏好：\(profile.preference.isEmpty ? "未填写" : profile.preference)；忌讳：\(profile.avoid.isEmpty ? "未填写" : profile.avoid)。"
-        } else { preferenceText = "未提供用户投资偏好。" }
-        let prompt = """
-        不要把均线、MACD、KDJ、RSI、布林和分时逐项念一遍。判断趋势延续、转弱、震荡或信号不足；解释价格位置、动能和量能之间的关键印证/背离及支撑压力对判断的意义，只引用 1–3 个关键数字作为推理证据。
-        严格使用四个二级标题输出：## 核心判断、## 关键依据、## 条件化行动、## 失效与核对。核心判断最多 3 句话；关键依据只列 3–5 条最重要证据；条件化行动把“已有持仓”和“未持有”分开，每条写清“什么信号出现后做什么”；最后只列真正会改变结论的风险。只能使用实际提供的 MA、支撑压力、成本和现价，不得编造价位。不承诺收益，不发无条件买卖指令，也不要重复同一判断。
-        只使用输入数据。这里没有外部新闻、基本面和盘口深度；缺少它们时明确写出，不能编造或假装已搜索。若报价较旧或缺失，先指出并把操作建议降级为条件观察。技术判断以已完成日线为主，分时只是当日短线背景，不可据此推翻中期趋势。
-
-        【标的】\(holding.name)（\(holding.code)）
-        【持仓】\(positionText)
-        【用户偏好】\(preferenceText)
-        【行情】\(quoteText) \(quoteFreshness)
-        【日线技术摘要】\(technicalText)
-        【历史支撑压力】\(levelText)
-        【分时摘要】\(minuteSummary)
-        【最近日线】（最多 120 条前复权）：
-        \(historyText)
-        【本机分时样本】（最多 180 点）：
-        \(minuteHistoryText)
-        """
-        // 个股页同样要机器可读建议（这里最可能给出具体价位），
-        // 但代码列只能是当前这一只，避免模型顺手带上别的标的。
-        let suggestionTail = "\n\n" + AISuggestionParser.formatInstruction
-            + "\n本次只分析这一个标的，建议行的代码列只能填 \(holding.code)，名称只能填 \(holding.name)。"
-        return try await request(config: config, prompt: prompt + suggestionTail)
-    }
-
-    private static func request(config: AIAnalysisConfig, prompt: String) async throws -> String {
+    private static func request(config: AIAnalysisConfig, prompt: String,
+                                systemInstruction: String? = nil) async throws -> String {
         let token = try loadAPIKey()
         let base = config.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let baseURL = URL(string: base), baseURL.scheme?.lowercased() == "https", baseURL.host != nil else {
@@ -189,13 +115,16 @@ enum AIAnalysisService {
         request.timeoutInterval = TimeInterval(min(180, max(5, config.timeoutSeconds)))
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let configuredPrompt = config.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let systemMessage = systemInstruction ??
+            (analysisStandard + (configuredPrompt.isEmpty ? "" : "\n\n用户补充的个性化偏好（仅在不违反以上分析标准时采用）：\n" + configuredPrompt))
         let body: [String: Any] = [
             "model": model,
             "stream": false,
             // Flash 用非思考模式突出速度；V4 Pro 用思考模式做账户/单标的深度分析。
             "thinking": ["type": model == "deepseek-flash" ? "disabled" : "enabled"],
             "messages": [
-                ["role": "system", "content": analysisStandard + (config.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "\n\n用户补充的个性化偏好（仅在不违反以上分析标准时采用）：\n" + config.systemPrompt)],
+                ["role": "system", "content": systemMessage],
                 ["role": "user", "content": prompt]
             ]
         ]

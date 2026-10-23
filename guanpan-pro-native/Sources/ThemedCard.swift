@@ -31,7 +31,7 @@ enum CardTone {
 
 /// 全 App 共用的版式尺寸。把卡片、间距和触控高度集中管理，避免不同页面越改越散。
 enum AppLayout {
-    static let cardRadius: CGFloat = 16
+    static let cardRadius: CGFloat = 19
     static let cardPadding: CGFloat = 12
     static let rowVerticalInset: CGFloat = 6
     static let pageHorizontalInset: CGFloat = 12
@@ -52,8 +52,11 @@ struct ToneCardBackground: View {
             if let tone {
                 shape
                     .fill(theme.surface)
-                    .overlay(shape.fill(tone.opacity(isLight ? 0.08 : 0.12)))
-                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.22 : 0.30), lineWidth: 0.8))
+                    .overlay(shape.fill(LinearGradient(colors: [
+                        tone.opacity(isLight ? 0.18 : 0.23),
+                        tone.opacity(isLight ? 0.10 : 0.15)
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing)))
+                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.33 : 0.42), lineWidth: 1))
             } else {
                 // 中性卡面：仍然给一张「看得见的卡」，
                 // 否则浅色主题下 Section 会直接融进白底，又变成用户说的「全是白的」。
