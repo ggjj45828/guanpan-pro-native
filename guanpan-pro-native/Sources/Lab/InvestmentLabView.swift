@@ -13,11 +13,13 @@ struct InvestmentLabView: View {
     @State private var specifyFlowDate = false
     @State private var newSymbol = ""
     @State private var newAsset = "etf"
-    @State private var newTPlusOne = true
+    @State private var newRule = "unknown"
     @State private var isWithdrawal = false
     @State private var month = String(MarketCalendar.isoDay(.now).prefix(7))
     @State private var monthlyAmount = ""
     @State private var paused = false
+    @State private var schedulePlan = false
+    @State private var scheduledDate = Date()
     @State private var account = "G"
     @State private var symbol = ""
     @State private var side = "buy"
@@ -27,6 +29,24 @@ struct InvestmentLabView: View {
     @State private var error = ""
     private let names = ["A": "持有与现金", "B": "初始比例新增", "C": "长期目标新增", "D": "定期再平衡",
                          "E": "红利价值规则", "F": "趋势风控规则", "G": "本机多因子自主模拟"]
+    private let fullNames = [
+        "A": "原持仓不卖，新增资金留现金",
+        "B": "原持仓不卖，新增资金按原比例买入",
+        "C": "原持仓不卖，新增资金按长期目标仓位买入",
+        "D": "定期再平衡，可卖出虚拟持仓",
+        "E": "红利价值与估值驱动调仓",
+        "F": "趋势与风险控制，卖出后按规则回补",
+        "G": "AI 多因子自主模拟交易"
+    ]
+    private let descriptions = [
+        "A": "后续入金全部留作现金，作为不追加买入的对照。",
+        "B": "后续入金按建立实验时的原持仓比例买入；原始持仓不卖。",
+        "C": "后续入金按你确认的长期目标比例买入；原始持仓不卖。",
+        "D": "按设定周期调回目标比例；可以卖出虚拟持仓。",
+        "E": "参考股息、估值、分红稳定性和现金流质量；基本面数据不足时不下结论。",
+        "F": "按趋势与风险条件减仓或卖出，再按规则回补；不是短期预测保证。",
+        "G": "用本机可用的多因子规则生成虚拟交易；尚未验证为实时自主 AI 交易员。"
+    ]
     private var holdings: [Holding] { portfolio.data.holdings.filter { $0.kind == .etf && $0.quantity > 0 } }
     private var isLight: Bool { AppTheme.palette(for: portfolio.resolvedAppearance).isLight }
     private var now: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
@@ -35,16 +55,21 @@ struct InvestmentLabView: View {
         List {
             Section("开发验证版 · 独立实验账本") {
                 Text("模拟交易与真实持仓隔离。A–G 使用可解释规则和同一资金流；盘口缺失就等待。当前 iOS 版本仍需编译与真机验收。")
+                DisclosureGroup("A–G 分别是什么？") {
+                    ForEach(Array(fullNames.keys).sorted(), id: \.self) { key in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(key) · \(fullNames[key] ?? key)").font(.subheadline.weight(.semibold))
+                            Text(descriptions[key] ?? "").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 3)
+                    }
+                }
                 Text(lab.message).font(.footnote)
                 if !error.isEmpty { Text(error).font(.footnote).foregroundStyle(CardTone.warn) }
             }.plainCard(isLight: isLight)
             if lab.state == nil { creationSection }
             else {
-                Section("自动模拟与研究") {
-                    Toggle("允许 NAS 规则策略自动生成虚拟限价单", isOn: Binding(
-                        get: { (lab.state?["autonomous"] as? [String: Any])?["enabled"] as? Bool ?? false },
-                        set: { lab.action(["type": "autonomy", "enabled": $0, "intervalMs": 86_400_000]) }))
-                    Text("只影响虚拟账户；默认关闭。开启后每日复核规则，数据不全不强制交易，卖出仍受原始持仓权限约束。")
+                Section("研究工具") {
+                    Text("NAS 后台只做行情机会筛查，不生成虚拟限价单或模拟成交。此处的独立实验账本属于旧版回测工具，与真实持仓和 NAS 扫描分开；AI 私人顾问应使用真实资产研究入口。")
                         .font(.caption).foregroundStyle(.secondary)
                     NavigationLink("研究、风险与未来资金安排") { LabResearchView() }
                     NavigationLink("真实资产通道 · 仅手动") { ManualAssetChannelView() }
@@ -54,19 +79,22 @@ struct InvestmentLabView: View {
                 Section("登记目标配置中的新证券") {
                     TextField("ETF / 股票代码", text: $newSymbol)
                     Picker("证券类型", selection: $newAsset) { Text("ETF").tag("etf"); Text("股票").tag("stock") }
-                    Toggle("买入后下一交易日才能卖", isOn: $newTPlusOne)
+                    Picker("回转交易规则", selection: $newRule) {
+                        Text("请选择").tag("unknown"); Text("T+0 · 当日可卖").tag("t0"); Text("T+1 · 后续交易日可卖").tag("t1")
+                    }
                     Button("确认交易规则并登记，不创建持仓") {
                         lab.action(["type": "instrument", "at": now, "definition": ["symbol": newSymbol,
                             "asset": newAsset, "quantity": 0, "cost": 0, "price": 1,
-                            "tick": newAsset == "etf" ? 10 : 100, "lot": 100, "tPlusOne": newTPlusOne]])
-                    }
+                            "tick": newAsset == "etf" ? 10 : 100, "lot": 100, "tPlusOne": newRule == "t1"]])
+                    }.disabled(newRule == "unknown")
                     Text("规则登记不会生成行情价格或改变初始快照。参考价仍须来自后续有效行情。特殊证券交易单位请先核实，当前界面按 100 股整手登记。")
                         .font(.caption).foregroundStyle(.secondary)
                 }.plainCard(isLight: isLight)
                 Section("策略对照账户") {
                     ForEach(Array(names.keys).sorted(), id: \.self) { key in
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("\(key) · \(names[key] ?? key)").font(.headline)
+                            Text("\(key) · \(fullNames[key] ?? names[key] ?? key)").font(.headline)
+                            Text(descriptions[key] ?? "").font(.caption).foregroundStyle(.secondary)
                             Text("虚拟现金 ¥\(InvestmentLabStore.yuan(lab.accounts[key]?["cash"]))")
                             Text(performance(key)).font(.caption).foregroundStyle(.secondary)
                         }
@@ -85,9 +113,12 @@ struct InvestmentLabView: View {
                     TextField("月份 YYYY-MM", text: $month)
                     TextField("本月金额（元）", text: $monthlyAmount).keyboardType(.decimalPad)
                     Toggle("暂停本月入金", isOn: $paused)
+                    Toggle("指定虚拟入金时间", isOn: $schedulePlan)
+                    if schedulePlan { DatePicker("计划时间", selection: $scheduledDate) }
                     Button("保存本月安排") { savePlan() }
+                    Toggle("允许 NAS 按计划记入虚拟资金", isOn: Binding(get: { (lab.state?["fundingSchedule"] as? [String: Any])?["enabled"] as? Bool ?? false }, set: { lab.action(["type": "fundingSchedule", "enabled": $0]) }))
                     Button("执行当前月份入金") { lab.action(["type": "executePlan", "month": month, "at": now]) }
-                    Text("计划不会在后台假定到账；执行时核对月份，避免重复记录。")
+                    Text("自动记账仅影响七个虚拟账户，不代表真实资金到账；错过整月的安排会提示核对，不倒填资金时间。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.plainCard(isLight: isLight)
                 orderSection
@@ -101,7 +132,7 @@ struct InvestmentLabView: View {
                 statusRow("真实资产", channels.assets)
                 statusRow("行情数据", channels.market)
                 statusRow("AI 量化", channels.quant)
-                Button("检查独立通道") { Task { await channels.refresh(lab: lab) } }
+                Button("检查独立通道") { Task { await channels.refresh() } }
                 Text("此页不会上传或下载真实账本；原设置的手动备份入口保留。行情通道自动读取，量化通道自动同步独立实验账本；版本冲突暂停。")
                     .font(.footnote).foregroundStyle(.secondary)
             }.plainCard(isLight: isLight)
@@ -110,7 +141,7 @@ struct InvestmentLabView: View {
         .listStyle(.plain)
         .navigationTitle("投资数字孪生 · 实验")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await channels.refresh(lab: lab) }
+        .task { await channels.refresh() }
     }
 
     private var creationSection: some View {
@@ -123,7 +154,11 @@ struct InvestmentLabView: View {
                     Picker("实验类型", selection: Binding(get: { kinds[h.code] ?? "unknown" }, set: { kinds[h.code] = $0 })) {
                         Text("待确认").tag("unknown"); Text("ETF").tag("etf"); Text("股票").tag("stock"); Text("排除本实验").tag("exclude")
                     }
-                    Toggle("买入后下一交易日才能卖出", isOn: Binding(get: { tPlusOne[h.code] ?? true }, set: { tPlusOne[h.code] = $0 }))
+                    Picker("回转交易规则", selection: Binding(get: { tPlusOne[h.code].map { $0 ? "t1" : "t0" } ?? "unknown" }, set: { value in
+                        if value == "unknown" { tPlusOne.removeValue(forKey: h.code) } else { tPlusOne[h.code] = value == "t1" }
+                    })) {
+                        Text("待确认").tag("unknown"); Text("T+0 · 当日可卖").tag("t0"); Text("T+1 · 后续交易日可卖").tag("t1")
+                    }
                 }
             }
             Text("快照将复制数量、单位成本、现金和创建时间；估值使用当前本机价格，可能为缓存。场外历史数据保留于原账本，不进入实验。")
@@ -189,12 +224,13 @@ struct InvestmentLabView: View {
                 let kind = kinds[h.code] ?? "unknown"
                 guard kind != "unknown" else { throw InvestmentLabStore.LabError.message("请确认每只证券类型或排除") }
                 if kind == "exclude" { continue }
+                guard let sellNextDay = tPlusOne[h.code] else { throw InvestmentLabStore.LabError.message("请确认 \(h.code) 的 T+0/T+1 规则；美股跨境 ETF 不能统一设为 T+1") }
                 guard h.quantity.isFinite, h.quantity.rounded() == h.quantity, h.quantity <= 100_000_000 else {
                     throw InvestmentLabStore.LabError.message("初始数量须为有效整数股")
                 }
                 positions.append(["symbol": h.code, "asset": kind, "quantity": Int64(h.quantity),
                     "cost": try InvestmentLabStore.units(h.cost, allowNegative: true), "price": try InvestmentLabStore.units(h.current),
-                    "tick": kind == "etf" ? 10 : 100, "lot": 100, "tPlusOne": tPlusOne[h.code] ?? true])
+                    "tick": kind == "etf" ? 10 : 100, "lot": 100, "tPlusOne": sellNextDay])
             }
             let closures = Array(MarketCalendar.mainlandClosures2026.union(portfolio.data.customMarketHolidays))
             lab.create(snapshot: ["at": now, "cash": try InvestmentLabStore.units(portfolio.data.cash), "positions": positions,
@@ -224,7 +260,9 @@ struct InvestmentLabView: View {
     private func savePlan() {
         do {
             guard let value = Double(monthlyAmount) else { throw InvestmentLabStore.LabError.message("请输入月度金额") }
-            lab.action(["type": "plan", "month": month, "amount": try InvestmentLabStore.units(value), "paused": paused])
+            var action: [String: Any] = ["type": "plan", "month": month, "amount": try InvestmentLabStore.units(value), "paused": paused]
+            if schedulePlan { action["executeAt"] = Int64(scheduledDate.timeIntervalSince1970 * 1000) }
+            lab.action(action)
             error = ""
         } catch { self.error = error.localizedDescription }
     }

@@ -78,6 +78,15 @@ class StoreTests(unittest.TestCase):
             body=request();body['intent']='automatic';body['data']=data
             self.assertEqual(self.store.put(channel,body)['revision'],1)
 
+    def test_quant_accepts_research_only_opportunity_scan(self):
+        body=request();body['intent']='automatic';body['data']={'opportunityScan':{
+            'action':'screen-only','automatesRealTrades':False,'opportunities':[]}}
+        saved=self.store.put('quant',body)
+        self.assertEqual(saved['revision'],1)
+        stored=self.store.get('quant')['data']['opportunityScan']
+        self.assertEqual(stored['action'],'screen-only')
+        self.assertFalse(stored['automatesRealTrades'])
+
     def test_revision_boolean_and_float_rejected(self):
         for rev in (True, 1.5, -1, None):
             with self.assertRaises(ChannelError):self.store.put('assets',request(revision=rev))

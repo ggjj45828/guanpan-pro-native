@@ -98,17 +98,17 @@ struct IntradayCompanionView: View {
                         Task { await explainWithAI() }
                     } label: {
                         if aiBusy { ProgressView("正在结合盘中数据分析…") }
-                        else { Label("让 DeepSeek 解释当前计划", systemImage: "sparkles") }
+                        else { Label("让 AI 解释本机判断", systemImage: "sparkles") }
                     }
                     .disabled(aiBusy || !AIAnalysisService.hasSavedAPIKey || decision.level == .invalid)
                     if !AIAnalysisService.hasSavedAPIKey {
-                        Text("先在 AI 账户分析里保存 DeepSeek 密钥。")
+                        Text("先在「更多 → 手机 AI 接口设置」保存模型 API 密钥。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if !aiResult.isEmpty {
                         AIFormattedResultView(text: aiResult, accent: store.effectiveAccentColor)
                     }
-                    Text("本机规则会随行情刷新复核；大模型只在你点按时分析，提供“回暖 / 继续走弱”的条件情景和失效信号，不能可靠预言下午方向；App 不会自动下单。")
+                    Text("本机规则会随行情刷新复核；大模型仅解释本机判断依据，不生成另一套买卖结论或价格。最终操作建议统一查看「AI 今日指导」。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -199,9 +199,8 @@ struct IntradayCompanionView: View {
         今日本机分时样本：
         \(minuteText.isEmpty ? "暂无" : minuteText)
 
-        请结合画像给出意见：用户偏好抄底，应把回调视作观察机会，但不能把“跌得多”直接等同买点；需要区分低位、止跌/企稳、趋势风险和仓位限制。卖出时，份额足够只代表账面可卖，必须说明趋势/仓位/止盈计划等具体依据；若没有足够依据，应明确说“暂不建议卖出/继续观察”，不能迎合用户的卖出意图。**但若上面给了做 T 口径，那部分就按价差评估 —— 不要用趋势依据去否定一笔做 T 计划，也不要给无条件买卖指令。**不要臆造用户画像、技术数据或止盈目标。
-        请只输出四小段：当前结论、画像如何影响判断、现在要等的确认/失效信号、回暖与继续走弱两种条件情景。每段 1–3 句。
-        不得声称能预测下午涨跌；只能写条件与失效信号。没有量能、新闻、盘口或实时数据就明确说没有。不要给无条件买卖指令，不自动交易。
+        只解释上面的本机判断 decision.level、decision.summary 与已有规则依据，指出数据缺口以及什么事实会让本机判断改变。不能给出新的持有/买入/卖出/做T/网格结论；不能改写或覆盖 decision；不能输出具体价位、份额或收益数字。不要迎合用户的交易意图，也不要臆造画像、技术数据或止盈目标。
+        请只输出两小段：本机结论为何如此；当前缺失的数据与可观察的变化条件。每段 1–3 句。没有量能、新闻、盘口或实时数据就明确说没有。不预测下午涨跌，不自动交易；完整操作建议统一由 AI 今日指导给出。
         """
         do {
             aiResult = try await AIAnalysisService.chat(config: store.data.aiAnalysisConfig, prompt: prompt)

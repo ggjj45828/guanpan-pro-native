@@ -8,7 +8,7 @@ from channel_store import ChannelStore
 from market_data import MarketArchive
 from market_runtime import MarketRuntime
 class WorkerHTTPIntegration(unittest.TestCase):
- def test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets(self):
+ def test_actual_http_worker_restart_only_screens_research_without_touching_assets(self):
   with tempfile.TemporaryDirectory()as temp:
    root=Path(temp);old=server.SYNC_TOKEN;server.SYNC_TOKEN='integration-test-only'
    http=ThreadingHTTPServer(('127.0.0.1',0),server.Handler)

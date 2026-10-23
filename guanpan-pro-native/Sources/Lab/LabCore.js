@@ -242,6 +242,7 @@
   function dispatch(input, action) {
     validate(input); const s = clone(input), x = action;
     check(x && typeof x.type === 'string', '操作无效');
+    check(s.researchOnly!==true||!['order','book','flow','executePlan','dividend'].includes(x.type),'真实资产研究副本仅可研究，不能执行交易或资金变化');
     let a;
     if (x.account !== undefined) a = account(s, x.account);
     switch (x.type) {
@@ -256,16 +257,29 @@
         check(typeof x.enabled==='boolean'&&integer(x.intervalMs,60000),'模拟自动执行配置无效');
         s.autonomous={enabled:x.enabled,intervalMs:x.intervalMs,rules:clone(x.rules||{})};break;
       }
+      case 'tradingRule': {
+        check(key(x.symbol)&&typeof x.tPlusOne==='boolean'&&integer(x.at,s.seed.at)&&key(x.id),'证券交易规则无效');
+        check(!Object.values(s.accounts).some(a=>a.orders.some(o=>open(o)&&o.symbol===x.symbol)),'先撤销该证券全部虚拟挂单再修改规则');
+        for(const acc of Object.values(s.accounts))position(acc,x.symbol).tPlusOne=x.tPlusOne;
+        s.ruleChanges=s.ruleChanges||[];check(!s.ruleChanges.some(r=>r.id===x.id),'规则版本重复');
+        s.ruleChanges.push({id:x.id,symbol:x.symbol,tPlusOne:x.tPlusOne,at:x.at,source:'user-confirmed'});break;
+      }
       case 'memory': {
         check(key(x.id)&&integer(x.at,1)&&typeof x.text==='string'&&x.text.length<=4000,'偏好记录无效');
         s.memory=s.memory||[];check(!s.memory.some(m=>m.id===x.id),'偏好记录重复');s.memory.push({id:x.id,at:x.at,text:x.text});break;
       }
       case 'recordDividend': {
-        check(key(x.id)&&key(x.symbol)&&integer(x.at,s.seed.at+1)&&integer(x.netPerShare)&&integer(x.paymentAt,x.at+1)&&integer(x.publishedAt,1)&&x.publishedAt<=x.at,'登记日分红条款无效');
+        const recordAt=x.recordAt??x.at;
+        check(key(x.id)&&key(x.symbol)&&integer(recordAt,s.seed.at+1)&&integer(x.at,recordAt)&&integer(x.netPerShare)&&integer(x.paymentAt,recordAt+1)&&integer(x.publishedAt,1)&&x.publishedAt<=recordAt,'登记日分红条款无效');
         s.dividendRecords=s.dividendRecords||{};check(!s.dividendRecords[x.id],'分红登记重复');
         const entitlements={};
-        for(const [code,acc] of Object.entries(s.accounts)) { advance(acc,x.at);entitlements[code]=quantity(position(acc,x.symbol)); }
-        s.dividendRecords[x.id]={symbol:x.symbol,recordAt:x.at,paymentAt:x.paymentAt,netPerShare:x.netPerShare,entitlements,paid:false};break;
+        for(const [code,acc] of Object.entries(s.accounts)) {
+          position(acc,x.symbol);advance(acc,x.at);
+          const initial=(s.seed.positions.find(p=>p.symbol===x.symbol)||{}).quantity||0;
+          const entitled=initial+sum(acc.fills.filter(f=>f.symbol===x.symbol&&f.at<=recordAt).map(f=>f.side==='buy'?f.quantity:-f.quantity));
+          check(integer(entitled),'登记日份额无效');entitlements[code]=entitled;
+        }
+        s.dividendRecords[x.id]={symbol:x.symbol,recordAt,paymentAt:x.paymentAt,netPerShare:x.netPerShare,entitlements,paid:false};break;
       }
       case 'dividend': {
         const record=(s.dividendRecords||{})[x.id];check(record&&!record.paid&&integer(x.at,record.paymentAt),'分红未登记、未到付款日或重复');
@@ -276,7 +290,10 @@
       case 'flow': flow(s, x); break;
       case 'plan':
         check(/^\d{4}-(0[1-9]|1[0-2])$/.test(x.month || '') && integer(x.amount) && typeof x.paused === 'boolean', '月度安排无效');
-        s.monthlyPlan[x.month] = { amount: x.amount, paused: x.paused }; break;
+        if(x.executeAt!==undefined)check(integer(x.executeAt,s.seed.at+1)&&sessionOf(x.executeAt).slice(0,7)===x.month,'自动入金日期与月份不符');
+        s.monthlyPlan[x.month] = { amount: x.amount, paused: x.paused,...(x.executeAt===undefined?{}:{executeAt:x.executeAt}) }; break;
+      case 'fundingSchedule':
+        check(typeof x.enabled==='boolean','入金调度开关无效');s.fundingSchedule={enabled:x.enabled};break;
       case 'executePlan': {
         check(/^\d{4}-(0[1-9]|1[0-2])$/.test(x.month || '') && new Date(x.at + 8*3600000).toISOString().slice(0,7) === x.month, '执行日期与入金月份不符');
         const plan = s.monthlyPlan[x.month]; check(plan, '月度计划不存在');

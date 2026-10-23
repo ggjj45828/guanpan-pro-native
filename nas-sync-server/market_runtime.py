@@ -13,6 +13,9 @@ from decimal import Decimal,ROUND_HALF_UP
 from urllib.parse import urlparse,parse_qs
 from market_data import MarketArchive
 from channel_store import ChannelError
+from market_universe import UniverseStore,validate_manifest
+from market_data import valid
+from fundamentals import derive
 
 def units(value):
     number=Decimal(str(value))
@@ -36,12 +39,44 @@ def configured_book(fields,definition,at,available,volume_multiplier):
         session=local.strftime('%Y-%m-%d'),isTrading=local.weekday()<5 and(570<=minute<690 or 780<=minute<897)))
 
 class MarketRuntime:
-    def __init__(self,channels,archive,http_get=None,fetch_daily=None):
+    def __init__(self,channels,archive,http_get=None,fetch_daily=None,holdings_provider=None):
         self.channels=channels;self.archive=archive;self.lock=threading.Lock();self.last_error=None
-        self.http_get=http_get;self.fetch_daily=fetch_daily;self.last_daily={};self.last_quote={}
-    def definitions(self):
-        lab=(self.channels.get('quant').get('data')or{}).get('lab')or{}
-        return [p for p in [*(lab.get('seed')or{}).get('positions',[]),*(lab.get('catalog')or{}).values()] if p.get('asset') in ('etf','stock')]
+        self.http_get=http_get;self.fetch_daily=fetch_daily;self.last_daily={};self.last_quote={};self.daily_attempt={};self.cursor=0
+        self.universe=UniverseStore(archive)
+        self.holdings_provider=holdings_provider
+    def definitions(self,include_universe=False):
+        # Registered research symbols come from the synchronized real account,
+        # never from a digital-twin seed or a virtual portfolio.
+        rows=[]
+        if self.holdings_provider:
+            rows=[p for p in self.holdings_provider() if p.get('asset') in ('etf','stock')]
+        if include_universe:rows+=((self.universe.get(int(time.time()*1000))or{}).get('instruments',[]))
+        return list({p['symbol']:p for p in rows}.values())
+    def ingest_bundle(self,body,now=None):
+        now=int(time.time()*1000)if now is None else now
+        if not isinstance(body,dict)or not isinstance(body.get('records'),list):raise ChannelError(422,'invalid_market_bundle')
+        if not isinstance(body.get('financials',[]),list):raise ChannelError(422,'invalid_financial_bundle')
+        records=list(body['records'])
+        for bundle in body.get('financials',[]):
+            factors=derive(bundle,now)
+            records.append(dict(symbol=bundle['symbol'],asset='stock',kind='fundamentals',at=now,availableAt=now,source=bundle['source'],data=factors))
+        for record in records:
+            valid(record)
+            if record['availableAt']>now:raise ChannelError(422,'future_market_evidence')
+        if 'universe'in body:
+            validate_manifest(body['universe'],now)
+            old=self.universe.get(body['universe']['asOf'])
+            if old and old['asOf']==body['universe']['asOf']and old!=body['universe']:raise ChannelError(409,'universe_version_is_immutable')
+        result=self.ingest(records,now)
+        if 'universe'in body:self.universe.put(body['universe'],now)
+        return result
+    def research_page(self,offset,limit,now):
+        if type(offset)is not int or offset<0 or type(limit)is not int or not 1<=limit<=100:raise ChannelError(422,'invalid_research_page')
+        manifest=self.universe.get(now)
+        rows=(manifest or {}).get('instruments',[])
+        data=self.archive.snapshot(rows[offset:offset+limit],now)
+        return dict(ok=True,offset=offset,nextOffset=offset+limit if offset+limit<len(rows)else None,
+            coverage=self.universe.coverage(now),research=data)
     def ingest_minutes(self,code,bars,now=None):
         now=int(time.time()*1000) if now is None else now
         p=next((p for p in self.definitions() if p['symbol'].lower().removeprefix('sh').removeprefix('sz').removeprefix('bj')==code.lower().removeprefix('sh').removeprefix('sz').removeprefix('bj')),None)
@@ -52,6 +87,9 @@ class MarketRuntime:
             if at>now:continue
             data={'price':units(b['price'])}
             if b.get('iopv') is not None:data['iopv']=units(b['iopv'])
+            # Volume is used only when the upstream explicitly confirms shares.
+            if b.get('volumeUnit')=='shares' and isinstance(b.get('volume'),(int,float)) and b['volume']>=0:
+                data['volume']=b['volume'];data['volumeUnit']='shares'
             rows.append(dict(symbol=p['symbol'],asset=p['asset'],kind='intraday',at=at,availableAt=now,source='original-NAS-minute-collector',data=data))
         if rows:
             latest=max(rows,key=lambda r:r['at']);rows.append(dict(latest,kind='quote',source='minute-price-fallback'))
@@ -64,7 +102,10 @@ class MarketRuntime:
     def collect_registered(self,now=None):
         now=int(time.time()*1000)if now is None else now
         errors=[]
-        for p in self.definitions():
+        definitions=self.definitions(include_universe=True)
+        batch=(definitions+definitions)[self.cursor:self.cursor+20]if len(definitions)>20 else definitions
+        self.cursor=(self.cursor+len(batch))%len(definitions)if definitions else 0
+        for p in batch:
             try:self._collect_one(p,now)
             except Exception:errors.append('registered source failed for '+str(p.get('symbol','unknown')))
         return errors
@@ -89,12 +130,20 @@ class MarketRuntime:
                     if p['asset']=='etf'and len(fields)>78 and fields[78]:
                         try:quote['iopv']=units(fields[78])
                         except ValueError:pass
-                    self.ingest([dict(symbol=code,asset=p['asset'],kind='quote',at=at,availableAt=now,source='existing-Tencent-price-adapter',data=quote)],now)
+                    records=[dict(symbol=code,asset=p['asset'],kind='quote',at=at,availableAt=now,source='existing-Tencent-price-adapter',data=quote)]
+                    # One observed price point per source minute. The provider's
+                    # cumulative volume is not a verified per-minute share count,
+                    # so this path deliberately omits volume and cannot invent VWAP.
+                    if live and 0<=now-at<=90000:
+                        records.append(dict(symbol=code,asset=p['asset'],kind='intraday',at=at,
+                            availableAt=now,source='existing-Tencent-quote-sampled-minute',data=dict(quote)))
+                    self.ingest(records,now)
                     multiplier=os.environ.get('V2_BOOK_VOLUME_MULTIPLIER','')
                     if multiplier:
                         try:self.ingest([configured_book(fields,p,at,now,int(multiplier))],now)
                         except (ValueError,IndexError,ChannelError):self.last_error='book validation failed; no fabricated liquidity'
-        if self.fetch_daily and now-self.last_daily.get(code,0)>=6*3600000:
+        if self.fetch_daily and now-self.last_daily.get(code,0)>=6*3600000 and now-self.daily_attempt.get(code,0)>=60000:
+            self.daily_attempt[code]=now
             raw,_=self.fetch_daily({'code':symbol,'n':'640','period':'day','fq':'qfq'})
             text=raw.decode('utf-8',errors='replace');body=json.loads(text[text.find('{'):text.rfind('}')+1])
             entry=(body.get('data')or{}).get(symbol)or{}
@@ -133,8 +182,7 @@ class MarketRuntime:
                     if len(raw)>16*1024*1024:raise ValueError('feed too large')
                     return json.loads(raw)
         body=fetch(url,token)
-        if not isinstance(body,dict)or not isinstance(body.get('records'),list):raise ValueError('normalized feed contract mismatch')
-        return self.ingest(body['records'],now)
+        return self.ingest_bundle(body,now)
     def backup_daily(self,now=None):
         import hashlib
         now=int(time.time()*1000)if now is None else now
@@ -170,7 +218,14 @@ def route(handler,method,path):
         runtime=handler.server.market_runtime
         if method=='POST' and path=='/api/v2/market/ingest':
             if int(handler.headers.get('Content-Length','0'))>16*1024*1024:raise ChannelError(413,'market_batch_too_large')
-            body=handler.read_body();result=runtime.ingest(body.get('records'))
+            body=handler.read_body();result=runtime.ingest_bundle(body)
+        elif method=='GET'and path=='/api/v2/market/research-page':
+            q=parse_qs(urlparse(handler.path).query)
+            now=int(time.time()*1000);at=int(q.get('at',[str(now)])[0])
+            if at<=0 or at>now:raise ChannelError(422,'invalid_research_time')
+            result=runtime.research_page(int(q.get('offset',['0'])[0]),int(q.get('limit',['50'])[0]),at)
+        elif method=='GET'and path=='/api/v2/market/universe':
+            result={'ok':True,'coverage':runtime.universe.coverage(int(time.time()*1000))}
         elif method=='GET'and path=='/api/v2/market/records':
             q=parse_qs(urlparse(handler.path).query)
             result={'ok':True,'records':runtime.archive.query(q.get('symbol',[''])[0],q.get('kind',[''])[0],start=int(q.get('start',['0'])[0]),end=int(q.get('end',[str(2**63-1)])[0]),limit=int(q.get('limit',['1000'])[0]),before=int(q['before'][0])if 'before'in q else None)}

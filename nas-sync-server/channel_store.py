@@ -19,7 +19,7 @@ CHANNELS = {"assets": "manual", "market": "automatic", "quant": "automatic"}
 FIELDS = {
     "assets": {"holdings", "cash", "ledger", "costs", "cashFlows", "asOf"},
     "market": {"quotes", "iopv", "intraday", "daily", "books", "quality", "asOf"},
-    "quant": {"lab", "strategies", "orders", "fills", "decisions", "reviews", "backtests", "asOf", "executor", "preferences"},
+    "quant": {"lab", "strategies", "orders", "fills", "decisions", "reviews", "backtests", "asOf", "executor", "preferences", "opportunityScan"},
 }
 
 
@@ -50,7 +50,7 @@ def validate_payload(channel: str, payload: object) -> dict:
         elif name == "asOf":
             if not nonnegative_int(value):
                 raise ChannelError(422, "asOf_must_be_epoch_milliseconds")
-        elif name in {"lab", "quality", "costs", "executor", "preferences"}:
+        elif name in {"lab", "quality", "costs", "executor", "preferences", "opportunityScan"}:
             if not isinstance(value, dict):
                 raise ChannelError(422, "expected_object")
         elif not isinstance(value, list):

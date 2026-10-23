@@ -26,7 +26,7 @@ for name, cmd in commands:
     (out / (name + ('.json' if name == 'synthetic-demo' else '.log'))).write_text(result.stdout + result.stderr, encoding='utf-8')
     results.append({'name': name, 'exitCode': result.returncode, 'log': name + ('.json' if name == 'synthetic-demo' else '.log')})
     print(name + ': ' + ('PASS' if result.returncode == 0 else 'FAIL'))
-for name in ['server.py', 'channel_store.py', 'market_data.py', 'market_runtime.py']:
+for name in ['server.py', 'channel_store.py', 'market_data.py', 'market_runtime.py', 'fundamentals.py', 'market_universe.py']:
     py_compile.compile(str(root / 'nas-sync-server' / name), doraise=True)
 report = {
     'timestampUTC': datetime.now(timezone.utc).isoformat(),

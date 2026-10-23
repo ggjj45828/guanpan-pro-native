@@ -1,20 +1,15 @@
 services:
   guanpan-nas-sync:
-    image: python:3.12-alpine
-    container_name: guanpan-nas-sync
+    image: guanpan-nas-sync-v2:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
-    working_dir: /app
-    command: ["python", "-u", "/app/server.py"]
     ports:
       # 旧服务器若仍占用 8787，用 8788；旧的已停可改回 "8787:8787"
       - "8788:8787"
     volumes:
-      - ./server.py:/app/server.py:ro
-      - ./channel_store.py:/app/channel_store.py:ro
-      - ./market_data.py:/app/market_data.py:ro
-      - ./market_runtime.py:/app/market_runtime.py:ro
-      - ./web:/app/web:ro
-      - ./data:/data
+      - v2-data:/data
     environment:
       PORT: "8787"
       DATA_DIR: "/data"
@@ -24,6 +19,10 @@ services:
       SYNC_TOKEN: "${SYNC_TOKEN:-}"
       # 上游行情超时（秒）。家里网慢可调到 20。
       UPSTREAM_TIMEOUT: "12"
+      V2_UPSTREAM_ENABLED: "${V2_UPSTREAM_ENABLED:-1}"
+      V2_FEED_URL: "${V2_FEED_URL:-}"
+      V2_FEED_TOKEN: "${V2_FEED_TOKEN:-}"
+      V2_BOOK_VOLUME_MULTIPLIER: "${V2_BOOK_VOLUME_MULTIPLIER:-}"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/ping', timeout=2).read()"]
       interval: 30s
@@ -32,17 +31,19 @@ services:
       retries: 3
 
   guanpan-lab-worker:
-    image: node:22-alpine
+    image: guanpan-lab-worker-v2:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
     restart: unless-stopped
-    working_dir: /worker
-    command: ["node", "/worker/lab-worker.cjs"]
     depends_on:
       - guanpan-nas-sync
-    volumes:
-      - ./lab-worker.cjs:/worker/lab-worker.cjs:ro
-      - ../guanpan-pro-native/Sources/Lab:/core:ro
     environment:
       SYNC_URL: "http://guanpan-nas-sync:8787"
       SYNC_TOKEN: "${SYNC_TOKEN:-}"
       LAB_CORE_DIR: "/core"
       LAB_POLL_MS: "2000"
+
+volumes:
+  v2-data:
+    name: guanpan-nas-v2-update-data

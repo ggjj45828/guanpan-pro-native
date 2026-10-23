@@ -1,8 +1,8 @@
 {
-  "timestampUTC": "2026-10-18T10:04:55.200717+00:00",
+  "timestampUTC": "2026-10-23T09:22:03.535834+00:00",
   "platform": "Windows-11-10.0.26200-SP0",
   "python": "3.12.14",
-  "node": "v24.19.0",
+  "node": "v24.22.1",
   "results": [
     {
       "name": "simulation-core",
@@ -11,7 +11,7 @@
     },
     {
       "name": "nas-channels",
-      "exitCode": 0,
+      "exitCode": 1,
       "log": "nas-channels.log"
     },
     {

@@ -34,7 +34,7 @@ targets:
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
         CFBundleShortVersionString: "2.13.55"
-        CFBundleVersion: "59"
+        CFBundleVersion: "60"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。
@@ -85,15 +85,40 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.validation
         GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/观盘 Pro.app/观盘 Pro"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  GuanpanProExperienceTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: GuanpanProNative
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.experience
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: GuanpanProNative
 schemes:
   GuanpanProValidation:
     build:
       targets:
         GuanpanProNative: all
         GuanpanProNativeTests: [test]
+        GuanpanProExperienceTests: [test]
     test:
       config: Debug
       targets:
         - GuanpanProNativeTests
+        - GuanpanProExperienceTests
       environmentVariables:
         GUANPAN_TESTING: "1"
+  GuanpanProExperience:
+    build:
+      targets:
+        GuanpanProNative: all
+        GuanpanProExperienceTests: [test]
+    test:
+      config: Debug
+      targets:
+        - GuanpanProExperienceTests

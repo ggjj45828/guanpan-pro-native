@@ -111,13 +111,13 @@ struct QuantitativeEngineView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("投资数字孪生实验室") {
+                Section("真实持仓 AI 指导") {
                     NavigationLink {
-                        InvestmentLabView()
+                        LabResearchView()
                     } label: {
-                        Label("独立虚拟账户与限价实验", systemImage: "flask")
+                        Label("查看今天的统一指导", systemImage: "sparkles")
                     }
-                    Text("开发验证版：真实持仓只读复制，模拟账本独立保存；完整策略及实时盘口接入待完成。")
+                    Text("这里只提供行情和技术研究；最终判断由手机根据真实持仓统一给出。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)

@@ -853,7 +853,16 @@ def main() -> None:
         sync_market_watchlist(existing)
         seed_market_archive(existing)
     channels = ChannelStore(DATA_DIR / "channels-v2.sqlite3")
-    V2_RUNTIME = MarketRuntime(channels, MarketArchive(DATA_DIR / "market-v2.sqlite3"), http_get, fetch_kline)
+    def real_research_holdings() -> list[dict]:
+        native = read_snapshot("native")["data"] or {}
+        account = native.get("data", native) if isinstance(native, dict) else {}
+        rows = account.get("holdings", []) if isinstance(account, dict) else []
+        return [{"symbol": row["code"], "asset": "etf"}
+                for row in rows if isinstance(row, dict) and row.get("kind") in ("etf", "stock")
+                and isinstance(row.get("code"), str) and tencent_symbol(row["code"])
+                and isinstance(row.get("quantity"), (int, float)) and row["quantity"] > 0]
+    V2_RUNTIME = MarketRuntime(channels, MarketArchive(DATA_DIR / "market-v2.sqlite3"), http_get, fetch_kline,
+                               holdings_provider=real_research_holdings)
     threading.Thread(target=collector_loop, name="market-collector", daemon=True).start()
     threading.Thread(target=V2_RUNTIME.loop, name="v2-market-collector", daemon=True).start()
     host = os.environ.get("HOST", "0.0.0.0")

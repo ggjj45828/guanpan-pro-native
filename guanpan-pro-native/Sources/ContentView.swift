@@ -21,35 +21,36 @@ enum PadTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .overview: return "总览"
+        case .overview: return "首页"
         case .market: return "行情"
-        case .decisions: return "AI 决策"
-        case .laboratory: return "量化实验室"
-        case .assets: return "资产"
+        case .decisions: return "持仓"
+        case .laboratory: return "AI"
+        case .assets: return "我的"
         }
     }
     var icon: String {
         switch self {
-        case .overview: return "square.grid.2x2"
+        case .overview: return "house.fill"
         case .market: return "chart.xyaxis.line"
-        case .decisions: return "sparkles"
-        case .laboratory: return "flask"
-        case .assets: return "briefcase.fill"
+        case .decisions: return "square.stack.3d.up"
+        case .laboratory: return "sparkles"
+        case .assets: return "person.crop.circle"
         }
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject var store: PortfolioStore
-    @EnvironmentObject private var lab: InvestmentLabStore
     @EnvironmentObject private var channels: LabChannelCoordinator
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
+    @AppStorage(ThemeManager.storageKey) private var visualThemeRaw = VisualTheme.scene.rawValue
     /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
     /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
     @State private var padTab: PadTab? = .overview
+    @State private var phoneTab: PadTab = .overview
     /// 定时自动切换深浅时，需要一个随时间推进的驱动器，否则计划时间到了也不会变。
     @State private var themeTick = 0
     private let themeTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -63,7 +64,9 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(effectiveColorScheme)
-        .tint(store.effectiveAccentColor)
+        .tint(ThemeManager.tokens(activeVisualTheme).accent)
+        .environment(\.appAppearance, ThemeManager.appearance(activeVisualTheme))
+        .environment(\.visualTheme, activeVisualTheme)
         .appFontScale(CGFloat(fontScale))
         .environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
         .onAppear {
@@ -90,7 +93,7 @@ struct ContentView: View {
         .task {
             if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
             while !Task.isCancelled {
-                if scenePhase == .active { await channels.refresh(lab: lab) }
+                if scenePhase == .active { await channels.refresh() }
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
@@ -98,6 +101,7 @@ struct ContentView: View {
             if let document = channels.marketDocument { store.applyV2MarketDocument(document) }
         }
         .onChange(of: scenePhase) { _, phase in
+            if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
             if phase == .active {
                 store.configureNASSync()
                 store.refreshQuotes()
@@ -127,10 +131,22 @@ struct ContentView: View {
     /// 依赖 themeTick，保证定时切换到了点会重算。
     private var effectiveColorScheme: ColorScheme? {
         _ = themeTick
-        return store.effectiveColorScheme
+        return ThemeManager.tokens(activeVisualTheme).isDark ? .dark : .light
     }
 
-    private var currentTheme: AppTheme { AppTheme.palette(for: store.resolvedAppearance) }
+    private var activeVisualTheme: VisualTheme {
+        let requested = VisualTheme(rawValue: visualThemeRaw) ?? .scene
+        let scene: VisualScene
+        switch useSplitLayout ? (padTab ?? .overview) : phoneTab {
+        case .overview: scene = .home
+        case .market: scene = .intraday
+        case .decisions: scene = .holdings
+        case .laboratory: scene = .daily
+        case .assets: scene = .detail
+        }
+        return ThemeManager.resolve(requested, for: scene)
+    }
+    private var currentTheme: AppTheme { AppTheme.palette(for: ThemeManager.appearance(activeVisualTheme)) }
 
     // MARK: - 双形态根容器（iPhone 用 TabView，iPad 用分栏）
 
@@ -143,16 +159,16 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var phoneTabRoot: some View {
-        TabView {
-            ProOverviewView().tabItem { Label("总览", systemImage: "square.grid.2x2") }
-            DashboardView().tabItem { Label("行情", systemImage: "chart.xyaxis.line") }
-            ProDecisionHubView().tabItem { Label("AI 决策", systemImage: "sparkles") }
-            NavigationStack { InvestmentLabView() }.tabItem { Label("量化实验室", systemImage: "flask") }
-            ProAssetsHubView().tabItem { Label("资产", systemImage: "briefcase.fill") }
+        TabView(selection: $phoneTab) {
+            VisualHomeView().tabItem { Label("首页", systemImage: "house.fill") }.tag(PadTab.overview)
+            ProMarketWorkspace().tabItem { Label("行情", systemImage: "chart.xyaxis.line") }.tag(PadTab.market)
+            VisualHoldingsView().tabItem { Label("持仓", systemImage: "square.stack.3d.up") }.tag(PadTab.decisions)
+            NavigationStack { LabResearchView() }.tabItem { Label("AI", systemImage: "sparkles") }.tag(PadTab.laboratory)
+            MoreHubView().tabItem { Label("我的", systemImage: "person.crop.circle") }.tag(PadTab.assets)
         }
         .scrollContentBackground(.hidden)
         .background(.clear)
-        .toolbarBackground(currentTheme.surface, for: .tabBar)
+        .toolbarBackground(ThemeManager.tokens(activeVisualTheme).surface, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
     }
 
@@ -179,11 +195,11 @@ struct ContentView: View {
     @ViewBuilder private var padDetail: some View {
         // 侧栏未选中（iPad 上偶发）时回落到自选，不要显示空白详情栏
         switch padTab ?? .overview {
-        case .overview: ProOverviewView()
-        case .market: DashboardView()
-        case .decisions: ProDecisionHubView()
-        case .laboratory: NavigationStack { InvestmentLabView() }
-        case .assets: ProAssetsHubView()
+        case .overview: VisualHomeView()
+        case .market: ProMarketWorkspace()
+        case .decisions: VisualHoldingsView()
+        case .laboratory: NavigationStack { LabResearchView() }
+        case .assets: MoreHubView()
         }
     }
 
@@ -194,7 +210,7 @@ struct ContentView: View {
     /// 再靠 `overlayTint` 压暗、靠卡片半透明透出来；界线很难调到每种主题都好看，
     /// 而且一旦铺了图，主题底色就完全看不见了。
     @ViewBuilder private var backgroundLayer: some View {
-        currentTheme.gradient
+        ThemeManager.tokens(activeVisualTheme).background
             .ignoresSafeArea()
     }
 }
@@ -908,9 +924,11 @@ struct DashboardView: View {
             Text("\(item.changePct.directionMark()) \(percent)")
                 .scaledFont(10, weight: .medium).monospacedDigit().lineLimit(1)
                 .foregroundStyle(tone)
+            Text(item.updatedAt.map { $0.formatted(date: .omitted, time: .shortened) } ?? "时间未知")
+                .scaledFont(9).foregroundStyle(.tertiary).lineLimit(1)
         }
         .padding(.horizontal, 9).padding(.vertical, 6)
-        .frame(minWidth: 84, alignment: .leading)
+        .frame(width: 112, height: 76, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tone.opacity(0.12)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tone.opacity(0.24), lineWidth: 0.5))
         .accessibilityElement(children: .combine)
@@ -1136,17 +1154,13 @@ private struct WatchQuoteCard: View {
     }
 }
 
-/// 「更多」页的弹窗入口（v2.13.39 合并）。
-///
-/// 原来 AI 账户分析 / 量化信号 / 账户决策提示各挂一层 `.sheet`，全在同一个 List 上。
+/// 「更多」页的轻量分析弹窗入口；最终投资指导统一从 AI 今日指导进入。
 private enum MoreHubSheet: Identifiable {
-    case aiAnalysis
     case quantEngine
     case portfolioAdvice
 
     var id: String {
         switch self {
-        case .aiAnalysis: return "aiAnalysis"
         case .quantEngine: return "quantEngine"
         case .portfolioAdvice: return "portfolioAdvice"
         }
@@ -1162,9 +1176,88 @@ private struct MoreHubSheetContent: View {
 
     @ViewBuilder private var content: some View {
         switch sheet {
-        case .aiAnalysis: AIAnalysisView()
         case .quantEngine: QuantitativeEngineView()
         case .portfolioAdvice: PortfolioAdviceView()
+        }
+    }
+}
+
+/// 在线模型配置只管理本机密钥，不生成与统一顾问并行的账户结论。
+struct AISettingsView: View {
+    @EnvironmentObject private var store: PortfolioStore
+    @State private var token = ""
+    @State private var status = ""
+    @State private var keySaved = AIAnalysisService.hasSavedAPIKey
+    @State private var model = "deepseek-flash"
+    @FocusState private var keyFocused: Bool
+
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
+
+    var body: some View {
+        Form {
+            Section {
+                Label("手机在线 AI", systemImage: "sparkles")
+                    .font(.headline)
+                Text("AI 今日指导在手机端读取同一份真实持仓、最新行情、NAS研究和动态画像，再调用你配置的模型补充解释。模型不能覆盖本机策略结论，也不能自行生成未核验的价格。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            .plainCard(isLight: isLight)
+
+            Section("API 密钥") {
+                Picker("DeepSeek 模型", selection: $model) {
+                    Text("Flash · 快速").tag("deepseek-flash")
+                    Text("V4 Pro · 深度").tag("deepseek-v4-pro")
+                }
+                .onChange(of: model) { _, selected in
+                    store.data.aiAnalysisConfig.model = selected
+                    store.save(label: "修改手机 AI 模型")
+                }
+                SecureField("粘贴 DeepSeek API 密钥", text: $token)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($keyFocused)
+                Button("安全保存到本机") {
+                    do {
+                        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            status = "请输入新的密钥；已保存的密钥不会显示。"
+                            return
+                        }
+                        try AIAnalysisService.saveAPIKey(token)
+                        token = ""
+                        keySaved = AIAnalysisService.hasSavedAPIKey
+                        status = "密钥已保存到本机钥匙串。"
+                    } catch { status = error.localizedDescription }
+                }
+                if keySaved {
+                    Button("删除本机已保存密钥", role: .destructive) {
+                        do {
+                            try AIAnalysisService.saveAPIKey("")
+                            keySaved = false
+                            status = "本机密钥已删除。"
+                        } catch { status = error.localizedDescription }
+                    }
+                }
+                Text(keySaved ? "密钥仅保存在此设备的钥匙串，不会进入 NAS 或 JSON 备份。" : "尚未保存密钥。不开启在线分析时，手机仍可使用本机规则。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            .plainCard(isLight: isLight)
+
+            if !status.isEmpty {
+                Section { Text(status).font(.footnote).foregroundStyle(.secondary) }
+                    .plainCard(isLight: isLight)
+            }
+        }
+        .navigationTitle("手机 AI 设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .scrollContentBackground(.hidden)
+        .listStyle(.plain)
+        .appListLayout()
+        .themedSheetBackground()
+        .keyboardDoneToolbar()
+        .onAppear {
+            let configured = store.data.aiAnalysisConfig.model
+            model = configured == "deepseek-v4-pro" ? configured : "deepseek-flash"
+            keySaved = AIAnalysisService.hasSavedAPIKey
         }
     }
 }
@@ -1175,6 +1268,9 @@ struct MoreHubView: View {
     @State private var showPlanningTools = false
     @State private var showAppSettings = false
     @State private var showDataSync = false
+    @State private var showAdvisor = false
+    @State private var showInvestorProfile = false
+    @State private var showAISettings = false
     // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
     // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
     /// 三个弹窗入口合并成一个目标（见 `MoreHubSheet`）。
@@ -1185,9 +1281,17 @@ struct MoreHubView: View {
             List {
                 Section {
                     VStack(spacing: 10) {
-                        MoreHubCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
+                        MoreHubCard(title: "AI 今日指导", subtitle: "唯一建议 · 真实持仓、NAS研究与手机AI",
                                     icon: "sparkles", tint: store.effectiveAccentColor) {
-                            activeSheet = .aiAnalysis
+                            showAdvisor = true
+                        }
+                        MoreHubCard(title: "AI 对我的了解", subtitle: "真实成交与建议反馈形成的动态画像",
+                                    icon: "person.text.rectangle", tint: Color(red: 0.36, green: 0.54, blue: 0.84)) {
+                            showInvestorProfile = true
+                        }
+                        MoreHubCard(title: "手机 AI 接口设置", subtitle: "API 密钥仅保存在本机钥匙串",
+                                    icon: "key.fill", tint: Color(red: 0.52, green: 0.38, blue: 0.78)) {
+                            showAISettings = true
                         }
                         HStack(spacing: 10) {
                             MoreHubTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
@@ -1203,7 +1307,7 @@ struct MoreHubView: View {
                     .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                     .listRowBackground(Color.clear)
                 } header: { Text("AI 与智能分析") } footer: {
-                    Text("投资偏好（画像）与模型接口在「AI 账户分析」页内配置；密钥只存本机钥匙串。")
+                    Text("动态画像在「AI 对我的了解」查看与修改；模型密钥只存本机钥匙串。")
                         .scaledFont(10)
                 }
 
@@ -1233,7 +1337,6 @@ struct MoreHubView: View {
                 Section("账户状态") {
                     LabeledContent("自选", value: "\(store.data.quotes.count) 只")
                     LabeledContent("场内持仓", value: "\(store.data.holdings.filter { $0.kind == .etf }.count) 只")
-                    LabeledContent("场外基金", value: "\(store.data.holdings.filter { $0.kind == .fund }.count) 只")
                     Label(store.nasSyncStatus, systemImage: "externaldrive.fill")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -1255,6 +1358,9 @@ struct MoreHubView: View {
             .navigationDestination(isPresented: $showPlanningTools) { ToolsView(title: "计划与复盘") }
             .navigationDestination(isPresented: $showAppSettings) { SettingsView(mode: .app) }
             .navigationDestination(isPresented: $showDataSync) { SettingsView(mode: .sync) }
+            .navigationDestination(isPresented: $showAdvisor) { LabResearchView() }
+            .navigationDestination(isPresented: $showInvestorProfile) { InvestorProfileView() }
+            .navigationDestination(isPresented: $showAISettings) { AISettingsView() }
             // 三层 sheet → **一层**（见 `MoreHubSheet`）。
             .sheet(item: $activeSheet) { sheet in
                 MoreHubSheetContent(sheet: sheet)
@@ -2303,6 +2409,7 @@ struct HoldingsView: View {
             // App 在后台跨过午夜、再回到前台时 `.task` 不保证重启，时钟会停在昨天，
             // 于是昨晚更新的净值今天还亮着框。这里补一次，只在真的翻篇时才写状态。
             .onChange(of: scenePhase) { _, phase in
+            if ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1" { return }
                 guard phase == .active else { return }
                 if MarketCalendar.isoDay(fundFreshnessClock) != MarketCalendar.isoDay(.now) {
                     fundFreshnessClock = .now
@@ -4012,22 +4119,7 @@ struct AssetsView: View {
                                 : "--",
                             dayTone: dayTone)
                         assetComposition
-                        MetricGrid(columns: 3, cells: [
-                            MetricCell(title: "持仓市值", value: (store.totalMarketValue).cny()),
-                            MetricCell(title: "参考现金", value: (store.data.cash).cny()),
-                            MetricCell(title: "仓位", value: (store.positionPercent).pct(1)),
-                            MetricCell(title: "持仓浮盈", value: (store.totalPnL).cny(), toneValue: store.totalPnL),
-                            MetricCell(title: "盈亏比例", value: store.totalPnLRate.map { $0.pct(2) } ?? "--", toneValue: store.totalPnL),
-                            MetricCell(title: "总成本", value: (store.totalCost).cny()),
-                            MetricCell(title: "当日盈亏", value: store.hasDayPnLGross ? (store.dayPnLGross).cny() : "--",
-                                      toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
-                            MetricCell(title: "当日幅度", value: store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--",
-                                      toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
-                            MetricCell(title: "已实现盈亏", value: (store.realizedPnL).cny(), toneValue: store.realizedPnL),
-                            MetricCell(title: "ETF / 证券", value: (store.marketValue(of: .etf)).cny()),
-                            MetricCell(title: "场外基金", value: (store.marketValue(of: .fund)).cny()),
-                            MetricCell(title: "累计净转入", value: netDeposit.cny(), toneValue: netDeposit)
-                        ])
+                        MetricGrid(columns: 3, cells: accountMetricCells)
                         Text("累计净转入 = 现金流记录里转入与转出相抵后的净额，只统计你手动记录过的流水。")
                             .scaledFont(10).foregroundStyle(.secondary)
                         Button("记录现金转入 / 转出") { showCashFlow = true }
@@ -4360,6 +4452,27 @@ struct AssetsView: View {
 
     /// 现金流记录里转入与转出相抵后的净额。没有记录时是 0，不臆测。
     private var netDeposit: Double { store.data.cashFlows.reduce(0) { $0 + $1.amount } }
+    private var accountMetricCells: [MetricCell] {
+        var cells = [
+            MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
+            MetricCell(title: "参考现金", value: store.data.cash.cny()),
+            MetricCell(title: "仓位", value: store.positionPercent.pct(1)),
+            MetricCell(title: "持仓浮盈", value: store.totalPnL.cny(), toneValue: store.totalPnL),
+            MetricCell(title: "盈亏比例", value: store.totalPnLRate.map { $0.pct(2) } ?? "--", toneValue: store.totalPnL),
+            MetricCell(title: "总成本", value: store.totalCost.cny()),
+            MetricCell(title: "当日盈亏", value: store.hasDayPnLGross ? store.dayPnLGross.cny() : "--",
+                       toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
+            MetricCell(title: "当日幅度", value: store.hasDayPnLGross ? (store.dayPnLGrossRate?.pct(2) ?? "--") : "--",
+                       toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
+            MetricCell(title: "已实现盈亏", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
+            MetricCell(title: "ETF / 证券", value: store.marketValue(of: .etf).cny())
+        ]
+        if store.data.holdings.contains(where: { $0.kind == .fund && $0.quantity > 0 }) {
+            cells.append(MetricCell(title: "场外基金", value: store.marketValue(of: .fund).cny()))
+        }
+        cells.append(MetricCell(title: "累计净转入", value: netDeposit.cny(), toneValue: netDeposit))
+        return cells
+    }
 
     /// 主题深浅决定卡片色的透明度档位。
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
@@ -4394,7 +4507,7 @@ struct AssetsView: View {
             .frame(height: 9)
             HStack(spacing: 12) {
                 legend(Color(red: 0.22, green: 0.53, blue: 0.90), "ETF/证券", etf / total)
-                legend(Color(red: 0.55, green: 0.42, blue: 0.90), "场外基金", fund / total)
+                if fund > 0 { legend(Color(red: 0.55, green: 0.42, blue: 0.90), "场外基金", fund / total) }
                 legend(Color(red: 0.15, green: 0.75, blue: 0.62), "现金", cash / total)
             }
         }
@@ -4814,14 +4927,13 @@ struct ToolsView: View {
     /// 合并成一个 `item` 之后只剩一层，且天然保证同一时刻只有一个弹窗。
     private enum ToolSheet: String, Identifiable {
         case grid, longGridPlanner, gridReview,
-             aiAnalysis, portrait, ledgerHealth,
+             portrait, ledgerHealth,
              tradePlans, overlap, addCash,
              fundReplay, quantEngine, tradeCSVImport,
              etfIncomeCalendar, dividendCalendar, portfolioAnalysis,
              tradePreview, returnSource, historicalReplay,
              intradayArchive, dataTrust, reconciliation,
              tradeLedger, monthlyReview, yearlyReview,
-             portfolioScenario,
              allocationTargets
         var id: String { rawValue }
     }
@@ -4887,7 +4999,6 @@ struct ToolsView: View {
                     Section("持仓结构") {
                         Button(allocationTargetsTitle) { activeSheet = .allocationTargets }
                         Button("ETF / 基金成分重叠") { activeSheet = .overlap }
-                        Button("换仓情景试算") { activeSheet = .portfolioScenario }
                     }
                 } else {
                     Section("计划") { Button("交易计划记录（\(store.data.tradePlans.count)）") { activeSheet = .tradePlans }; Button("日内网格计划与回放") { activeSheet = .grid }; Button("中长期网格计划") { activeSheet = .longGridPlanner }; Button(allocationTargetsTitle) { activeSheet = .allocationTargets }; Button("新增资金加仓试算") { activeSheet = .addCash } }
@@ -4917,7 +5028,6 @@ struct ToolsView: View {
                 case .grid: DayGridView().themedSheetBackground()
                 case .longGridPlanner: StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
                 case .gridReview: GridReviewView().environmentObject(store).themedSheetBackground()
-                case .aiAnalysis: AIAnalysisView().themedSheetBackground()
                 case .portrait: AccountPortraitView().themedSheetBackground()
                 case .ledgerHealth: LedgerHealthView().themedSheetBackground()
                 case .tradePlans: TradePlansView().themedSheetBackground()
@@ -4938,8 +5048,7 @@ struct ToolsView: View {
                 case .tradeLedger: TradeLedgerManagementView().themedSheetBackground()
                 case .monthlyReview: MonthlyReviewView().themedSheetBackground()
                 case .yearlyReview: YearlyReviewView().themedSheetBackground()
-                case .portfolioScenario: PortfolioScenarioView().themedSheetBackground()
-                case .allocationTargets: AllocationTargetsView().environmentObject(store).themedSheetBackground()
+                case .allocationTargets: ProAllocationWorkspace().environmentObject(store).themedSheetBackground()
                 }
             }
         }
@@ -5423,7 +5532,7 @@ struct ETFOverlapView: View {
         NavigationStack {
             List {
                 Section("覆盖情况") {
-                    LabeledContent("持有 ETF / 场外基金", value: "\(etfs.count) / \(store.data.holdings.filter { $0.kind == .fund }.count) 只")
+                    LabeledContent("持有 ETF", value: "\(etfs.count) 只")
                     LabeledContent("已有快照", value: "\(covered.count + store.data.fundConstituentSnapshots.count) 只")
                     LabeledContent("前十大对应市值", value: (coveredWeight).cny())
                     LabeledContent("重复成分敞口合计", value: (duplicates.reduce(0) { $0 + $1.exposure }).cny())
@@ -5734,8 +5843,10 @@ struct TradePlansView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showNew = false
     @State private var reviewTarget: TradePlan?
+    @State private var fillTarget: TradePlan?
 
     private var plans: [TradePlan] { store.data.tradePlans.sorted { $0.created > $1.created } }
+    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
         NavigationStack {
@@ -5757,11 +5868,15 @@ struct TradePlansView: View {
                         if !plan.trigger.isEmpty { Text("触发条件：\(plan.trigger)").font(.footnote) }
                         if let actualPrice = plan.actualPrice, let actualAmount = plan.actualAmount {
                             let variance = (plan.side == .sell ? plan.price - actualPrice : actualPrice - plan.price) * actualAmount / actualPrice
-                            Text("执行价 \((actualPrice).num(3)) · 相对计划偏差 \((variance).cny())")
+                            Text("\(plan.linkedLedgerID == nil ? "自述执行价（未入账）" : "真实入账成交价") \((actualPrice).num(3)) · 相对计划偏差 \((variance).cny())")
                                 .font(.footnote).foregroundStyle(variance >= 0 ? .green : .orange)
                         }
                         if !plan.review.isEmpty { Text("复盘：\(plan.review)").font(.footnote).foregroundStyle(.secondary) }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), alignment: .leading)], alignment: .leading, spacing: 8) {
+                            if plan.status == .planned && plan.kind == .etf && plan.linkedLedgerID == nil {
+                                Button("我已成交") { fillTarget = plan }
+                                    .buttonStyle(.borderedProminent)
+                            }
                             if plan.status != .cancelled {
                                 Button(plan.status == .reviewed ? "修改复盘" : "记录执行/复盘") { reviewTarget = plan }
                                     .buttonStyle(.bordered)
@@ -5776,10 +5891,11 @@ struct TradePlansView: View {
                             }.buttonStyle(.bordered)
                         }.font(.caption)
                     }.padding(.vertical, 4)
+                        .toneCard(plan.status == .cancelled ? CardTone.warn : (plan.linkedLedgerID == nil ? CardTone.accent : CardTone.ok), isLight: isLight)
                 }
             }
             .scrollContentBackground(.hidden)
-            .listStyle(.plain)
+            .appListLayout()
             .background(.clear)
             .navigationTitle("交易计划与复盘")
             .toolbar {
@@ -5789,9 +5905,17 @@ struct TradePlansView: View {
             .sheet(isPresented: $showNew) { TradePlanEditor { store.data.tradePlans.append($0); store.save(label: "修改账本或设置") } .themedSheetBackground() }
             .sheet(item: $reviewTarget) { plan in
                 TradePlanReviewEditor(plan: plan) { changed in
-                    if let index = store.data.tradePlans.firstIndex(where: { $0.id == changed.id }) { store.data.tradePlans[index] = changed; store.save(label: "修改账本或设置") }
+                    if let index = store.data.tradePlans.firstIndex(where: { $0.id == changed.id }) {
+                        var current = changed
+                        current.linkedLedgerID = store.data.tradePlans[index].linkedLedgerID
+                        store.data.tradePlans[index] = current
+                        store.save(label: "修改账本或设置")
+                    }
                 }
                 .themedSheetBackground()
+            }
+            .sheet(item: $fillTarget) { plan in
+                TradePlanFillEditor(plan: plan).themedSheetBackground()
             }
         }
     }
@@ -5807,6 +5931,67 @@ struct TradePlansView: View {
         case .reviewed: return "已复盘"
         case .cancelled: return "已取消"
         }
+    }
+}
+
+private struct TradePlanFillEditor: View {
+    @EnvironmentObject var store: PortfolioStore
+    @Environment(\.dismiss) private var dismiss
+    let plan: TradePlan
+    @State private var quantity = ""
+    @State private var price = ""
+    @State private var fee = "0.10"
+    @State private var linkedCash = true
+    @State private var tradeDate = Date.now
+    @State private var error = ""
+    @State private var linkAIJudgement = false
+
+    private var latestAIJudgement: AdvisorDecisionRecord? {
+        store.data.advisorDecisionRecords.last { $0.symbol == plan.code }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("券商真实成交 · \(plan.name)") {
+                    Text("请先在券商完成交易，再按成交回报填写。这里只记录真实流水，不会替你下单。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    TextField("实际成交份额", text: $quantity).keyboardType(.decimalPad)
+                    TextField("实际成交价", text: $price).keyboardType(.decimalPad)
+                    TextField("实际手续费", text: $fee).keyboardType(.decimalPad)
+                    Toggle("联动本程序参考现金", isOn: $linkedCash)
+                    DatePicker("成交日期", selection: $tradeDate, displayedComponents: .date)
+                    if let judgement = latestAIJudgement {
+                        Toggle("关联最近一次AI判断", isOn: $linkAIJudgement)
+                        Text("\(judgement.action) · \(judgement.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            }
+            .navigationTitle("我已成交")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("确认入账") { save() } }
+            }
+            .onAppear {
+                price = String(plan.price)
+                linkedCash = store.data.cashLinkedByDefault
+            }
+        }
+    }
+
+    private func save() {
+        guard let q = Double(quantity), let p = Double(price), let f = Double(fee) else {
+            error = "请填写实际成交份额、价格和手续费。"; return
+        }
+        do {
+            try store.recordTrade(code: plan.code, kind: plan.kind, side: plan.side,
+                quantity: q, price: p, fee: f, linkedCash: linkedCash, date: tradeDate, planID: plan.id,
+                advisorDecisionID: linkAIJudgement ? latestAIJudgement?.id : nil)
+            Task { await store.refreshQuotesAndWait() }
+            dismiss()
+        } catch { self.error = error.localizedDescription }
     }
 }
 
@@ -5973,459 +6158,6 @@ private struct TradePlanReviewEditor: View {
         var changed = plan; changed.actualPrice = price; changed.actualAmount = amount
         changed.review = review.trimmingCharacters(in: .whitespacesAndNewlines); changed.status = .reviewed
         onSave(changed); dismiss()
-    }
-}
-
-private enum DeepSeekModelOption: String, CaseIterable, Identifiable {
-    case flash = "deepseek-flash", pro = "deepseek-v4-pro"
-    var id: String { rawValue }
-    /// 用户仍按“Flash / Chat”理解用途；请求值使用 DeepSeek 当前官方模型名。
-    var title: String { self == .flash ? "DeepSeek Flash（快速）" : "DeepSeek Chat（V4 Pro 深度）" }
-}
-struct AIAnalysisView: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var model = ""
-    @State private var timeoutSeconds = 45
-    @State private var systemPrompt = ""
-    @State private var showPortrait = false
-    @State private var advisorResult = ""
-    @State private var showAdvisorResult = false
-    @State private var investmentProfile = InvestmentProfile()
-    @State private var token = ""
-    @State private var keySaved = false
-    @FocusState private var apiKeyFocused: Bool
-    @State private var showSavedAccountResult = false
-    @State private var busy = false
-    @State private var result = ""
-    @State private var message = ""
-    /// 一键转计划时的预填载体（同时充当 sheet(item:) 的开关）。
-    @State private var planPrefill: AISuggestion?
-    /// 已经处理过的建议 id，防止同一行被反复转成多条提醒。
-    @State private var handledSuggestionIDs: Set<UUID> = []
-    @State private var suggestionNote = ""
-    @State private var showProfileSettings = false
-    @State private var showModelSettings = false
-
-    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
-
-    /// 从模型回答末尾解析出的可执行建议。解析失败就是空数组，界面自然不出现这一段。
-    private var suggestions: [AISuggestion] { AISuggestionParser.parse(result) }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    VStack(spacing: 0) {
-                        insightButton(title: "账户画像", subtitle: "从持仓与流水归纳操作习惯", icon: "person.crop.circle.badge.checkmark") {
-                            showPortrait = true
-                        }
-                        Divider().padding(.leading, 52)
-                        insightButton(title: "本机账户建议", subtitle: "不需要 API 密钥，不上传数据", icon: "sparkles", expanded: showAdvisorResult) {
-                            if advisorResult.isEmpty { advisorResult = LocalAdvisorEngine.review(data: store.data, totalAsset: store.totalAsset); showAdvisorResult = true }
-                            else { withAnimation(.easeInOut(duration: 0.2)) { showAdvisorResult.toggle() } }
-                        }
-                    }
-                    if showAdvisorResult, !advisorResult.isEmpty {
-                        Text(advisorResult)
-                            .font(.subheadline)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
-                                fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
-                                tone: store.effectiveAccentColor)
-                    }
-                }
-                .toneCard(store.effectiveAccentColor, isLight: isLight)
-                Section("AI 助手") {
-                    Button {
-                        if keySaved {
-                            Task { await runAnalysis() }
-                        } else {
-                            message = "先在下方保存 DeepSeek API 密钥；密钥只保存在本机钥匙串。"
-                            apiKeyFocused = true
-                        }
-                    } label: {
-                        HStack(spacing: 9) {
-                            if busy { ProgressView() }
-                            Image(systemName: busy ? "sparkles" : "sparkles.rectangle.stack")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(busy ? "正在分析账户…" : keySaved ? "分析我的账户" : "配置密钥后开始分析")
-                                    .font(.headline)
-                                Text("当前模型：\(DeepSeekModelOption(rawValue: model)?.title ?? "DeepSeek Flash（快速）")")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "arrow.right").font(.caption.weight(.semibold))
-                        }
-                        .padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                    }
-                    .disabled(busy)
-                    if let saved = store.data.savedAccountAIAnalysis {
-                        Button { showSavedAccountResult = true } label: {
-                            Label("查看上次分析 · \(saved.updatedAt.formatted(date: .abbreviated, time: .shortened))",
-                                  systemImage: "clock.arrow.circlepath")
-                        }
-                    }
-                    Text("账户建议和账户画像可在上方直接使用；大模型分析会读取当前账本并保存最近一次成功结果。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .toneCard(store.effectiveAccentColor, isLight: isLight)
-                Section {
-                    DisclosureGroup(isExpanded: $showProfileSettings) {
-                        Picker("交易风格", selection: $investmentProfile.style) {
-                            Text("超短线").tag("day"); Text("波段").tag("swing"); Text("中线").tag("mid"); Text("长线定投").tag("long")
-                        }
-                        Picker("风险偏好", selection: $investmentProfile.risk) {
-                            Text("保守").tag("con"); Text("平衡").tag("bal"); Text("激进").tag("agg")
-                        }
-                        Stepper(value: $investmentProfile.maxPositionPercent, in: 1...100, step: 1) {
-                            LabeledContent("单标的仓位上限", value: "\(Int(investmentProfile.maxPositionPercent))%")
-                        }
-                        TextField("典型持有周期", text: $investmentProfile.horizon)
-                        Toggle("关注 ETF 溢价", isOn: $investmentProfile.premiumSensitive)
-                        TextField("偏好方向", text: $investmentProfile.preference, axis: .vertical).lineLimit(1...3)
-                        TextField("忌讳 / 不做", text: $investmentProfile.avoid, axis: .vertical).lineLimit(1...3)
-                        TextField("自己的交易方式", text: $investmentProfile.method, axis: .vertical).lineLimit(2...5)
-                        TextField("投资目标", text: $investmentProfile.goal, axis: .vertical).lineLimit(1...3)
-                        Button("保存投资偏好") {
-                            investmentProfile.maxPositionPercent = min(100, max(1, investmentProfile.maxPositionPercent))
-                            store.data.investmentProfile = investmentProfile
-                            store.save(label: "修改账本或设置")
-                            message = "投资偏好已保存"
-                        }
-                    } label: {
-                        settingsSummary(title: "投资偏好", value: "\(profileStyleName(investmentProfile.style)) · \(profileRiskName(investmentProfile.risk))", icon: "slider.horizontal.3")
-                    }
-                }
-                .plainCard(isLight: isLight)
-                Section {
-                    DisclosureGroup(isExpanded: $showModelSettings) {
-                        LabeledContent("接口", value: "DeepSeek 官方 API")
-                        Picker("DeepSeek 模型", selection: $model) { ForEach(DeepSeekModelOption.allCases) { Text($0.title).tag($0.rawValue) } }
-                        Stepper(value: $timeoutSeconds, in: 5...180, step: 5) {
-                            LabeledContent("请求超时", value: "\(timeoutSeconds) 秒")
-                        }
-                        TextField("分析要求", text: $systemPrompt, axis: .vertical).lineLimit(3...7)
-                        Button("保存接口设置") {
-                            var config = store.data.aiAnalysisConfig
-                            config.endpoint = "https://api.deepseek.com"
-                            config.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                            config.timeoutSeconds = min(180, max(5, timeoutSeconds))
-                            config.systemPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                            store.data.aiAnalysisConfig = config
-                            store.save(label: "修改账本或设置")
-                            message = "接口设置已保存"
-                        }
-                        Text("Flash 适合快速分析；Chat 适合更完整的账户或单标的解读。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    } label: {
-                        settingsSummary(title: "模型设置", value: model.isEmpty ? "未配置" : model, icon: "cpu")
-                    }
-                }
-                .plainCard(isLight: isLight)
-                Section {
-                    Label("API 密钥", systemImage: "key").font(.headline)
-                    HStack {
-                        SecureField("粘贴 API 密钥", text: $token)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .focused($apiKeyFocused)
-                        PasteButton(payloadType: String.self) { values in
-                            if let value = values.first { token = value.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        }
-                        .labelStyle(.iconOnly)
-                        .accessibilityLabel("从剪贴板粘贴 API 密钥")
-                    }
-                    Button("安全保存密钥") {
-                        do {
-                            guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                                message = "请输入新的密钥；已保存的密钥不会显示在这里。"
-                                return
-                            }
-                            try AIAnalysisService.saveAPIKey(token)
-                            token = ""
-                            keySaved = AIAnalysisService.hasSavedAPIKey
-                            message = "密钥已保存到本机钥匙串"
-                        } catch { message = error.localizedDescription }
-                    }
-                    if keySaved {
-                        Button("删除本机已保存密钥", role: .destructive) {
-                            do {
-                                try AIAnalysisService.saveAPIKey("")
-                                keySaved = false
-                                message = "本机密钥已删除"
-                            } catch { message = error.localizedDescription }
-                        }
-                    }
-                    Text(keySaved ? "密钥已保存在本机钥匙串，不会写入 JSON 备份。" : "请使用你在模型服务商处创建的 API 密钥。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
-                Section {
-                    DisclosureGroup("查看发送给模型的数据范围") {
-                        Text("分析时会发送投资偏好、持仓、自选报价、场内与场外基金流水、定投计划、基金成分报告、参考现金、最近快照和现金流记录。本机还会计算交易行为统计、大盘指数与组合集中度、已缓存标的的均线位置并一并发送；这些补充材料在手机本地计算。请勿在提示中填写账户密码或其他敏感信息。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                .plainCard(isLight: isLight)
-                if !message.isEmpty {
-                    Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
-                        .plainCard(isLight: isLight)
-                }
-                if !result.isEmpty {
-                    Section("分析结果") {
-                        if let saved = store.data.savedAccountAIAnalysis {
-                            Label("保存于 \(saved.updatedAt.formatted(date: .abbreviated, time: .shortened)) · 下次成功分析后替换",
-                                  systemImage: "clock.arrow.circlepath")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        // 展示用剥掉机器可读段的人话版本；解析仍然读完整的 result。
-                        AIFormattedResultView(text: AISuggestionParser.displayText(result),
-                                              accent: store.effectiveAccentColor)
-                        Text("模型输出可能有误。价格/净值可能延迟；请核对行情与基金净值，不要仅依据模型文字交易。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !suggestions.isEmpty {
-                        Section("可执行建议（\(suggestions.count) 条）") {
-                            Text("模型在回答末尾给出了可落地的价位。转成计划会进「交易计划与复盘」等待你复核，转成提醒会在行情刷新时通知；两者都不会自动下单。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                            ForEach(suggestions) { suggestion in
-                                suggestionRow(suggestion)
-                            }
-                            if !suggestionNote.isEmpty {
-                                Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
-                            }
-                        }
-                        .toneCard(store.effectiveAccentColor, isLight: isLight)
-                    }
-                }
-            }
-            .navigationTitle("AI 账户分析")
-            .navigationBarTitleDisplayMode(.inline)
-            .keyboardDoneToolbar()
-            .scrollContentBackground(.hidden)
-            .listStyle(.plain)
-            .appListLayout()
-            .background(.clear)
-            .themedSheetBackground()
-            .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
-            .sheet(isPresented: $showSavedAccountResult) {
-                NavigationStack {
-                    ScrollView {
-                        if let saved = store.data.savedAccountAIAnalysis {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("保存于 \(saved.updatedAt.formatted(date: .complete, time: .shortened))")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                AIFormattedResultView(text: AISuggestionParser.displayText(saved.text),
-                                                      accent: store.effectiveAccentColor)
-                                Text("这是上次成功分析的保存结果；重新分析成功后会更新。")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                            }
-                            .padding(12)
-                        } else {
-                            ContentUnavailableView("暂无已保存的分析", systemImage: "sparkles")
-                        }
-                    }
-                    .navigationTitle("上次分析结果")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { showSavedAccountResult = false } } }
-                    .themedSheetBackground()
-                }
-            }
-            .sheet(item: $planPrefill) { suggestion in
-                // 显式写 onSave: —— TradePlanEditor 的参数顺序是 (onSave, prefill)，
-                // 尾随闭包语法会绑到最后一个参数（prefill）上，类型对不上。
-                TradePlanEditor(prefill: suggestion, onSave: { plan in
-                    store.data.tradePlans.append(plan)
-                    store.save(label: "AI 建议转交易计划")
-                    handledSuggestionIDs.insert(suggestion.id)
-                    suggestionNote = "已存入「交易计划与复盘」，到复盘日期前都可以修改或取消。"
-                })
-                .themedSheetBackground()
-            }
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
-            .onAppear {
-                let savedModel = store.data.aiAnalysisConfig.model
-                if savedModel == "deepseek-chat" || savedModel == "deepseek-reasoner" {
-                    model = DeepSeekModelOption.pro.rawValue
-                } else if savedModel == "deepseek-v4-flash" {
-                    model = DeepSeekModelOption.flash.rawValue
-                } else {
-                    model = DeepSeekModelOption(rawValue: savedModel) == nil ? DeepSeekModelOption.flash.rawValue : savedModel
-                }
-                timeoutSeconds = store.data.aiAnalysisConfig.timeoutSeconds
-                systemPrompt = store.data.aiAnalysisConfig.systemPrompt
-                investmentProfile = store.data.investmentProfile
-                keySaved = AIAnalysisService.hasSavedAPIKey
-                if result.isEmpty, let saved = store.data.savedAccountAIAnalysis {
-                    result = saved.text
-                }
-            }
-        }
-    }
-
-    private func insightButton(title: String, subtitle: String, icon: String, expanded: Bool? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(store.effectiveAccentColor)
-                    .frame(width: 36, height: 36)
-                    .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.headline).foregroundStyle(.primary)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: expanded.map { $0 ? "chevron.up" : "chevron.down" } ?? "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func settingsSummary(title: String, value: String, icon: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).foregroundStyle(store.effectiveAccentColor).frame(width: 24)
-            Text(title).font(.headline)
-            Spacer()
-            Text(value).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-        }
-    }
-
-    private func profileStyleName(_ raw: String) -> String {
-        ["day": "超短线", "swing": "波段", "mid": "中线", "long": "长线定投"][raw] ?? "未设置"
-    }
-
-    private func profileRiskName(_ raw: String) -> String {
-        ["con": "保守", "bal": "平衡", "agg": "激进"][raw] ?? "未设置"
-    }
-
-    @MainActor
-    private func runAnalysis() async {
-        var config = store.data.aiAnalysisConfig
-        config.endpoint = "https://api.deepseek.com"
-        config.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        config.timeoutSeconds = min(180, max(5, timeoutSeconds))
-        config.systemPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.data.aiAnalysisConfig = config
-        store.save(label: "修改账本或设置")
-        busy = true
-        message = ""
-        defer { busy = false }
-        // 补充材料在本机算好再塞进 prompt：交易行为画像（按历史流水统计的习惯）、
-        // 大盘指数、组合结构风险、已缓存标的的技术面。全部零网络请求，
-        // 拿不到的段落直接不出现，不让模型拿到编出来的数。
-        let extras = AIContextBuilder.portfolioSections(store: store)
-        do {
-            let newResult = try await AIAnalysisService.analyze(config: config, portfolio: store.data,
-                                                                extraSections: extras)
-            result = newResult
-            store.data.savedAccountAIAnalysis = SavedAIAnalysis(text: newResult)
-            store.saveAIAnalysisCache()
-            // 只有新答案成功后，旧建议的处理状态才作废。
-            handledSuggestionIDs.removeAll()
-            suggestionNote = ""
-        } catch {
-            message = result.isEmpty ? error.localizedDescription : "\(error.localizedDescription)；上次分析结果仍已保留。"
-        }
-    }
-
-    // MARK: - 可执行建议 → 计划 / 提醒
-
-    /// 单条建议的展示与两个落地动作。
-    ///
-    /// 配色沿用工程口径：买=红、卖=绿（国内习惯），不吃系统 `Color.red`。
-    private func suggestionRow(_ suggestion: AISuggestion) -> some View {
-        let tone: Color = suggestion.side == .buy ? PnLColor.up : PnLColor.down
-        let handled = handledSuggestionIDs.contains(suggestion.id)
-        // 在 ViewBuilder 之外先算好，少一处「闭包里能不能写 let」的疑问。
-        let prices = priceParts(suggestion)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(suggestion.side.label)
-                    .scaledFont(11, weight: .semibold)
-                    .foregroundStyle(tone)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(tone.opacity(isLight ? 0.14 : 0.24), in: Capsule())
-                Text("\(suggestion.displayName) · \(suggestion.code)")
-                    .scaledFont(14, weight: .semibold)
-                    .lineLimit(1).minimumScaleFactor(0.75)
-                Spacer(minLength: 4)
-                if handled {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(CardTone.ok)
-                        .accessibilityLabel("已处理")
-                }
-            }
-            if !prices.isEmpty {
-                Text(prices.joined(separator: " · "))
-                    .scaledFont(12).monospacedDigit().foregroundStyle(.secondary)
-            }
-            if !suggestion.reason.isEmpty {
-                Text(suggestion.reason).font(.footnote)
-            }
-            HStack(spacing: 10) {
-                Button("存入计划记录") {
-                    Haptics.tap()
-                    planPrefill = suggestion
-                }
-                .buttonStyle(.bordered)
-                .disabled(handled)
-
-                Button("设为价格提醒") {
-                    createAlert(from: suggestion)
-                }
-                .buttonStyle(.bordered)
-                .disabled(handled || alertTarget(suggestion) == nil || isFund(suggestion.code))
-            }
-            .font(.caption)
-        }
-        .padding(.vertical, 3)
-    }
-
-    /// 「参考价 3.85 · 目标 4.20 · 失效 3.70」，没填的项不出现。
-    private func priceParts(_ suggestion: AISuggestion) -> [String] {
-        var parts: [String] = []
-        if let price = suggestion.price { parts.append("参考价 \(price.num(3))") }
-        if let target = suggestion.target { parts.append("目标 \(target.num(3))") }
-        if let invalid = suggestion.invalid { parts.append("失效 \(invalid.num(3))") }
-        return parts
-    }
-
-    /// 提醒挂在哪个价位：优先参考价，其次目标价/失效价 —— 有哪个用哪个。
-    private func alertTarget(_ suggestion: AISuggestion) -> Double? {
-        suggestion.price ?? suggestion.target ?? suggestion.invalid
-    }
-
-    /// 这个代码是不是场外基金。基金按净值成交、没有实时价，价格提醒对它无意义。
-    private func isFund(_ code: String) -> Bool {
-        store.data.holdings.contains { $0.code == code && $0.kind == .fund }
-    }
-
-    /// 把建议转成价格提醒。买入等回落到参考价（below），卖出等涨到参考价（above）。
-    private func createAlert(from suggestion: AISuggestion) {
-        guard let target = alertTarget(suggestion) else { return }
-        // 场外基金没有实时价，提醒引擎永远碰不到它 —— 建一条哑提醒不如说清楚。
-        if store.data.holdings.contains(where: { $0.code == suggestion.code && $0.kind == .fund }) {
-            suggestionNote = "\(suggestion.displayName) 是场外基金，按净值成交、没有实时价，价格提醒不会触发；请用「存入计划记录」，到净值公布后自己核对。"
-            return
-        }
-        let direction: QuoteAlert.Direction = suggestion.side == .buy ? .below : .above
-        do {
-            try store.addQuoteAlert(code: suggestion.code,
-                                    name: suggestion.displayName,
-                                    target: target,
-                                    direction: direction)
-            handledSuggestionIDs.insert(suggestion.id)
-            suggestionNote = "已添加价格提醒：\(suggestion.displayName) \(direction == .below ? "跌到" : "涨到") \(target.num(3)) 时通知（一次性，触发后需手动重启）。"
-        } catch {
-            suggestionNote = error.localizedDescription
-        }
     }
 }
 
@@ -7288,6 +7020,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
+    @AppStorage(ThemeManager.storageKey) private var visualThemeRaw = VisualTheme.scene.rawValue
     @State private var themePickerExpanded = false
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
@@ -7296,6 +7029,9 @@ struct SettingsView: View {
     /// 本机的改动不再往上推，NAS 上的版本号也不再滚动。
     @AppStorage(NASSyncService.uploadKey) private var nasUpload = true
     @State private var showExporter = false
+    @State private var showOffExchangeExporter = false
+    @State private var confirmOffExchangeCleanup = false
+    @State private var exportedOffExchangeBundle: Data?
     @State private var showImporter = false
     @State private var confirmNASDownload = false
     @State private var confirmNASUpload = false
@@ -7358,8 +7094,35 @@ struct SettingsView: View {
                 }
                 Button("取消", role: .cancel) { selectedNASVersion = nil }
             }
+            .confirmationDialog("备份文件已导出并通过完整性校验。确认后会删除本机场外明细、相关分析与恢复副本及应用内归档；账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。NAS 不会自动删除。", isPresented: $confirmOffExchangeCleanup, titleVisibility: .visible) {
+                Button("确认删除本机场外历史", role: .destructive) {
+                    guard let exportedOffExchangeBundle else { message = "找不到已校验的备份文件。场外历史仍保留。"; return }
+                    do {
+                        try store.deleteOffExchangeHistoryAfterConfirmedExport(exportedOffExchangeBundle)
+                        self.exportedOffExchangeBundle = nil
+                        message = store.historicalArchiveStatus
+                    } catch { message = error.localizedDescription }
+                }
+                Button("暂不删除", role: .cancel) { exportedOffExchangeBundle = nil }
+            }
             .fileExporter(isPresented: $showExporter, document: PortfolioBackup(data: store.data, intradayBars: store.intradayBars, dailyBars: store.dailyBars.values.flatMap { $0 }), contentType: .json, defaultFilename: "观盘Pro原生备份") { result in
                 handleExportResult(result)
+            }
+            .fileExporter(isPresented: $showOffExchangeExporter,
+                          document: OffExchangeHistoryBackupDocument(bytes: (try? store.prepareOffExchangeHistoryExport()) ?? Data()),
+                          contentType: .json, defaultFilename: "观盘Pro场外历史归档") { result in
+                switch result {
+                case .success(let url):
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    guard let bytes = try? Data(contentsOf: url), HistoricalFundArchive.verifyExportBundle(bytes) else {
+                        message = "导出文件无法读取或完整性校验失败。原场外记录仍保留。"
+                        return
+                    }
+                    exportedOffExchangeBundle = bytes
+                    confirmOffExchangeCleanup = true
+                case .failure(let error): message = "备份导出失败，原场外记录仍保留：\(error.localizedDescription)"
+                }
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
                 handleImportResult(result)
@@ -7410,56 +7173,18 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var appearanceSection: some View {
-        // 只留配色主题。
-        // 图片背景 / 渐变背景 / 背景遮罩 / 毛玻璃 / 卡片融合 这一整组已按用户要求移除 ——
-        // 背景图要靠卡片半透明透出来，每个主题的透明度都得单独调才好看；
-        // 而配色主题本身已经能拉开观感差异，不必再维护「图 × 主题」两套变量的组合。
-        Section("配色主题") {
-            DisclosureGroup(isExpanded: $themePickerExpanded) {
-                let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(allThemes, id: \.rawValue) { item in
-                        ThemePreviewCard(appearance: item,
-                                         accent: AccentPreset(rawValue: store.data.accentColorName)?.color ?? item.accentColor,
-                                         selected: store.appearance == item) {
-                            Haptics.selection()
-                            store.appearance = item
-                        }
-                    }
+        Section("App 主题") {
+            Picker("视觉主题", selection: $visualThemeRaw) {
+                ForEach(VisualTheme.allCases) { theme in
+                    Text(theme.title).tag(theme.rawValue)
                 }
-                .padding(.vertical, 6)
-                Text("主题同时决定页面和卡片底色；强调色可在下方单独调整。")
+            }
+            .pickerStyle(.navigationLink)
+            Text("五套主题共享同一份真实持仓、行情和 AI 结论。切换后立即生效，重新打开 App 也会保留。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if visualThemeRaw == VisualTheme.scene.rawValue {
+                Text("跟随场景：首页东方编辑室、盘中交易仪表盘、AI日报杂志卡片、持仓创意拼图、设置和详情现代卡片。")
                     .font(.footnote).foregroundStyle(.secondary)
-            } label: {
-                HStack {
-                    Label("当前主题", systemImage: "paintpalette")
-                    Spacer()
-                    Text(store.appearance.title).foregroundStyle(.secondary)
-                }
-            }
-        }
-        if themePickerExpanded {
-        Section("强调色") {
-            Picker("强调色", selection: Binding(
-                get: { store.data.accentColorName },
-                set: { store.data.accentColorName = $0; Haptics.selection(); store.save(label: "修改账本或设置") })) {
-                ForEach(AccentPreset.allCases) { preset in Text(preset.title).tag(preset.rawValue) }
-            }
-            Text("选「跟随主题」时用主题自带强调色；选其他则覆盖全部主题。")
-                .scaledFont(10).foregroundStyle(.secondary)
-        }
-        Section("定时自动切换深浅") {
-            Picker("自动切换", selection: Binding(
-                get: { store.data.autoThemeSchedule },
-                set: { store.data.autoThemeSchedule = $0; store.save(label: "修改账本或设置") })) {
-                Text("关闭").tag("")
-                Text("日出日落（19:00–07:00 深色）").tag("sun")
-                Text("22:00–07:00 深色").tag("22:00-07:00")
-                Text("20:00–08:00 深色").tag("20:00-08:00")
-            }
-            if !store.data.autoThemeSchedule.isEmpty {
-                Text("开启后每分钟检查一次；到点自动切换，会覆盖上面所选主题的深浅。")
-                    .scaledFont(10).foregroundStyle(.secondary)
             }
         }
         Section("字号") {
@@ -7467,65 +7192,10 @@ struct SettingsView: View {
                 ForEach(FontScalePreset.allCases) { preset in Text(preset.title).tag(preset.value) }
             }
             .pickerStyle(.segmented)
-            Text("App 内字号倍率，会与系统「设置 → 显示与亮度 → 文字大小」叠加。改大后部分紧凑网格会自动换行。")
-                .scaledFont(10).foregroundStyle(.secondary)
-            HStack {
-                Text("预览：总资产 ¥1,234,567.89").scaledFont(13, weight: .semibold, design: .rounded)
-                Spacer(minLength: 0)
-            }
-        }
+            Text("大字模式下卡片会增加高度，避免证券名称和金额互相遮挡。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
-
-    private var allThemes: [AppAppearance] {
-        [.system, .dark, .oled, .blue, .green, .purple, .sakura, .cyber, .amber, .coffee, .graphite, .light, .paper, .mint]
-    }
-
-    /// 主题预览卡：直接画出该主题的底色渐变 + 强调色 + 深浅标记，选中加边框。
-    private struct ThemePreviewCard: View {
-    let appearance: AppAppearance
-    let accent: Color
-    let selected: Bool
-    let action: () -> Void
-
-    private var theme: AppTheme { AppTheme.palette(for: appearance) }
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack(alignment: .topTrailing) {
-                    theme.gradient
-                        .frame(height: 46)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    Circle().fill(accent).frame(width: 9, height: 9)
-                        .padding(6)
-                }
-                HStack(spacing: 3) {
-                    Text(appearance.title).scaledFont(11, weight: .medium).lineLimit(1)
-                    Spacer(minLength: 0)
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .scaledFont(11).foregroundStyle(accent)
-                    }
-                }
-                Text(theme.isLight ? "浅色" : "深色")
-                    .scaledFont(9).foregroundStyle(.secondary)
-            }
-            .padding(7)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(selected ? accent.opacity(0.14) : Color.secondary.opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(selected ? accent.opacity(0.6) : Color.clear, lineWidth: 1.2)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-}
-
     @ViewBuilder private var ledgerSection: some View {
         Section("现金账本") {
             LabeledContent("当前参考现金", value: (store.data.cash).cny())
@@ -7563,9 +7233,6 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary).disabled(store.data.quoteRefreshSeconds == 0)
             Toggle("自动保存每日分时", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
             Text("前台刷新时记录实时点，并每 30 分钟至多补全一次自选和场内持仓的最近交易日整日分时；旧日期持续保留，可在“工具－分时采集”查看。这份档案也是「工具－复盘」的原料。")
-                .font(.footnote).foregroundStyle(.secondary)
-            Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
-            Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
                 .font(.footnote).foregroundStyle(.secondary)
             Toggle("允许系统安排后台刷新", isOn: $backgroundRefreshEnabled)
             Text("前台按设置间隔刷新；后台刷新由 iOS 自主安排，时间和频率不保证。后台只尝试更新行情并触发已授权的本地价格提醒，不采集分时、不运行影子盘，也不刷新基金净值。")
@@ -7609,6 +7276,17 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var dataSection: some View {
+        if store.hasOffExchangeHistoryToClean {
+            Section("一次性清理旧场外记录") {
+                Text(store.historicalArchiveStatus)
+                Button("先导出并校验备份，再确认清理") {
+                    do { _ = try store.prepareOffExchangeHistoryExport(); showOffExchangeExporter = true }
+                    catch { message = error.localizedDescription }
+                }
+                Text("只有本机检测到旧场外记录时才显示。导出文件通过校验后会再次询问；确认后，软件内的场外持仓、流水、相关 AI 分析、撤销/审计副本和归档都会删除。账户总资产快照与共用现金流水保留，快照总额可能包含过场外估值。此操作不会自动改动 NAS。完成后本入口消失。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
         Section("数据备份") {
             Button("导出 JSON 备份") { showExporter = true }
             Button("导入 JSON 备份") { showImporter = true }
@@ -7654,7 +7332,7 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Toggle("真实账本自动同步（默认关闭 · 旧协议）", isOn: $nasAutoSync)
-            Text("升级后默认手动同步真实资产。行情与 AI 量化独立通道状态见投资数字孪生实验室；旧协议仍会携带完整账本和缓存。")
+            Text("升级后默认手动同步真实资产。行情与 NAS 研究通道状态可在「AI 今日指导」中查看；旧协议仍会携带完整账本和缓存。")
                 .font(.footnote).foregroundStyle(.secondary)
             // 第二层开关：只收不发。用户要的就是「NAS 收集的数据自动到我手机上，
             // 而不是一直往上同步，版本还一直变化」。
@@ -8029,5 +7707,21 @@ struct PortfolioBackup: FileDocument {
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: try JSONEncoder().encode(NativeBackupEnvelope(data: data, intradayBars: intradayBars, dailyBars: dailyBars)))
+    }
+}
+
+struct OffExchangeHistoryBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var bytes: Data
+    init(bytes: Data) { self.bytes = bytes }
+    init(configuration: ReadConfiguration) throws {
+        guard let contents = configuration.file.regularFileContents,
+              HistoricalFundArchive.verifyExportBundle(contents) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        bytes = contents
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: bytes)
     }
 }

@@ -1,7 +1,6 @@
 services:
   guanpan-nas-sync:
     image: python:3.12-alpine
-    container_name: guanpan-nas-sync
     restart: unless-stopped
     working_dir: /app
     command: ["python", "-u", "/app/server.py"]
@@ -13,6 +12,8 @@ services:
       - ./channel_store.py:/app/channel_store.py:ro
       - ./market_data.py:/app/market_data.py:ro
       - ./market_runtime.py:/app/market_runtime.py:ro
+      - ./market_universe.py:/app/market_universe.py:ro
+      - ./fundamentals.py:/app/fundamentals.py:ro
       - ./web:/app/web:ro
       - ./data:/data
     environment:
@@ -24,6 +25,10 @@ services:
       SYNC_TOKEN: "${SYNC_TOKEN:-}"
       # 上游行情超时（秒）。家里网慢可调到 20。
       UPSTREAM_TIMEOUT: "12"
+      V2_UPSTREAM_ENABLED: "${V2_UPSTREAM_ENABLED:-1}"
+      V2_FEED_URL: "${V2_FEED_URL:-}"
+      V2_FEED_TOKEN: "${V2_FEED_TOKEN:-}"
+      V2_BOOK_VOLUME_MULTIPLIER: "${V2_BOOK_VOLUME_MULTIPLIER:-}"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/ping', timeout=2).read()"]
       interval: 30s

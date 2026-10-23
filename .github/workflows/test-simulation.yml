@@ -1,5 +1,11 @@
 name: Experimental simulation core
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+  push:
+    branches: ['upgrade/v2.13.55-r2']
+    paths:
+      - 'Experimental/**'
+      - '.github/workflows/test-simulation.yml'
 permissions:
   contents: read
 jobs:

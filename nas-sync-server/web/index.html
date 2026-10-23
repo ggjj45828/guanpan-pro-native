@@ -894,7 +894,7 @@ window.__SA={top:0,bottom:0,left:0,right:0,appH:0,
   <div class="nv on" data-p="watch"><span>◈</span>自选</div>
   <div class="nv" data-p="hold"><span>▤</span>持仓</div>
   <div class="nv" data-p="ast"><span>◐</span>资产</div>
-  <div class="nv" data-p="fund"><span>◍</span>历史归档</div>
+
   <div class="nv" data-p="tool"><span>⚒</span>工具</div>
   <div class="nv" data-p="ai"><span>✦</span>AI</div>
   <div class="nv" data-p="set" id="navSet"><span>⚙</span>设置<i class="navbadge" id="chkBadge"></i></div>
@@ -13910,18 +13910,23 @@ function bindAdd(el){
 /* ═══════════ 工具页 ═══════════ */
 var TOOLAB='dca';
 function renderTool(){
+  /* Legacy grid-trade simulator is retained only for old local data compatibility;
+     the NAS web UI is research-only and must not expose a second simulated account. */
+  if(TOOLAB==='gridTrade'){
+    TOOLAB='dca';
+    toast('旧版模拟网格入口已停用；NAS 只提供行情研究与机会证据');
+  }
   var el=document.getElementById('pgTool');
   if(!el){var d=document.createElement('div');d.id='pgTool';d.style.display='none';document.getElementById('main').appendChild(d);}
   el=document.getElementById('pgTool');
   var h='<div class="tabs2" style="padding:10px 14px 0">'+
-   [['add','加仓试算'],['val','估值分位'],['dca','定投回测'],['grid','网格计划'],['gridTrade','网格交易'],['pen','持仓穿透'],['trd','交易流水']].map(function(x){return '<div class="tb'+(TOOLAB===x[0]?' on':'')+'" data-tool="'+x[0]+'">'+x[1]+'</div>';}).join('')+
+   [['add','加仓试算'],['val','估值分位'],['dca','定投回测'],['grid','网格计划'],['pen','持仓穿透'],['trd','交易流水']].map(function(x){return '<div class="tb'+(TOOLAB===x[0]?' on':'')+'" data-tool="'+x[0]+'">'+x[1]+'</div>';}).join('')+
    '</div>';
   if(!DB.hold.length&&TOOLAB!=='gridTrade'){el.innerHTML=h+'<div class="empty" style="padding:40px">还没有持仓</div>';bindTool(el);return;}
   if(TOOLAB==='add')h+=toolAdd();
   else if(TOOLAB==='val')h+=toolVal();
   else if(TOOLAB==='dca')h+=toolDca();
   else if(TOOLAB==='grid')h+=toolGrid();
-  else if(TOOLAB==='gridTrade')h+=toolGridTrade();
   else if(TOOLAB==='trd')h+=toolTrd();
   else h+=toolPen();
   el.innerHTML=h;
@@ -14250,9 +14255,10 @@ function gridTradeCaptureTick(){
   try{
     if(document.visibilityState==='hidden')return;
     var marketOpen=isOpenNow();
-    if(Date.now()-GRID_HEALTH_LAST_TOAST>15*60*1000){for(var gi=0;gi<(DB.gridTrades||[]).length;gi++){var gg=DB.gridTrades[gi];if(!gg||!gg.active||gg.horizon!=='intraday')continue;var gh=gridTradeHealth(gg,gridTradeQuote(gg.code));if(gh.state!=='正常观察'&&gh.state!=='等待行情'){GRID_HEALTH_LAST_TOAST=Date.now();toast((gg.name||gg.code)+' 网格体检：'+gh.state+'。'+gh.why[0]);break;}}}
-    var codes=[],seen={};(DB.gridTrades||[]).forEach(function(g){if(g&&g.status!=='closed'&&g.horizon==='intraday'&&g.code&&!seen[g.code]&&codes.length<12){seen[g.code]=1;codes.push(g.code);}});(DB.hold||[]).concat(DB.watch||[]).forEach(function(x){if(x&&x.code&&!seen[x.code]&&codes.length<12){seen[x.code]=1;codes.push(x.code);}});
-    codes.forEach(function(code){if(Date.now()-(GRID_LAST_CAPTURE[code]||0)<55000)return;GRID_LAST_CAPTURE[code]=Date.now();gridCaptureMinute(code,function(m){if(m&&m.pts&&m.pts.length){var raw=String(m.sessionDate||'').replace(/\D/g,''),day=raw.length>=8?raw.slice(0,4)+'-'+raw.slice(4,6)+'-'+raw.slice(6,8):fmtD(new Date()),old=((gridHistoryLoad()[code]||{})[day]||[]);if(marketOpen||old.length<m.pts.length){gridHistoryCapture(code,m);if(marketOpen)gridTradeShadowTick(code,m);}}else gridCaptureMetaRecord(code,'',null,'行情接口未返回分钟数据');});});
+    /* Keep minute-history capture for held/watchlisted instruments, but never
+       run the retired shadow-account simulator from the background timer. */
+    var codes=[],seen={};(DB.hold||[]).concat(DB.watch||[]).forEach(function(x){if(x&&x.code&&!seen[x.code]&&codes.length<12){seen[x.code]=1;codes.push(x.code);}});
+    codes.forEach(function(code){if(Date.now()-(GRID_LAST_CAPTURE[code]||0)<55000)return;GRID_LAST_CAPTURE[code]=Date.now();gridCaptureMinute(code,function(m){if(m&&m.pts&&m.pts.length){var raw=String(m.sessionDate||'').replace(/\D/g,''),day=raw.length>=8?raw.slice(0,4)+'-'+raw.slice(4,6)+'-'+raw.slice(6,8):fmtD(new Date()),old=((gridHistoryLoad()[code]||{})[day]||[]);if(marketOpen||old.length<m.pts.length)gridHistoryCapture(code,m);}else gridCaptureMetaRecord(code,'',null,'行情接口未返回分钟数据');});});
   }catch(e){}
 }
 function gridTradeLearningSummary(code){

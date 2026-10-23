@@ -36,11 +36,20 @@ jobs:
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -resultBundlePath "$RUNNER_TEMP/GuanpanValidation.xcresult" \
+            -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
+      - name: Export UI test screenshots
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/GuanpanValidation.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/GuanpanValidation.xcresult" --output-path "$RUNNER_TEMP/experience-screenshots" || true
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ios-validation-results
-          path: ${{ runner.temp }}/GuanpanValidation.xcresult
+          path: |
+            ${{ runner.temp }}/GuanpanValidation.xcresult
+            ${{ runner.temp }}/experience-screenshots
           if-no-files-found: warn
 
