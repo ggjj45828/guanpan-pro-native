@@ -336,7 +336,7 @@ struct VisualHomeView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1).minimumScaleFactor(0.7)
                     }
-                    .frame(maxWidth: .infinity, minHeight: theme == .dashboard ? 73 : 68, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: theme == .dashboard ? 73 : 68, alignment: .topLeading)
                     .padding(9)
                     .background(tokens.surface, in: RoundedRectangle(cornerRadius: theme == .dashboard ? 10 : 13))
                 }.buttonStyle(.plain).frame(maxWidth: .infinity)
@@ -351,7 +351,7 @@ struct VisualHomeView: View {
                     Text(nasStatusText).font(.caption.weight(.bold))
                         .foregroundStyle(nasOnline ? Color.green : Color.orange)
                 }
-                .frame(maxWidth: .infinity, minHeight: theme == .dashboard ? 73 : 68, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: theme == .dashboard ? 73 : 68, alignment: .topLeading)
                 .padding(9)
                 .background(tokens.surface, in: RoundedRectangle(cornerRadius: 13))
                 .frame(maxWidth: .infinity)
@@ -390,8 +390,9 @@ struct VisualHomeView: View {
         let decision = decisions.first { $0.symbol == holding.code }
         let change = store.data.quotes.first { $0.code == holding.code }?.changePct
         let color = holdingColor(holding)
+        let rounded = RoundedRectangle(cornerRadius: tokens.corner, style: .continuous)
         return ZStack(alignment: .trailing) {
-            if illustrated { LandscapeDecoration(color: color).frame(height: 145).opacity(0.85) }
+            if illustrated { LandscapeDecoration(color: color).frame(height: 145).opacity(0.24) }
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -431,10 +432,9 @@ struct VisualHomeView: View {
             .frame(maxWidth: .infinity, minHeight: illustrated ? 120 : 112, alignment: .leading)
             .padding(14)
         }
-        .background(color.opacity(theme == .dashboard ? 0.17 : 0.10),
-                    in: RoundedRectangle(cornerRadius: tokens.corner))
-        .overlay(RoundedRectangle(cornerRadius: tokens.corner)
-            .strokeBorder(color.opacity(0.25), lineWidth: 1))
+        .background(color.opacity(theme == .dashboard ? 0.17 : 0.10), in: rounded)
+        .overlay(rounded.strokeBorder(color.opacity(0.25), lineWidth: 1))
+        .clipShape(rounded)
     }
 
     private func compactHolding(_ holding: Holding) -> some View {

@@ -122,7 +122,7 @@ struct VisualHoldingsView: View {
         let rounded = RoundedRectangle(cornerRadius: tokens.corner, style: .continuous)
         return ZStack(alignment: .bottomTrailing) {
             if theme == .eastern || theme == .magazine {
-                LandscapeDecoration(color: color).frame(height: 150)
+                LandscapeDecoration(color: color).frame(height: 150).opacity(0.24)
             }
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 6) {
@@ -164,6 +164,7 @@ struct VisualHoldingsView: View {
         }
         .background(rounded.fill(color.opacity(theme == .bento ? 0.25 : theme == .dashboard ? 0.17 : 0.10)))
         .overlay(rounded.strokeBorder(color.opacity(0.26), lineWidth: 1))
+        .clipShape(rounded)
         .shadow(color: color.opacity(theme == .magazine ? 0.13 : 0.07), radius: 10, x: 0, y: 5)
     }
 
