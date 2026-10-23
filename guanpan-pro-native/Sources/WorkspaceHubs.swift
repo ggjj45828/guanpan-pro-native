@@ -124,6 +124,12 @@ struct ProMarketWorkspace: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
                     ForEach(store.indexQuotes) { item in indexCard(item, width: nil, height: 84) }
                 }
+            } else if theme == .modern || theme == .magazine {
+                HStack(spacing: 8) {
+                    ForEach(Array(store.indexQuotes.prefix(3))) { item in
+                        indexCard(item, width: nil, height: 88)
+                    }
+                }
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: theme == .dashboard ? 7 : 10) {
@@ -140,7 +146,8 @@ struct ProMarketWorkspace: View {
     private func indexCard(_ item: MarketIndexQuote, width: CGFloat?, height: CGFloat) -> some View {
         NavigationLink { IndexDetailView(index: item) } label: {
             VStack(alignment: .leading, spacing: 6) {
-                Text(item.name).font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+                Text(item.name).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
                 Text(item.price.num(2)).font(.system(.subheadline, design: .rounded).weight(.semibold))
                     .monospacedDigit().foregroundStyle(.primary).lineLimit(1).minimumScaleFactor(0.72)
                 Text((item.changePct * 100).num(2) + "% · " +
@@ -155,7 +162,7 @@ struct ProMarketWorkspace: View {
                     RoundedRectangle(cornerRadius: 2).fill(ProStyle.change(item.changePct))
                         .frame(width: 3).padding(.vertical, 9).padding(.leading, 3)
                 }
-        }.buttonStyle(.plain)
+        }.buttonStyle(.plain).frame(maxWidth: width == nil ? .infinity : nil)
     }
 
     private var chartPanel: some View {

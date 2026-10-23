@@ -318,7 +318,8 @@ struct VisualHomeView: View {
             ForEach(Array(store.indexQuotes.prefix(3))) { quote in
                 NavigationLink { IndexDetailView(index: quote) } label: {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(quote.name).font(.caption2.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                        Text(quote.name).font(.caption2.weight(.semibold))
+                            .lineLimit(1).minimumScaleFactor(0.7)
                         Text(quote.price.num(2))
                             .font(.subheadline.weight(.bold)).monospacedDigit()
                             .lineLimit(1).minimumScaleFactor(0.65)
@@ -333,12 +334,12 @@ struct VisualHomeView: View {
                         } ?? "时间不明")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(1).minimumScaleFactor(0.7)
                     }
                     .frame(maxWidth: .infinity, minHeight: theme == .dashboard ? 73 : 68, alignment: .leading)
                     .padding(9)
                     .background(tokens.surface, in: RoundedRectangle(cornerRadius: theme == .dashboard ? 10 : 13))
-                }.buttonStyle(.plain)
+                }.buttonStyle(.plain).frame(maxWidth: .infinity)
             }
             if store.indexQuotes.isEmpty {
                 Text("指数行情待更新").font(.caption).frame(maxWidth: .infinity, minHeight: 66)
@@ -350,9 +351,10 @@ struct VisualHomeView: View {
                     Text(nasStatusText).font(.caption.weight(.bold))
                         .foregroundStyle(nasOnline ? Color.green : Color.orange)
                 }
-                .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: theme == .dashboard ? 73 : 68, alignment: .leading)
                 .padding(9)
                 .background(tokens.surface, in: RoundedRectangle(cornerRadius: 13))
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -371,11 +373,13 @@ struct VisualHomeView: View {
                     }.buttonStyle(.plain)
                 }
             } else {
-                HStack(alignment: .top, spacing: tokens.gap) {
-                    ForEach(Array(holdings.prefix(2))) { holding in
-                        NavigationLink { ProHoldingWorkspace(holding: holding) } label: {
-                            holdingPanel(holding, illustrated: false)
-                        }.buttonStyle(.plain)
+                Grid(horizontalSpacing: tokens.gap) {
+                    GridRow {
+                        ForEach(Array(holdings.prefix(2))) { holding in
+                            NavigationLink { ProHoldingWorkspace(holding: holding) } label: {
+                                holdingPanel(holding, illustrated: false)
+                            }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
                 }
             }
@@ -392,22 +396,26 @@ struct VisualHomeView: View {
                 HStack(alignment: .top, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(holding.name).font(.subheadline.weight(.bold))
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(2).minimumScaleFactor(0.8)
+                            .frame(minHeight: 35, alignment: .topLeading)
                         Text(holding.code).font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
                     Spacer(minLength: 2)
                     Text(displayAction(decision))
                         .font(.caption2.weight(.bold))
                         .padding(.horizontal, 7).padding(.vertical, 4)
                         .background(color.opacity(0.18), in: Capsule())
-                        .fixedSize()
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(holding.current.num(3))
                         .font(.title3.weight(.bold)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.65)
                     if let change {
                         Text((change * 100).pct(2)).font(.caption.weight(.bold))
                             .foregroundStyle(changeColor(change))
+                            .lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
                 Text(decision?.hasValidatedPlan == true && (decision?.validUntil ?? .distantPast) <= displayNow
@@ -418,6 +426,7 @@ struct VisualHomeView: View {
                     "行情截至 \($0.formatted(date: .abbreviated, time: .shortened))"
                 } ?? "行情时间待核实")
                     .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
             .frame(maxWidth: .infinity, minHeight: illustrated ? 120 : 112, alignment: .leading)
             .padding(14)

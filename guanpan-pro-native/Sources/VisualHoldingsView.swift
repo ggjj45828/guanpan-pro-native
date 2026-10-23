@@ -30,9 +30,13 @@ struct VisualHoldingsView: View {
                         let pairs = holdings.chunkedPairs()
                         ForEach(pairs.indices, id: \.self) { index in
                             let pair = pairs[index]
-                            HStack(alignment: .top, spacing: tokens.gap) {
-                                ForEach(pair) { holding in holdingLink(holding) }
-                                if pair.count == 1 { Color.clear.frame(maxWidth: .infinity) }
+                            Grid(horizontalSpacing: tokens.gap) {
+                                GridRow {
+                                    ForEach(pair) { holding in
+                                        holdingLink(holding).frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    }
+                                    if pair.count == 1 { Color.clear.frame(maxWidth: .infinity) }
+                                }
                             }
                         }
                     } else {
@@ -118,14 +122,17 @@ struct VisualHoldingsView: View {
                 HStack(alignment: .top, spacing: 6) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(holding.name).font(.subheadline.weight(.bold))
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(2).minimumScaleFactor(0.8)
+                            .frame(minHeight: 35, alignment: .topLeading)
                         Text(holding.code).font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
                     Spacer(minLength: 1)
                     Image(systemName: "arrow.up.right").font(.caption2).foregroundStyle(.secondary)
                 }
                 Text(holding.current.num(3))
                     .font(.title3.weight(.bold)).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.65)
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
                         Text("持有 \(holding.quantity.num(0)) 份")
@@ -139,10 +146,12 @@ struct VisualHoldingsView: View {
                 Text("浮动盈亏 \(displayedPnL.cny())")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(CardTone.pnl(displayedPnL) ?? .secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
                 Text(holding.marketUpdatedAt.map {
                     "行情截至 \($0.formatted(date: .abbreviated, time: .shortened))"
                 } ?? "行情时间待核实")
                     .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
             .frame(maxWidth: .infinity, minHeight: theme == .bento ? 126 : 113, alignment: .leading)
             .padding(theme == .dashboard ? 13 : 16)
