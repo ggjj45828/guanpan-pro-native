@@ -124,8 +124,11 @@ struct ProMarketWorkspace: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
                     ForEach(store.indexQuotes) { item in indexCard(item, width: nil, height: 84) }
                 }
-            } else if theme == .modern || theme == .magazine {
-                HStack(spacing: 8) {
+            } else if theme == .eastern || theme == .modern || theme == .magazine {
+                // Keep the three primary indices aligned and fully visible on narrow phones.
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
+                                    GridItem(.flexible(), spacing: 8),
+                                    GridItem(.flexible(), spacing: 8)], spacing: 8) {
                     ForEach(Array(store.indexQuotes.prefix(3))) { item in
                         indexCard(item, width: nil, height: 88)
                     }

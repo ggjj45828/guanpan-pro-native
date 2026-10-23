@@ -54,7 +54,10 @@ struct LabResearchView: View {
                 Text("真实持仓 · 统一指导")
                     .foregroundStyle(tokens.secondary)
                     .textCase(nil)
-                    .listRowBackground(tokens.background)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(tokens.background)
             }
             Section("手机 AI · 补充解释") {
                 Text("本机规则先形成唯一判断。在线模型只解释同一份真实持仓和行情快照，不能自行编造限价或相反指令。")

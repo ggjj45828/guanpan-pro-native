@@ -122,7 +122,7 @@ struct VisualHoldingsView: View {
         let rounded = RoundedRectangle(cornerRadius: tokens.corner, style: .continuous)
         return ZStack(alignment: .bottomTrailing) {
             if theme == .eastern || theme == .magazine {
-                LandscapeDecoration(color: color).frame(height: 150).opacity(0.24)
+                LandscapeDecoration(color: color).frame(height: 150).opacity(0.09).allowsHitTesting(false)
             }
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 6) {

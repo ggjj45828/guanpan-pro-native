@@ -392,7 +392,7 @@ struct VisualHomeView: View {
         let color = holdingColor(holding)
         let rounded = RoundedRectangle(cornerRadius: tokens.corner, style: .continuous)
         return ZStack(alignment: .trailing) {
-            if illustrated { LandscapeDecoration(color: color).frame(height: 145).opacity(0.24) }
+            if illustrated { LandscapeDecoration(color: color).frame(height: 145).opacity(0.09).allowsHitTesting(false) }
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
