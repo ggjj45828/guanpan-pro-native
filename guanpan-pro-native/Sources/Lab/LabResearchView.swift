@@ -217,7 +217,7 @@ struct LabResearchView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("今天有没有值得操作的机会？")
                         .font(.headline)
-                    HStack(alignment: .stretch, spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 7) {
                             Image(systemName: "sparkles").font(.title3)
                             Text(todayStatus).font(.title3.weight(.bold)).fixedSize(horizontal: false, vertical: true)
@@ -368,8 +368,8 @@ struct LabResearchView: View {
         let ordered = (history["orderedRoundTrips"] as? NSNumber)?.intValue ?? 0
         let days = (history["days"] as? NSNumber)?.intValue ?? 0
         let wait = (history["meanWaitMinutes"] as? NSNumber)?.doubleValue
-        let expiry = (plan["validUntil"] as? NSNumber)?.doubleValue
-            .map { Date(timeIntervalSince1970: $0 / 1000) }
+        let expiry = (plan["validUntil"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
         return AnyView(VStack(alignment: .leading, spacing: 7) {
             Label(type, systemImage: "chart.xyaxis.line")
                 .font(.subheadline.weight(.bold))
@@ -868,6 +868,6 @@ private struct AdvisorActualFillView: View {
                 linkedCash: true, date: tradeAt, advisorDecisionID: candidate.decisionID)
             Task { await portfolio.refreshQuotesAndWait() }
             dismiss()
-        } catch { error = error.localizedDescription }
+        } catch { self.error = error.localizedDescription }
     }
 }
