@@ -47,7 +47,9 @@ private struct NASFundNAVArchiveResponse: Decodable {
 enum NASSyncService {
     static let urlKey = "guanpan.native.nas.url"
     static let tokenKey = "guanpan.native.nas.token"
-    static let automaticKey = "guanpan.native.nas.automatic"
+    // New opt-in key: old mixed-sync preference must not silently enable real-asset writes.
+    // The old value is preserved in UserDefaults, but deliberately not adopted.
+    static let automaticKey = "guanpan.native.nas.assets.automaticOptIn.v2"
     static let revisionKey = "guanpan.native.nas.revision"
     static let fingerprintKey = "guanpan.native.nas.fingerprint"
     /// 「同时写回网页版账本」开关（设备本地设置，不随账本同步）。
@@ -159,12 +161,24 @@ enum NASSyncService {
         return "\(document.intradayBars.count)|\(intradayDays)|\(document.dailyBars.count)|\(dailyLast)"
     }
 
-    static func endpoint(base: String) throws -> URL {
+    static func normalizedBaseURL(_ base: String) throws -> URL {
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let root = URL(string: trimmed), ["http", "https"].contains(root.scheme?.lowercased() ?? ""), root.host != nil else {
+        guard var parts = URLComponents(string: trimmed), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
+              parts.host != nil, parts.user == nil, parts.password == nil else {
             throw NASSyncError.invalidAddress
         }
-        return root.appendingPathComponent("api").appendingPathComponent("native").appendingPathComponent("data")
+        var path = parts.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        for suffix in ["api/native/data", "api/native/ping", "api/data", "api/ping", "index.html"] {
+            if path.lowercased() == suffix { path = ""; break }
+            if path.lowercased().hasSuffix("/" + suffix) { path = String(path.dropLast(suffix.count + 1)); break }
+        }
+        parts.path = path.isEmpty ? "" : "/" + path
+        parts.query = nil; parts.fragment = nil
+        guard let root = parts.url else { throw NASSyncError.invalidAddress }
+        return root
+    }
+    static func endpoint(base: String) throws -> URL {
+        try normalizedBaseURL(base).appendingPathComponent("api/native/data")
     }
 
     /// Optional authenticated market-data relay through the configured NAS.
@@ -345,7 +359,7 @@ enum NASSyncService {
     /// 把整份网页账本写回 `/api/data`（网页版协议：`{tok, data}`）。
     /// 返回 NAS 报告的新版本号；服务器不给就返回 0。
     @discardableResult
-    static func putWebLedger(base: String, token: String, payload: [String: Any]) async throws -> Int {
+    static func putWebLedger(base: String, token: String, payload: [String: Any], expectedRevision: Int? = nil) async throws -> Int {
         let url = try webLedgerURL(base: base)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -355,7 +369,8 @@ enum NASSyncService {
             // 两种鉴权都带上：新服务认 Bearer，旧服务认 body 里的 tok。
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let body: [String: Any] = ["tok": token, "data": payload]
+        var body: [String: Any] = ["tok": token, "data": payload]
+        if let expectedRevision { body["expectedRevision"] = expectedRevision }
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.fragmentsAllowed])
         let (bytes, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NASSyncError.invalidResponse }
@@ -380,8 +395,7 @@ enum NASSyncService {
         let url: URL
         if path == "/api/native/data" { url = try endpoint(base: base) }
         else {
-            let root = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard let baseURL = URL(string: root), ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""), baseURL.host != nil else { throw NASSyncError.invalidAddress }
+            let baseURL = try normalizedBaseURL(base)
             url = path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/")
                 .reduce(baseURL) { $0.appendingPathComponent(String($1)) }
         }
@@ -400,6 +414,9 @@ enum NASSyncService {
         let decoded = try? JSONDecoder.nasSync.decode(NASSyncResponse.self, from: bytes)
         if !(200...299).contains(http.statusCode) {
             if http.statusCode == 409 { throw NASSyncError.conflict(decoded?.err ?? "NAS 上的数据已变化") }
+            if http.statusCode == 404 && path == "/api/native/data" {
+                throw NASSyncError.server("NAS 原生账本接口不存在（404，路径 \(url.path)）。请检查地址、反向代理和运行中的服务版本；未改用网页账本覆盖本机资产。")
+            }
             if http.statusCode == 404 && path.hasSuffix("/history") {
                 throw NASSyncError.server("当前一体化服务器包没有开放历史版本列表接口；账本同步不受影响")
             }
