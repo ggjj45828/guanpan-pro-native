@@ -283,6 +283,7 @@ struct DividendBuyScore: Equatable, Identifiable {
         case batch = "可分批"
         case observe = "观望"
         case wait = "等待"
+        case insufficient = "数据不足"
     }
     let code: String
     let price: Decimal
@@ -300,6 +301,7 @@ struct DividendBuyScore: Equatable, Identifiable {
     let missing: [String]
     var total: Int { yieldPoints + positionPoints + drawdownPoints + stabilityPoints }
     var tier: Tier {
+        guard missing.isEmpty else { return .insufficient }
         switch total {
         case 80...: return .attention
         case 60..<80: return .batch
@@ -343,6 +345,7 @@ enum DividendBuyScoreEngine {
         let window = Array(samples.filter { $0.close > 0 }
             .sorted { $0.timestamp < $1.timestamp }
             .suffix(windowBars))
+        if window.count < windowBars { missing.append("近180日日K不足") }
         var positionPoints = 0
         var drawdownPoints = 0
         var windowLow: Decimal?

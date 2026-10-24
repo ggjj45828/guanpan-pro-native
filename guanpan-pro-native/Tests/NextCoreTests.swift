@@ -762,7 +762,7 @@ final class NextCoreTests: XCTestCase {
             NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: Decimal(string: "0.012")!)
         ]
         // 窗口低 1.0 高 2.0；现价 1.0（贴区间下沿）→ 位置 35；回撤 50% → 回撤 15。
-        let samples = [bar(0, low: 1, high: 2, close: 1), bar(1, low: 1, high: 2, close: 1)]
+        let samples = (-179...0).map { bar($0, low: 1, high: 2, close: 1) }
         // 每份 0.05、现价 1.0 → 股息率 5%，目标 4% → 拿满 40。
         let score = try? XCTUnwrap(DividendBuyScoreEngine.evaluate(code: "563020", perShare: Decimal(string: "0.05")!,
             price: 1, iopv: nil, samples: samples, dividendEvents: events, today: "2026-10-20", targetYieldPercent: 4))
@@ -784,6 +784,7 @@ final class NextCoreTests: XCTestCase {
         XCTAssertEqual(halfYield?.positionPoints, 0)
         XCTAssertEqual(halfYield?.drawdownPoints, 0)
         XCTAssertTrue(halfYield?.missing.contains("日K") ?? false)
+        XCTAssertEqual(halfYield?.tier, .insufficient)
         // 没有派息事件：稳定 0。
         XCTAssertEqual(halfYield?.stabilityPoints, 0)
 
@@ -831,7 +832,7 @@ final class NextCoreTests: XCTestCase {
             NextETFDividendEvent(code: "563020", date: "2025-06-10", amountPerShare: Decimal(string: "0.012")!),
             NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: Decimal(string: "0.012")!)
         ]
-        let samples = [bar(0, low: 1, high: 2, close: 1), bar(1, low: 1, high: 2, close: 1)]
+        let samples = (-179...0).map { bar($0, low: 1, high: 2, close: 1) }
         // 全拿满：40 + 35 + 15 + 10 = 100 → 值得关注。
         let high = try? XCTUnwrap(DividendBuyScoreEngine.evaluate(code: "563020", perShare: Decimal(string: "0.05")!,
             price: 1, iopv: nil, samples: samples, dividendEvents: events, today: "2026-10-20", targetYieldPercent: 4))
@@ -853,6 +854,21 @@ final class NextCoreTests: XCTestCase {
             stabilityPoints: 4, windowLow: nil, windowHigh: nil, missing: [])
         XCTAssertEqual(wait.total, 33)
         XCTAssertEqual(wait.tier, .wait)
+    }
+
+    func testDividendBuyScoreDoesNotRecommendOnShortDailyHistory() {
+        let events = [
+            NextETFDividendEvent(code: "563020", date: "2024-06-10", amountPerShare: Decimal(string: "0.012")!),
+            NextETFDividendEvent(code: "563020", date: "2025-06-10", amountPerShare: Decimal(string: "0.012")!),
+            NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: Decimal(string: "0.012")!)
+        ]
+        let shortHistory = (-4...0).map { bar($0, low: 1, high: 2, close: 1) }
+        let score = try? XCTUnwrap(DividendBuyScoreEngine.evaluate(code: "563020", perShare: Decimal(string: "0.05")!,
+            price: 1, iopv: nil, samples: shortHistory, dividendEvents: events,
+            today: "2026-10-20", targetYieldPercent: 4))
+        XCTAssertEqual(score?.total, 100, "The partial score remains inspectable")
+        XCTAssertEqual(score?.tier, .insufficient, "Short history must block an attractive buy signal")
+        XCTAssertTrue(score?.missing.contains("近180日日K不足") ?? false)
     }
 
 }
