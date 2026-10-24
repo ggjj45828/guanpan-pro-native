@@ -430,6 +430,8 @@ class CrossMarketEvidenceTests(unittest.TestCase):
             ("US_NDX", "2026-07-06T09:30:00-04:00", True),
             ("US_SPX", "2026-01-05T09:30:00-05:00", True),
             ("US_SPX", "2026-01-03T10:00:00-05:00", False),
+            ("CN_SSE", "2026-10-01T10:00:00+08:00", False),
+            ("CN_SSE", "2026-10-08T10:00:00+08:00", True),
         ]
         for market_id, stamp, expected in cases:
             with self.subTest(market_id=market_id, stamp=stamp):

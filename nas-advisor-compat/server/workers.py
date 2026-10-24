@@ -21,6 +21,15 @@ CROSS_MARKET_TENCENT_SYMBOLS = {
     "CN_A500": "sh000510", "CN_SEMICONDUCTOR": "sz399989",
 }
 CROSS_MARKET_SERIES = tuple(CROSS_MARKET_TENCENT_SYMBOLS) + tuple(CROSS_MARKET_EASTMONEY_SECIDS)
+# 2026 SSE holiday schedule, announced 2025-12-22 (上证公告〔2025〕45号).
+# The NAS uses this only to avoid pointless provider requests and never treats a
+# nominal open day as proof that a provider quote is fresh.
+MAINLAND_CLOSURES_2026 = frozenset({
+    "2026-01-01", "2026-01-02",
+    "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23",
+    "2026-04-06", "2026-05-01", "2026-05-04", "2026-05-05", "2026-06-19", "2026-09-25",
+    "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
+})
 EXTERNAL_MARKET_SESSIONS = {
     "JP_N225": ("Asia/Tokyo", (("09:00", "11:30"), ("12:30", "15:30"))),
     "KR_KOSPI": ("Asia/Seoul", (("09:00", "15:30"),)),
@@ -37,6 +46,8 @@ def market_session_open(market_id, now=None):
         raise ValueError("market session time must be timezone-aware")
     if market_id in CROSS_MARKET_TENCENT_SYMBOLS:
         local = now.astimezone(SHANGHAI)
+        if local.year == 2026 and local.date().isoformat() in MAINLAND_CLOSURES_2026:
+            return False
         minute = local.hour * 60 + local.minute
         return local.weekday() < 5 and ((570 <= minute <= 690) or (780 <= minute <= 900))
     timezone_name, sessions = EXTERNAL_MARKET_SESSIONS[market_id]
