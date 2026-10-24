@@ -871,14 +871,34 @@ enum NextAccountAdvisor {
     static func review(book: NextBook, quotes: [String: NextQuote],
                        concentrationLimitPercent: Decimal,
                        targetWeights: [String: Decimal] = [:],
-                       realizedTotal: Decimal? = nil) -> NextAccountReview? {
+                       realizedTotal: Decimal? = nil, now: Date = Date()) -> NextAccountReview? {
         let holdings = book.positions.filter { $0.units > 0 }
         var priced: [(position: NextPosition, value: Double, price: Double)] = []
         var missing: [NextPosition] = []
         for position in holdings {
-            guard let quote = quotes[position.code], quote.price > 0 else { missing.append(position); continue }
+            guard let quote = quotes[position.code], quote.code == position.code,
+                  quote.price > 0, quote.isFreshForPricePlan(at: now) else {
+                missing.append(position)
+                continue
+            }
             let price = NextNum.double(quote.price)
             priced.append((position, price * Double(position.units), price))
+        }
+        if !missing.isEmpty {
+            let names = missing.prefix(3).map { "\($0.name)(\($0.code))" }.joined(separator: "、")
+            var footnotes: [String] = []
+            if let realizedTotal, realizedTotal != 0 {
+                footnotes.append("本机已实现盈亏合计 \(realizedTotal >= 0 ? "+" : "")¥\(NextMoney.text(realizedTotal))（按账本成交逐笔成本还原，未计分红）。")
+            }
+            footnotes.append("组合风险比例未计算：至少一只真实持仓缺少新鲜且带可信供应商时间的报价，不能用部分持仓估值代替完整组合。")
+            footnotes.append("诊断依据：本机真实账本；缺报价不按成本价填补。")
+            return NextAccountReview(
+                headline: "组合估值不完整 · \(missing.count)/\(holdings.count) 只持仓缺少有效报价",
+                findings: [NextAccountFinding(
+                    title: "\(missing.count) 只持仓缺少有效报价",
+                    detail: "\(names) 的行情缺失、过期或来源时间不可核验；当前不显示现金占比、目标偏离和集中度，刷新全部持仓行情后再评估。",
+                    severity: .info)],
+                footnotes: footnotes)
         }
         let cash = NextNum.double(book.cash)
         let invested = priced.reduce(0) { $0 + $1.value }
@@ -957,14 +977,6 @@ enum NextAccountAdvisor {
                     detail: "集中度偏高，单一事件可能同时影响两个仓位。若两只跟踪同一指数或同一行业，实际暴露比这个数字更高。",
                     severity: .watch))
             }
-        }
-
-        if !missing.isEmpty {
-            let names = missing.prefix(3).map { "\($0.name)(\($0.code))" }.joined(separator: "、")
-            findings.append(NextAccountFinding(
-                title: "\(missing.count) 只持仓缺报价",
-                detail: "\(names) 暂无有效价格，未计入上面的占比与总资产。联网刷新后再看诊断，不要用缺数据的比例做决策。",
-                severity: .info))
         }
 
         if findings.isEmpty {

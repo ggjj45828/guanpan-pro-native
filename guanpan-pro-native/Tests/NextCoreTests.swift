@@ -491,7 +491,7 @@ final class NextCoreTests: XCTestCase {
         let currentQuote = NextQuote(code: "159941", name: "纳指ETF", price: 9, previousClose: 9,
                                      time: now, source: "test")
         let review = NextAccountAdvisor.review(book: book, quotes: ["159941": currentQuote],
-            concentrationLimitPercent: 100, targetWeights: ["159941": 80])
+            concentrationLimitPercent: 100, targetWeights: ["159941": 80], now: now)
         XCTAssertTrue(review?.findings.contains(where: {
             $0.title == "现金低于长期储备目标" && $0.detail.contains("20.0%")
         }) == true)
@@ -777,7 +777,7 @@ final class NextCoreTests: XCTestCase {
             NextPosition(code: "159941", name: "纳指ETF", units: 10_000, bookCost: Decimal(string: "12000")!)
         ])
         let quote = NextQuote(code: "159941", name: "纳指ETF", price: Decimal(string: "1.2")!, previousClose: Decimal(string: "1.2")!, time: now, source: "test")
-        let review = NextAccountAdvisor.review(book: book, quotes: ["159941": quote], concentrationLimitPercent: 40)
+        let review = NextAccountAdvisor.review(book: book, quotes: ["159941": quote], concentrationLimitPercent: 40, now: now)
         XCTAssertNotNil(review)
         XCTAssertTrue(review?.findings.contains { $0.title.contains("超过单仓上限") } == true)
         // 缺报价的持仓要单独提示，不能静默算进比例。
@@ -785,7 +785,16 @@ final class NextCoreTests: XCTestCase {
             NextPosition(code: "515180", name: "红利ETF", units: 100, bookCost: 100)
         ])
         let missingReview = NextAccountAdvisor.review(book: missing, quotes: [:], concentrationLimitPercent: 40)
-        XCTAssertTrue(missingReview?.findings.contains { $0.title.contains("缺报价") } == true)
+        XCTAssertTrue(missingReview?.findings.contains { $0.title.contains("缺少有效报价") } == true)
+        XCTAssertTrue(missingReview?.headline.contains("组合估值不完整") == true)
+        XCTAssertFalse(missingReview?.findings.contains { $0.title.contains("现金占比") } == true,
+                       "报价不全时不应基于不完整分母给出现金比例")
+        let staleQuote = NextQuote(code: "515180", name: "红利ETF", price: 1.0, previousClose: 1.0,
+                                   time: now.addingTimeInterval(-121), source: "test")
+        let staleReview = NextAccountAdvisor.review(book: missing, quotes: ["515180": staleQuote],
+                                                    concentrationLimitPercent: 40, now: now)
+        XCTAssertTrue(staleReview?.headline.contains("组合估值不完整") == true,
+                      "过期报价不能被当作当前组合权重事实")
     }
 
     func testReceiptTimestampFallbackCannotSupportPrecisePlan() {

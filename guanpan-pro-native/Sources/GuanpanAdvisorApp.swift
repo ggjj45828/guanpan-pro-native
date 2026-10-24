@@ -994,6 +994,10 @@ private struct DecisionScreen: View {
     @State private var inspectResults: [InspectHolding] = []
     @State private var inspectSummary: String?
     @State private var inspecting = false
+    private var targetCodes: [String] {
+        Array(Set(model.preferences.watch + model.book.positions.filter { $0.units > 0 }.map(\.code)
+            + Array(model.goal.targetWeights.keys))).sorted()
+    }
     private var hasRecordedMobileAI: Bool {
         guard let code, let result else { return false }
         return result.evidence.contains { $0.id == "deepseek-mobile-\(code)" }
@@ -1167,7 +1171,7 @@ private struct DecisionScreen: View {
                         HStack(spacing: 10) { compactField("期限（年）", text: $years); compactField("每月新增预算", text: $budget); compactField("集中度线 %", text: $limit) }
                         Text("长期目标仓位（ETF目标合计可低于100%；剩余比例自动作为现金储备）")
                             .font(.caption2).foregroundStyle(p.muted)
-                        ForEach(model.preferences.watch, id: \.self) { targetCode in
+                        ForEach(targetCodes, id: \.self) { targetCode in
                             HStack(spacing: 8) {
                                 Text("\(knownName(targetCode)) · \(targetCode)").font(.caption).lineLimit(1)
                                 Spacer(minLength: 4)

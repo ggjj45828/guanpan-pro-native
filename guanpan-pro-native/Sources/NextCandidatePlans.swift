@@ -346,16 +346,19 @@ enum NextOpportunityScanner {
                      research: [String: NextNASResearch] = [:],
                      news: [String: [NextNewsInput]] = [:],
                      now: Date) -> NextDailyGuidance {
-        let total = book.total(using: quotes)
+        let matchingQuotes = quotes.reduce(into: [String: NextQuote]()) { result, pair in
+            if pair.key == pair.value.code { result[pair.key] = pair.value }
+        }
+        let total = book.total(using: matchingQuotes)
         let heldPositions = book.positions.filter { $0.units > 0 }
         let portfolioValuationReliable = !heldPositions.isEmpty && heldPositions.allSatisfy { position in
-            guard let quote = quotes[position.code] else { return false }
-            return quote.isFreshForPricePlan(at: now)
+            guard let quote = matchingQuotes[position.code] else { return false }
+            return quote.code == position.code && quote.isFreshForPricePlan(at: now)
         }
         var items: [NextGuidanceItem] = []
 
         for position in book.positions where position.units > 0 {
-            let quote = quotes[position.code]
+            let quote = matchingQuotes[position.code]
             // A provider's future-dated bar must not affect strategy selection, confidence, or plans.
             let bars = (daily[position.code] ?? []).filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
             let minutes = (intraday[position.code] ?? []).filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }

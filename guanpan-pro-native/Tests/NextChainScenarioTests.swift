@@ -183,6 +183,17 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertEqual(report.crossMarket?.validationState, "requires_pre_registered_future_replication")
     }
 
+    func testMismatchedQuoteCodeCannotSupportPortfolioGuidance() {
+        let wrongQuote = NextQuote(code: "000001", name: "错误映射", price: 1.4, previousClose: 1.4,
+                                   time: now, source: "fixture", timeQuality: "exchange_time")
+        let guidance = NextOpportunityScanner.scan(book: book(), quotes: [code: wrongQuote],
+            daily: [:], intraday: [:], rules: [:], goal: NextGoal(), now: now)
+        XCTAssertEqual(guidance.items.count, 1)
+        XCTAssertFalse(guidance.items[0].isActionable)
+        XCTAssertTrue(guidance.items[0].portfolioNote?.contains("组合内并非所有真实持仓") == true)
+        XCTAssertEqual(guidance.items[0].confidence.level, .blocked)
+    }
+
     private func scan(_ scanBook: NextBook, quote q: NextQuote, daily: [NextChartSample],
                       intraday: [NextChartSample], research: [String: NextNASResearch] = [:],
                       news: [String: [NextNewsInput]] = [:],
