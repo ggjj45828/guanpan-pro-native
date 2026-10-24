@@ -555,7 +555,7 @@ import Combine
                                      confidenceLevel: value.confidence.level.rawValue,
                                      rationale: value.evidence.joined(separator: "；"),
                                      expectedNetGain: value.netGain, expectedCostReduction: value.costReductionPerUnit,
-                                     riskNote: value.trampleRisk, marketState: item.state.rawValue,
+                                     riskNote: value.trampleRisk + "；" + value.continuedDropRisk, marketState: item.state.rawValue,
                                      cancelAbove: isSell ? nil : value.sellPrice,
                                      cancelBelow: isSell ? value.buyPrice : nil)
         } else if let result = item.gridPlan, case let .ready(value) = result,
@@ -638,7 +638,47 @@ import Combine
                     }.joined(separator: "；")
                     divergenceSummary = "15分钟观察：方向背离 \(observed.count) 个来源，过期 \(staleCount)，数据不足 \(insufficientCount)\(examples.isEmpty ? "" : "；" + examples)；仅为同窗价格观察，不是预测或交易信号"
                 }
-                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(divergenceSummary)；\(evidence.reason ?? "")")
+                let overnightRows = evidence.overnightAbsorption ?? []
+                let overnightSummary: String
+                if overnightRows.isEmpty {
+                    overnightSummary = "隔夜开盘统计未提供"
+                } else {
+                    let samples = overnightRows.prefix(4).map { row in
+                        let gap = row.meanOpeningGapPercent.map { String(format: "%+.2f%%开盘缺口", $0) } ?? "缺口不可用"
+                        let relation = row.leaderOpenGapCorrelation.map { String(format: "隔夜变化与缺口相关 %.2f", $0) } ?? "相关性不可用"
+                        let absorbed = row.meanGapAbsorptionFraction.map { String(format: "缺口回归均值 %.2fx", $0) } ?? "回归统计不足"
+                        let period = [row.sampleStartDay, row.sampleEndDay].compactMap { $0 }.joined(separator: "–")
+                        return "\(row.market) \(row.state) \(row.sampleCount)日\(period.isEmpty ? "" : "（\(period)）)：\(relation)，\(gap)，\(absorbed)"
+                    }.joined(separator: "；")
+                    overnightSummary = "隔夜→开盘历史描述（不是预测或交易信号）：\(samples)"
+                }
+                let tailSummary: String
+                if let tail = evidence.tailToNextDay {
+                    let tailGap = tail.tailToOpenGapCorrelation.map { String(format: "尾盘与次日缺口相关 %.2f", $0) } ?? "尾盘与次日缺口相关性不足"
+                    let tailOpen = tail.tailToFirstThirtyMinuteCorrelation.map { String(format: "尾盘与开盘后30分钟相关 %.2f", $0) } ?? "开盘后相关性不足"
+                    let period = [tail.sampleStartDay, tail.sampleEndDay].compactMap { $0 }.joined(separator: "–")
+                    tailSummary = "尾盘→次日历史描述（不是预测或交易信号）：\(tail.state) \(tail.sampleCount)日\(period.isEmpty ? "" : "（\(period)）)，\(tailGap)，\(tailOpen)"
+                } else {
+                    tailSummary = "尾盘→次日统计未提供"
+                }
+                let rollingSummary: String
+                if let rows = evidence.rollingValidity, !rows.isEmpty {
+                    let values = rows.prefix(3).map { row in
+                        let newest = row.windows.max(by: { $0.windowSessions < $1.windowSessions })
+                        return "\(row.market) \(row.lagMinutes)分钟/\(row.horizonMinutes)分钟前瞻，\(newest.map { "\($0.windowSessions)日\($0.state)" } ?? "无滚动样本")"
+                    }.joined(separator: "；")
+                    rollingSummary = "滚动有效性（研究用途）：\(values)；不能由此生成交易价格"
+                } else {
+                    rollingSummary = "20/60/120日滚动有效性未提供"
+                }
+                let profileSummary: String
+                if let rows = evidence.timeProfiles, !rows.isEmpty {
+                    let enough = rows.flatMap(\.profiles).filter { $0.state == "descriptive_only" }.count
+                    profileSummary = "跨市场分时段画像：\(enough) 个时段样本达门槛；仅描述历史，不是盘中预测或交易信号"
+                } else {
+                    profileSummary = "跨市场分时段画像未提供"
+                }
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(divergenceSummary)；\(overnightSummary)；\(tailSummary)；\(rollingSummary)；\(profileSummary)；\(evidence.reason ?? "")")
             } else {
                 crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：NAS未提供跨市场验证结果；不可推断领先关系")
             }

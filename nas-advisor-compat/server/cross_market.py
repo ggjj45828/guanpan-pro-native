@@ -143,9 +143,12 @@ def _correlation(xs, ys):
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sqrt(vx * vy)
 
 
-def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="Asia/Shanghai",
-             comparison_count=None):
-    comparison_count = comparison_count or len(LAG_MINUTES) * 4
+def _daily_pair_returns(leader, follower, lag_minutes, horizon_minutes, session_timezone):
+    """Return one mean pair per exchange-local trading day, with no future
+    matching. This is the shared, point-in-time input for rolling and intraday
+    research views; it deliberately does not convert minute count into sample
+    count.
+    """
     intraday_pairs = {}
     tolerance = 90
     leader_stamps, follower_stamps = list(leader), list(follower)
@@ -153,16 +156,22 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="A
     for target, target_price in follower.items():
         lead_now = _nearest(leader, target - timedelta(minutes=lag_minutes), tolerance, leader_stamps)
         lead_before = _nearest(leader, target - timedelta(minutes=lag_minutes + 5), tolerance, leader_stamps)
-        future_price = _nearest(follower, target + timedelta(minutes=horizon_minutes), tolerance, follower_stamps)
+        future_price = _following(follower, target + timedelta(minutes=horizon_minutes), tolerance, follower_stamps)
         if lead_now is None or lead_before is None or future_price is None or target_price <= 0:
             continue
         day = target.astimezone(zone).date().isoformat()
         intraday_pairs.setdefault(day, []).append((lead_now / lead_before - 1.0,
                                                     future_price / target_price - 1.0))
-    daily_pairs = [(mean(x for x, _ in samples), mean(y for _, y in samples))
-                   for samples in intraday_pairs.values() if samples]
-    lead_changes = [x for x, _ in daily_pairs]
-    future_returns = [y for _, y in daily_pairs]
+    return [(day, mean(x for x, _ in samples), mean(y for _, y in samples), len(samples))
+            for day, samples in sorted(intraday_pairs.items()) if samples]
+
+
+def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="Asia/Shanghai",
+             comparison_count=None):
+    comparison_count = comparison_count or len(LAG_MINUTES) * 4
+    daily_pairs = _daily_pair_returns(leader, follower, lag_minutes, horizon_minutes, session_timezone)
+    lead_changes = [x for _, x, _, _ in daily_pairs]
+    future_returns = [y for _, _, y, _ in daily_pairs]
     n = len(lead_changes)
     if n < MIN_SAMPLES:
         return {"sampleCount": n, "state": "insufficient", "correlation": None,
@@ -172,7 +181,7 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="A
                 "medianForwardReturn": None, "maxAdverseMove": None, "stability": None,
                 "correlationCI95": None, "bonferroniAdjustedPValue": None,
                 "testedWindowCount": comparison_count,
-                "observationCount": sum(len(samples) for samples in intraday_pairs.values()),
+                "observationCount": sum(count for _, _, _, count in daily_pairs),
                 "sampleUnit": "independent trading sessions"}
     corr = _correlation(lead_changes, future_returns)
     positive_pairs = [(x, r) for x, r in zip(lead_changes, future_returns) if x > 0]
@@ -200,7 +209,7 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="A
               and stability >= 0.65 and adjusted_p is not None and adjusted_p <= 0.05)
     return {"sampleCount": n, "state": "stable_candidate" if stable else "unstable",
             "sampleUnit": "independent trading sessions",
-            "observationCount": sum(len(samples) for samples in intraday_pairs.values()),
+            "observationCount": sum(count for _, _, _, count in daily_pairs),
             "correlation": corr,
             "correlationCI95": confidence,
             "bonferroniAdjustedPValue": adjusted_p,
@@ -252,6 +261,143 @@ def analyze_pair(leader_rows, follower_rows, *, as_of, source, market_status="un
     else:
         state, reason = "insufficient", "独立交易日样本不足，无法判断是否存在稳定领先关系"
     return {**base, "state": state, "reason": reason, "windows": windows}
+
+
+def rolling_validity(leader_rows, follower_rows, *, as_of, lag_minutes, horizon_minutes,
+                     windows=(20, 60, 120), session_timezone="Asia/Shanghai"):
+    """Report rolling descriptive validity for one explicitly selected window.
+
+    A short rolling window can show a correlation but cannot establish a lead.
+    Therefore every row stays research-only; a lack of correlation is shown as
+    such instead of being silently replaced by an intuitive market story.
+    """
+    as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
+    if as_of is None or as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    if type(lag_minutes) is not int or lag_minutes not in LAG_MINUTES:
+        raise ValueError("lag_minutes must be a configured lag")
+    if type(horizon_minutes) is not int or horizon_minutes not in (5, 15, 30, 60):
+        raise ValueError("horizon_minutes must be a configured horizon")
+    if (not isinstance(windows, (tuple, list)) or not windows or
+            any(type(item) is not int or item < 2 or item > 400 for item in windows)):
+        raise ValueError("windows must contain 2–400 session lengths")
+    leader = _series(leader_rows, as_of.astimezone(timezone.utc))
+    follower = _series(follower_rows, as_of.astimezone(timezone.utc))
+    pairs = _daily_pair_returns(leader, follower, lag_minutes, horizon_minutes, session_timezone)
+    results = []
+    for window in sorted(set(windows)):
+        subset = pairs[-window:]
+        xs, ys = [row[1] for row in subset], [row[2] for row in subset]
+        count = len(subset)
+        correlation = _correlation(xs, ys)
+        # “no_consistent_relationship” is only a descriptive outcome here;
+        # it does not prove no relationship outside this observed interval.
+        state = "descriptive_only" if count >= window else "insufficient"
+        results.append({"windowSessions": window, "sampleCount": count,
+                        "sampleStartDay": subset[0][0] if subset else None,
+                        "sampleEndDay": subset[-1][0] if subset else None,
+                        "correlation": correlation,
+                        "conditionalDirectionRate": (sum((x > 0) == (y > 0) for x, y in zip(xs, ys)) / count
+                                                     if count else None),
+                        "state": state, "eligibleForTradingSignal": False})
+    return {"lagMinutes": lag_minutes, "horizonMinutes": horizon_minutes,
+            "asOf": as_of.astimezone(timezone.utc).isoformat(), "windows": results,
+            "eligibleForTradingSignal": False,
+            "note": "20/60/120日滚动统计只用于观察关系是否衰减；未通过未来复现前不能作为交易信号"}
+
+
+def intraday_time_profiles(leader_rows, follower_rows, *, as_of, lag_minutes=0,
+                           horizon_minutes=15, session_timezone="Asia/Shanghai",
+                           bucket_minutes=30, minimum_sessions=20):
+    """Create exchange-local time-of-day profiles from one pair per day/bucket.
+
+    The aggregation unit is a trading day within each bucket, preventing many
+    correlated minute observations from masquerading as independent evidence.
+    """
+    as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
+    if as_of is None or as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    if type(bucket_minutes) is not int or bucket_minutes not in (15, 30, 60):
+        raise ValueError("bucket_minutes must be 15, 30 or 60")
+    if type(minimum_sessions) is not int or not 2 <= minimum_sessions <= 400:
+        raise ValueError("minimum_sessions must be between 2 and 400")
+    leader = _series(leader_rows, as_of.astimezone(timezone.utc))
+    follower = _series(follower_rows, as_of.astimezone(timezone.utc))
+    zone = ZoneInfo(session_timezone)
+    grouped = {}
+    leader_stamps, follower_stamps = list(leader), list(follower)
+    for target, target_price in follower.items():
+        lead_now = _nearest(leader, target - timedelta(minutes=lag_minutes), stamps=leader_stamps)
+        lead_before = _nearest(leader, target - timedelta(minutes=lag_minutes + 5), stamps=leader_stamps)
+        future = _following(follower, target + timedelta(minutes=horizon_minutes), stamps=follower_stamps)
+        if lead_now is None or lead_before is None or future is None or target_price <= 0:
+            continue
+        local = target.astimezone(zone)
+        minute = local.hour * 60 + local.minute
+        bucket = (minute // bucket_minutes) * bucket_minutes
+        key = (local.date().isoformat(), bucket)
+        grouped.setdefault(key, []).append((lead_now / lead_before - 1.0, future / target_price - 1.0))
+    by_bucket = {}
+    for (day, bucket), rows in grouped.items():
+        by_bucket.setdefault(bucket, []).append((day, mean(x for x, _ in rows), mean(y for _, y in rows)))
+    profiles = []
+    for bucket in sorted(by_bucket):
+        rows = sorted(by_bucket[bucket])
+        xs, ys = [row[1] for row in rows], [row[2] for row in rows]
+        profiles.append({"startMinute": bucket, "endMinute": bucket + bucket_minutes,
+                         "sampleCount": len(rows), "sampleStartDay": rows[0][0] if rows else None,
+                         "sampleEndDay": rows[-1][0] if rows else None,
+                         "correlation": _correlation(xs, ys),
+                         "conditionalDirectionRate": (sum((x > 0) == (y > 0) for x, y in zip(xs, ys)) / len(rows)
+                                                      if rows else None),
+                         "state": "descriptive_only" if len(rows) >= minimum_sessions else "insufficient",
+                         "eligibleForTradingSignal": False})
+    return {"lagMinutes": lag_minutes, "horizonMinutes": horizon_minutes,
+            "bucketMinutes": bucket_minutes, "minimumSessions": minimum_sessions,
+            "profiles": profiles, "eligibleForTradingSignal": False,
+            "note": "分时段画像按交易日聚合，仅描述不同时间段的历史关系；不是盘中预测或交易信号"}
+
+
+def currency_context(fx_rows, asset_rows, *, as_of, source, pair, window_minutes=60,
+                     maximum_age_seconds=900):
+    """Return a timestamped FX context only when the caller supplies a named,
+    verified feed. It deliberately has no hard-coded 'weaker currency means
+    buy' rule: an FX move is an observation that may invalidate assumptions,
+    never an order authorization.
+    """
+    as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
+    if as_of is None or as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    if not isinstance(source, str) or not source.strip() or not isinstance(pair, str) or not pair.strip():
+        raise ValueError("named FX source and pair are required")
+    if type(window_minutes) is not int or not 5 <= window_minutes <= 240:
+        raise ValueError("window_minutes must be between 5 and 240")
+    if type(maximum_age_seconds) is not int or not 60 <= maximum_age_seconds <= 3600:
+        raise ValueError("maximum_age_seconds must be between 60 and 3600")
+    as_of = as_of.astimezone(timezone.utc)
+    fx, asset = _series(fx_rows, as_of), _series(asset_rows, as_of)
+    if not fx:
+        return {"pair": pair, "source": source, "state": "insufficient_data",
+                "reason": "没有带来源和时间戳的汇率样本", "eligibleForTradingSignal": False}
+    fx_stamps = list(fx)
+    latest = max(fx)
+    age = (as_of - latest).total_seconds()
+    base = {"pair": pair, "source": source, "asOf": latest.isoformat(), "ageSeconds": max(0, age),
+            "windowMinutes": window_minutes, "eligibleForTradingSignal": False,
+            "note": "汇率仅作为跨境资产上下文；没有硬编码方向规则，不能单独触发做T、网格或买卖"}
+    if age < 0 or age > maximum_age_seconds:
+        return {**base, "state": "stale", "reason": "汇率行情超过新鲜度门槛"}
+    prior = _nearest(fx, latest - timedelta(minutes=window_minutes), stamps=fx_stamps)
+    asset_latest = max(asset, default=None)
+    asset_prior = (_nearest(asset, asset_latest - timedelta(minutes=window_minutes), stamps=list(asset))
+                   if asset_latest else None)
+    if prior is None or asset_latest is None or asset_prior is None:
+        return {**base, "state": "insufficient_data",
+                "reason": "汇率或持仓缺少同窗真实样本，不输出方向推断"}
+    return {**base, "state": "observed_context", "reason": None,
+            "fxReturnPercent": round((fx[latest] / prior - 1.0) * 100, 4),
+            "assetReturnPercent": round((asset[asset_latest] / asset_prior - 1.0) * 100, 4),
+            "assetLatestAt": asset_latest.isoformat()}
 
 
 def detect_live_divergence(leader_rows, asset_rows, *, as_of, window_minutes=15,
@@ -334,6 +480,159 @@ def lunch_shock(rows, *, day, as_of):
     if p0 is None or p1 is None or p0 <= 0:
         return {"state": "insufficient", "return": None, "from": start.isoformat(), "to": end.isoformat()}
     return {"state": "observed", "return": p1 / p0 - 1.0, "from": start.isoformat(), "to": end.isoformat()}
+
+
+def overnight_absorption(leader_rows, asset_rows, *, as_of, minimum_sessions=30,
+                         maximum_baseline_age_hours=24):
+    """Describe external-market moves after the prior A-share close and their
+    observed opening-gap/first-30-minute digestion for the held ETF.
+
+    The result is descriptive only. It does not claim stable lead/lag, predict
+    a price, or authorize a trade. A session is omitted unless all endpoints
+    are actual, point-in-time observations from the source and held asset.
+    """
+    as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
+    if as_of is None or as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    if type(minimum_sessions) is not int or not 2 <= minimum_sessions <= 500:
+        raise ValueError("minimum_sessions must be between 2 and 500")
+    if (isinstance(maximum_baseline_age_hours, bool) or
+            not isinstance(maximum_baseline_age_hours, (int, float)) or
+            not isfinite(maximum_baseline_age_hours) or not 1 <= maximum_baseline_age_hours <= 72):
+        raise ValueError("maximum_baseline_age_hours must be between 1 and 72")
+
+    as_of = as_of.astimezone(timezone.utc)
+    leader = _series(leader_rows, as_of)
+    asset = _series(asset_rows, as_of)
+    zone = ZoneInfo("Asia/Shanghai")
+    by_day = {}
+    for stamp, price in asset.items():
+        local = stamp.astimezone(zone)
+        minute = local.hour * 60 + local.minute
+        if 570 <= minute <= 900:
+            by_day.setdefault(local.date().isoformat(), []).append((stamp, price, minute))
+
+    sessions = []
+    leader_stamps = list(leader)
+    dates = sorted(by_day)
+    for index in range(1, len(dates)):
+        previous_day, day = dates[index - 1], dates[index]
+        previous_close_candidates = [row for row in by_day[previous_day] if 890 <= row[2] <= 900]
+        today = by_day[day]
+        open_candidates = [row for row in today if 570 <= row[2] <= 580]
+        checkpoint_candidates = [row for row in today if 595 <= row[2] <= 605]
+        if not previous_close_candidates or not open_candidates or not checkpoint_candidates:
+            continue
+        previous_close = max(previous_close_candidates, key=lambda row: row[0])
+        opening = min(open_candidates, key=lambda row: row[0])
+        checkpoint = min(checkpoint_candidates, key=lambda row: (abs(row[2] - 600), row[0]))
+        if not leader:
+            continue
+        source_start = _nearest(leader, previous_close[0], stamps=leader_stamps)
+        source_start_stamp = next((stamp for stamp in reversed(leader_stamps)
+                                   if stamp <= previous_close[0]), None)
+        source_end_stamp = next((stamp for stamp in reversed(leader_stamps)
+                                 if previous_close[0] < stamp <= opening[0]), None)
+        if (source_start is None or source_start_stamp is None or source_end_stamp is None or
+                (previous_close[0] - source_start_stamp).total_seconds() > maximum_baseline_age_hours * 3600):
+            continue
+        source_end = leader[source_end_stamp]
+        gap = opening[1] / previous_close[1] - 1.0
+        digestion = checkpoint[1] / opening[1] - 1.0
+        absorption = -digestion / gap if abs(gap) >= 0.001 else None
+        sessions.append({"day": day, "leaderReturnPercent": (source_end / source_start - 1.0) * 100,
+                         "openingGapPercent": gap * 100, "firstThirtyMinuteReturnPercent": digestion * 100,
+                         "gapAbsorptionFraction": absorption,
+                         "sourceStartAt": source_start_stamp.isoformat(),
+                         "sourceEndAt": source_end_stamp.isoformat(),
+                         "assetPreviousCloseAt": previous_close[0].isoformat(),
+                         "assetOpenAt": opening[0].isoformat(), "assetCheckpointAt": checkpoint[0].isoformat()})
+
+    count = len(sessions)
+    paired = [row for row in sessions if row["leaderReturnPercent"] is not None]
+    absorptions = [row["gapAbsorptionFraction"] for row in sessions
+                   if row["gapAbsorptionFraction"] is not None and isfinite(row["gapAbsorptionFraction"])]
+    state = "descriptive_only" if count >= minimum_sessions else "insufficient"
+    return {"state": state, "asOf": as_of.isoformat(), "sampleCount": count, "minimumSessions": minimum_sessions,
+            "sampleStartDay": sessions[0]["day"] if sessions else None,
+            "sampleEndDay": sessions[-1]["day"] if sessions else None,
+            "leaderOpenGapCorrelation": _correlation([row["leaderReturnPercent"] for row in paired],
+                                                      [row["openingGapPercent"] for row in paired]),
+            "meanLeaderReturnPercent": mean(row["leaderReturnPercent"] for row in paired) if paired else None,
+            "meanOpeningGapPercent": mean(row["openingGapPercent"] for row in sessions) if sessions else None,
+            "meanFirstThirtyMinuteReturnPercent": mean(row["firstThirtyMinuteReturnPercent"] for row in sessions) if sessions else None,
+            "meanGapAbsorptionFraction": mean(absorptions) if absorptions else None,
+            "absorptionSampleCount": len(absorptions), "eligibleForTradingSignal": False,
+            "note": ("只描述隔夜来源变动、A股开盘缺口及开盘后30分钟的历史关系；不代表预测或交易信号"
+                     if state == "descriptive_only" else
+                     f"有效完整交易日仅 {count} 天，至少需要 {minimum_sessions} 天；不生成隔夜关系结论"),
+            "sessions": sessions}
+
+
+def tail_to_next_day(asset_rows, *, as_of, minimum_sessions=30):
+    """Describe, rather than predict, a held asset's late-session move and
+    the following session's opening/first-half-hour path.
+
+    Sessions require actual timestamps on both sides of the overnight boundary.
+    Missing holidays and provider gaps are omitted; they are never filled from a
+    later close. This is a research statistic, not a next-day order signal.
+    """
+    as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
+    if as_of is None or as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    if type(minimum_sessions) is not int or not 2 <= minimum_sessions <= 500:
+        raise ValueError("minimum_sessions must be between 2 and 500")
+    points = _series(asset_rows, as_of.astimezone(timezone.utc))
+    zone = ZoneInfo("Asia/Shanghai")
+    by_day = {}
+    for stamp, price in points.items():
+        local = stamp.astimezone(zone)
+        minute = local.hour * 60 + local.minute
+        if 570 <= minute <= 900:
+            by_day.setdefault(local.date().isoformat(), []).append((stamp, price, minute))
+
+    sessions = []
+    dates = sorted(by_day)
+    for index in range(1, len(dates)):
+        prior, day = dates[index - 1], dates[index]
+        prior_rows, today = by_day[prior], by_day[day]
+        tail_start = [row for row in prior_rows if 840 <= row[2] <= 850]
+        tail_close = [row for row in prior_rows if 890 <= row[2] <= 900]
+        opening = [row for row in today if 570 <= row[2] <= 580]
+        checkpoint = [row for row in today if 595 <= row[2] <= 605]
+        if not tail_start or not tail_close or not opening or not checkpoint:
+            continue
+        start = min(tail_start, key=lambda row: row[0])
+        close = max(tail_close, key=lambda row: row[0])
+        opened = min(opening, key=lambda row: row[0])
+        after_open = min(checkpoint, key=lambda row: (abs(row[2] - 600), row[0]))
+        if start[1] <= 0 or close[1] <= 0 or opened[1] <= 0:
+            continue
+        sessions.append({"day": day,
+                         "tailReturnPercent": (close[1] / start[1] - 1.0) * 100,
+                         "nextOpeningGapPercent": (opened[1] / close[1] - 1.0) * 100,
+                         "firstThirtyMinuteReturnPercent": (after_open[1] / opened[1] - 1.0) * 100,
+                         "tailStartAt": start[0].isoformat(), "priorCloseAt": close[0].isoformat(),
+                         "nextOpenAt": opened[0].isoformat(), "nextCheckpointAt": after_open[0].isoformat()})
+    tail = [row["tailReturnPercent"] for row in sessions]
+    gap = [row["nextOpeningGapPercent"] for row in sessions]
+    open_path = [row["firstThirtyMinuteReturnPercent"] for row in sessions]
+    count = len(sessions)
+    state = "descriptive_only" if count >= minimum_sessions else "insufficient"
+    return {"state": state, "asOf": as_of.astimezone(timezone.utc).isoformat(),
+            "sampleCount": count, "minimumSessions": minimum_sessions,
+            "sampleStartDay": sessions[0]["day"] if sessions else None,
+            "sampleEndDay": sessions[-1]["day"] if sessions else None,
+            "tailToOpenGapCorrelation": _correlation(tail, gap),
+            "tailToFirstThirtyMinuteCorrelation": _correlation(tail, open_path),
+            "meanTailReturnPercent": mean(tail) if tail else None,
+            "meanNextOpeningGapPercent": mean(gap) if gap else None,
+            "meanFirstThirtyMinuteReturnPercent": mean(open_path) if open_path else None,
+            "eligibleForTradingSignal": False,
+            "note": ("仅描述该ETF尾盘、次日开盘及开盘后30分钟的历史路径；不代表预测或交易信号"
+                     if state == "descriptive_only" else
+                     f"有效完整交易日仅 {count} 天，至少需要 {minimum_sessions} 天；不生成尾盘至次日结论"),
+            "sessions": sessions}
 
 
 def _session_time(day, clock, zone):

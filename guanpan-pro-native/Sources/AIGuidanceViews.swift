@@ -659,6 +659,7 @@ struct AIGuidanceDetailSheet: View {
                 GPDataRow(title: "需扣除手续费", value: "¥\(NextMoney.text(plan.feeTotal))", note: "ETF 每笔 ¥0.10，两笔")
                 Text(plan.volumeSupport).font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                 Text(plan.trampleRisk).font(.caption2).foregroundStyle(p.terracotta).fixedSize(horizontal: false, vertical: true)
+                Text(plan.continuedDropRisk).font(.caption2).foregroundStyle(p.terracotta).fixedSize(horizontal: false, vertical: true)
                 Text("有效期至 \(plan.validUntil.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(p.muted)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("失效条件").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.ink)

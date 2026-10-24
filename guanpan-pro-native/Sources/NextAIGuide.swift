@@ -519,7 +519,10 @@ struct NextTPlan: Equatable {
     let feeTotal: Decimal
     let netGain: Decimal
     let costReductionPerUnit: Decimal
+    let estimatedMissedUpside: Decimal
+    let estimatedContinuedDropLoss: Decimal
     let trampleRisk: String
+    let continuedDropRisk: String
     let volumeSupport: String
     let validUntil: Date
     let cancelConditions: [String]
@@ -557,6 +560,31 @@ enum NextOrderBookEvidence {
     }
 }
 
+/// 场内 ETF 的 IOPV 只在来源明确标注为 ETF、报价本身仍新鲜时才作为执行保护。
+/// IOPV 缺失并不伪造净值，也不会据此杜撰溢折价；但当可靠 IOPV 显示明显
+/// 溢折价时，候选限价计划必须停下，等待净值与市场价格重新收敛。
+enum NextETFPremiumExecutionGuard {
+    static let maximumAbsolutePremiumPercent = 1.0
+
+    static func rejectionReason(quote: NextQuote, now: Date) -> String? {
+        guard quote.providerInstrumentType == "ETF",
+              quote.isFreshForPricePlan(at: now),
+              let iopv = quote.iopv, iopv > 0 else { return nil }
+        let premium = NextNum.double((quote.price / iopv - 1) * 100)
+        guard abs(premium) >= maximumAbsolutePremiumPercent else { return nil }
+        let direction = premium >= 0 ? "溢价" : "折价"
+        return "实时 IOPV (direction) (String(format: "%.2f", premium))%（阈值 ±\(String(format: "%.1f", maximumAbsolutePremiumPercent))%）；净值与市价偏离过大，拒绝生成具体候选限价，等待溢折价收敛后再评估"
+    }
+
+    static func evidence(quote: NextQuote, now: Date) -> String? {
+        guard quote.providerInstrumentType == "ETF",
+              quote.isFreshForPricePlan(at: now),
+              let iopv = quote.iopv, iopv > 0 else { return nil }
+        let premium = NextNum.double((quote.price / iopv - 1) * 100)
+        return "ETF IOPV ¥\(NextMoney.text(iopv, digits: 3))，实时溢折价 \(String(format: "%+.2f", premium))%（执行过滤阈值 ±\(String(format: "%.1f", maximumAbsolutePremiumPercent))%）"
+    }
+}
+
 /// 做 T 计划生成器。**只根据真实持仓与行情计算可手工挂出的价格和份额**；
 /// 未成交前不改变持仓、现金，不产生任何收益。价格全部来自当日分时统计
 ///（VWAP、日内高低、振幅）与日 K 结构，禁止由大模型直接生成。
@@ -582,6 +610,9 @@ enum NextTradeTPlanner {
               let lotSize = rules.lotSize, lotSize > 0,
               let feePerTrade = rules.feePerTrade, feePerTrade >= 0 else {
             return .insufficientData(confidence, ["该证券的交易规则未核实（份额单位/手续费），为避免错误委托拒绝生成价格"])
+        }
+        if let reason = NextETFPremiumExecutionGuard.rejectionReason(quote: quote, now: now) {
+            return .notWorthwhile([reason])
         }
         guard let caps, caps.nasLongTermQuality, caps.nasFreshnessValid,
               (caps.nasDays ?? 0) >= 60,
@@ -671,8 +702,11 @@ enum NextTradeTPlanner {
 
         // 踏空风险：以 1× 今日振幅的继续上涨为参考，量化「卖飞」的代价。
         let referenceRise = sellPrice * Decimal(amplitude / 100)
-        let missCost = (sellPrice + referenceRise - buyPrice) * Decimal(units) - feeTotal
-        var trample = "若卖出后价格继续上涨超过 \(String(format: "%.2f", amplitude))%（约 ¥\(NextMoney.text(sellPrice + referenceRise, digits: 3))）且当日不回落至买回价，本次做T踏空，约少赚 ¥\(NextMoney.text(max(0, missCost)))"
+        // Compare with continuing to hold the same shares: opportunity cost is
+        // the rise after the sale plus the sale fee. Do not add the planned
+        // round-trip spread a second time.
+        let missCost = referenceRise * Decimal(units) + feePerTrade
+        var trample = "若卖出后价格再上涨一个今日振幅（约 \(String(format: "%.2f", amplitude))%）且未回落买回，相对继续持有的机会成本约 ¥\(NextMoney.text(missCost))（情景估算，不是预测）"
         if let historyMissRate {
             trample += "；长期分时统计中卖出后未回落比例约 \(Int((historyMissRate * 100).rounded()))%"
         } else if let medianAmplitude = caps.nasAmplitude60 {
@@ -686,6 +720,11 @@ enum NextTradeTPlanner {
         } else {
             trample += "；长期分时统计未接入，暂不给历史未回落比例"
         }
+
+        // A filled buy can remain exposed if price keeps falling. Show a
+        // one-day-range mark-to-market scenario separately from the T profit.
+        let continuedDropLoss = buyPrice * Decimal(amplitude / 100) * Decimal(units) + feePerTrade
+        let continuedDropRisk = "若买入成交后再下跌一个今日振幅（约 \(String(format: "%.2f", amplitude))%），对应持仓浮亏情景约 ¥\(NextMoney.text(continuedDropLoss))；这只是风险量级，不代表价格预测"
 
         // 成交量支持：本计划份额占当日成交量的比例。
         var volumeSupport = "当日无成交量统计，无法评估冲击成本"
@@ -707,6 +746,9 @@ enum NextTradeTPlanner {
             evidence.append("RSI14 \(String(format: "%.1f", rsi))")
         }
         evidence.append("现价 ¥\(NextMoney.text(quote.price, digits: 3))（\(quote.source)，\(confidence.quoteAgeSeconds ?? 0) 秒前）")
+        if let iopvEvidence = NextETFPremiumExecutionGuard.evidence(quote: quote, now: now) {
+            evidence.append(iopvEvidence)
+        }
         evidence.append(contentsOf: capNotes)
         if let medianAmplitude = caps.nasAmplitude60, let days = caps.nasDays {
             evidence.append("NAS \(days) 天分时：60 日振幅中位数 \(String(format: "%.2f", medianAmplitude))%，日均往返 \(String(format: "%.1f", caps.nasRoundTrips60 ?? 0)) 次")
@@ -714,7 +756,9 @@ enum NextTradeTPlanner {
 
         let plan = NextTPlan(kind: kind, code: quote.code, name: quote.name, sellPrice: sellPrice, buyPrice: buyPrice,
                              units: units, grossSpread: grossSpread, feeTotal: feeTotal, netGain: netGain,
-                             costReductionPerUnit: costReduction, trampleRisk: trample, volumeSupport: volumeSupport,
+                             costReductionPerUnit: costReduction, estimatedMissedUpside: missCost,
+                             estimatedContinuedDropLoss: continuedDropLoss,
+                             trampleRisk: trample, continuedDropRisk: continuedDropRisk, volumeSupport: volumeSupport,
                              validUntil: NextPlanClock.sessionEnd(after: now),
                              cancelConditions: [
                                 "现价偏离 VWAP 超过 1.5× 今日振幅（做T前提消失）",
@@ -790,6 +834,9 @@ enum NextGridPlanner {
               let lotSize = rules.lotSize, lotSize > 0,
               let feePerTrade = rules.feePerTrade else {
             return .insufficientData(confidence, ["该证券的交易规则未核实（份额单位/手续费），拒绝生成网格档位"])
+        }
+        if let reason = NextETFPremiumExecutionGuard.rejectionReason(quote: quote, now: now) {
+            return .notRecommended([reason])
         }
         guard let orderBook, orderBook.code == quote.code,
               let liquidity = NextOrderBookEvidence.assess(orderBook, lotSize: lotSize, now: now),

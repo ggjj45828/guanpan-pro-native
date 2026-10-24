@@ -57,11 +57,29 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             source=", ".join(sorted(source_names)) or "未验证来源",
             market_status="open" if market_open else "closed", max_age_seconds=600,
             multiple_comparison_count=len(CROSS_MARKET_SERIES) * len(cross_market.LAG_MINUTES) * 4)
+        stable_windows = [row for row in report.get("windows", [])
+                          if row.get("state") == "stable_candidate"]
+        # A default observation window is explicitly non-trading when no
+        # historical candidate exists; it is there to reveal decay, not to
+        # quietly turn a no-relationship result into a signal.
+        reference = (min(stable_windows, key=lambda row: row.get("bonferroniAdjustedPValue", 1.0))
+                     if stable_windows else {"lagMinutes": 0, "horizonMinutes": 15})
+        rolling = cross_market.rolling_validity(
+            leader_rows, follower_rows, as_of=now,
+            lag_minutes=reference["lagMinutes"], horizon_minutes=reference["horizonMinutes"])
+        profiles = cross_market.intraday_time_profiles(
+            leader_rows, follower_rows, as_of=now,
+            lag_minutes=reference["lagMinutes"], horizon_minutes=reference["horizonMinutes"])
+        overnight = cross_market.overnight_absorption(leader_rows, follower_rows, as_of=now)
+        overnight.pop("sessions", None)  # Keep the phone payload to compact statistics, not raw archives.
         reports.append({"market": market_id, "currentMarketStatus": "open" if market_open else "closed",
                         "liveDivergence": cross_market.detect_live_divergence(
                             leader_rows, follower_rows, as_of=now, window_minutes=15,
                             minimum_move_percent=0.25, tolerance_seconds=90,
-                            maximum_age_seconds=600), **report})
+                            maximum_age_seconds=600),
+                        "overnightAbsorption": overnight,
+                        "rollingValidity": rolling,
+                        "timeProfiles": profiles, **report})
     def newest_timestamp(rows):
         stamps = [row["leaderLatestAt"] for row in rows if row.get("leaderLatestAt")]
         return max(stamps, key=lambda value: datetime.fromisoformat(value).astimezone(timezone.utc)) if stamps else None
@@ -124,6 +142,9 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
         latest_at = newest_timestamp(reports)
         source = ", ".join(sorted({row["source"] for row in reports if row["source"] != "未验证来源"})) or None
         current_status, age_seconds = "unknown", None
+    tail_to_next_day = cross_market.tail_to_next_day(follower_rows, as_of=now)
+    # The app needs the auditable summary, not an entire minute archive payload.
+    tail_to_next_day.pop("sessions", None)
     return {"state": state, "reason": reason, "source": source, "asOf": latest_at,
             "sampleCount": sample_count,
             "bestLagMinutes": best_lag, "conditionalWinRate": win_rate,
@@ -131,6 +152,10 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             "ageSeconds": age_seconds, "researchWindow": {"start": start, "end": end_text},
             "leadSources": lead_sources, "rankedHistoricalCandidates": ranked_sources,
             "liveDivergences": [{"market": row["market"], **row["liveDivergence"]} for row in reports],
+            "overnightAbsorption": [{"market": row["market"], **row["overnightAbsorption"]} for row in reports],
+            "rollingValidity": [{"market": row["market"], **row["rollingValidity"]} for row in reports],
+            "timeProfiles": [{"market": row["market"], **row["timeProfiles"]} for row in reports],
+            "tailToNextDay": tail_to_next_day,
             "eligibleForTradingSignal": False,
             "validationState": "requires_pre_registered_future_replication" if ranked_sources else "no_validated_candidate"}
 

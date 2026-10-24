@@ -15,10 +15,12 @@ final class NextChainScenarioTests: XCTestCase {
                             feePerTrade: Decimal(string: "0.10"), source: "fixture", verifiedAt: now)
     }
 
-    private func quote(price: Double, previousClose: Double = 1.400) -> NextQuote {
+    private func quote(price: Double, previousClose: Double = 1.400, iopv: Double? = nil) -> NextQuote {
         NextQuote(code: code, name: "纳指ETF", price: Decimal(string: String(format: "%.3f", price))!,
                   previousClose: Decimal(string: String(format: "%.3f", previousClose))!,
-                  time: now, source: "fixture")
+                  time: now, source: "fixture", timeQuality: "exchange_time",
+                  iopv: iopv.flatMap { Decimal(string: String(format: "%.3f", $0)) },
+                  providerInstrumentType: iopv == nil ? nil : "ETF")
     }
 
     private func book(units: Int = 10_000, cash: Double = 50_000) -> NextBook {
@@ -237,6 +239,14 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertGreaterThan(plan.netGain, 0, "净收益必须扣完两笔手续费后为正")
         XCTAssertGreaterThan(plan.costReductionPerUnit, 0, "等效降本必须为正")
         XCTAssertEqual(plan.feeTotal, Decimal(string: "0.20")!, "两笔手续费都要进计算")
+        let amplitude = try! XCTUnwrap(NextIntradayStatsEngine.compute(samples: intraday, previousClose: quote(price: 1.400).previousClose).amplitudePercent)
+        XCTAssertEqual(plan.estimatedMissedUpside,
+                       plan.sellPrice * Decimal(amplitude / 100) * Decimal(plan.units) + Decimal(string: "0.10")!,
+                       "踏空情景只计算卖出后涨幅与已发生的卖出手续费，不重复计入计划价差")
+        XCTAssertEqual(plan.estimatedContinuedDropLoss,
+                       plan.buyPrice * Decimal(amplitude / 100) * Decimal(plan.units) + Decimal(string: "0.10")!,
+                       "下跌情景应单列买入后继续下跌的风险量级")
+        XCTAssertTrue(plan.continuedDropRisk.contains("情景"))
         XCTAssertTrue(plan.evidence.contains { $0.contains("VWAP") })
         XCTAssertFalse(plan.cancelConditions.isEmpty)
         XCTAssertEqual(plan.validUntil, NextPlanClock.sessionEnd(after: now))
@@ -355,6 +365,31 @@ final class NextChainScenarioTests: XCTestCase {
             }
             XCTAssertTrue(plan.pauseConditions.contains { $0.contains("突破") })
         }
+    }
+
+    func testReliableLargeETFIOPVPremiumBlocksTAndGridExecutionPlans() throws {
+        let intraday = minutes((0..<60).map { [1.386, 1.412, 1.387, 1.413, 1.388, 1.414][$0 % 6] })
+        // 现价 1.400、可靠 IOPV 1.370，溢价约 +2.19%，超过明确的 ±1% 执行保护线。
+        let inflated = quote(price: 1.400, iopv: 1.370)
+        let tGuidance = scan(book(), quote: inflated, daily: bars(oscillatingCloses()),
+                             intraday: intraday, research: [code: research()])
+        let tItem = try XCTUnwrap(tGuidance.items.first)
+        guard case let .notWorthwhile(reasons)? = tItem.tPlan else {
+            return XCTFail("可靠 IOPV 大幅溢价必须阻止做T具体限价：\(String(describing: tItem.tPlan))")
+        }
+        XCTAssertTrue(reasons.joined(separator: " ").contains("IOPV"))
+        XCTAssertFalse(tItem.isActionable)
+
+        let gridGuidance = scan(book(), quote: inflated,
+                                daily: bars(oscillatingCloses(), bandPercent: 0.6),
+                                intraday: minutes((0..<60).map { 1.390 + Double($0) * 0.0003 }),
+                                research: [code: research()])
+        let gridItem = try XCTUnwrap(gridGuidance.items.first)
+        guard case let .notRecommended(gridReasons)? = gridItem.gridPlan else {
+            return XCTFail("可靠 IOPV 大幅溢价必须阻止网格具体档位：\(String(describing: gridItem.gridPlan))")
+        }
+        XCTAssertTrue(gridReasons.joined(separator: " ").contains("溢价"))
+        XCTAssertFalse(gridItem.isActionable)
     }
 
     // MARK: - D 数据不足：拒绝给价格

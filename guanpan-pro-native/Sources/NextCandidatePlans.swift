@@ -330,6 +330,7 @@ enum NextOpportunityScanner {
                 if case let .ready(plan) = result {
                     headline = plan.kind.rawValue
                     riskNotes.append(plan.trampleRisk)
+                    riskNotes.append(plan.continuedDropRisk)
                     if portfolioNote != nil {
                         riskNotes.append("组合仓位已超上限：正T的买入腿不建议执行")
                     }

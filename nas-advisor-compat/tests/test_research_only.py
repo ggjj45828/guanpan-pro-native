@@ -5,7 +5,7 @@ import json
 import io
 import tempfile
 import gc
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -74,6 +74,169 @@ class LiveDivergenceTests(unittest.TestCase):
             with self.subTest(threshold=threshold), self.assertRaises(ValueError):
                 cross_market.detect_live_divergence([], [], as_of=as_of,
                                                     minimum_move_percent=threshold)
+
+
+class OvernightAbsorptionTests(unittest.TestCase):
+    def test_uses_complete_point_in_time_sessions_and_never_emits_trade_signal(self):
+        leader, asset = [], []
+        shanghai = timezone(timedelta(hours=8))
+        day = datetime(2026, 8, 3, tzinfo=shanghai).date()
+        trading_days = []
+        while len(trading_days) < 32:
+            if day.weekday() < 5:
+                trading_days.append(day)
+            day += timedelta(days=1)
+        for index, session_day in enumerate(trading_days):
+            base = 100 + index
+            previous_close = datetime.combine(session_day, datetime.min.time(), shanghai).replace(hour=14, minute=59)
+            overnight_at = previous_close.replace(hour=16, minute=0)
+            asset.extend([
+                {"timestamp": previous_close.isoformat(), "price": str(base)},
+                {"timestamp": previous_close.replace(hour=9, minute=30).isoformat(), "price": str(base * 1.01)},
+                {"timestamp": previous_close.replace(hour=10, minute=0).isoformat(), "price": str(base * 1.005)},
+            ])
+            leader.extend([
+                {"timestamp": previous_close.isoformat(), "price": str(1000 + index)},
+                {"timestamp": overnight_at.isoformat(), "price": str((1000 + index) * 1.01)},
+            ])
+        as_of = datetime.combine(trading_days[-1], datetime.min.time(), shanghai).replace(hour=10, minute=1)
+        report = cross_market.overnight_absorption(leader, asset, as_of=as_of)
+        self.assertEqual(report["state"], "descriptive_only")
+        self.assertEqual(report["sampleCount"], 31)
+        self.assertGreater(report["meanOpeningGapPercent"], 0)
+        self.assertGreater(report["meanGapAbsorptionFraction"], 0)
+        self.assertFalse(report["eligibleForTradingSignal"])
+        self.assertNotIn("price", report)
+        self.assertEqual(report["sessions"][-1]["day"], trading_days[-1].isoformat())
+
+    def test_old_or_future_intervals_cannot_fabricate_overnight_samples(self):
+        as_of = datetime.fromisoformat("2026-10-23T10:01:00+08:00")
+        leader = [{"timestamp": "2026-10-22T14:59:00+08:00", "price": "100"},
+                  {"timestamp": "2026-10-22T16:00:00+08:00", "price": "101"},
+                  {"timestamp": "2026-10-23T08:00:00+08:00", "price": "101.5"},
+                  {"timestamp": "2026-10-23T09:31:00+08:00", "price": "102"}]
+        asset = [{"timestamp": "2026-10-22T14:59:00+08:00", "price": "1"},
+                 {"timestamp": "2026-10-23T09:30:00+08:00", "price": "1.01"},
+                 {"timestamp": "2026-10-23T10:00:00+08:00", "price": "1.00"},
+                 {"timestamp": "2026-10-23T10:02:00+08:00", "price": "9"}]
+        report = cross_market.overnight_absorption(leader, asset, as_of=as_of, minimum_sessions=2)
+        self.assertEqual(report["state"], "insufficient")
+        self.assertEqual(report["sampleCount"], 1)
+        self.assertEqual(report["sessions"][0]["assetOpenAt"], "2026-10-23T01:30:00+00:00")
+        self.assertNotEqual(report["sessions"][0]["firstThirtyMinuteReturnPercent"], 800)
+
+
+class TailToNextDayTests(unittest.TestCase):
+    def test_tail_research_requires_real_cross_day_endpoints_and_is_not_a_signal(self):
+        rows = []
+        shanghai = timezone(timedelta(hours=8))
+        day = datetime(2026, 7, 1, tzinfo=shanghai).date()
+        trading_days = []
+        while len(trading_days) < 32:
+            if day.weekday() < 5:
+                trading_days.append(day)
+            day += timedelta(days=1)
+        for index, session_day in enumerate(trading_days):
+            base = 1 + index / 100
+            stamp = datetime.combine(session_day, datetime.min.time(), shanghai)
+            rows.extend([
+                {"timestamp": stamp.replace(hour=14, minute=0).isoformat(), "price": str(base)},
+                {"timestamp": stamp.replace(hour=14, minute=59).isoformat(), "price": str(base * 1.01)},
+                {"timestamp": stamp.replace(hour=9, minute=30).isoformat(), "price": str(base * 1.005)},
+                {"timestamp": stamp.replace(hour=10, minute=0).isoformat(), "price": str(base * 1.007)},
+            ])
+        as_of = datetime.combine(trading_days[-1], datetime.min.time(), shanghai).replace(hour=10, minute=1)
+        report = cross_market.tail_to_next_day(rows, as_of=as_of)
+        self.assertEqual(report["state"], "descriptive_only")
+        self.assertEqual(report["sampleCount"], 31)
+        self.assertFalse(report["eligibleForTradingSignal"])
+        self.assertNotIn("price", report)
+        self.assertEqual(report["sessions"][-1]["day"], trading_days[-1].isoformat())
+
+    def test_tail_research_excludes_future_points(self):
+        as_of = datetime.fromisoformat("2026-10-23T10:01:00+08:00")
+        rows = [
+            {"timestamp": "2026-10-22T14:00:00+08:00", "price": "1"},
+            {"timestamp": "2026-10-22T14:59:00+08:00", "price": "1.01"},
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": "1.005"},
+            {"timestamp": "2026-10-23T10:00:00+08:00", "price": "1.007"},
+            {"timestamp": "2026-10-23T10:02:00+08:00", "price": "9"},
+        ]
+        report = cross_market.tail_to_next_day(rows, as_of=as_of, minimum_sessions=2)
+        self.assertEqual(report["sampleCount"], 1)
+        self.assertEqual(report["state"], "insufficient")
+        self.assertAlmostEqual(report["sessions"][0]["firstThirtyMinuteReturnPercent"], (1.007 / 1.005 - 1) * 100)
+
+
+class RollingCrossMarketResearchTests(unittest.TestCase):
+    def _rows(self, count=32):
+        leader, asset = [], []
+        shanghai = timezone(timedelta(hours=8))
+        day = datetime(2026, 7, 1, tzinfo=shanghai).date()
+        added = 0
+        while added < count:
+            if day.weekday() < 5:
+                sign = 1 if added % 2 else -1
+                base = 100 + added
+                stamp = datetime.combine(day, datetime.min.time(), shanghai)
+                leader.extend([
+                    {"timestamp": stamp.replace(hour=9, minute=25).isoformat(), "price": str(base)},
+                    {"timestamp": stamp.replace(hour=9, minute=30).isoformat(), "price": str(base * (1 + sign * .002))},
+                ])
+                asset.extend([
+                    {"timestamp": stamp.replace(hour=9, minute=30).isoformat(), "price": "1"},
+                    {"timestamp": stamp.replace(hour=9, minute=45).isoformat(), "price": str(1 + sign * .001)},
+                ])
+                added += 1
+            day += timedelta(days=1)
+        as_of = datetime.combine(day, datetime.min.time(), shanghai).replace(hour=12)
+        return leader, asset, as_of
+
+    def test_rolling_windows_keep_short_history_explicitly_insufficient(self):
+        leader, asset, as_of = self._rows()
+        report = cross_market.rolling_validity(leader, asset, as_of=as_of,
+                                                lag_minutes=0, horizon_minutes=15)
+        by_window = {row["windowSessions"]: row for row in report["windows"]}
+        self.assertEqual(by_window[20]["state"], "descriptive_only")
+        self.assertEqual(by_window[20]["sampleCount"], 20)
+        self.assertEqual(by_window[60]["state"], "insufficient")
+        self.assertEqual(by_window[60]["sampleCount"], 32)
+        self.assertFalse(report["eligibleForTradingSignal"])
+
+    def test_time_profile_aggregates_by_day_not_raw_minute_count(self):
+        leader, asset, as_of = self._rows()
+        report = cross_market.intraday_time_profiles(leader, asset, as_of=as_of,
+                                                       lag_minutes=0, horizon_minutes=15,
+                                                       minimum_sessions=20)
+        self.assertEqual(len(report["profiles"]), 1)
+        profile = report["profiles"][0]
+        self.assertEqual(profile["sampleCount"], 32)
+        self.assertEqual(profile["state"], "descriptive_only")
+        self.assertFalse(profile["eligibleForTradingSignal"])
+        self.assertNotIn("price", profile)
+
+
+class CurrencyContextTests(unittest.TestCase):
+    def test_currency_context_requires_named_fresh_series_and_never_authorizes_trade(self):
+        as_of = datetime.fromisoformat("2026-10-23T10:00:00+08:00")
+        fx = [
+            {"timestamp": "2026-10-23T09:00:00+08:00", "price": "7.10"},
+            {"timestamp": "2026-10-23T10:00:00+08:00", "price": "7.12"},
+        ]
+        asset = [
+            {"timestamp": "2026-10-23T09:00:00+08:00", "price": "1.00"},
+            {"timestamp": "2026-10-23T10:00:00+08:00", "price": "1.01"},
+        ]
+        report = cross_market.currency_context(fx, asset, as_of=as_of,
+                                                source="verified FX fixture", pair="USD/CNY")
+        self.assertEqual(report["state"], "observed_context")
+        self.assertAlmostEqual(report["fxReturnPercent"], (7.12 / 7.10 - 1) * 100, places=4)
+        self.assertFalse(report["eligibleForTradingSignal"])
+        self.assertNotIn("price", report)
+        stale = cross_market.currency_context(fx, asset,
+            as_of=datetime.fromisoformat("2026-10-23T11:00:00+08:00"),
+            source="verified FX fixture", pair="USD/CNY")
+        self.assertEqual(stale["state"], "stale")
 
 
 class PointInTimeArchiveTests(unittest.TestCase):
@@ -920,6 +1083,18 @@ class RetiredRoutesTests(unittest.TestCase):
             divergences = response[0][1]["crossMarket"]["liveDivergences"]
             self.assertEqual(len(divergences), len(workers.CROSS_MARKET_SERIES))
             self.assertTrue(all(item["eligibleForTradingSignal"] is False for item in divergences))
+            overnight = response[0][1]["crossMarket"]["overnightAbsorption"]
+            self.assertEqual(len(overnight), len(workers.CROSS_MARKET_SERIES))
+            self.assertTrue(all(item["eligibleForTradingSignal"] is False for item in overnight))
+            self.assertTrue(all("sessions" not in item for item in overnight), "Phone receives compact stats, not raw NAS minute archives")
+            rolling = response[0][1]["crossMarket"]["rollingValidity"]
+            profiles = response[0][1]["crossMarket"]["timeProfiles"]
+            self.assertEqual(len(rolling), len(workers.CROSS_MARKET_SERIES))
+            self.assertEqual(len(profiles), len(workers.CROSS_MARKET_SERIES))
+            self.assertTrue(all(item["eligibleForTradingSignal"] is False for item in rolling + profiles))
+            tail = response[0][1]["crossMarket"]["tailToNextDay"]
+            self.assertFalse(tail["eligibleForTradingSignal"])
+            self.assertNotIn("sessions", tail)
             self.assertIsNone(response[0][1]["ai"])
             self.assertFalse(response[0][1]["providerConfigured"])
             self.assertEqual(response[0][1]["providerStatus"]["state"], "phone-only")

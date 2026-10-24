@@ -1237,7 +1237,80 @@ struct NextNASResearch: Codable, Equatable {
                 return parsed.map { $0 > now } ?? false
             }
         }
+        /// Historical overnight move/open-gap comparison; descriptive only.
+        struct OvernightAbsorption: Codable, Equatable {
+            let market: String
+            let state: String
+            let sampleCount: Int
+            let asOf: String?
+            let sampleStartDay: String?
+            let sampleEndDay: String?
+            let minimumSessions: Int?
+            let leaderOpenGapCorrelation: Double?
+            let meanLeaderReturnPercent: Double?
+            let meanOpeningGapPercent: Double?
+            let meanFirstThirtyMinuteReturnPercent: Double?
+            let meanGapAbsorptionFraction: Double?
+            let absorptionSampleCount: Int?
+            let eligibleForTradingSignal: Bool?
+            let note: String?
+        }
+        /// The ETF's own late-session → next-session path. Research-only and
+        /// deliberately separate from candidate order planning.
+        struct TailToNextDay: Codable, Equatable {
+            let state: String
+            let sampleCount: Int
+            let minimumSessions: Int?
+            let sampleStartDay: String?
+            let sampleEndDay: String?
+            let tailToOpenGapCorrelation: Double?
+            let tailToFirstThirtyMinuteCorrelation: Double?
+            let meanTailReturnPercent: Double?
+            let meanNextOpeningGapPercent: Double?
+            let meanFirstThirtyMinuteReturnPercent: Double?
+            let eligibleForTradingSignal: Bool?
+            let note: String?
+        }
+        struct RollingValidity: Codable, Equatable {
+            struct Window: Codable, Equatable {
+                let windowSessions: Int
+                let sampleCount: Int
+                let state: String
+                let correlation: Double?
+                let conditionalDirectionRate: Double?
+                let eligibleForTradingSignal: Bool?
+            }
+            let market: String
+            let lagMinutes: Int
+            let horizonMinutes: Int
+            let windows: [Window]
+            let eligibleForTradingSignal: Bool?
+            let note: String?
+        }
+        struct TimeProfiles: Codable, Equatable {
+            struct Profile: Codable, Equatable {
+                let startMinute: Int
+                let endMinute: Int
+                let sampleCount: Int
+                let state: String
+                let correlation: Double?
+                let conditionalDirectionRate: Double?
+                let eligibleForTradingSignal: Bool?
+            }
+            let market: String
+            let lagMinutes: Int
+            let horizonMinutes: Int
+            let bucketMinutes: Int
+            let minimumSessions: Int
+            let profiles: [Profile]
+            let eligibleForTradingSignal: Bool?
+            let note: String?
+        }
         var liveDivergences: [LiveDivergence]? = nil
+        var overnightAbsorption: [OvernightAbsorption]? = nil
+        var tailToNextDay: TailToNextDay? = nil
+        var rollingValidity: [RollingValidity]? = nil
+        var timeProfiles: [TimeProfiles]? = nil
     }
     var crossMarket: CrossMarketEvidence? = nil
 }
