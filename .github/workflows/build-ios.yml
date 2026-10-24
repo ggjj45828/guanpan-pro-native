@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - 'upgrade/v2.13.55-r2'
     paths:
       - 'guanpan-pro-native/**'
       - '.github/workflows/build-ios.yml'

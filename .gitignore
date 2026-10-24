@@ -13,3 +13,4 @@ DerivedData/
 Thumbs.db
 __pycache__/
 *.py[cod]
+work-test-tmp/
