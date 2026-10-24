@@ -193,10 +193,11 @@ struct NextMarketStateReading: Equatable {
 /// 复用 NextSignalEngine（均线/RSI/MACD）与 NextGridCheckEngine.metrics（波动/振幅/震荡性），不重算。
 enum NextMarketStateEngine {
     static func classify(daily: [NextChartSample], intraday: [NextChartSample], quote: NextQuote?, now: Date) -> NextMarketStateReading {
-        let bars = daily.filter { $0.close > 0 }.sorted { $0.timestamp < $1.timestamp }
+        // Never let a future-dated bar leak into state, moving averages, or grid metrics.
+        let bars = daily.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
         let signal = NextSignalEngine.evaluate(bars)
         let metrics = NextGridCheckEngine.metrics(of: bars)
-        let minuteCount = intraday.filter { $0.close > 0 }.count
+        let minuteCount = intraday.filter { $0.close > 0 && $0.timestamp <= now }.count
         let todayChange: Double? = quote.map { NextNum.double(($0.price / $0.previousClose - 1) * 100) }
 
         var return20: Double?
@@ -563,8 +564,9 @@ enum NextTradeTPlanner {
     static func plan(kind: NextTKind, book: NextBook, quote: NextQuote?, daily: [NextChartSample], intraday: [NextChartSample],
                      rules: NextInstrumentRules?, orderBook: NextOrderBookSnapshot? = nil, caps: NextPlanCaps? = nil,
                      now: Date, historyMissRate: Double? = nil) -> NextTPlannerResult {
-        let bars = daily.filter { $0.close > 0 }
-        let validIntraday = intraday.filter { $0.close > 0 }
+        // Planning receives only observations known at `now`; future timestamps are a hard look-ahead risk.
+        let bars = daily.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
+        let validIntraday = intraday.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
         let confidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: bars.count,
                                                   minuteSampleCount: validIntraday.count,
                                                   intradayLatestAt: validIntraday.map(\.timestamp).max(),
@@ -764,7 +766,8 @@ enum NextGridPlanner {
                      rules: NextInstrumentRules?, nasRange: NextNasRange? = nil,
                      orderBook: NextOrderBookSnapshot? = nil,
                      caps: NextPlanCaps? = nil, now: Date) -> NextGridPlannerResult {
-        let bars = daily.filter { $0.close > 0 }.sorted { $0.timestamp < $1.timestamp }
+        // Daily bars can include a partial/current candle; future observations are never admissible.
+        let bars = daily.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
         // 网格不依赖当日分时点：按「日 K ≥60 + 行情 2 分钟内」评估（见 canPriceGridPlan）。
         // 之前这里把 minuteSampleCount 硬编码成 0，导致 assess 因缺分时而判 blocked，
         // 网格永远出不了 ready 计划——这是生产 bug，不是测试问题。
