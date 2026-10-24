@@ -55,7 +55,11 @@ final class NextChainScenarioTests: XCTestCase {
     private func minutes(_ prices: [Double]) -> [NextChartSample] {
         prices.enumerated().map { index, value in
             let price = Decimal(string: String(format: "%.4f", value))!
-            return NextChartSample(timestamp: now.addingTimeInterval(Double(index) * 60),
+            // The final sample is known at the decision instant. Earlier points
+            // are historical; placing them after `now` would correctly trigger
+            // the production look-ahead filter and leave a one-point fixture.
+            let secondsBeforeNow = Double(prices.count - 1 - index) * 60
+            return NextChartSample(timestamp: now.addingTimeInterval(-secondsBeforeNow),
                                    open: price, high: price, low: price, close: price,
                                    iopv: nil, volume: 10_000)
         }
@@ -169,8 +173,8 @@ final class NextChainScenarioTests: XCTestCase {
                                     intraday: [code: intraday], rules: [code: rules()],
                                     orderBooks: [code: orderBook()], goal: NextGoal(),
                                     nasConfigured: nasConfigured ?? !research.isEmpty,
-                                    nasReachable: nasReachable ?? (!research.isEmpty ? true : nil),
-                                    nasProbedAt: (nasConfigured == true || !research.isEmpty || nasReachable != nil) ? now : nil,
+                                    nasReachable: nasReachable,
+                                    nasProbedAt: nasReachable == nil ? nil : now,
                                     profile: profile, research: research, news: news, now: now)
     }
 
