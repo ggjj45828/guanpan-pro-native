@@ -29,9 +29,17 @@ final class NativeNavigationTests: XCTestCase {
 
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-ui-testing", "1"]
+        app.launchArguments += ["-ui-testing", "1", "-ui-testing-reset"]
+        app.launchEnvironment["GUANPAN_TESTING"] = "1"
         app.launch()
         return app
+    }
+
+    /// Toolbar actions live in a SwiftUI safe-area inset. XCTest sometimes
+    /// tries to scroll this already-visible element and gets kAXErrorCannotComplete.
+    private func tapVisible(_ element: XCUIElement) {
+        XCTAssertTrue(element.waitForExistence(timeout: 10))
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 
     /// 自绘底栏的五个页签。新页签加进 GPTabBar 时同步这里。
@@ -56,7 +64,7 @@ final class NativeNavigationTests: XCTestCase {
         byId(app, "tab.market").tap()
         let settingsButton = byId(app, "settings.open")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
-        settingsButton.tap()
+        tapVisible(settingsButton)
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
         attach(app, "settings")
     }
@@ -137,7 +145,7 @@ final class NativeNavigationTests: XCTestCase {
         let app = launch()
         let searchButton = byId(app, "search.open")
         XCTAssertTrue(searchButton.waitForExistence(timeout: 10))
-        searchButton.tap()
+        tapVisible(searchButton)
         XCTAssertTrue(app.navigationBars["全局搜索"].waitForExistence(timeout: 5))
         let field = app.textFields["输入代码或名称"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
@@ -155,7 +163,7 @@ final class NativeNavigationTests: XCTestCase {
         let app = launch()
         let settingsEntry = byId(app, "settings.open")
         XCTAssertTrue(settingsEntry.waitForExistence(timeout: 10))
-        settingsEntry.tap()
+        tapVisible(settingsEntry)
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
         let theme = app.segmentedControls["settings.theme"]
         XCTAssertTrue(theme.waitForExistence(timeout: 5))
@@ -166,6 +174,8 @@ final class NativeNavigationTests: XCTestCase {
         app.terminate()
         let largeText = XCUIApplication()
         largeText.launchArguments += ["-ui-testing", "1", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge"]
+        largeText.launchArguments += ["-ui-testing-reset"]
+        largeText.launchEnvironment["GUANPAN_TESTING"] = "1"
         largeText.launch()
         XCTAssertTrue(byId(largeText, "tab.decision").waitForExistence(timeout: 10))
         attach(largeText, "overview-accessibility-text")
@@ -181,7 +191,7 @@ final class NativeNavigationTests: XCTestCase {
         let app = launch()
         let settingsEntry = byId(app, "settings.open")
         XCTAssertTrue(settingsEntry.waitForExistence(timeout: 10))
-        settingsEntry.tap()
+        tapVisible(settingsEntry)
         let keyField = byId(app, "settings.deepseek.key")
         XCTAssertTrue(keyField.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "DeepSeek 连接")).firstMatch.exists)

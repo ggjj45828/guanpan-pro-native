@@ -86,6 +86,17 @@ final class NextLocalRepository {
         let base = appSupport ?? fileManager.temporaryDirectory
         directory = base.appendingPathComponent("GuanpanProNative", isDirectory: true)
         recoveryDirectory = base.appendingPathComponent("GuanpanProNative-Recovery", isDirectory: true)
+        // UI tests run repeatedly in one simulator and otherwise inherit the
+        // previous test's saved navigation stack/preferences. Reset only the
+        // app's own sandbox when both the test scheme and explicit test flag
+        // are present; normal launches never delete persisted account data.
+        let args = ProcessInfo.processInfo.arguments
+        let isUITestReset = ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1"
+            && args.contains("-ui-testing") && args.contains("-ui-testing-reset")
+        if isUITestReset {
+            try? fileManager.removeItem(at: directory)
+            try? fileManager.removeItem(at: recoveryDirectory)
+        }
         guard appSupport != nil else {
             integrityWarning = "iOS 未提供持久化应用目录；真实账本写入已停止。"
             return
