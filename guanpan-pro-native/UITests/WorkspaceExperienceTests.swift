@@ -68,4 +68,27 @@ final class WorkspaceExperienceTests: XCTestCase {
         XCTAssertFalse(app.buttons["视觉主题"].exists)
         app.terminate()
     }
+
+    @MainActor func testMyToolCardsNavigateWithoutTerminatingApp() {
+        let app = launch(theme: "modern")
+        XCTAssertTrue(app.tabBars.buttons["我的"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["我的"].tap()
+        XCTAssertTrue(app.navigationBars["我的"].waitForExistence(timeout: 10))
+
+        for (card, title) in [("more.investor-profile", "AI 对我的了解"),
+                              ("more.ai-settings", "手机 AI 设置"),
+                              ("more.analysis-tools", "分析工具"),
+                              ("more.planning-tools", "计划与复盘"),
+                              ("more.app-settings", "应用设置"),
+                              ("more.data-sync", "数据与同步")] {
+            let button = app.buttons[card]
+            XCTAssertTrue(button.waitForExistence(timeout: 10), "Missing \(card)")
+            button.tap()
+            XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10), "Failed to open \(title)")
+            XCTAssertTrue(app.state == .runningForeground)
+            app.navigationBars[title].buttons["我的"].tap()
+            XCTAssertTrue(app.navigationBars["我的"].waitForExistence(timeout: 10))
+        }
+        app.terminate()
+    }
 }

@@ -1154,34 +1154,6 @@ private struct WatchQuoteCard: View {
     }
 }
 
-/// 「更多」页的轻量分析弹窗入口；最终投资指导统一从 AI 今日指导进入。
-private enum MoreHubSheet: Identifiable {
-    case quantEngine
-    case portfolioAdvice
-
-    var id: String {
-        switch self {
-        case .quantEngine: return "quantEngine"
-        case .portfolioAdvice: return "portfolioAdvice"
-        }
-    }
-}
-
-private struct MoreHubSheetContent: View {
-    let sheet: MoreHubSheet
-
-    var body: some View {
-        content.themedSheetBackground()
-    }
-
-    @ViewBuilder private var content: some View {
-        switch sheet {
-        case .quantEngine: QuantitativeEngineView()
-        case .portfolioAdvice: PortfolioAdviceView()
-        }
-    }
-}
-
 /// 在线模型配置只管理本机密钥，不生成与统一顾问并行的账户结论。
 struct AISettingsView: View {
     @EnvironmentObject private var store: PortfolioStore
@@ -1264,43 +1236,25 @@ struct AISettingsView: View {
 
 struct MoreHubView: View {
     @EnvironmentObject private var store: PortfolioStore
+    @Environment(\.visualTheme) private var visualTheme
     private enum Destination: Hashable {
         case analysisTools, planningTools, appSettings, dataSync
-        case advisor, investorProfile, aiSettings
+        case investorProfile, aiSettings
     }
     @State private var path: [Destination] = []
-    // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
-    // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
-    /// 三个弹窗入口合并成一个目标（见 `MoreHubSheet`）。
-    @State private var activeSheet: MoreHubSheet?
-
     var body: some View {
         NavigationStack(path: $path) {
             List {
                 Section {
                     VStack(spacing: 10) {
-                        MoreHubCard(title: "AI 今日指导", subtitle: "唯一建议 · 真实持仓、NAS研究与手机AI",
-                                    icon: "sparkles", tint: store.effectiveAccentColor) {
-                            path.append(.advisor)
-                        }
                         MoreHubCard(title: "AI 对我的了解", subtitle: "真实成交与建议反馈形成的动态画像",
                                     icon: "person.text.rectangle", tint: Color(red: 0.36, green: 0.54, blue: 0.84)) {
                             path.append(.investorProfile)
-                        }
+                        }.accessibilityIdentifier("more.investor-profile")
                         MoreHubCard(title: "手机 AI 接口设置", subtitle: "API 密钥仅保存在本机钥匙串",
                                     icon: "key.fill", tint: Color(red: 0.52, green: 0.38, blue: 0.78)) {
                             path.append(.aiSettings)
-                        }
-                        HStack(spacing: 10) {
-                            MoreHubTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
-                                        icon: "waveform.path.ecg", tint: Color(red: 0.16, green: 0.72, blue: 0.85)) {
-                                activeSheet = .quantEngine
-                            }
-                            MoreHubTile(title: "账户决策提示", subtitle: "仓位上限\n现金占比",
-                                        icon: "lightbulb.fill", tint: Color(red: 1.0, green: 0.62, blue: 0.18)) {
-                                activeSheet = .portfolioAdvice
-                            }
-                        }
+                        }.accessibilityIdentifier("more.ai-settings")
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                     .listRowBackground(Color.clear)
@@ -1314,10 +1268,10 @@ struct MoreHubView: View {
                         HStack(spacing: 10) {
                             MoreHubTile(title: "分析工具", subtitle: "风险、信号\n账户体检", icon: "chart.bar.xaxis", tint: .blue) {
                                 path.append(.analysisTools)
-                            }
+                            }.accessibilityIdentifier("more.analysis-tools")
                             MoreHubTile(title: "计划与复盘", subtitle: "网格、收益\n历史回看", icon: "calendar.badge.clock", tint: .orange) {
                                 path.append(.planningTools)
-                            }
+                            }.accessibilityIdentifier("more.planning-tools")
                         }
                         HStack(spacing: 10) {
                             MoreHubTile(title: "应用设置", subtitle: "配色、行情\n成本口径", icon: "gearshape.fill", tint: .gray) {
@@ -1347,10 +1301,10 @@ struct MoreHubView: View {
             .scrollContentBackground(.hidden)
             .listStyle(.plain)
             .appListLayout()
-            .background(.clear)
+            .background(ThemeManager.tokens(visualTheme).background)
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
+            .toolbarBackground(ThemeManager.tokens(visualTheme).surface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
@@ -1358,14 +1312,9 @@ struct MoreHubView: View {
                 case .planningTools: ToolsView(title: "计划与复盘")
                 case .appSettings: SettingsView(mode: .app)
                 case .dataSync: SettingsView(mode: .sync)
-                case .advisor: LabResearchView()
                 case .investorProfile: InvestorProfileView()
                 case .aiSettings: AISettingsView()
                 }
-            }
-            // 三层 sheet → **一层**（见 `MoreHubSheet`）。
-            .sheet(item: $activeSheet) { sheet in
-                MoreHubSheetContent(sheet: sheet)
             }
         }
     }
@@ -4916,6 +4865,7 @@ struct ETFIncomeCalendarView: View {
 struct ToolsView: View {
     let title: String
     @EnvironmentObject var store: PortfolioStore
+    @Environment(\.visualTheme) private var visualTheme
     @Environment(\.dismiss) private var dismiss
     @AppStorage("guanpan.native.tools.showAll") private var showAllTools = false
     @State private var shockPercent = 20
@@ -4986,7 +4936,6 @@ struct ToolsView: View {
     }
 
     var body: some View {
-        NavigationStack {
             List {
                 if title == "分析工具" {
                     // 「风险与决策」标题带上已触达的条数：`limitBreachCount` 原来是声明了从没被读过的
@@ -5013,9 +4962,9 @@ struct ToolsView: View {
         .listRowBackground(Color.clear)
         // 这一页几乎全是「一个功能 = 一行」的按钮，整行可点，别让人对着空白处点不动。
         .fullRowRowButtons()
-        .background(.clear).navigationTitle(title)
+        .background(ThemeManager.tokens(visualTheme).background).navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
+            .toolbarBackground(ThemeManager.tokens(visualTheme).surface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             // 25 个工具弹窗合并成**一个** `.sheet(item:)`。
@@ -5047,7 +4996,6 @@ struct ToolsView: View {
                 case .allocationTargets: ProAllocationWorkspace().environmentObject(store).themedSheetBackground()
                 }
             }
-        }
     }
 }
 
