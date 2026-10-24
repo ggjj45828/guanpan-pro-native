@@ -68,11 +68,14 @@ final class NextChainScenarioTests: XCTestCase {
     private func scan(_ scanBook: NextBook, quote q: NextQuote, daily: [NextChartSample],
                       intraday: [NextChartSample], research: [String: NextNASResearch] = [:],
                       news: [String: [NextNewsInput]] = [:],
-                      profile: NextInvestorProfile? = nil) -> NextDailyGuidance {
+                      profile: NextInvestorProfile? = nil, nasConfigured: Bool? = nil,
+                      nasReachable: Bool? = nil) -> NextDailyGuidance {
         NextOpportunityScanner.scan(book: scanBook, quotes: [code: q], daily: [code: daily],
                                     intraday: [code: intraday], rules: [code: rules()],
-                                    orderBooks: [code: orderBook()],
-                                    goal: NextGoal(), nasAvailable: !research.isEmpty,
+                                    orderBooks: [code: orderBook()], goal: NextGoal(),
+                                    nasConfigured: nasConfigured ?? !research.isEmpty,
+                                    nasReachable: nasReachable ?? (!research.isEmpty ? true : nil),
+                                    nasProbedAt: (nasConfigured == true || !research.isEmpty || nasReachable != nil) ? now : nil,
                                     profile: profile, research: research, news: news, now: now)
     }
 
@@ -173,6 +176,26 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertEqual(actual.sellPrice, expected.sellPrice)
         XCTAssertEqual(actual.units, expected.units)
         XCTAssertEqual(actual.netGain, expected.netGain)
+    }
+
+    func testGuidanceSeparatesNASReachabilityFromCachedResearch() throws {
+        let q = quote(price: 1.400)
+        let closes = oscillatingCloses()
+        let intraday = minutes((0..<60).map { [1.386, 1.412, 1.387, 1.413, 1.388, 1.414][$0 % 6] })
+        let fresh = scan(book(), quote: q, daily: bars(closes), intraday: intraday,
+                         research: [code: research()], nasConfigured: true, nasReachable: true)
+        XCTAssertTrue(fresh.dataState.contains("NAS 在线"), fresh.dataState)
+        XCTAssertTrue(fresh.dataState.contains("新鲜长期研究"), fresh.dataState)
+
+        let cached = scan(book(), quote: q, daily: bars(closes), intraday: intraday,
+                          research: [code: research()], nasConfigured: true, nasReachable: false)
+        XCTAssertTrue(cached.dataState.contains("NAS 当前不可达"), cached.dataState)
+        XCTAssertTrue(cached.dataState.contains("本机缓存"), cached.dataState)
+
+        let stale = scan(book(), quote: q, daily: bars(closes), intraday: intraday,
+                         research: [code: research(stale: true)], nasConfigured: true, nasReachable: true)
+        XCTAssertTrue(stale.dataState.contains("NAS 在线"), stale.dataState)
+        XCTAssertTrue(stale.dataState.contains("已过期或质量不足"), stale.dataState)
     }
 
     // MARK: - C 多日区间：网格档数由波动率与区间推导，不是固定 4 档
