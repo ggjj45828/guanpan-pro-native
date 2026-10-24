@@ -1,600 +1,345 @@
 import SwiftUI
 
-/// 指数详情页：分时 / 日 K + 均线。
+/// 指数详情：点指数卡片进来的页面。
 ///
-/// **为什么不复用 `MarketChartView`**：那个页面是给持仓看的，绑定了成本、浮动盈亏、
-/// 网格计划、IOPV 折溢价这些东西 —— 指数没有成本，这些格子只会是空的或算错的。
-/// 这里只保留「看走势」需要的部分，涨跌口径与首页那张指数卡完全一致
-/// （红涨绿跌、恒带 ▲▼）。
-struct IndexDetailView: View {
-    let index: MarketIndexQuote
+/// 为什么单独做一张分时图，而不复用 `UnifiedChartView`：
+/// 主图的横轴固定 09:30–15:00（沪深的交易时段），但日经是北京时间 08:00–14:00、
+/// 韩国到 14:30、美股在夜里。硬套 A 股横轴会把海外指数的点挤到边界甚至丢掉。
+/// 所以这里按**样本序**画，横轴刻度取首/中/末三个真实时间，任何时段都成立。
+/// 日K/周K/月K 交给 `UnifiedChartView`（按根数取窗口，不涉及时段）。
+struct IndexDetailScreen: View {
+    @Environment(\.gp) private var p
+    let symbol: String
 
-    @EnvironmentObject private var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var scheme
+    @State private var quote: GlobalIndexQuote?
+    @State private var minuteSamples: [NextChartSample] = []
+    @State private var previousClose: Decimal?
+    @State private var dailySamples: [NextChartSample] = []
+    @State private var tab: IndexChartTab = .intraday
+    /// 交给 UnifiedChartView 的周期绑定。分时由本页自己画，所以这里只允许 .day 起步，
+    /// 用户在图内切周K/月K 时它照常生效。
+    @State private var kInterval: NextChartInterval = .day
+    @State private var selectedTime: Date?
+    @State private var loading = false
+    @State private var snapshotError: String?
+    @State private var minuteError: String?
+    @State private var dailyError: String?
 
-    @State private var tab: Tab = .intraday
-    @State private var minutes: [IntradayBar] = []
-    @State private var bars: [DailyBar] = []
-    @State private var status = "正在加载…"
-    @State private var isLoading = true
-    /// 日 K 只画最近这么多根 —— 一屏塞 300 根蜡烛，每根不到一个像素，看不出形态。
-    @State private var visibleCount = 120
-
-    enum Tab: String, CaseIterable, Identifiable {
-        case intraday = "分时"
-        case daily = "日K"
-        var id: String { rawValue }
+    private var capability: GlobalIndexCapability { GlobalIndexSeries.capability(for: symbol) }
+    private var name: String { GlobalIndexFeed.displayName(symbol) }
+    private var tone: Color {
+        guard let quote, quote.price > 0 else { return p.muted }
+        return p.changeTone(NextNum.double(quote.changePercent))
     }
-
-    private var tone: Color { PnLColor.of(index.changePct) }
-    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
-    private var gridColor: Color { Color.primary.opacity(isLight ? 0.10 : 0.16) }
-    private var intradayPriceLineColor: Color {
-        switch store.data.intradayLineColorMode {
-        case .white: return .white
-        case .black: return .black
-        case .automatic, .upDown: return scheme == .dark ? .white : .black
-        }
+    private var effectivePrevious: Decimal? {
+        if let previousClose, previousClose > 0 { return previousClose }
+        guard let quote, quote.price > 0, quote.changePercent != -100 else { return nil }
+        let base = quote.price / (1 + quote.changePercent / 100)
+        return base > 0 ? NextNum.decimal(base) : nil
     }
-    private var isMainlandIndex: Bool {
-        guard let symbol = MarketIndexStore.catalog.first(where: { $0.secid == index.symbol })?.tencent?.lowercased() else { return false }
-        return symbol.hasPrefix("sh") || symbol.hasPrefix("sz")
-    }
-    private var isUSIndex: Bool {
-        MarketIndexStore.catalog.first(where: { $0.secid == index.symbol })?.tencent?.lowercased().hasPrefix("us") == true
-    }
-
-    /// 昨收。指数当前价与涨跌幅都在手里，反推即可 —— 和 `dayPnL(of:)` 用的是同一套算法。
-    private var previousClose: Double {
-        let pct = index.changePct
-        guard pct.isFinite, abs(pct) > 0.000001, (1 + pct) != 0 else { return index.price }
-        return index.price / (1 + pct)
-    }
-
-    private var displayedBars: [DailyBar] {
-        Array(bars.suffix(max(20, visibleCount)))
+    private var dailyDataset: NextChartDataset? {
+        guard !dailySamples.isEmpty else { return nil }
+        return NextChartDataset(code: symbol, interval: .day, samples: dailySamples,
+                                costPerUnit: nil, costObservedAt: nil,
+                                priceSource: capability.dailySource, iopvSource: nil, observedAt: Date())
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    Picker("", selection: $tab) {
-                        ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-
-                    if isLoading {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, minHeight: 230)
-                    } else if minutes.isEmpty && bars.isEmpty {
-                        unavailableSection
-                    } else if tab == .intraday {
-                        intradaySection
-                    } else {
-                        dailySection
-                    }
-
-                    indicatorGrid
-
-                    Text(status)
-                        .scaledFont(10).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                // 指数详情页信息较少，收窄页面边距，把更多横向空间留给走势。
-                .padding(.horizontal, 6)
-                .padding(.vertical, 10)
+        // 注意：GPPageBackground 自带 ScrollView 和横向 14 的内边距，
+        // 这里再套一层 ScrollView 就会嵌套滚动（内层永远滚不动）。
+        GPPageBackground {
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                chartCard
+                footnotes
             }
-            .navigationTitle(index.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { isLoading = true; Task { await load() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(isLoading)
-                }
-                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
-            }
+            .padding(.bottom, 26)
         }
-        .task { await load() }
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await reload() }
     }
 
-    // MARK: - 头部
+    // MARK: 表头
 
     private var header: some View {
-        let change = index.price - previousClose
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(index.price.num(2))
-                    .scaledFont(30, weight: .bold, design: .rounded)
-                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
-                    .foregroundStyle(tone)
-                Text("\(change.directionMark()) \(change.num(2))")
-                    .scaledFont(14, weight: .semibold).monospacedDigit()
-                    .foregroundStyle(tone)
-                Text("\((index.changePct * 100).pct(2))")
-                    .scaledFont(14, weight: .semibold).monospacedDigit()
-                    .foregroundStyle(tone)
-                Spacer(minLength: 0)
-            }
-            Text(quoteTimeText)
-                .scaledFont(10).foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(index.name) \((index.price).num(2))，\(spokenDirection(change)) \((abs(change)).num(2))，\((index.changePct * 100).pct(2))")
-    }
-
-    /// 行情时点。休市时行情源给的是上一交易日收盘价，必须写出来，否则会被当成实时。
-    private var quoteTimeText: String {
-        guard let date = index.updatedAt else { return "行情源未提供时间戳" }
-        let day = shortDay(date)
-        let today = shortDay(Date())
-        if day != today {
-            // 交易日开盘前，行情同样停在上一个交易日 —— 那不是休市，只是还没开盘。
-            return store.isMarketClosedToday ? "休市 · \(day) 收盘" : "\(day) 收盘 · 待开盘"
-        }
-        // 走全局缓存：`quoteTimeText` 每次 body 求值都会读一次（指数卡在列表里）。
-        return "\(day) \(FormatCache.shanghai("HH:mm").string(from: date))"
-    }
-
-    // MARK: - 分时
-
-    private var intradaySection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if minutes.count < 2 {
-                Text(minutes.isEmpty ? "暂无分时数据。该市场可能还没开盘，或数据源未返回。" : "分时点不足，无法成线。")
-                    .scaledFont(11).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 200)
-            } else {
-                intradayPlot
-                intradayAxis
+            HStack(spacing: 6) {
+                Text(name).font(.system(size: 15, weight: .semibold)).foregroundStyle(p.ink)
+                Text(symbol).font(.system(size: 10, design: .monospaced)).foregroundStyle(p.muted)
+                Spacer(minLength: 4)
+                Button { Task { await reload() } } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(p.forest).frame(width: 34, height: 34).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(loading)
+                .accessibilityLabel("刷新指数")
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var intradayPlot: some View {
-        let closes = minutes.map(\.price)
-        let base = previousClose
-        // 以昨收为中心**对称**取值域：分时图的视觉重心就是涨跌，上下不对称会放大或缩小涨跌感。
-        let span = max((closes.map { abs($0 - base) }.max() ?? 0) * 1.18, base * 0.0016, 0.0001)
-        let lo = base - span, hi = base + span
-        let volumes = minutes.map { $0.volume ?? 0 }
-        let maxVolume = max(volumes.max() ?? 1, 1)
-        let priceHeight: CGFloat = 310
-        let volumeHeight: CGFloat = 112
-
-        return HStack(alignment: .top, spacing: 6) {
-            // 左侧刻度与价格主图等高；小柱明确标成成交量，避免和 MACD 混淆。
-            VStack(alignment: .trailing) {
-                Text(hi.num(2)); Spacer(); Text(base.num(2)); Spacer(); Text(lo.num(2))
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(quote.map { NextNum.text($0.price) } ?? "—")
+                    .font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(quote == nil ? p.muted : p.ink)
+                if let quote, quote.price > 0 {
+                    Text("\(NextNum.signed(quote.changePercent))%")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .foregroundStyle(tone)
+                }
+                if loading { ProgressView().scaleEffect(0.6).frame(width: 16, height: 16) }
             }
-            .scaledFont(9).foregroundStyle(.secondary).monospacedDigit()
-            .frame(width: 50, height: priceHeight)
-
-            VStack(spacing: 3) {
-                GeometryReader { geo in
-                    let size = geo.size
-                    ZStack {
-                        // 昨收虚线 + 上下四分位参考线
-                        Path { path in
-                            for ratio in [0.25, 0.5, 0.75] {
-                                let y = size.height * ratio
-                                path.move(to: CGPoint(x: 0, y: y))
-                                path.addLine(to: CGPoint(x: size.width, y: y))
-                            }
-                        }
-                        .stroke(gridColor, style: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
-
-                        intradayLinePath(size: size, lo: lo, hi: hi)
-                            .stroke(intradayPriceLineColor, style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
-                    }
+            HStack(spacing: 12) {
+                if let previous = effectivePrevious {
+                    Text("昨收 \(NextNum.text(NextNum.double(previous)))").font(.system(size: 10.5)).foregroundStyle(p.muted)
                 }
-                .frame(height: priceHeight)
-
-                HStack(spacing: 5) {
-                    Text("分时成交量").fontWeight(.semibold)
-                    Text("柱越高成交越多 · 红绿按昨收涨跌").foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
+                if let stamp = quote?.observedAt {
+                    Text("时点 \(stamp.formatted(date: .omitted, time: .shortened))").font(.system(size: 10.5)).foregroundStyle(p.muted)
                 }
-                .scaledFont(9)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 3)
-
-                // 与价格主图共用固定交易时段横轴；加高副图并加宽柱体，方便辨认。
-                GeometryReader { geo in
-                    let size = geo.size
-                    let slotWidth = size.width / CGFloat(isMainlandIndex ? 240 : max(volumes.count, 1))
-                    ZStack(alignment: .bottomLeading) {
-                        ForEach(Array(volumes.enumerated()), id: \.offset) { item in
-                            let height = item.element > 0
-                                ? max(1.5, size.height * CGFloat(item.element / maxVolume)) : 0
-                            let ratio = intradayXRatio(minutes[item.offset].timestamp)
-                            let risesFromPreviousClose = minutes[item.offset].price >= base
-                            if height > 0 {
-                                let barWidth = min(size.width, max(1, slotWidth * 0.9))
-                                Rectangle()
-                                    .fill((risesFromPreviousClose ? PnLColor.up : PnLColor.down).opacity(0.68))
-                                    .frame(width: barWidth, height: height)
-                                    .position(x: min(size.width - barWidth / 2,
-                                                     max(barWidth / 2, size.width * ratio)),
-                                              y: size.height - height / 2)
-                            }
-                        }
-                    }
-                }
-                .frame(height: volumeHeight)
-                .overlay(alignment: .center) {
-                    if !volumes.contains(where: { $0 > 0 }) {
-                        Text("行情源未提供成交量")
-                            .scaledFont(9).foregroundStyle(.tertiary)
-                    }
+                if quote?.isStale == true {
+                    Text("上一时段收盘价").font(.system(size: 10, weight: .bold)).foregroundStyle(p.terracotta)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .cardSurface()
-    }
-
-    private var intradayAxis: some View {
-        // 横轴标签按真实分时数据的首/中/尾时间生成，不再给港股、美股硬套 A 股 09:30–15:00。
-        let fmt = FormatCache.date("HH:mm",
-                                   zone: isUSIndex ? (TimeZone(identifier: "America/New_York") ?? .current)
-                                                   : (TimeZone(identifier: "Asia/Shanghai") ?? .current))
-        let times = minutes.map(\.timestamp)
-        if isUSIndex {
-            return HStack {
-                Text("09:30")
-                Spacer()
-                Text("12:45")
-                Spacer()
-                Text("16:00")
-            }
-            .scaledFont(9).foregroundStyle(.secondary)
-            .padding(.leading, 60)
-        }
-        if isMainlandIndex {
-            return HStack {
-                Text("09:30")
-                Spacer()
-                Text("午休跳过")
-                Spacer()
-                Text("15:00")
-            }
-            .scaledFont(9).foregroundStyle(.secondary)
-            .padding(.leading, 60)
-        }
-        let start = times.first.map { fmt.string(from: $0) } ?? "--:--"
-        let end = times.last.map { fmt.string(from: $0) } ?? "--:--"
-        let mid: String = {
-            guard let f = times.first, let l = times.last else { return "--:--" }
-            return fmt.string(from: f.addingTimeInterval(l.timeIntervalSince(f) / 2))
-        }()
-        return HStack {
-            Text(start)
-            Spacer()
-            Text(mid)
-            Spacer()
-            Text(end)
-        }
-        .scaledFont(9).foregroundStyle(.secondary)
-        .padding(.leading, 60)
-    }
-
-    // MARK: - 日 K
-
-    private var dailySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if displayedBars.count < 2 {
-                Text("暂无日 K 数据。")
-                    .scaledFont(11).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 200)
-            } else {
-                dailyPlot
-                dailyAxis
-            }
-        }
-    }
-
-    private var dailyPlot: some View {
-        let shown = displayedBars
-        let closes = bars.map(\.close)
-        let ma5 = movingAverage(closes, period: 5)
-        let ma10 = movingAverage(closes, period: 10)
-        let ma20 = movingAverage(closes, period: 20)
-        let ma60 = movingAverage(closes, period: 60)
-        let start = bars.count - shown.count
-
-        var lo = shown.map(\.low).min() ?? 0
-        var hi = shown.map(\.high).max() ?? 1
-        // 均线可能跑到蜡烛区间外（比如急跌后的 MA60），要一起纳入值域，否则线会画到框外。
-        for series in [ma5, ma10, ma20, ma60] {
-            // 变量名不叫 index：这个类型里 `index` 是持有的那只指数，遮蔽掉容易埋雷。
-            for cursor in start..<bars.count where cursor < series.count {
-                if let value = series[cursor] { lo = min(lo, value); hi = max(hi, value) }
-            }
-        }
-        if hi <= lo { hi = lo + 1 }
-        let pad = (hi - lo) * 0.06
-        lo -= pad; hi += pad
-
-        return HStack(alignment: .top, spacing: 6) {
-            VStack(alignment: .trailing) {
-                Text(hi.num(2)); Spacer(); Text(((hi + lo) / 2).num(2)); Spacer(); Text(lo.num(2))
-            }
-            .scaledFont(9).foregroundStyle(.secondary).monospacedDigit()
-            .frame(width: 54, height: 200)
-
-            GeometryReader { geo in
-                let size = geo.size
-                let step = size.width / CGFloat(max(shown.count, 1))
-                let bodyWidth = max(1, step * 0.62)
-                ZStack {
-                    Path { path in
-                        for ratio in [0.25, 0.5, 0.75] {
-                            let y = size.height * ratio
-                            path.move(to: CGPoint(x: 0, y: y))
-                            path.addLine(to: CGPoint(x: size.width, y: y))
-                        }
-                    }
-                    .stroke(gridColor, style: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
-
-                    // 蜡烛
-                    ForEach(Array(shown.enumerated()), id: \.offset) { item in
-                        let x = step * (CGFloat(item.offset) + 0.5)
-                        let bar = item.element
-                        let up = bar.close >= bar.open
-                        let color = up ? PnLColor.up : PnLColor.down
-                        let yHigh = yFor(bar.high, size: size, lo: lo, hi: hi)
-                        let yLow = yFor(bar.low, size: size, lo: lo, hi: hi)
-                        let yOpen = yFor(bar.open, size: size, lo: lo, hi: hi)
-                        let yClose = yFor(bar.close, size: size, lo: lo, hi: hi)
-                        Path { path in
-                            path.move(to: CGPoint(x: x, y: yHigh))
-                            path.addLine(to: CGPoint(x: x, y: yLow))
-                        }
-                        .stroke(color, lineWidth: 0.7)
-                        Path { path in
-                            path.addRect(CGRect(x: x - bodyWidth / 2, y: min(yOpen, yClose),
-                                                width: bodyWidth, height: max(0.8, abs(yClose - yOpen))))
-                        }
-                        .fill(color)
-                    }
-
-                    // 四条均线取同一套颜色口径，和 K 线页保持一致
-                    ForEach(Array(movingLineSources().enumerated()), id: \.offset) { item in
-                        linePath(item.element.points, size: size, lo: lo, hi: hi, start: start)
-                            .stroke(item.element.color, lineWidth: 1)
-                    }
-                }
-            }
-            .frame(height: 200)
-        }
-    }
-
-    private var dailyAxis: some View {
-        HStack(spacing: 10) {
-            Text(displayedBars.first?.date ?? "")
-            Spacer()
-            Text(displayedBars.last?.date ?? "")
-        }
-        .scaledFont(9).foregroundStyle(.secondary)
-        .padding(.leading, 60)
-    }
-
-    /// 四条均线的值 + 颜色。统一在这里给，避免图例和线本身的颜色对不上。
-    private func movingLineSources() -> [(points: [Double], color: Color)] {
-        let closes = bars.map(\.close)
-        // 均线在起点处是缺失的，用首根收盘价补平，否则线会从半空中开始。
-        func filled(_ period: Int, _ color: Color) -> (points: [Double], color: Color) {
-            let series = movingAverage(closes, period: period)
-            let fallback = closes.first ?? 0
-            return (series.map { $0 ?? fallback }, color)
-        }
-        return [
-            filled(5, Color(red: 0.98, green: 0.68, blue: 0.20)),
-            filled(10, Color(red: 0.35, green: 0.68, blue: 0.98)),
-            filled(20, Color(red: 0.72, green: 0.48, blue: 0.92)),
-            filled(60, Color(red: 0.42, green: 0.78, blue: 0.62))
-        ]
-    }
-
-    // MARK: - 指标区
-
-    private var indicatorGrid: some View {
-        let closes = bars.map(\.close)
-        let ma5 = movingAverage(closes, period: 5).last ?? nil
-        let ma10 = movingAverage(closes, period: 10).last ?? nil
-        let ma20 = movingAverage(closes, period: 20).last ?? nil
-        let ma60 = movingAverage(closes, period: 60).last ?? nil
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("均线位置").scaledFont(11, weight: .medium)
-            HStack(spacing: 10) {
-                maCell("MA5", ma5)
-                maCell("MA10", ma10)
-                maCell("MA20", ma20)
-                maCell("MA60", ma60)
-            }
-            if let ma20, let first = bars.last {
-                Text(maPositionText(close: first.close, ma20: ma20, ma60: ma60))
-                    .scaledFont(10).foregroundStyle(.secondary)
+            if let snapshotError {
+                Text(snapshotError).font(.system(size: 10)).foregroundStyle(p.terracotta)
             }
         }
         .padding(12)
-        .cardSurface()
+        .background(p.paper, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(tone.opacity(0.18), lineWidth: 0.8))
+        .padding(.top, 8)
     }
 
-    private func maCell(_ title: String, _ value: Double?) -> some View {
-        let above = value.map { index.price >= $0 }
-        return VStack(alignment: .leading, spacing: 2) {
-            Text(title).scaledFont(10).foregroundStyle(.secondary)
-            Text(value.map { $0.num(2) } ?? "--")
-                .scaledFont(12, weight: .semibold, design: .rounded).monospacedDigit()
-                .lineLimit(1).minimumScaleFactor(0.7)
-                .foregroundStyle(above.map { $0 ? PnLColor.up : PnLColor.down } ?? Color.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    // MARK: 图表
 
-    /// 用「现价站在哪几条均线之上」给一句人话结论，比单纯列数字好读。
-    ///
-    /// 别写成 `(close >= ma20 ? above : below).append("MA20")` ——
-    /// 三元表达式的结果是**不可变**的临时值，`append` 会报
-    /// 「cannot use mutating member on immutable value: result of conditional operator」。
-    private func maPositionText(close: Double, ma20: Double?, ma60: Double?) -> String {
-        var above: [String] = []
-        var below: [String] = []
-        if let ma20 {
-            if close >= ma20 { above.append("MA20") } else { below.append("MA20") }
-        }
-        if let ma60 {
-            if close >= ma60 { above.append("MA60") } else { below.append("MA60") }
-        }
-        if above.isEmpty && below.isEmpty { return "日 K 样本不足，还不能判断均线位置。" }
-        if below.isEmpty { return "现价站在 \(above.joined(separator: "、")) 之上，中期结构偏强。" }
-        if above.isEmpty { return "现价跌到 \(below.joined(separator: "、")) 之下，中期结构偏弱。" }
-        return "现价在 \(above.joined(separator: "、")) 之上、\(below.joined(separator: "、")) 之下，处在均线纠缠区。"
-    }
-
-    // MARK: - 绘制辅助
-
-    /// 大陆指数横轴固定为完整交易时段；午休压缩到 11:30 / 13:00 的同一位置。
-    /// 即使接口只返回上午 20 个点，也只画到对应时间，不把它拉伸成全天走势。
-    private func intradayXRatio(_ timestamp: Date) -> CGFloat {
-        if isMainlandIndex {
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-            let parts = calendar.dateComponents([.hour, .minute], from: timestamp)
-            let clockMinute = (parts.hour ?? 9) * 60 + (parts.minute ?? 30)
-            let sessionMinute: Int
-            if clockMinute <= 690 { sessionMinute = clockMinute - 570 }
-            else if clockMinute < 780 { sessionMinute = 120 }
-            else { sessionMinute = 120 + clockMinute - 780 }
-            return CGFloat(min(240, max(0, sessionMinute))) / 240
-        }
-        if isUSIndex {
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
-            let parts = calendar.dateComponents([.hour, .minute], from: timestamp)
-            let minute = (parts.hour ?? 9) * 60 + (parts.minute ?? 30) - 570
-            return CGFloat(min(390, max(0, minute))) / 390
-        }
-        guard let first = minutes.first?.timestamp, let last = minutes.last?.timestamp,
-              last > first else { return 0.5 }
-        return CGFloat(min(1, max(0, timestamp.timeIntervalSince(first) / last.timeIntervalSince(first))))
-    }
-
-    private func intradayLinePath(size: CGSize, lo: Double, hi: Double) -> Path {
-        var path = Path()
-        guard minutes.count > 1 else { return path }
-        for (offset, bar) in minutes.enumerated() {
-            let point = CGPoint(x: size.width * intradayXRatio(bar.timestamp),
-                                y: yFor(bar.price, size: size, lo: lo, hi: hi))
-            if offset == 0 { path.move(to: point) } else { path.addLine(to: point) }
-        }
-        return path
-    }
-
-    private func yFor(_ value: Double, size: CGSize, lo: Double, hi: Double) -> CGFloat {
-        guard hi > lo else { return size.height / 2 }
-        return size.height * (1 - CGFloat((value - lo) / (hi - lo)))
-    }
-
-    /// `start` 用来把「全量序列上的某个区间」映射到当前画布上（日 K 只画末尾一段）。
-    private func linePath(_ values: [Double], size: CGSize, lo: Double, hi: Double, start: Int = 0) -> Path {
-        var path = Path()
-        let slice: ArraySlice<Double>
-        if start > 0 {
-            guard start < values.count else { return path }
-            slice = values[start...]
-        } else {
-            slice = values[...]
-        }
-        guard slice.count > 1 else { return path }
-        let step = size.width / CGFloat(slice.count - 1)
-        for (offset, value) in slice.enumerated() {
-            let point = CGPoint(x: step * CGFloat(offset), y: yFor(value, size: size, lo: lo, hi: hi))
-            offset == 0 ? path.move(to: point) : path.addLine(to: point)
-        }
-        return path
-    }
-
-    private func movingAverage(_ values: [Double], period: Int) -> [Double?] {
-        guard period > 0, values.count >= period else {
-            return Array(repeating: nil, count: values.count)
-        }
-        var out: [Double?] = Array(repeating: nil, count: values.count)
-        var sum = 0.0
-        for index in values.indices {
-            sum += values[index]
-            if index >= period { sum -= values[index - period] }
-            if index >= period - 1 { out[index] = sum / Double(period) }
-        }
-        return out
-    }
-
-    // MARK: - 取数
-
-    @MainActor private func load() async {
-        guard isLoading else { return }
-        // 不再用「有没有腾讯代码」提前拦请求：日经 / 东证 / 韩国没有腾讯代码，
-        // 但只要发请求，store 内部会依次尝试 腾讯 → 东方财富 → NAS 代理，
-        // 东财 / NAS 兜底因此能真正被执行，而不是在请求前被跳过。
-        async let minuteResult = store.fetchIndexMinutes(quote: index)
-        async let barResult = store.fetchIndexDailyBars(quote: index, count: 320)
-        let (minuteBars, dailyBars) = await (minuteResult, barResult)
-        minutes = minuteBars.sorted { $0.timestamp < $1.timestamp }
-        bars = dailyBars
-        isLoading = false
-
-        if !minuteBars.isEmpty, let day = minuteBars.last?.day {
-            let isToday = day == shortDayDate(Date())
-            if isToday {
-                status = "分时 \(minuteBars.count) 个点 · 实时"
-            } else if store.isMarketClosedToday {
-                status = "分时 \(minuteBars.count) 个点 · 休市，显示 \(day) 的分时"
-            } else {
-                // 交易日开盘前拿到的是上一交易日的完整分时，这是正常的，别写成「休市」。
-                status = "分时 \(minuteBars.count) 个点 · 尚未开盘，显示 \(day) 的分时"
+    private var chartCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                ForEach(IndexChartTab.allCases) { item in
+                    Button { tab = item; selectedTime = nil } label: {
+                        Text(item.title)
+                            .font(.system(size: 11, weight: tab == item ? .semibold : .regular))
+                            .foregroundStyle(tab == item ? p.forest : p.muted)
+                            .padding(.vertical, 6).padding(.horizontal, 10)
+                            .background(tab == item ? p.tint : .clear, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(item == .intraday && !capability.hasMinute)
+                    .opacity(item == .intraday && !capability.hasMinute ? 0.4 : 1)
+                    .accessibilityIdentifier("index.tab.\(item.rawValue)")
+                }
+                Spacer(minLength: 0)
+                Text(tab == .intraday ? capability.minuteSource : capability.dailySource)
+                    .font(.system(size: 9.5)).foregroundStyle(p.muted)
             }
-        } else if !dailyBars.isEmpty {
-            status = "日 K \(dailyBars.count) 根，最新 \(dailyBars.last?.date ?? "--")"
-        } else {
-            status = "数据源未返回该指数的行情。"
+            if tab == .intraday {
+                if minuteSamples.isEmpty {
+                    if let minuteError {
+                        GPStatus(title: "分时暂不可用", detail: minuteError, symbol: "wifi.exclamationmark", actionTitle: "重新获取") { Task { await loadMinute() } }
+                    } else if loading {
+                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
+                    }
+                } else {
+                    IndexIntradayChart(samples: minuteSamples, previousClose: effectivePrevious, height: 330)
+                }
+            } else {
+                if let dataset = dailyDataset {
+                    UnifiedChartView(dataset: dataset, interval: $kInterval, costPerUnit: nil,
+                                     selectedTime: $selectedTime)
+                } else if let dailyError {
+                    GPStatus(title: "日K暂不可用", detail: dailyError, symbol: "wifi.exclamationmark", actionTitle: "重新获取") { Task { await loadDaily() } }
+                } else if loading {
+                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
+                }
+            }
+        }
+        .padding(12)
+        .background(p.paper, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(p.muted.opacity(0.14), lineWidth: 0.8))
+    }
+
+    // MARK: 说明
+
+    private var footnotes: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if let note = capability.missingNote {
+                Text(note).font(.system(size: 10)).foregroundStyle(p.terracotta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("分时口径：按该市场的真实交易时段逐点绘制，横轴刻度取首/中/末真实时间；纵轴以昨收为 0 轴、上下对称。日K 不作复权推测（指数本身无分红）。")
+                .font(.system(size: 10)).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+            Text("数据源：\(capability.hasMinute ? capability.minuteSource : capability.dailySource)；指数只读，不参与买卖与账本。")
+                .font(.system(size: 10)).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// 这个指数有没有可用的历史行情源。
-    ///
-    /// 实测结论：腾讯 `ifzq` 的日 K / 分时只覆盖 A 股、港股、美股；
-    /// 日经 225、东证 TOPIX、韩国 KOSPI 三条在所有源上都只有实时快照。
-    /// 与其让用户点进来看到一张空白图，不如说清「它本来就没有」。
-    private var hasHistorySource: Bool {
-        MarketIndexStore.catalog.first { $0.secid == index.symbol }?.tencent != nil
+    // MARK: 取数
+
+    private func reload() async {
+        loading = true
+        defer { loading = false }
+        async let snapshot: Void = loadSnapshot()
+        async let minute: Void = loadMinute()
+        async let daily: Void = loadDaily()
+        _ = await (snapshot, minute, daily)
+        if !capability.hasMinute { tab = .line }
     }
 
-    /// 没有历史数据时的占位说明。
-    private var unavailableSection: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 30))
-                .foregroundStyle(.secondary)
-            Text("暂无分时与日 K")
-                .scaledFont(15, weight: .semibold)
-            Text("日经 225、东证 TOPIX、韩国 KOSPI 目前只能取到实时价与涨跌幅（见上方数字），历史曲线暂时没有可用的公开接口。指数条上的价格是准的，只是画不出线。")
-                .scaledFont(12).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+    private func loadSnapshot() async {
+        do {
+            quote = try await GlobalIndexFeed.fetchQuote(symbol: symbol)
+            snapshotError = nil
+        } catch {
+            snapshotError = "快照：\(error.localizedDescription)"
         }
-        .frame(maxWidth: .infinity, minHeight: 200)
-        .padding(.horizontal, 8)
     }
 
-    /// `yyyy-MM-dd` 形态的「今天」。
-    private func shortDayDate(_ date: Date) -> String {
-        MarketCalendar.isoDay(date)
+    private func loadMinute() async {
+        guard capability.hasMinute else { minuteError = capability.missingNote; return }
+        do {
+            let result = try await GlobalIndexSeries.minute(for: symbol)
+            minuteSamples = result.samples
+            previousClose = result.previousClose
+            minuteError = nil
+        } catch {
+            minuteError = error.localizedDescription
+        }
+    }
+
+    private func loadDaily() async {
+        do {
+            dailySamples = try await GlobalIndexSeries.daily(for: symbol)
+            dailyError = nil
+        } catch {
+            dailyError = error.localizedDescription
+        }
+    }
+}
+
+enum IndexChartTab: String, CaseIterable, Identifiable {
+    case intraday, line
+    var id: String { rawValue }
+    var title: String { self == .intraday ? "分时" : "日K" }
+}
+
+/// 指数分时图：按样本序绘制，所以日经（北京时间 08:00–14:00）、韩国、港股、美股都不会错位。
+/// 纵轴以昨收为 0 轴、上下严格对称 —— 与沪深分时同一套读图习惯。
+struct IndexIntradayChart: View {
+    @Environment(\.gp) private var p
+    let samples: [NextChartSample]
+    let previousClose: Decimal?
+    var height: CGFloat = 330
+
+    private var closes: [Double] { samples.map { NextNum.double($0.close) } }
+    private var base: Double {
+        if let previousClose { return NextNum.double(previousClose) }
+        return closes.first ?? 0
+    }
+    private var span: Double {
+        guard base > 0 else { return 1 }
+        let values = closes.filter { $0 > 0 }
+        guard let high = values.max(), let low = values.min() else { return base * 0.01 }
+        let deviation = max(high - base, base - low)
+        // 波动极小时给 ±0.4% 保底，避免整条线贴着 0 轴；但**不与对称范围相加**，两边同一尺度。
+        return max(deviation * 1.08, base * 0.004)
+    }
+    private var isUp: Bool { (closes.last ?? base) >= base }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(alignment: .top, spacing: 6) {
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, size in
+                        drawGrid(&context, size: size)
+                        drawSeries(&context, size: size)
+                    }
+                }
+                .frame(height: height)
+                priceLabels
+            }
+            timeLabels
+        }
+    }
+
+    private var priceLabels: some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            Text(NextNum.text(base + span)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.muted)
+            Spacer(minLength: 0)
+            Text(NextNum.text(base)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.muted)
+            Spacer(minLength: 0)
+            Text(NextNum.text(base - span)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.muted)
+        }
+        .frame(width: 46, height: height)
+    }
+
+    private var timeLabels: some View {
+        HStack(spacing: 0) {
+            if let first = samples.first?.timestamp {
+                Text(clock(first)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.muted)
+            }
+            Spacer(minLength: 0)
+            if samples.count > 2 {
+                Text(clock(samples[samples.count / 2].timestamp)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.muted)
+            }
+            Spacer(minLength: 0)
+            if let last = samples.last?.timestamp {
+                Text(clock(last)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.muted)
+            }
+        }
+        .padding(.trailing, 46)
+    }
+
+    private func clock(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func point(_ index: Int, _ size: CGSize) -> CGPoint {
+        let width = max(1, size.width)
+        let x = samples.count <= 1 ? 0 : CGFloat(index) / CGFloat(samples.count - 1) * width
+        let value = closes.indices.contains(index) ? closes[index] : base
+        let ratio = span > 0 ? (value - base) / span : 0
+        let y = size.height / 2 - CGFloat(ratio) * (size.height / 2)
+        return CGPoint(x: x, y: minimax(y, size.height))
+    }
+
+    private func minimax(_ y: CGFloat, _ height: CGFloat) -> CGFloat { min(max(y, 0), height) }
+
+    private func drawGrid(_ context: inout GraphicsContext, size: CGSize) {
+        for level in [0.0, 0.5, 1.0] {
+            let y = size.height * level
+            var line = Path()
+            line.move(to: CGPoint(x: 0, y: y))
+            line.addLine(to: CGPoint(x: size.width, y: y))
+            context.stroke(line, with: .color(p.muted.opacity(level == 0.5 ? 0.35 : 0.14)),
+                           style: StrokeStyle(lineWidth: level == 0.5 ? 0.9 : 0.6,
+                                              dash: level == 0.5 ? [3, 3] : []))
+        }
+    }
+
+    private func drawSeries(_ context: inout GraphicsContext, size: CGSize) {
+        guard !samples.isEmpty else { return }
+        var line = Path()
+        for index in samples.indices {
+            let current = point(index, size)
+            if index == 0 { line.move(to: current) } else { line.addLine(to: current) }
+        }
+        let tone = isUp ? p.gpUp : p.gpDown
+        // 面积：把折线闭合到底边，用低透明度填充，幅度小的时候也不至于看不见。
+        if let first = samples.indices.first, let last = samples.indices.last {
+            var area = line
+            area.addLine(to: CGPoint(x: point(last, size).x, y: size.height))
+            area.addLine(to: CGPoint(x: point(first, size).x, y: size.height))
+            area.closeSubpath()
+            context.fill(area, with: .linearGradient(
+                Gradient(colors: [tone.opacity(0.22), tone.opacity(0.02)]),
+                startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+        }
+        context.stroke(line, with: .color(tone), style: StrokeStyle(lineWidth: 1, lineJoin: .round))
+        if let lastPoint = samples.indices.last.map({ point($0, size) }) {
+            let dot = Path(ellipseIn: CGRect(x: lastPoint.x - 2, y: lastPoint.y - 2, width: 4, height: 4))
+            context.fill(dot, with: .color(tone))
+        }
     }
 }

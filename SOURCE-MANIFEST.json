@@ -1,0 +1,517 @@
+[
+  {
+    "path": ".gitattributes",
+    "bytes": 239,
+    "sha256": "340cb4b7258baca421087e28c8c375f15a9ac0b68b0a0530be644971362c1b33"
+  },
+  {
+    "path": ".github/workflows/build-ios.yml",
+    "bytes": 2145,
+    "sha256": "f080f86c73ab804b26917ae5e7c80f3c184a15f5d4e5f73571aa664e96bccace"
+  },
+  {
+    "path": ".github/workflows/test-simulation.yml",
+    "bytes": 297,
+    "sha256": "7583d70f7b72b2890f6bbc5d4a752d4841c58d179edbd3b6fce8e56719154c54"
+  },
+  {
+    "path": ".github/workflows/validate-foundation.yml",
+    "bytes": 865,
+    "sha256": "babf471899ab388da78b460410cc7b21541221889ff3ecb7152258fdee19997a"
+  },
+  {
+    "path": ".gitignore",
+    "bytes": 249,
+    "sha256": "b704818996bdb71b7e8488db9d16abb258137fb0be615f405dc75218fdab7c62"
+  },
+  {
+    "path": "docs/validation/nas-channels.log",
+    "bytes": 2669,
+    "sha256": "feddc7fb04ae08b6b4b992a1e128922d655a6b26574d1f4a7da43a7b2a460947"
+  },
+  {
+    "path": "docs/validation/results.json",
+    "bytes": 751,
+    "sha256": "c30545111d40719e3d9fef669d8e1de7639c33339cb03500dd8233e62c7e63fd"
+  },
+  {
+    "path": "docs/validation/simulation-core.log",
+    "bytes": 2844,
+    "sha256": "ad496df61098b559a5220b93d2d52d82dcb77d834516b0598708e926ad3312c1"
+  },
+  {
+    "path": "docs/validation/synthetic-demo.json",
+    "bytes": 4763,
+    "sha256": "7bc6040288edca30c2226973dd8d835396a9721cb0a283b54949ca2e255cd980"
+  },
+  {
+    "path": "docs/三通道协议与部署.md",
+    "bytes": 6098,
+    "sha256": "6b73e3843041287afbdb039271fbc38bd5649f55040786bd6892749d76f96433"
+  },
+  {
+    "path": "docs/基线校验.json",
+    "bytes": 4060,
+    "sha256": "a40a44a4db5e5e3c523d6fd95d448538bb19cf8ee3a2212f7093807ea8ae5072"
+  },
+  {
+    "path": "docs/完整需求矩阵.csv",
+    "bytes": 15548,
+    "sha256": "93b9470daa729ac311ab376a449758cc3ae001719fabaeb8c7109c45e4b23f98"
+  },
+  {
+    "path": "docs/完整需求矩阵.json",
+    "bytes": 27987,
+    "sha256": "24e92b83efaa88e73adf0d154ba4a31d671915ce1fcacf899e8e6e55f241d2ed"
+  },
+  {
+    "path": "docs/完整需求矩阵.md",
+    "bytes": 17493,
+    "sha256": "ea48bbab67a5090f1cb0d92b3fe4daea7a57978f001dbf84e57d3399c4cc363a"
+  },
+  {
+    "path": "docs/本轮交付与验证.md",
+    "bytes": 9103,
+    "sha256": "613d5f121f4ce66146d411a58f43a8771c1ad3521f49c644542d7529bcdb4cff"
+  },
+  {
+    "path": "Experimental/SimulationCore/Package.swift",
+    "bytes": 296,
+    "sha256": "f4f3a2183257e7b147744ba321d46aa1ff987b1a27a601a33c2a48d0575a751d"
+  },
+  {
+    "path": "Experimental/SimulationCore/Sources/SimulationCore/SimulationCore.swift",
+    "bytes": 5053,
+    "sha256": "dc313fdcefb2d296e3897859eff8536cab9a1f1f68542031ce0b34e74042b287"
+  },
+  {
+    "path": "Experimental/SimulationCore/Tests/SimulationCoreTests/SimulationCoreTests.swift",
+    "bytes": 2458,
+    "sha256": "88ec66d4803b1273ce1c170b8cf6985912794e9b3e96296d884481ea7e711231"
+  },
+  {
+    "path": "guanpan-pro-native/BUILDING.md",
+    "bytes": 1766,
+    "sha256": "a3f5987b78fe792fcadd635e9d4c6a7bf5f9e1a2f2c538d986c06afffa07eaef"
+  },
+  {
+    "path": "guanpan-pro-native/generate-xcode-project.sh",
+    "bytes": 301,
+    "sha256": "33ee796dc05a3d5387ffc74c3950f6196301bc82fc824daf2c344437039fa50c"
+  },
+  {
+    "path": "guanpan-pro-native/project.yml",
+    "bytes": 3029,
+    "sha256": "92b630b57296573333ffe9b2d8f3e02de634e59523468f56fc506b9a44ee6c0a"
+  },
+  {
+    "path": "guanpan-pro-native/README.md",
+    "bytes": 11219,
+    "sha256": "388a62328b29e384ab1348524f68e66e6f46afb224ab309943cb2c6a716ddf36"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AccessibilityKit.swift",
+    "bytes": 9046,
+    "sha256": "5b64e8333f16068b1fc2299276f7109e6d23516cfd5d7a02860e1444868987b1"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AccountPortraitView.swift",
+    "bytes": 30637,
+    "sha256": "8046370b44723c016fe03ad1df910505c032b2a660f0514d71c4addf82b7fcb9"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AIAnalysisService.swift",
+    "bytes": 23039,
+    "sha256": "03e4c2add35112d3023ce1da9d7486b636780bf5e568706f4707f7009a33fe8a"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AIContextBuilder.swift",
+    "bytes": 7216,
+    "sha256": "603b7d7d8aae6de6818a7bf0e4ba6cfd7d7a42d66ae79b6ff6c1e944676bad57"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AIResultFormatting.swift",
+    "bytes": 12011,
+    "sha256": "8b09f70ea7bb4c7edd6107fc06ad3e288060cb4dcb53bcaf3e2d6af0969e0dd4"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AISuggestionParser.swift",
+    "bytes": 7761,
+    "sha256": "2e7d732c25dcea0f5fc0e3f4dcbe92cf7e39c9ecd7446ee653e9b61faee32c28"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AllocationTargetsView.swift",
+    "bytes": 7181,
+    "sha256": "d7c6be647221ecf3792de4413f492501bd838ef628eb06724ede6f2271b42052"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/AppTheme.swift",
+    "bytes": 11793,
+    "sha256": "91c967c961300f3addcfbc6cc4719e8582dd2db557af3920ea79c94e94b2fc66"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+    "bytes": 29605,
+    "sha256": "029656d77c03cd5639311543133b37a21c5b634ce582f1bde4e24407cd5c21b0"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Assets.xcassets/AppIcon.appiconset/Contents.json",
+    "bytes": 202,
+    "sha256": "9239900ca4c37dc860feb154216409f05d906e26f2d79550e1e8e8b8db6324c7"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Assets.xcassets/Contents.json",
+    "bytes": 63,
+    "sha256": "0fd49ba3c3585c709678e0046a821c3c60685ec7063720d30d3a3448be3a208b"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Assets.xcassets/LaunchBackground.colorset/Contents.json",
+    "bytes": 695,
+    "sha256": "144077f8970b1687152aeb89dc5e75df7743caf80b307d53f4117f6bc1d185a9"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/BehaviorProfile.swift",
+    "bytes": 12326,
+    "sha256": "76cada0ac2650c621a62fc1fcbdb8e79ffda1f638eb4f7adc35946d9dfdca6e9"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/ContentView.swift",
+    "bytes": 473125,
+    "sha256": "91a98b031746b75369035300831deaa78408dd2fb7dfd5ee56197163c3aeb12d"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/DataTrustView.swift",
+    "bytes": 11163,
+    "sha256": "ed2b9cca2b3e84b1dd291afce611ffe0dbba45040b3e1ca4a548cda588df6e6c"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/DynamicType.swift",
+    "bytes": 3258,
+    "sha256": "ee74a476a233e30f68df02ca09f28359eb6f2931aae6cf3b02635993c0ee87d6"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/ETFConstituentLibrary.swift",
+    "bytes": 14597,
+    "sha256": "94991337cfdd37fd4453ec2643766d9d2392e2b9dc5f8ede5e491835c8eeb2f1"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/ExchangeRateService.swift",
+    "bytes": 11484,
+    "sha256": "8aa8633ccda3cbeb3343b2424bff6cd44f49224371e0105504dd25ad20858b00"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Formatting.swift",
+    "bytes": 9795,
+    "sha256": "93b95aeb020153f98cf638fec73e27159fd1e958325c6b10a0fddd8a7e0b63a5"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/FundFeeEngine.swift",
+    "bytes": 7180,
+    "sha256": "04b7bf2d1de70e4687d7a0c07d8710adf729722ce6281d42c8910b4dbcbaf187"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/FundReconciliationView.swift",
+    "bytes": 4980,
+    "sha256": "d81e1e9f0a80d1f5a401a4333b4ecb0abe5c9fdc6332777fa421ee877ded46e0"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/GridEngine.swift",
+    "bytes": 53052,
+    "sha256": "eb646cb12320a95d543d339bb5face39a5976a43e96fd965f5c7d2e500de6add"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/GridReviewAdvisor.swift",
+    "bytes": 9721,
+    "sha256": "05c276cecd5d28163352deaf9cdc7f4ef7d7cff1cc3b433636558d34b1f96de5"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/GridReviewView.swift",
+    "bytes": 38575,
+    "sha256": "3e47443861bdcb8c00d143ba7b7459bff49394cbe8446918018c5fb0ba822b88"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/GridSuitability.swift",
+    "bytes": 13099,
+    "sha256": "662b8e9edf01e50246f911c867983483bc9d77d568e28665364ac8f429b2db8c"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/GuanpanProApp.swift",
+    "bytes": 1762,
+    "sha256": "b73a2a9b25d2b90e8267b35b4d33dd501048b77e4966a4e438d46773ea46783e"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/HistoricalReplayView.swift",
+    "bytes": 16968,
+    "sha256": "56d621a41b5426ff16ed1c958b38f158f8bb7b2fd851b8d9925046ea1c85ff25"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/IndexDetailView.swift",
+    "bytes": 27674,
+    "sha256": "db60c1d9118ed12d799df51942b66a9c001f6e38a48d857996b0ffc008cf4a88"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/InstrumentDetailView.swift",
+    "bytes": 22296,
+    "sha256": "99e0b44394b66c936b6b3f1f76110b6d6b941cf4e1e387bf55e868feaf34285b"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/IntradayArchiveView.swift",
+    "bytes": 32917,
+    "sha256": "3f389b50b89e3463b45de06c94999f443970a6b3513481574afd034d8d867b2e"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/IntradayCompanionStore.swift",
+    "bytes": 45769,
+    "sha256": "083088faa09339c0e3aa12762662c1b064869727258ef4ce8e07c963929d90b6"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/IntradayCompanionView.swift",
+    "bytes": 14751,
+    "sha256": "60bb6333b0b4361bb5ce09f63b5dba3bcea904b62ddd4b8b10a925e86afdb8f1"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Lab/InvestmentLabStore.swift",
+    "bytes": 6215,
+    "sha256": "cb0ad94040e93ddcfbf783f8c8f6164a7678767319a643cb9eb946e7731203b1"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Lab/InvestmentLabView.swift",
+    "bytes": 12189,
+    "sha256": "e5d1ab32fa65d0fd5d293c34ff845d3a6a5fb55d423e847704514ddb697471fa"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Lab/LabChannelCoordinator.swift",
+    "bytes": 7045,
+    "sha256": "02a20ae813364272b3bc60b1a4dbdb84a6b4c4fb455b9ae84b3dbbbe2b2a9bf7"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Lab/LabCore.js",
+    "bytes": 26223,
+    "sha256": "06cbe2888fb3c332ec2c0cd09a2621e055db5dc2fd7fd514385c64f4cf79b8a8"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/LedgerHealth.swift",
+    "bytes": 10436,
+    "sha256": "79482708677d5fda785a8ba76cd49086a9d542ea0cea4deaed7388468969894b"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/LegacyMigration.swift",
+    "bytes": 34407,
+    "sha256": "f1159b33ecf3d7ac9fcacfb328a2bc95f75be6298df47ac0f3b2446eb1cca9e3"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/LocalAdvisorEngine.swift",
+    "bytes": 7273,
+    "sha256": "b26294f4f699e8b0e04e40b98accede087fa73238fc2e317bda1c4d58b148fd6"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/MarketCalendar.swift",
+    "bytes": 5234,
+    "sha256": "eda318be81a191e8508a54ac0ef69501e8db2a73ae9a933ea4fa44d73000092c"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/MarketChartView.swift",
+    "bytes": 174140,
+    "sha256": "fb09f6c932ffef82bfc9f45f7aed4322ddb7ea44318bcd9d2dedee4111dbff9a"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/MarketSignals.swift",
+    "bytes": 11691,
+    "sha256": "bc41bd38b41adfe9f1fd2bb7628b1db73e2b3562771154d0f57bd2ecbd0a7c6a"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/MetricCardKit.swift",
+    "bytes": 5332,
+    "sha256": "af5c677a2df8f7e4c9f0002448799189e773ea27bd3ee56983711d10a6154894"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/Models.swift",
+    "bytes": 50718,
+    "sha256": "fa71ce28785a1916ea09cd9d99c167d2d8d42c5ee1c1a6f70c8190f97f32fbc9"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/MonthlyReviewView.swift",
+    "bytes": 12010,
+    "sha256": "b87edcfe9905a474a1bb31290a36e7ea82b0d780c1bc039d1c949e8d376f779e"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/NASSyncService.swift",
+    "bytes": 30281,
+    "sha256": "4d23f6961c12351debdb2efecc570eb946992a25ffc4d846079faeba50722988"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/NativeNotifications.swift",
+    "bytes": 4203,
+    "sha256": "70672b5ad71028f5f87581489b67f921a3b919a8034ed6d7c8d6b3e8556e303c"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/PortfolioAdviceView.swift",
+    "bytes": 6401,
+    "sha256": "6cee4b1c4e3579692fa531a3a3172869f8d496023f056a9ee5be129b642b9da1"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/PortfolioAnalysisView.swift",
+    "bytes": 12954,
+    "sha256": "552ea5b8840a70b1fafb187934a3e74a564157d0590933d6f7d092ee16cb1d80"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/PortfolioStore.swift",
+    "bytes": 284297,
+    "sha256": "95d47caa712ea86b3de942d18c58be026d6d8fa136d356dea5de5b0042f62ff4"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/QuantitativeEngineView.swift",
+    "bytes": 14809,
+    "sha256": "366b833cba472b1d1e577a1ce5159d2063a074fa10cb8b1098bf224b4cd50cb8"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/ReconciliationView.swift",
+    "bytes": 18063,
+    "sha256": "5b648e5e64587a915ecdae9d0a59ca49dd5d881e3bd7253ba3bbe97e859a51fc"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/ReturnSourceView.swift",
+    "bytes": 12008,
+    "sha256": "6cd934c004524ab0593451b06709b905e844fc52d75a22f28f22ba68a75308d7"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/StrategyBacktest.swift",
+    "bytes": 3599,
+    "sha256": "a043cf51d9c65f055a527fc08041e9d4207e6fda1548218d51dbc7dcf648aa2b"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/ThemedCard.swift",
+    "bytes": 8577,
+    "sha256": "fbc4d9dc2d9fc2d2fe2e6fe3ddf0cca2f7bd74ee408f2cf10418ff5b2c9d9fc9"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/TradeCSVImport.swift",
+    "bytes": 11908,
+    "sha256": "dfc901a04ceed170530d59ed88baf3e7d6684acd2d41ec82732c71f554a94b9f"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/TradePreviewView.swift",
+    "bytes": 7146,
+    "sha256": "4fe864b5d71652a57a27a9cb8b2deb6614c407fe9a8d96601480e96d01ffaab8"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/WebLedgerSyncCard.swift",
+    "bytes": 6496,
+    "sha256": "4610c56a07756137ff3eacd1903a39b8a872cd642dbb05dcb601018e05ef6a0c"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/WebLedgerWriter.swift",
+    "bytes": 14702,
+    "sha256": "b973ecc728e00e4de58d87c5055722ac88f801b106a79d63730d50bfd8f551e7"
+  },
+  {
+    "path": "guanpan-pro-native/Sources/YearlyReviewView.swift",
+    "bytes": 21559,
+    "sha256": "0e3a7e0b9427afb20024f5aac88d7aa2c7e9df11d178b0c376935477ea2fe928"
+  },
+  {
+    "path": "guanpan-pro-native/升级说明-2.13.33.md",
+    "bytes": 1378,
+    "sha256": "bc2a807118c71069e97eb419700eeb96f4862570439c0c9110043d5cf5183107"
+  },
+  {
+    "path": "guanpan-pro-native/源码改动说明.md",
+    "bytes": 1755,
+    "sha256": "aa253ddb04867d333dfa89cebf3f17f8232f0d922dbb51b0fcea3edd1b96aefc"
+  },
+  {
+    "path": "nas-sync-server/channel_store.py",
+    "bytes": 11377,
+    "sha256": "690337a7b26448189223f73d987bb39bff518d46a77c44baff4cc2fc6c46deaf"
+  },
+  {
+    "path": "nas-sync-server/compose.yaml",
+    "bytes": 1151,
+    "sha256": "451e30304454d88a549d054bd0ec011a8a83f4e5ddb0eb2ca5d47267528767d0"
+  },
+  {
+    "path": "nas-sync-server/docker-compose.yml",
+    "bytes": 1151,
+    "sha256": "451e30304454d88a549d054bd0ec011a8a83f4e5ddb0eb2ca5d47267528767d0"
+  },
+  {
+    "path": "nas-sync-server/Dockerfile",
+    "bytes": 568,
+    "sha256": "e81adc8d295de194f54ab975e2aa885ebf76693e023135692e71c471f04ebc11"
+  },
+  {
+    "path": "nas-sync-server/server.py",
+    "bytes": 42043,
+    "sha256": "163df87b4830dacf2e828e8437391d481ead3d1c3772496013066ced95920e06"
+  },
+  {
+    "path": "nas-sync-server/web/index.html",
+    "bytes": 1657243,
+    "sha256": "3c7e9aa4d93affc94c5fade25f4eba02c51982c40d0734e2d55d7da942e3614c"
+  },
+  {
+    "path": "nas-sync-server/部署说明.md",
+    "bytes": 6677,
+    "sha256": "036c23f20a49c4aeebd368b15dfd4a3d39f916b65abb8de9ec8a10f3abf29c90"
+  },
+  {
+    "path": "README-GitHub构建.md",
+    "bytes": 2199,
+    "sha256": "ed540021687f69b716e919fa393fdf6d51f65d6dd501347d35dce099434daf64"
+  },
+  {
+    "path": "README-NAS同步服务器.md",
+    "bytes": 5786,
+    "sha256": "8e3c8f3e95ad211191bbedd7c62baba5faac5dcbe6a91dc32b771fd26dab86e1"
+  },
+  {
+    "path": "START-HERE.md",
+    "bytes": 1463,
+    "sha256": "e6968a87ec89c2f136917317680072ad1c4fb49cca3799263ff44eec8be37faf"
+  },
+  {
+    "path": "tests/demo-lab.cjs",
+    "bytes": 1532,
+    "sha256": "7dabe90c884af5796f2088381a6f14d511171efd0b8852e7f00a6aea86dcecb5"
+  },
+  {
+    "path": "tests/lab-core.test.cjs",
+    "bytes": 13314,
+    "sha256": "bf16c97789026fc944da0d6f8aac1e868bfbc8d54fce23e940b62d973f092138"
+  },
+  {
+    "path": "tests/run-validation.py",
+    "bytes": 2068,
+    "sha256": "50a2c3778dda47ae2e8f2c5b983166e0241f04f8866df758215589cae64cb779"
+  },
+  {
+    "path": "tests/test_channels.py",
+    "bytes": 9217,
+    "sha256": "967dcb86712b1633547130a46caa656745c53c9419dc2a469fc110c7168d4564"
+  },
+  {
+    "path": "审计与实施计划.md",
+    "bytes": 9288,
+    "sha256": "b8b72649e7faa611ff3b6a8b22271ea408276491784455c292151d3f1589f664"
+  },
+  {
+    "path": "本次修复说明.md",
+    "bytes": 4447,
+    "sha256": "7b49ba4690baf3f28019fe6c4a19940a9c4aa20a29e01c59c064944346b14b34"
+  },
+  {
+    "path": "源码改动说明.md",
+    "bytes": 321351,
+    "sha256": "af1732d731d54b7028cdd8190235e13347ee1fb4207065da08931d23d83774de"
+  },
+  {
+    "path": "源码文件清单.csv",
+    "bytes": 2079,
+    "sha256": "bd3a6b96af3cd2a91992d533420097902fe4f1b0644ac72b072dbe2c02ad302c"
+  },
+  {
+    "path": "项目交接说明.md",
+    "bytes": 10191,
+    "sha256": "b9b7c1afc9a10a534e66a2f596e10e8ccd5403071e7e1417be0e8a71305fc9ec"
+  }
+]

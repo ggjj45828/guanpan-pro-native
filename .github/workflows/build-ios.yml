@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - 'upgrade/v2.13.55-r2'
     paths:
       - 'guanpan-pro-native/**'
       - '.github/workflows/build-ios.yml'
@@ -62,7 +63,9 @@ jobs:
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
+          # Keep ZIP entry names ASCII: some Windows re-signing tools fail to
+          # decode a non-ASCII .app directory name produced by ditto.
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/GuanpanPro.app"
           cd "$RUNNER_TEMP/ipa"
           ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/GuanpanPro-unsigned.ipa"
           unzip -l "$RUNNER_TEMP/GuanpanPro-unsigned.ipa"

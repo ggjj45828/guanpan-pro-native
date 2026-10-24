@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>观盘 Pro Next · 网页版</title>
+<style>
+:root{
+  --bg:#f5f6f2;--card:#ffffff;--ink:#1d2522;--mut:#6b756e;--line:#e1e5de;
+  --forest:#173d35;--terra:#b5532f;--violet:#5b4bb0;--gold:#b8893a;
+  --price:#111111;--avg:#ff7a00;--prev:#9aa3b2;--iopv:#7c3aed;
+  --up:#e63022;--down:#16a34a;--ma20:#2563eb;--cost:#0d9488;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.45}
+header{padding:10px 14px;background:var(--forest);color:#fff;position:sticky;top:0;z-index:20;box-shadow:0 1px 0 rgba(0,0,0,.12)}
+header h1{font:600 17px/1 Georgia,"Songti SC",serif;margin:0}
+.idx{display:flex;gap:10px;overflow-x:auto;padding:6px 0 2px;scrollbar-width:none}
+.idx::-webkit-scrollbar{display:none}
+.idx .c{flex:0 0 auto;font-size:12px;white-space:nowrap;cursor:pointer;border-radius:8px;padding:2px 6px}
+.idx .c:active{background:rgba(255,255,255,.15)}
+.idx .n{color:#dfe6e0}.idx .v{font-variant-numeric:tabular-nums;font-weight:600}
+.up{color:var(--up)}.down{color:var(--down)}.mut{color:var(--mut)}.sm{font-size:11px}.right{text-align:right}
+nav{display:flex;gap:0;overflow-x:auto;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:19;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav button{flex:0 0 auto;border:0;background:none;padding:11px 13px;font-size:13px;color:var(--mut);font-weight:500;border-bottom:2px solid transparent}
+nav button.on{color:var(--forest);border-color:var(--forest);font-weight:700}
+main{padding:12px;max-width:980px;margin:0 auto}
+section{display:none}section.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+.card h2{margin:0 0 8px;font-size:14px;display:flex;align-items:center;gap:8px}
+.tag{font-size:10px;padding:1px 7px;border-radius:99px;background:var(--violet);color:#fff;font-weight:600}
+.tag.g{background:var(--gold)}.tag.t{background:var(--terra)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px dashed var(--line)}
+.row:last-child{border-bottom:0}
+.name{font-weight:600}.code{font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+input,select,textarea{font:inherit;border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:#fcfdfb;color:var(--ink)}
+input:focus,textarea:focus{outline:2px solid var(--forest);outline-offset:0}
+button.act{border:0;border-radius:10px;background:var(--forest);color:#fff;font-weight:600;padding:9px 13px;cursor:pointer}
+button.act:active{transform:translateY(1px)}
+button.ghost{background:#eef1ec;color:var(--forest)}
+button.danger{background:var(--terra);color:#fff}
+button.mini{font-size:12px;padding:5px 9px;border-radius:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.qcard{border:1px solid var(--line);border-radius:12px;padding:9px;background:#fcfdfb;position:relative}
+.qcard .top{display:flex;justify-content:space-between;align-items:baseline}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.chip{font-size:12px;padding:4px 9px;border-radius:99px;background:#eef1ec;color:var(--forest);cursor:pointer;border:1px solid transparent}
+.chip.on{background:var(--forest);color:#fff}
+.chip.disabled{opacity:.35;pointer-events:none}
+canvas{width:100%;height:auto;display:block;background:#fcfdfb;border-radius:10px;touch-action:none}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--mut);margin-top:8px;align-items:center}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:4px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:right;padding:6px 4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left}
+.status{padding:8px 10px;border-radius:9px;font-size:12px;margin:8px 0}
+.status.ok{background:#e7f3ec;color:#1d6b43}.status.err{background:#fbe8e3;color:#9c3a1c}
+.hidden{display:none}
+.badge{font-size:10px;padding:1px 7px;border-radius:99px;font-weight:700;color:#fff;white-space:nowrap}
+details.exlist{margin-top:8px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+details.exlist summary{cursor:pointer;padding:8px 10px;background:#f4f6f2;font-size:12px;font-weight:600;list-style:none}
+details.exlist summary::-webkit-details-marker{display:none}
+details.exlist[open] summary{border-bottom:1px solid var(--line)}
+details.exlist .body{padding:6px 10px}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#1d2522;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;z-index:50;max-width:90%}
+#toast.show{opacity:.96}
+@media(min-width:720px){.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+</style></head>
+<body>
+<header>
+  <h1>观盘 Pro Next · 网页版</h1>
+  <div class="idx" id="idx">指数加载中…</div>
+</header>
+<nav id="nav">
+  <button data-tab="watch" class="on">自选</button>
+  <button data-tab="hold">持仓</button>
+  <button data-tab="chart">图表</button>
+  <button data-tab="div">分红</button>
+  <button data-tab="ai">研究</button>
+  <button data-tab="alert">提醒</button>
+  <button data-tab="data">数据</button>
+</nav>
+<main>
+  <section id="watch" class="on">
+    <div class="card">
+      <h2>自选 <span class="tag">实时</span><span class="sm mut" id="watchTime"></span></h2>
+      <div class="chips" id="watchChips"></div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <input id="addCode" inputmode="numeric" maxlength="6" placeholder="加代码 如 159941" style="flex:1">
+        <button class="act mini" onclick="addWatch()">添加</button>
+        <button class="act mini ghost" onclick="loadQuotes(getWatch())">刷新</button>
+        <button class="act mini ghost" onclick="loadWorth()">算值得买</button>
+      </div>
+      <div class="grid" id="watchGrid" style="margin-top:8px"></div>
+    </div>
+  </section>
+
+  <section id="hold">
+    <div class="card">
+      <h2>持仓与盈亏 <span class="tag g">NAS 账本</span></h2>
+      <div id="holdSummary" class="sm mut">读取中…</div>
+      <div id="benchRow" class="row" style="margin-top:4px"></div>
+      <div id="holdList"></div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <span class="sm mut">现金调整</span>
+        <input id="cashInput" type="number" step="0.01" placeholder="金额(元)" style="width:110px">
+        <button class="act mini" onclick="adjustCash('set')">设为</button>
+        <button class="act mini" onclick="adjustCash('in')">入金 +</button>
+        <button class="act mini ghost" onclick="adjustCash('out')">出金 −</button>
+      </div>
+      <!-- 买入 / 卖出：口径与手机端 recordTrade 完全一致（含手续费计入成本、T+1 可卖、卖出算已实现盈亏） -->
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <span class="sm mut">买入 / 卖出</span>
+        <select id="tradeCode" style="width:150px" onchange="renderTradeHint()"></select>
+        <input id="tradeUnits" type="number" step="100" min="100" placeholder="份数" style="width:100px">
+        <input id="tradePrice" type="number" step="0.001" placeholder="价格" style="width:100px">
+        <input id="tradeFee" type="number" step="0.01" placeholder="手续费" style="width:90px" value="0.10">
+        <button class="act mini" onclick="submitTrade('buy')">买入</button>
+        <button class="act mini ghost" onclick="submitTrade('sell')">卖出</button>
+        <!-- 交收规则：跨境/黄金 ETF 是 T+0，境内股票 ETF 是 T+1。**不按名称或代码前缀瞎猜**，
+             由你按自己券商的实际规则标注一次，之后按标注执行；未标注一律按 T+1 保守处理。 -->
+        <label class="sm mut" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="tradeT0" onchange="toggleSettlement()"> T+0（当日可卖）</label>
+      </div>
+      <div id="tradeHint" class="sm mut" style="margin-top:4px"></div>
+      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+        <button class="act mini" onclick="addPosition()">加持仓</button>
+        <button class="act mini" onclick="saveBook()">保存到 NAS</button>
+        <button class="act mini ghost" onclick="loadBook()">重读</button>
+      </div>
+      <div id="holdStatus" class="status hidden"></div>
+    </div>
+  </section>
+
+  <section id="chart">
+    <div class="card">
+      <h2>行情图表 <span class="tag t">分时 / 日K</span></h2>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <!-- 自动：进来就已选中第一只持仓并画好图；点持仓/自选卡片、指数都会自动切到这里 -->
+        <select id="chartCode" style="width:170px" onchange="openChart()" title="会自动跟随你的持仓/自选，也可手动切换"></select>
+        <button class="act mini" onclick="openChart()">刷新</button>
+        <div class="chips" id="chartKind" style="margin:0">
+          <span class="chip on" data-k="day" onclick="setKind('day')">日K</span>
+          <span class="chip" data-k="intraday" onclick="setKind('intraday')">分时</span>
+        </div>
+        <label class="sm mut" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="adjChk" checked onchange="redrawChart()"> 前复权</label>
+        <label class="sm mut" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="maChk" checked onchange="redrawChart()"> MA</label>
+        <button class="act mini ghost" onclick="resetView()">重置缩放</button>
+      </div>
+      <div id="chartInfo" class="sm mut" style="margin:6px 0"></div>
+      <canvas id="chartCanvas" width="900" height="600"></canvas>
+      <div class="legend" id="chartLegend"></div>
+      <div class="sm mut" id="chartMeta"></div>
+    </div>
+  </section>
+
+  <section id="div">
+    <div class="card">
+      <h2>分红与股息率 <span class="tag">派息记录</span></h2>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input id="divCode" maxlength="6" placeholder="代码" style="width:90px" value="159941">
+        <button class="act mini" onclick="loadDividends()">查询</button>
+      </div>
+      <div id="divBody" class="sm mut">输入代码查询。</div>
+    </div>
+  </section>
+
+  <section id="ai">
+    <div class="card">
+      <h2>NAS长期研究档案 <span class="tag">数据证据</span></h2>
+      <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+        <select id="aiCode" style="width:160px"></select>
+        <button class="act mini" onclick="loadResearch()">看缓存</button>
+      </div>
+      <div class="sm mut">标的自动列出（真实持仓 + 自选）。NAS负责展示长期统计、行情档案和新闻；最终AI判断由手机端统一生成。</div>
+      <div id="aiBody" class="sm mut">选好标的后点「看缓存」读取 NAS 已保存研究。</div>
+      <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+        <h3 style="font-size:13px;margin:0 0 4px">长期分时统计 <span class="tag t">1/5/20/60/120 日</span></h3>
+        <div class="sm mut" style="margin-bottom:4px">全部来自 NAS 分钟归档的实算：VWAP 偏离、日内振幅、往返次数、支撑压力、波动率、完整度与新鲜度。归档不够就明说不够，不做外推。</div>
+        <div id="minuteStats" class="sm mut">点「看缓存」时一并读取。</div>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+        <h3 style="font-size:13px;margin:0 0 4px">相关新闻与计划影响 <span class="tag" style="background:var(--terra)">标题级</span></h3>
+        <div style="display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap">
+          <button class="act mini" onclick="loadNews()">取新闻标题</button>
+          <span class="sm mut">只判读标题，用来判断原做T/网格计划是否要暂停</span>
+        </div>
+        <div id="newsBody" class="sm mut">还没有取新闻。</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="alert">
+    <div class="card">
+      <h2>条件提醒 <span class="tag" style="background:var(--terra)">本机</span></h2>
+      <div class="sm mut">提醒规则存在本浏览器（localStorage），用实时行情判定；触发时高亮。iOS 端提醒独立存储，互不同步。</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+        <input id="aCode" maxlength="6" placeholder="代码" style="width:80px">
+        <select id="aMetric"><option value="price">价格(元)</option><option value="changePercent">涨跌幅(%)</option><option value="premiumPercent">溢折价(%)</option></select>
+        <select id="aDir"><option value="atOrAbove">≥</option><option value="atOrBelow">≤</option></select>
+        <input id="aVal" placeholder="阈值" style="width:90px">
+        <button class="act mini" onclick="addAlert()">加规则</button>
+      </div>
+      <div id="alertList"></div>
+    </div>
+  </section>
+
+  <section id="data">
+    <div class="card">
+      <h2>账本数据 <span class="tag g">NAS</span></h2>
+      <div class="sm mut">直接编辑 NAS 上的新账本 JSON（与 iOS 共用）。写入采用修订号，冲突不会覆盖。也可恢复备份。</div>
+      <textarea id="bookEditor" rows="14" style="width:100%;font:12px ui-monospace,Menlo,Consolas,monospace;margin-top:8px"></textarea>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="act mini" onclick="saveBookFromEditor()">保存编辑</button>
+        <button class="act mini ghost" onclick="loadBook()">重读</button>
+        <button class="act mini ghost" onclick="downloadBook()">下载备份</button>
+        <label class="sm mut" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="editConfirm"> 确认覆盖为下一版</label>
+      </div>
+      <div id="dataStatus" class="status hidden"></div>
+      <div style="margin-top:10px"><a href="/" target="_blank" rel="noopener" class="sm">打开完整数据控制台 ↗</a></div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const fmt = (n,d=2)=> (n==null||isNaN(n))?"–":Number(n).toLocaleString("zh-CN",{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct = n => (n>0?"+":"")+fmt(n,3)+"%";
+const sign = n => (n>0?"+":"")+fmt(n,3);
+let BOOK=null, REVISION=0, QUOTES={}, WATCH=[], ALERTS=[], DIVCACHE={};
+let CHART={bars:null,rows:null,div:null,code:null,name:null,prevClose:null,intradayAllowed:true,view:null};
+
+// ---------- 网络 ----------
+async function api(path, opts){
+  const r = await fetch(path, opts||{});
+  const v = await r.json().catch(()=>({error:"响应非 JSON"}));
+  // 带上状态码与服务端原文：AI 分析失败时要能分清是 400（模型名/请求格式）、
+  // 401/403（key 没配）还是 5xx（NAS 出不了网），否则用户只看到一句"分析失败"。
+  if(!r.ok){ const e=new Error(v.error||("HTTP "+r.status)); e.status=r.status; e.serverError=v.error||""; e.payload=v; throw e; }
+  return v;
+}
+function toast(msg){const t=$("toast");t.textContent=msg;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2200);}
+function uuid(){ if(crypto.randomUUID) return crypto.randomUUID(); return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c=='x'?r:(r&0x3|0x8)).toString(16);}); }
+function isSix(c){ return /^\d{6}$/.test(c); }
+
+// ---------- Tab ----------
+document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#nav button").forEach(x=>x.classList.remove("on"));
+  document.querySelectorAll("main section").forEach(s=>s.classList.remove("on"));
+  b.classList.add("on"); $(b.dataset.tab).classList.add("on");
+  if(b.dataset.tab==="watch"){ loadQuotes(getWatch()); loadWorth(); }
+  if(b.dataset.tab==="hold") loadBook();
+  if(b.dataset.tab==="alert") renderAlerts();
+  if(b.dataset.tab==="chart" && !CHART.code) openChart();   // 切到图表页自动画，不用手动选代码
+});
+
+// ---------- 指数（可点进看曲线） ----------
+async function loadIndices(){
+  try{
+    const v = await api("/v1/market/indices");
+    const el=$("idx");
+    if(!v.indices||!v.indices.length){el.innerHTML='<span class="mut">指数源暂不可用</span>';return;}
+    el.innerHTML = v.indices.map(x=>{
+      const up=x.changePercent>=0, cls=up?"up":"down", arrow=up?"▲":"▼";
+      return `<span class="c" onclick="openIndex('${x.kline}','${x.name.replace(/'/g,"")}')" title="点击查看 ${x.name} 历史曲线"><span class="n">${x.name}</span> <span class="v ${cls}">${fmt(x.price)} ${arrow}${fmt(Math.abs(x.changePercent))}</span></span>`;
+    }).join("");
+  }catch(e){ $("idx").innerHTML='<span class="mut">指数加载失败：'+e.message+'</span>'; }
+}
+
+// ---------- 自选 ----------
+function getWatch(){ if(!WATCH.length) WATCH=JSON.parse(localStorage.getItem("gp_watch")||"[]"); return WATCH; }
+function setWatch(){ localStorage.setItem("gp_watch", JSON.stringify(WATCH)); renderWatchChips(); renderChartCodeOptions(); renderAICode(); renderTradeCode(); }
+function renderWatchChips(){
+  const c=$("watchChips"); c.innerHTML="";
+  getWatch().forEach(code=>{
+    const s=document.createElement("span"); s.className="chip"; s.textContent=code+" ✕";
+    s.title="点击删除自选 "+code;
+    s.onclick=()=>delWatch(code);
+    c.appendChild(s);
+  });
+  if(!WATCH.length) c.innerHTML='<span class="sm mut">还没有自选，添加代码试试</span>';
+}
+function addWatch(){ const v=$("addCode").value.trim(); if(!isSix(v)){toast("请输入6位代码");return;} if(WATCH.includes(v)){toast("已存在");return;} WATCH.push(v); setWatch(); $("addCode").value=""; loadQuotes(getWatch()); loadWorth(); }
+async function loadQuotes(codes){
+  if(!codes||!codes.length){ $("watchGrid").innerHTML='<span class="sm mut">空</span>'; return; }
+  try{
+    const v = await api("/v1/market/quotes?codes="+codes.join(","));
+    const qs=v.quotes||[];
+    qs.forEach(q=>QUOTES[q.code]=q);
+    $("watchTime").textContent="更新 "+new Date().toLocaleTimeString("zh-CN");
+    renderWatchGrid();
+    renderAlerts();
+  }catch(e){ $("watchGrid").innerHTML='<span class="sm mut">行情失败：'+e.message+'</span>'; }
+}
+function renderWatchGrid(){
+  const codes=getWatch();
+  if(!codes.length){ $("watchGrid").innerHTML='<span class="sm mut">还没有自选，上面加代码</span>'; return; }
+  $("watchGrid").innerHTML = codes.map(code=>{
+    const q=QUOTES[code];
+    if(!q) return `<div class="qcard"><span class="name">${code}</span> <span class="sm mut">无行情</span> <button class="act mini ghost" onclick="delWatch('${code}')">删</button></div>`;
+    const price=Number(q.price), prev=Number(q.previousClose), ch=prev? (price/prev-1)*100:0;
+    const up=ch>=0, cls=up?"up":"down";
+    const iopv = q.iopv? `<div class="sm mut">IOPV ${fmt(Number(q.iopv),4)}</div>`:"";
+    const w=worthOf(code);
+    const badge = w? `<span class="badge" style="background:${w.color}">${w.label}</span>`:"";
+    return `<div class="qcard" onclick="gotoChart('${code}')">
+      <div class="top"><span class="name">${q.name||code}</span>${badge}<button class="act mini ghost" onclick="event.stopPropagation();delWatch('${code}')">删</button></div>
+      <div class="top"><span class="code">${code}</span><span class="num ${cls}">${fmt(price,3)}</span></div>
+      <div class="top"><span class="sm mut">${w?w.note:""}</span><span class="num ${cls}">${pct(ch)}</span></div>
+      ${iopv}</div>`;
+  }).join("");
+}
+function gotoChart(code){ ensureChartOption(code,(QUOTES[code]&&QUOTES[code].name)||code); $("chartCode").value=code; openChart(); document.querySelector('#nav button[data-tab="chart"]').click(); }
+
+// ---------- 值不值得买（列表直接可见，无需点进标的） ----------
+function trailingSum(code){
+  const evs=(DIVCACHE[code]||[]).filter(e=>!e.isEstimated && e.date);
+  if(!evs.length) return null;
+  const now=new Date(); const cutoff=new Date(now.getFullYear()-1, now.getMonth(), now.getDate());
+  let s=0; for(const e of evs){ const d=new Date(e.date); if(d>=cutoff) s+=Number(e.amountPerShare)||0; }
+  return s;
+}
+function worthOf(code){
+  const q=QUOTES[code]; const price=q?Number(q.price):0;
+  const sum=trailingSum(code);
+  const iopv=q&&q.iopv?Number(q.iopv):0;
+  const premium=(price&&iopv)?(price/iopv-1)*100:null;
+  if(price<=0) return {label:"—",color:"#94a3b8",note:"无行情"};
+  if(sum==null||sum<=0){
+    if(premium!=null&&premium>3) return {label:"谨慎",color:"#dc2626",note:"溢价"+fmt(premium,1)+"%"};
+    return {label:"中性",color:"#94a3b8",note:"无分红"};
+  }
+  const yld=sum/price*100; let label,color,note="股息率"+fmt(yld,1)+"%";
+  if(yld>=3){label="值得";color="#16a34a";}
+  else if(yld>=1.5){label="中性";color="#d97706";}
+  else {label="观察";color:"#94a3b8";}
+  if(premium!=null){
+    if(premium>3){label="谨慎";color="#dc2626";note+="·溢价"+fmt(premium,1)+"%";}
+    else if(premium<-1){note+="·折价"+fmt(-premium,1)+"%";}
+  }
+  return {label,color,note};
+}
+async function loadWorth(){
+  const codes=[...new Set([...getWatch(), ...(BOOK&&BOOK.positions?BOOK.positions.map(p=>p.code):[])])].filter(isSix);
+  await Promise.all(codes.map(async c=>{
+    if(DIVCACHE[c]) return;
+    try{ const v=await api("/v1/market/dividends/"+c).catch(()=>({events:[]})); DIVCACHE[c]=v.events||[]; }
+    catch(e){ DIVCACHE[c]=[]; }
+  }));
+  renderWatchGrid(); renderHold();
+}
+
+// ---------- 持仓 ----------
+async function loadBook(){
+  try{
+    const v = await api("/v1/real/books/main");
+    REVISION=v.revision||0;
+    BOOK = v.bookJSON? JSON.parse(v.bookJSON) : null;
+    BOOK = normalizeBook();
+    renderHold(); renderEditor(); renderAICode(); renderChartCodeOptions(); renderTradeCode();
+    loadWorth();
+  }catch(e){ toast("账本读取失败："+e.message); }
+}
+function normalizeBook(){
+  if(!BOOK||typeof BOOK!=="object") BOOK={};
+  if(!BOOK.schemaVersion) BOOK.schemaVersion=1;
+  if(!BOOK.id) BOOK.id=uuid();
+  BOOK.cash=Number(BOOK.cash||0);
+  if(!Array.isArray(BOOK.positions)) BOOK.positions=[];
+  BOOK.positions=BOOK.positions.map(p=>({code:String(p.code),name:p.name?String(p.name):String(p.code),units:Math.max(0,Math.floor(Number(p.units)||0)),bookCost:Number(p.bookCost||0)}));
+  for(const k of ["fills","cashMovements","incomeEvents","dividendEvents","history"]) if(!Array.isArray(BOOK[k])) BOOK[k]=[];
+  return BOOK;
+}
+function bookCash(){ return Number(BOOK.cash||0); }
+function renderAICode(){
+  const sel=$("aiCode"); if(!sel) return;
+  const keep=sel.value;
+  // 持仓 + 自选都列出来：即使 NAS 账本还没上传，也能直接分析自选里的标的，不用手输代码。
+  const list=[]; const seen=new Set();
+  ((BOOK&&BOOK.positions)||[]).forEach(p=>{ if(p&&p.code&&!seen.has(p.code)){ seen.add(p.code); list.push({code:String(p.code),name:p.name||""}); } });
+  getWatch().filter(isSix).forEach(c=>{ if(!seen.has(c)){ seen.add(c); list.push({code:c,name:(QUOTES[c]&&QUOTES[c].name)||""}); } });
+  if(!list.length){ sel.innerHTML='<option value="">（暂无标的：先加自选，或在账本页导入/手机上传账本）</option>'; return; }
+  sel.innerHTML=list.map(p=>`<option value="${p.code}">${p.code} ${p.name||""}</option>`).join("");
+  if(keep&&list.some(p=>p.code===keep)) sel.value=keep;   // 自动选中，不用手填
+}
+/* 行情图表代码改成下拉：直接列出持仓 + 自选 + 常用指数，不再手填。
+   指数走东财 secid（/v1/market/kline?symbol=），6 位代码走 /v1/market/daily/。 */
+const CHART_INDICES=[["1.000001","上证指数"],["0.399001","深证成指"],["0.399006","创业板指"],["1.000300","沪深300"],["100.NDX","纳斯达克100"],["100.N225","日经225"],["100.HSI","恒生指数"],["100.SPX","标普500"],["100.DJIA","道琼斯"],["100.KS11","韩国KOSPI"]];
+function renderChartCodeOptions(){
+  const sel=$("chartCode"); if(!sel) return;
+  // 自动优先：当前选择 → 第一只持仓 → 第一只自选 → 159941。**不需要手填代码**。
+  const cur=sel.value||CHART.code||chartDefaultCode();
+  const groups=[["持仓",(BOOK&&BOOK.positions)||[]],["自选",getWatch().map(c=>({code:c,name:(QUOTES[c]&&QUOTES[c].name)||c}))]];
+  let html=""; const seen=new Set();
+  groups.forEach(([label,arr])=>{
+    const opts=arr.filter(p=>p.code&&!seen.has(p.code)).map(p=>{ seen.add(p.code); return `<option value="${p.code}">${p.code} ${p.name||""}</option>`; }).join("");
+    if(opts) html+=`<optgroup label="${label}">${opts}</optgroup>`;
+  });
+  html+=`<optgroup label="指数">`+CHART_INDICES.map(([v,n])=>`<option value="${v}">${n}</option>`).join("")+`</optgroup>`;
+  sel.innerHTML=html;
+  if(!Array.from(sel.options).some(o=>o.value===cur)){ const o=document.createElement("option"); o.value=cur; o.textContent=cur; sel.insertBefore(o, sel.firstChild); }
+  sel.value=cur;
+  // 全自动：还没画过图就把默认标的直接画出来，进页面即可见，不用点"打开"。
+  if(!CHART.code){ CHART.code=cur; CHART.name=labelOfOption(sel,cur); loadChart(); }
+}
+/* 默认标的：第一只持仓 → 第一只自选 → 159941 */
+function chartDefaultCode(){
+  const pos=(BOOK&&BOOK.positions)||[];
+  if(pos.length&&pos[0]&&pos[0].code) return String(pos[0].code);
+  const w=getWatch().filter(isSix);
+  if(w.length) return w[0];
+  return "159941";
+}
+function labelOfOption(sel,val){
+  const o=Array.from(sel.options||[]).find(x=>x.value===val);
+  if(!o) return val;
+  return String(o.textContent||"").replace(/^\d{6}\s*/,"").trim()||val;
+}
+function ensureChartOption(value,label){
+  const sel=$("chartCode"); if(!sel||!value) return;
+  if(!Array.from(sel.options).some(o=>o.value===value)){ const o=document.createElement("option"); o.value=value; o.textContent=label||value; sel.appendChild(o); }
+}
+function delWatch(code){ WATCH=WATCH.filter(x=>x!==code); setWatch(); loadQuotes(getWatch()); loadWorth(); }
+async function adjustCash(mode){
+  const raw=($("cashInput").value||"").trim(); const v=Number(raw);
+  if(raw===""||!isFinite(v)){ toast("请输入金额"); return; }
+  const amount=Math.round(v*100)/100;
+  let delta=0, next=bookCash(), reason="";
+  if(mode==="set"){
+    if(amount<0){ toast("现金不能设为负数"); return; }
+    delta=Math.round((amount-bookCash())*100)/100; next=amount; reason="网页校准现金到 ¥"+fmt(amount,2);
+  }else if(mode==="in"){
+    if(amount<=0){ toast("入金金额要大于 0"); return; }
+    delta=amount; next=Math.round((bookCash()+amount)*100)/100; reason="网页入金 ¥"+fmt(amount,2);
+  }else{
+    if(amount<=0){ toast("出金金额要大于 0"); return; }
+    if(amount>bookCash()){ toast("出金不能超过当前现金 "+fmt(bookCash(),2)); return; }
+    delta=-amount; next=Math.round((bookCash()-amount)*100)/100; reason="网页出金 ¥"+fmt(amount,2);
+  }
+  if(Math.abs(delta)<0.005){ toast("现金没有变化"); return; }
+  if(!confirm("确认"+(delta>0?"增加":"减少")+"现金 ¥"+fmt(Math.abs(delta),2)+"？会留一条现金流水。")) return;
+  BOOK.cash=next;
+  BOOK.cashMovements.push({ id:uuid(), date:Date.now()/1000-978307200, amount:delta, reason:reason });
+  $("cashInput").value="";
+  await saveBook();
+  renderHold();
+}
+
+/* ---------- 买入 / 卖出 ----------
+   与手机端 NextAppModel.recordTrade 同一套口径：
+   · 手续费计入买入成本（bookCost += 成交金额 + 手续费）
+   · T+1：今天买入的份额当天不可卖（券商显示的"持仓 / 可用"就是这个差）
+   · 卖出按加权平均成本结转，算已实现盈亏 realized = 成交额 − 手续费 − 成本
+   · 已核实 ETF 的手续费严格 ¥0.10/笔
+   · fill 字段必须恰好是 {id,date,code,side,units,price,fee,realized}，多一个键服务端就拒 */
+const COCOA=978307200;
+function r2(x){ return Math.round((Number(x)||0)*100)/100; }
+function fillDate(d){ return Math.floor((d?d.getTime():Date.now())/1000-COCOA); }
+function tradeCandidates(){
+  const list=[]; const seen=new Set();
+  ((BOOK&&BOOK.positions)||[]).forEach(p=>{ if(p&&p.code&&!seen.has(p.code)){ seen.add(p.code); list.push({code:String(p.code),name:p.name||""}); } });
+  getWatch().filter(isSix).forEach(c=>{ if(!seen.has(c)){ seen.add(c); list.push({code:c,name:(QUOTES[c]&&QUOTES[c].name)||""}); } });
+  return list;
+}
+function renderTradeCode(){
+  const sel=$("tradeCode"); if(!sel) return;
+  const keep=sel.value; const list=tradeCandidates();
+  if(!list.length){ sel.innerHTML='<option value="">（先加自选或持仓）</option>'; $("tradeHint").textContent=""; return; }
+  sel.innerHTML=list.map(p=>`<option value="${p.code}">${p.code} ${p.name||""}</option>`).join("");
+  if(keep&&list.some(p=>p.code===keep)) sel.value=keep;
+  renderTradeHint();
+}
+function tradePosition(code){ return ((BOOK&&BOOK.positions)||[]).find(p=>p.code===code)||null; }
+/* T+1：今天买入的份额当天不能卖。"今天"按**北京时间**算，与手机端
+   NextCore.lockedUnits 的 Asia/Shanghai 日历一致，否则跨时区会差一天。 */
+function shanghaiDay(ms){
+  try{ return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(ms)); }
+  catch(e){ return new Date(ms).toDateString(); }
+}
+/* 交收规则 T+0 / T+1：存在本地，按代码标注。
+   跨境（纳指/日经/恒生/标普…）、黄金、债券、货币 ETF 通常是 T+0，境内股票 ETF 是 T+1。
+   但代码前缀和名称都不可靠，所以**不自动推断**——未标注的一律按 T+1 保守处理，
+   你确认是 T+0 的勾一下即可，之后这台浏览器都按标注执行。 */
+function settleMap(){ try{ return JSON.parse(localStorage.getItem("gp_settle")||"{}"); }catch(e){ return {}; } }
+function isT0(code){ return settleMap()[code]===true; }
+function toggleSettlement(){
+  const code=($("tradeCode").value||"").trim(); if(!isSix(code)){ toast("先选标的"); return; }
+  const m=settleMap(); m[code]=!!($("tradeT0")&&$("tradeT0").checked);
+  localStorage.setItem("gp_settle", JSON.stringify(m));
+  toast(code+(m[code]?" 已标注 T+0（当日可卖）":" 恢复 T+1"));
+  renderTradeHint();
+}
+function lockedUnits(code){
+  if(isT0(code)) return 0;              // T+0：今天买的今天就能卖
+  const fills=(BOOK&&BOOK.fills)||[]; const today=shanghaiDay(Date.now());
+  return fills.filter(f=>f&&f.code===code&&f.side==="buy"&&shanghaiDay((Number(f.date)+COCOA)*1000)===today)
+              .reduce((s,f)=>s+(Number(f.units)||0),0);
+}
+function renderTradeHint(){
+  const el=$("tradeHint"); if(!el) return;
+  const sel=$("tradeCode"); const code=sel?(sel.value||"").trim():"";
+  if(!code){ el.textContent=""; return; }
+  const p=tradePosition(code);
+  const q=QUOTES[code]; const isETF=q&&String(q.providerInstrumentType||"").toUpperCase()==="ETF";
+  if(isETF&&$("tradeFee")) $("tradeFee").value="0.10";   // 与手机端一致：已核实 ETF 自动 0.10
+  if($("tradeT0")) $("tradeT0").checked=isT0(code);
+  const t0=isT0(code);
+  if(!p){ el.textContent="当前没有这只的持仓，可先买入建仓。"+(q&&q.price?"当前价 ¥"+fmt(q.price,3):""); return; }
+  const locked=lockedUnits(code); const avail=t0?(Number(p.units)||0):Math.max(0,(Number(p.units)||0)-locked);
+  el.textContent=(t0?`${code} 已标注 T+0 · 当日买入可卖`:`${code} 按 T+1 · 今日买入锁定 ${locked} 份`)
+    + ` · 持有 ${p.units} 份 · 可卖 ${avail} 份 · 成本 ¥${fmt(p.bookCost,2)}`
+    + (q&&q.price?` · 现价 ¥${fmt(q.price,3)}`:"")
+    + (t0?"":" · 若是跨境/黄金 ETF 可勾选 T+0");
+}
+async function submitTrade(side){
+  if(!BOOK){ toast("账本还没读取"); return; }
+  const code=($("tradeCode").value||"").trim();
+  const units=Math.floor(Number($("tradeUnits").value));
+  const price=Number($("tradePrice").value);
+  const feeRaw=($("tradeFee").value||"").trim(); const fee=feeRaw===""?0:Number(feeRaw);
+  if(!isSix(code)){ toast("请选择或输入 6 位代码"); return; }
+  if(!isFinite(units)||units<=0){ toast("份数要是大于 0 的整数"); return; }
+  if(!isFinite(price)||price<=0){ toast("价格要大于 0"); return; }
+  if(!isFinite(fee)||fee<0){ toast("手续费无效"); return; }
+  const q=QUOTES[code]; const isETF=q&&String(q.providerInstrumentType||"").toUpperCase()==="ETF";
+  if(isETF&&Math.abs(fee-0.10)>1e-9){ toast("已核实 ETF 的手续费按每笔 ¥0.10 记录"); return; }
+  const gross=r2(price*units); const fee2=r2(fee);
+  const name=(q&&q.name)||(tradePosition(code)&&tradePosition(code).name)||code;
+  const idx=(BOOK.positions||[]).findIndex(p=>p.code===code);
+  let realized=0, text="";
+  if(side==="buy"){
+    const need=r2(gross+fee2);
+    if(r2(bookCash())<need){ toast("现金不足：本笔需 ¥"+fmt(need,2)+"（含手续费 ¥"+fmt(fee2,2)+"），可用 ¥"+fmt(bookCash(),2)+"，还差 ¥"+fmt(r2(need-bookCash()),2)); return; }
+    if(idx>=0){
+      BOOK.positions[idx].units=Number(BOOK.positions[idx].units)+units;
+      BOOK.positions[idx].bookCost=r2(Number(BOOK.positions[idx].bookCost)+need);
+    }else{
+      BOOK.positions.push({code:code,name:name,units:units,bookCost:need,acquiredAt:fillDate(new Date())});
+    }
+    BOOK.cash=r2(Number(BOOK.cash)-need);
+    text=`买入 ${name} ${units} 份 @ ¥${fmt(price,3)}，金额 ¥${fmt(gross,2)} + 手续费 ¥${fmt(fee2,2)}`;
+  }else{
+    if(idx<0){ toast("没有这只的持仓，无法卖出"); return; }
+    const pos=BOOK.positions[idx]; const held=Number(pos.units)||0;
+    if(units>held){ toast("卖出份额超过持有份额（持有 "+held+" 份）"); return; }
+    const avail=isT0(code)?held:Math.max(0,held-lockedUnits(code));
+    if(units>avail){ toast(isT0(code)?"卖出份额超过持有份额（持有 "+held+" 份）":"可卖份额不足：持有 "+held+" 份，其中今日买入锁定 "+(held-avail)+" 份，当前可卖 "+avail+" 份（T+1；若这只可当日回转，勾上方 T+0）"); return; }
+    const cost=r2(Number(pos.bookCost)*units/held);
+    realized=r2(gross-fee2-cost);
+    pos.units=held-units; pos.bookCost=r2(Number(pos.bookCost)-cost);
+    if(pos.units===0) BOOK.positions.splice(idx,1);
+    BOOK.cash=r2(Number(BOOK.cash)+r2(gross-fee2));
+    text=`卖出 ${name} ${units} 份 @ ¥${fmt(price,3)}，金额 ¥${fmt(gross,2)} − 手续费 ¥${fmt(fee2,2)}，已实现 ${realized>=0?"+":""}¥${fmt(realized,2)}`;
+  }
+  if(!confirm("确认"+text+"？\n会写入 NAS 真实账本（修订号保护）。")) return;
+  BOOK.fills.push({id:uuid(),date:fillDate(new Date()),code:code,side:side,units:units,price:price,fee:fee2,realized:realized});
+  await saveBook();
+  $("tradeUnits").value=""; $("tradePrice").value="";
+  renderHold(); renderTradeCode(); renderChartCodeOptions(); renderAICode();
+}
+function renderHold(){
+  const summary=$("holdSummary");
+  if(!BOOK||!BOOK.positions.length){ summary.textContent="暂无持仓。"; $("holdList").innerHTML=""; $("benchRow").innerHTML=""; return; }
+  let totalMv=0, totalCost=0, missing=0;
+  const rows = BOOK.positions.map(p=>{
+    const q=QUOTES[p.code];
+    /* 取不到报价必须是 null，不能按 0 算：0 会把整页渲染成「市值 0 · 盈亏 -100%」，
+       看上去像血本无归，实际只是行情接口没返回（收盘后被 60 秒新鲜度门槛拒过、
+       网络抖动、限流都会这样）。 */
+    const price=(q&&Number(q.price)>0)?Number(q.price):null;
+    const units=Number(p.units)||0; const cost=Number(p.bookCost)||0;
+    const mv=price==null?0:price*units;
+    const pnl=price==null?null:mv-cost; const pnlPct=(pnl!=null&&cost)? pnl/cost*100:null;
+    if(price==null) missing++;
+    totalMv+=mv; totalCost+=cost;
+    const up=(pnl||0)>=0, cls=up?"up":"down";
+    const w=worthOf(p.code);
+    const badge=w?`<span class="badge" style="background:${w.color}">${w.label}</span>`:"";
+    return `<div class="row">
+      <span><span class="name">${q?q.name:p.name}</span> <span class="code">${p.code}</span> ${badge}</span>
+      <span class="right"><span class="num">${price==null?'<span class="mut">无行情</span>':fmt(price,3)}</span><br><span class="sm mut">${units} 份</span></span>
+      <span class="right"><span class="num">${price==null?'<span class="mut">—</span>':fmt(mv,3)}</span><br><span class="num ${cls}">${pnl==null?'<span class="mut">—</span>':sign(pnl)+'<br>'+pct(pnlPct)}</span></span>
+      <button class="act mini ghost" onclick="delPosition('${p.code}')">删</button>
+    </div>`;
+  });
+  summary.innerHTML = `持仓市值 <b>${fmt(totalMv,3)}</b> · 持仓成本 <b>${fmt(totalCost,3)}</b> · 浮动盈亏 <b class="${totalMv-totalCost>=0?'up':'down'}">${sign(totalMv-totalCost)} (${pct(totalCost? (totalMv-totalCost)/totalCost*100:0)})</b> · 现金 ${fmt(bookCash(),3)} · 总资产 ${fmt(totalMv+bookCash(),3)}`
+    + (missing? ` · <b class="down">${missing} 只缺报价</b>`:'');
+  $("holdList").innerHTML = `<div class="row" style="font-weight:700;border-bottom:1px solid var(--line)">
+    <span>名称 / 代码</span><span class="right">现价 / 数量</span><span class="right">市值 / 盈亏</span><span></span></div>`+rows.join("");
+  loadBenchmark();
+}
+async function loadBenchmark(){
+  const bench="000300";
+  try{
+    const v=await api("/v1/market/daily/"+bench);
+    const bars=(v.bars||[]).slice(-30);
+    if(bars.length<2){ $("benchRow").innerHTML='<span class="sm mut">基准（沪深300）日K未归档，无法比较</span>'; return; }
+    const a=Number(bars[0].close), b=Number(bars[bars.length-1].close);
+    const r=(b/a-1)*100; const cls=r>=0?"up":"down";
+    let extra="";
+    if(BOOK.history&&BOOK.history.length>=2){
+      const f=BOOK.history[0], l=BOOK.history[BOOK.history.length-1];
+      const pf=(Number(l.total)-Number(f.total))/(Number(f.total)-Number(f.externalFlow))*100;
+      extra=` · 组合同期 <b class="${pf>=r?'up':'down'}">${pct(pf)}</b> · 超额 <b class="${pf>=r?'up':'down'}">${sign(pf-r)}</b>`;
+    }
+    $("benchRow").innerHTML=`<span class="sm mut">基准 沪深300 近30日 <b class="${cls}">${pct(r)}</b>${extra}（组合历史不足2点时不计超额）</span>`;
+  }catch(e){ $("benchRow").innerHTML='<span class="sm mut">基准读取失败</span>'; }
+}
+function addPosition(){ const code=prompt("代码(6位)"); if(!code||!isSix(code.trim()))return; const name=prompt("名称")||code.trim(); const units=Number(prompt("数量(份)")||"0"); const cost=Number(prompt("账面总成本(元)")||"0"); BOOK.positions.push({code:code.trim(),name,units,bookCost:cost}); renderHold(); renderEditor(); renderAICode(); }
+function delPosition(code){ BOOK.positions=BOOK.positions.filter(p=>p.code!==code); renderHold(); renderEditor(); renderAICode(); }
+async function saveBook(){
+  try{
+    BOOK=normalizeBook();
+    const r=await api("/v1/real/books/main",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"manual-confirmed",expectedRevision:REVISION,bookJSON:JSON.stringify(BOOK)})});
+    REVISION=r.revision; const s=$("holdStatus"); s.className="status ok"; s.textContent="已保存到 NAS，修订 "+r.revision; renderEditor();
+  }catch(e){ const s=$("holdStatus"); s.className="status err"; s.textContent="保存失败："+(e.message.includes("409")?"修订冲突，请重读后再保存":e.message); }
+}
+
+// ---------- 图表 ----------
+function openChart(){
+  const sel=$("chartCode");
+  let code=sel?(sel.value||"").trim():"";
+  if(!code){ code=chartDefaultCode(); if(sel) sel.value=code; }   // 没选就自动取默认，不再弹"请输入代码"
+  if(!code){ toast("暂无可显示的标的"); return; }
+  CHART.code=code; CHART.name=labelOfOption(sel,code); loadChart();
+}
+function setKind(k){
+  if(k==="intraday" && !CHART.intradayAllowed){ toast("该标的无分时数据（仅日K）"); return; }
+  document.querySelectorAll('#chartKind .chip').forEach(x=>x.classList.toggle('on', x.dataset.k===k));
+  if(k==="intraday" && CHART.intradayAllowed){ loadIntraday().then(redrawChart); } else redrawChart();
+}
+function isDay(){ return $("chartKind").querySelector(".on").dataset.k==="day"; }
+function resetView(){ CHART.view=null; redrawChart(); }
+async function loadChart(){
+  const code=CHART.code; if(!code) return;
+  $("chartInfo").textContent="加载中…";
+  const six=isSix(code);
+  CHART.intradayAllowed=six;
+  CHART.view=null;
+  // 指数（非6位）只取日K，禁用分时
+  document.querySelectorAll('#chartKind .chip').forEach(x=>{ if(x.dataset.k==="intraday") x.classList.toggle('disabled', !six); });
+  try{
+    const barsUrl = six? "/v1/market/daily/"+code : "/v1/market/kline?symbol="+encodeURIComponent(code);
+    const [d, div, q] = await Promise.all([
+      api(barsUrl).catch(()=>({bars:[]})),
+      six? api("/v1/market/dividends/"+code).catch(()=>({events:[]})) : Promise.resolve({events:[]}),
+      six? api("/v1/market/quotes?codes="+code).catch(()=>({quotes:[]})) : Promise.resolve({quotes:[]})
+    ]);
+    CHART.bars=(d.bars||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
+    CHART.div = six? (div.events||[]).filter(e=>!e.isEstimated) : [];
+    const qq=(q.quotes||[])[0]; if(qq) { QUOTES[code]=qq; CHART.prevClose=Number(qq.previousClose); }
+    else CHART.prevClose=null;
+    if(!six && $("chartKind").querySelector(".on").dataset.k==="intraday") setKind("day");
+    if(isDay()) redrawChart();
+    else { if(six) await loadIntraday(); redrawChart(); }
+  }catch(e){ $("chartInfo").textContent="加载失败："+e.message; }
+}
+async function loadIntraday(){
+  const day=new Date().toISOString().slice(0,10);
+  try{ const v=await api("/v1/market/minute/"+CHART.code+"?day="+day); CHART.rows=v.rows||[]; }
+  catch(e){ CHART.rows=[]; }
+}
+function fwdAdj(bars, events){
+  const evs=events.map(e=>({date:e.date, amt:Number(e.amountPerShare)||0})).sort((a,b)=>a.date<b.date?-1:1);
+  return bars.map(b=>{
+    const later=evs.filter(e=>e.date>b.date).reduce((s,e)=>s+e.amt,0);
+    if(later<=0) return b;
+    const adj=v=>v==null?null:Math.max(0,Number(v)-later);
+    return {date:b.date,open:adj(b.open),high:adj(b.high),low:adj(b.low),close:Math.max(0,Number(b.close)-later)};
+  });
+}
+// ---------- 画布尺寸：按设备像素比渲染，避免高分屏被拉糊 ----------
+// 逻辑坐标固定宽 900；高度随容器宽度自适应（CSS 高度与逻辑高度严格等比，
+// 所以横纵缩放系数相同，文字不会变形）。之前固定 900x600 再被 CSS 拉伸，
+// 大屏/高 DPR 下就是「分辨率不够」的来源。
+let CVW=900, CVH=600;
+function fitCanvas(){
+  const cv=$("chartCanvas");
+  const host=cv.parentElement||document.body;
+  const cssW=Math.max(300, Math.round(cv.clientWidth||host.clientWidth||900));
+  const cssH=Math.max(420, Math.min(880, Math.round(cssW*0.62)));
+  const dpr=Math.max(1, Math.min(3, window.devicePixelRatio||1));
+  const pw=Math.round(cssW*dpr), ph=Math.round(cssH*dpr);
+  if(cv.width!==pw) cv.width=pw;
+  if(cv.height!==ph) cv.height=ph;
+  cv.style.height=cssH+"px";
+  CVW=900; CVH=Math.round(900*cssH/cssW);
+  const ctx=cv.getContext("2d");
+  ctx.setTransform(pw/CVW,0,0,ph/CVH,0,0);
+  ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,pw,ph); ctx.restore();
+}
+function redrawChart(){ fitCanvas(); if(isDay()) drawDaily(); else drawIntraday(); }
+function setLegend(html){ $("chartLegend").innerHTML=html; }
+function avg(a){ return a.length? a.reduce((s,x)=>s+x,0)/a.length : null; }
+function bookCostFor(code){ const p=BOOK&&BOOK.positions.find(p=>p.code===code); return p&&Number(p.units)? Number(p.bookCost)/Number(p.units):0; }
+
+function ema(arr, period){ const k=2/(period+1); const out=[]; let prev=arr[0]; out.push(prev); for(let i=1;i<arr.length;i++){ prev=arr[i]*k+prev*(1-k); out.push(prev); } return out; }
+function calcMACD(closeArr){ const e12=ema(closeArr,12), e26=ema(closeArr,26); const dif=closeArr.map((_,i)=> e12[i]-e26[i]); const dea=ema(dif,9); const hist=dif.map((v,i)=> v-dea[i]); return {dif,dea,hist}; }
+function drawMACD(ctx,W,L,R,xs,xe,macd,MT,MB){
+  let mx=0; for(let i=xs;i<=xe;i++){ const a=macd.hist[i],b=macd.dif[i]; if(a!=null&&isFinite(a))mx=Math.max(mx,Math.abs(a)); if(b!=null&&isFinite(b))mx=Math.max(mx,Math.abs(b)); }
+  if(mx<=0) mx=1;
+  const mid=(MT+MB)/2; const x=i=> L + (i-xs)/(xe-xs||1)*(R-L); const y=v=> mid - (v/mx)*((MB-MT)/2)*0.92;
+  ctx.strokeStyle="#e6e9e3"; ctx.beginPath();ctx.moveTo(L,mid);ctx.lineTo(R,mid);ctx.stroke();
+  const n=xe-xs+1; const bw=Math.max(1,(R-L)/n*0.6);
+  for(let i=xs;i<=xe;i++){ const v=macd.hist[i]; if(v==null||!isFinite(v))continue; const xx=x(i), y0=y(0), yv=y(v); ctx.fillStyle = v>=0? "#e63022":"#16a34a"; ctx.fillRect(xx-bw/2, Math.min(y0,yv), bw, Math.abs(yv-y0)||1); }
+  const ln=(arr,col,w)=>{ ctx.strokeStyle=col;ctx.lineWidth=w||1.2;ctx.beginPath(); for(let i=xs;i<=xe;i++){ const v=arr[i]; if(v==null||!isFinite(v))continue; const xx=x(i),yy=y(v); (i===xs||arr[i-1]==null||!isFinite(arr[i-1]))?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy);} ctx.stroke(); ctx.lineWidth=1; };
+  ln(macd.dif,"#111111",1.4);
+  ln(macd.dea,"#ff7a00",1.2);
+}
+
+function drawDaily(){
+  const cv=$("chartCanvas"); const ctx=cv.getContext("2d"); const W=CVW,H=CVH;
+  ctx.clearRect(0,0,W,H);
+  const all=CHART.bars||[];
+  if(all.length<2){ $("chartInfo").textContent="日K数据不足（需≥2根，可能尚未归档）"; setLegend(""); return; }
+  const src = $("adjChk").checked? fwdAdj(all, CHART.div||[]) : all;
+  let view=CHART.view;
+  let s=0, e=src.length-1;
+  if(view){ s=Math.max(0,view.s); e=Math.min(src.length-1,view.e); if(e-s<1) {s=0;e=src.length-1;} }
+  const bars=src.slice(s,e+1);
+  let lo=Infinity,hi=-Infinity;
+  bars.forEach(b=>{ const l=Math.min(Number(b.low),Number(b.high)),h=Math.max(Number(b.low),Number(b.high)); if(l<lo)lo=l; if(h>hi)hi=h; });
+  if(!isFinite(lo)||!isFinite(hi)){ $("chartInfo").textContent="日K数据异常"; return; }
+  const pad=(hi-lo)*0.08||hi*0.02; lo-=pad; hi+=pad;
+  const costP=bookCostFor(CHART.code);
+  const L=52, R=W-18, T=14;
+  const mB=H*0.550, vT=H*0.577, vB=H*0.683, MT=H*0.710, MB=H*0.943, labY=H*0.977;
+  const x=i=> L + (i-s)/(e-s||1)*(R-L);
+  const y=v=> mB - (v-lo)/(hi-lo)*(mB-T);
+  ctx.fillStyle="#6b756e"; ctx.font="11px sans-serif"; ctx.textAlign="right";
+  for(let g=0;g<=4;g++){ const v=lo+(hi-lo)*g/4; const yy=y(v); ctx.strokeStyle="#eef1ec"; ctx.beginPath();ctx.moveTo(L,yy);ctx.lineTo(R,yy);ctx.stroke(); ctx.fillText(fmt(v,2),L-6,yy+4); }
+  let ma5f=[],ma20f=[];
+  if($("maChk").checked){ for(let i=0;i<src.length;i++){ const w=src.slice(Math.max(0,i-4),i+1); ma5f.push(avg(w.map(b=>Number(b.close)))); const w2=src.slice(Math.max(0,i-19),i+1); ma20f.push(avg(w2.map(b=>Number(b.close)))); } }
+  const cw=Math.max(2,(R-L)/bars.length*0.62);
+  bars.forEach((b,i)=>{ const o=Number(b.open),c=Number(b.close),h=Number(b.high),l=Number(b.low); const up=c>=o; ctx.strokeStyle=ctx.fillStyle=up?"#e63022":"#16a34a"; const xx=x(s+i); ctx.beginPath();ctx.moveTo(xx,y(h));ctx.lineTo(xx,y(l));ctx.stroke(); ctx.fillRect(xx-cw/2,y(Math.max(o,c)),cw,y(Math.min(o,c))-y(Math.max(o,c))||1); });
+  // 价格线（黑，副图 DIF 同色对应）
+  ctx.strokeStyle="#111111"; ctx.lineWidth=1; ctx.beginPath(); bars.forEach((b,i)=>{ const xx=x(s+i),yy=y(Number(b.close)); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); }); ctx.stroke(); ctx.lineWidth=1;
+  const drawMA=(arr,col)=>{ ctx.strokeStyle=col;ctx.lineWidth=1.4;ctx.beginPath(); for(let i=s;i<=e;i++){ const v=arr[i]; if(v==null)continue; const xx=x(i),yy=y(v); (i===s||arr[i-1]==null)?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy); } ctx.stroke(); ctx.lineWidth=1; };
+  if($("maChk").checked){ drawMA(ma5f,"#ff7a00"); drawMA(ma20f,"#2563eb"); }
+  if(costP>0&&costP>=lo&&costP<=hi){ ctx.strokeStyle="#0d9488";ctx.setLineDash([5,4]);ctx.beginPath();ctx.moveTo(L,y(costP));ctx.lineTo(R,y(costP));ctx.stroke();ctx.setLineDash([]); }
+  // 成交量
+  const vols=bars.map(b=>Number(b.volume)||0); const vmax=Math.max(1,...vols);
+  bars.forEach((b,i)=>{ const xx=x(s+i); const w=Math.max(1,(R-L)/bars.length*0.6); const h=(vols[i]/vmax)*(vB-vT); const up=Number(b.close)>=Number(b.open); ctx.fillStyle=up?"rgba(230,48,34,.5)":"rgba(22,163,74,.5)"; ctx.fillRect(xx-w/2,vB-h,w,h); });
+  // MACD 副图
+  const macd=calcMACD(src.map(b=>Number(b.close)));
+  drawMACD(ctx,W,L,R,s,e,macd,MT,MB);
+  ctx.fillStyle="#6b756e";ctx.textAlign="center"; [s,Math.floor((s+e)/2),e].forEach(i=>ctx.fillText(src[i].date.slice(5),x(i),labY));
+  const last=Number(src[e].close); const chg=CHART.prevClose? (last/CHART.prevClose-1)*100 : (src.length>1?(last/Number(src[0].close)-1)*100:0);
+  $("chartInfo").textContent=`${CHART.name||CHART.code} · 全部 ${src.length} 根日K · 显示 ${bars.length} 根${$("adjChk").checked?" · 前复权":""}${costP>0?" · 成本线 "+fmt(costP,4):""} · 最新 ${fmt(last,2)} (${pct(chg)})`;
+  $("chartMeta").textContent="数据源：NAS 归档（腾讯前复权日K）。滚轮缩放、拖动平移、双指捏合；MACD 副图柱红涨绿跌，DIF 线与主图价格线同为黑色。";
+  setLegend('<span><i style="background:#e63022"></i>阳线</span> <span><i style="background:#16a34a"></i>阴线</span> <span><i style="background:#111"></i>价格线</span> <span><i style="background:#ff7a00"></i>MA5</span> <span><i style="background:#2563eb"></i>MA20</span> <span><i style="background:#e63022"></i>MACD柱(红涨绿跌)</span> <span><i style="background:#0d9488"></i>成本</span>');
+}
+
+function drawIntraday(){
+  const cv=$("chartCanvas"); const ctx=cv.getContext("2d"); const W=CVW,H=CVH;
+  ctx.clearRect(0,0,W,H);
+  const rows=CHART.rows||[];
+  if(rows.length<2){ $("chartInfo").textContent="今日分时尚未归档（需在 App 前台采集或等待 NAS 采集）"; setLegend(""); return; }
+  const px=rows.map(r=>Number(r.price)); let lo=Math.min(...px),hi=Math.max(...px);
+  const pad=(hi-lo)*0.1||hi*0.02; lo-=pad; hi+=pad;
+  const prev = CHART.prevClose && CHART.prevClose>0 ? CHART.prevClose : (lo+hi)/2;
+  // layout: 价格区 + 成交量区
+  const L=58, R=W-58, T=14, pB=H*0.550, vT=H*0.577, vB=H*0.683, MT=H*0.710, MB=H*0.943, tY=H*0.977;
+  const X=s=>{ const d=new Date(s.timestamp); const m=d.getHours()*60+d.getMinutes()+(d.getSeconds()/60); const t0=9.5*60, tn=15*60; const frac=(m-t0)/(tn-t0); return L+Math.max(0,Math.min(1,frac))*(R-L); };
+  const y=v=> pB - (v-lo)/(hi-lo)*(pB-T);
+  // 累计均价
+  let cumP=0,cumV=0; const avgV=rows.map(r=>{ const p=Number(r.price),v=Number(r.volume)||0; cumP+=p*(v||1); cumV+=(v||1); return cumP/cumV; });
+  // 左轴价格 / 右轴百分比（都画在绘图区外）
+  ctx.font="11px sans-serif";
+  for(let g=0;g<=4;g++){
+    const v=lo+(hi-lo)*g/4; const yy=y(v);
+    ctx.strokeStyle="#eef1ec"; ctx.beginPath();ctx.moveTo(L,yy);ctx.lineTo(R,yy);ctx.stroke();
+    ctx.fillStyle="#444"; ctx.textAlign="right"; ctx.fillText(fmt(v,3),L-6,yy+4);
+    const pc=(v-prev)/prev*100; ctx.fillStyle="#9aa3b2"; ctx.textAlign="left"; ctx.fillText((pc>0?"+":"")+fmt(pc,2)+"%",R+6,yy+4);
+  }
+  // 昨收虚线
+  if(prev>=lo&&prev<=hi){ ctx.strokeStyle="#9aa3b2"; ctx.setLineDash([5,4]); ctx.beginPath();ctx.moveTo(L,y(prev));ctx.lineTo(R,y(prev));ctx.stroke();ctx.setLineDash([]); ctx.fillStyle="#9aa3b2";ctx.textAlign="left";ctx.fillText("昨收",R+6,y(prev)+4); }
+  // 分时价格线（黑）
+  ctx.strokeStyle="#111111"; ctx.lineWidth=1.6; ctx.beginPath();
+  rows.forEach((r,i)=>{ const xx=X(r),yy=y(Number(r.price)); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); }); ctx.stroke(); ctx.lineWidth=1;
+  // 均价线（橙）
+  ctx.strokeStyle="#ff7a00"; ctx.lineWidth=1.4; ctx.beginPath();
+  rows.forEach((r,i)=>{ const xx=X(r),yy=y(avgV[i]); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); }); ctx.stroke(); ctx.lineWidth=1;
+  // IOPV 线（紫）
+  const iopv=rows.filter(r=>r.iopv!=null&&r.iopv!=="" );
+  if(iopv.length){ ctx.strokeStyle="#7c3aed"; ctx.lineWidth=1.2; ctx.beginPath();
+    rows.forEach((r,i)=>{ if(r.iopv==null||r.iopv==="")return; const xx=X(r),yy=y(Number(r.iopv)); (i===0||rows[i-1].iopv==null||rows[i-1].iopv==="")?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy); });
+    ctx.stroke(); ctx.lineWidth=1; }
+  // 成交量柱（价格区下方，按每分钟涨跌着色）
+  const vols=rows.map(r=>Number(r.volume)||0); const vmax=Math.max(1,...vols);
+  rows.forEach((r,i)=>{ if(i===0)return; const xx=X(r); const w=Math.max(1,(R-L)/rows.length*0.6); const h=(vols[i]/vmax)*(vB-vT); const up=Number(r.price)>=Number(rows[i-1].price); ctx.fillStyle=up?"rgba(230,48,34,.55)":"rgba(22,163,74,.55)"; ctx.fillRect(xx-w/2,vB-h,w,h); });
+  // MACD 副图（柱红涨绿跌，DIF 线与主图价格线同为黑色）
+  const macd=calcMACD(px);
+  drawMACD(ctx,W,L,R,0,rows.length-1,macd,MT,MB);
+  // 时间刻度
+  ctx.fillStyle="#6b756e"; ctx.textAlign="center";
+  [["09:30",L],["11:30",L+(R-L)*0.5],["15:00",R]].forEach(([t,xx])=>ctx.fillText(t,xx,tY));
+  const last=Number(rows[rows.length-1].price); const chg=prev? (last/prev-1)*100:0;
+  $("chartInfo").textContent=`${CHART.name||CHART.code} · 今日分时 ${rows.length} 点 · 现价 ${fmt(last,3)} (${pct(chg)})`;
+  $("chartMeta").textContent="分时来自 NAS 分钟档案，仅交易时段有数据；成交量按每分钟涨跌着色。分时图固定比例，不可缩放。";
+  setLegend('<span><i style="background:#111111"></i>价格</span> <span><i style="background:#ff7a00"></i>均价</span> <span><i style="background:#9aa3b2"></i>昨收</span>'+(iopv.length?' <span><i style="background:#7c3aed"></i>IOPV</span>':'')+' <span><i style="background:#e63022"></i>MACD柱(红涨绿跌)</span> <span class="mut">左轴价格·右轴涨跌幅</span>');
+}
+
+function openIndex(symbol,name){ CHART.code=symbol; CHART.name=name; ensureChartOption(symbol,name); $("chartCode").value=symbol; document.querySelector('#nav button[data-tab="chart"]').click(); setKind("day"); loadChart(); }
+
+// ---------- 缩放/平移（仅日K；分时固定） ----------
+(function(){
+  const cv=$("chartCanvas");
+  let drag=null;
+  cv.addEventListener('wheel', e=>{ if(!isDay()) return; e.preventDefault();
+    const all=CHART.bars||[]; if(all.length<3) return;
+    if(!CHART.view) CHART.view={s:0,e:all.length-1};
+    let span=CHART.view.e-CHART.view.s; if(span<1) span=all.length-1;
+    const factor=e.deltaY>0?1.15:0.86; let nspan=Math.max(5,Math.round(span*factor));
+    const rect=cv.getBoundingClientRect(); const cx=(e.clientX-rect.left)/rect.width*CVW;
+    const L=52,R=CVW-18; const frac=Math.max(0,Math.min(1,(cx-L)/(R-L)));
+    const center=Math.round(CHART.view.s+frac*span);
+    let ns=center-Math.floor(nspan/2), ne=ns+nspan-1;
+    if(ns<0){ne-=ns;ns=0;} if(ne>all.length-1){ns-=(ne-(all.length-1));ne=all.length-1;} if(ns<0)ns=0;
+    CHART.view={s:ns,e:ne}; redrawChart();
+  }, {passive:false});
+  cv.addEventListener('mousedown', e=>{ if(!isDay())return; drag={x:e.clientX,view:{...CHART.view}}; });
+  window.addEventListener('mousemove', e=>{ if(!drag||!isDay())return; const all=CHART.bars||[]; if(!all.length)return; const span=(drag.view&&drag.view.e!=null)?(drag.view.e-drag.view.s):all.length-1; const rect=cv.getBoundingClientRect(); const dxpx=e.clientX-drag.x; const dxidx=Math.round(dxpx/rect.width*(RorL())); let ns=drag.view.s+dxidx, ne=drag.view.e+dxidx; if(ns<0){ne-=ns;ns=0;} if(ne>all.length-1){ns-=(ne-(all.length-1));ne=all.length-1;} if(ns<0)ns=0; CHART.view={s:ns,e:ne}; redrawChart(); });
+  window.addEventListener('mouseup', ()=>drag=null);
+  // 触摸：单指平移 + 双指捏合
+  let touch=null;
+  cv.addEventListener('touchstart', e=>{ if(!isDay())return; if(e.touches.length===1) touch={mode:'pan',x:e.touches[0].clientX,view:{...CHART.view}}; else if(e.touches.length===2){ const a=e.touches[0],b=e.touches[1]; touch={mode:'pinch',dist:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),view:{...CHART.view}}; } }, {passive:true});
+  cv.addEventListener('touchmove', e=>{ if(!isDay()||!touch)return; const all=CHART.bars||[]; if(!all.length)return;
+    if(touch.mode==='pan'&&e.touches.length===1){ const rect=cv.getBoundingClientRect(); const dxpx=e.touches[0].clientX-touch.x; const dxidx=Math.round(dxpx/rect.width*all.length/3); let ns=touch.view.s+dxidx, ne=touch.view.e+dxidx; if(ns<0){ne-=ns;ns=0;} if(ne>all.length-1){ns-=(ne-(all.length-1));ne=all.length-1;} if(ns<0)ns=0; CHART.view={s:ns,e:ne}; redrawChart(); }
+    else if(touch.mode==='pinch'&&e.touches.length===2){ const a=e.touches[0],b=e.touches[1]; const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY); const all2=CHART.bars||[]; if(!CHART.view) CHART.view={s:0,e:all2.length-1}; let span=(touch.view.e-touch.view.s)||(all2.length-1); let nspan=Math.max(5,Math.round(span*(touch.dist/d))); const center=Math.round((touch.view.s+touch.view.e)/2); let ns=center-Math.floor(nspan/2), ne=ns+nspan-1; if(ns<0){ne-=ns;ns=0;} if(ne>all2.length-1){ns-=(ne-(all2.length-1));ne=all2.length-1;} if(ns<0)ns=0; CHART.view={s:ns,e:ne}; redrawChart(); }
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener('touchend', ()=>touch=null);
+  window.addEventListener('resize', ()=>{ if(CHART.code) redrawChart(); });
+  function RorL(){ return (CHART.bars||[]).length; } // 平移灵敏度用全长估算
+})();
+
+// ---------- 分红（除息日可折叠） ----------
+async function loadDividends(){
+  const code=$("divCode").value.trim(); if(!isSix(code)){toast("请输入6位代码");return;}
+  const body=$("divBody"); body.className="sm mut"; body.textContent="查询中…";
+  try{
+    const [q,v]=await Promise.all([api("/v1/market/quotes?codes="+code).catch(()=>({quotes:[]})), api("/v1/market/dividends/"+code).catch(()=>({events:[]}))]);
+    const quote=(q.quotes||[])[0]; const price=quote?Number(quote.price):0;
+    const events=(v.events||[]).slice().sort((a,b)=>a.date<b.date?1:-1);
+    if(!events.length){ body.textContent="暂无派息记录。"; return; }
+    const recent=events.filter(e=>!e.isEstimated).slice(0,2).reduce((s,e)=>s+Number(e.amountPerShare),0);
+    const yieldP = price&&recent? recent/price*100:0;
+    const table=`<table style="margin-top:4px"><tr><th>除息日</th><th>每股(元)</th><th>类型</th></tr>${events.slice(0,12).map(e=>`<tr><td>${e.date}</td><td>${fmt(Number(e.amountPerShare),4)}</td><td class="mut">${e.isEstimated?"估算":"实际"}</td></tr>`).join("")}</table>`;
+    body.className="";
+    body.innerHTML=`<div class="row"><span>现价</span><span class="num">${fmt(price,4)}</span></div>
+      <div class="row"><span>近12月每股派息</span><span class="num">${fmt(recent,4)}</span></div>
+      <div class="row"><span><b>股息率(近12月)</b></span><span class="num ${yieldP>=3?'up':'mut'}">${pct(yieldP)}</span></div>
+      <details class="exlist"><summary>除息日明细（共 ${events.length} 条，点击展开/收起）</summary><div class="body">${table}</div></details>`;
+  }catch(e){ body.className="sm mut"; body.textContent="查询失败："+e.message; }
+}
+
+// ---------- NAS长期研究档案 ----------
+// 真实连通性验证：让 NAS 用配置好的 key 发一条最小请求，不携带任何持仓数据。
+async function loadResearch(){
+  const code=$("aiCode").value.trim(); if(!isSix(code)){toast("请输入6位代码");return;}
+  const body=$("aiBody"); body.className="sm mut"; body.textContent="读取缓存…";
+  try{
+    const v=await api("/v1/research/"+code);
+    const f=v.factors||{};
+    body.className="";
+    body.innerHTML=`<div class="status ok">NAS研究档案已读取；在线最终指导由手机 AI 生成。</div>
+      <div class="row"><span>名称 / 类型</span><span class="right">${f.name||'–'} ${f.instrumentType?'· '+f.instrumentType:''}</span></div>
+      <div class="row"><span>近一年股息率</span><span class="num">${f.dividendYield!=null?pct(Number(f.dividendYield)):'–'}</span></div>
+      <div class="row"><span>规模(亿元)/年化波动</span><span class="right">${f.scale!=null?fmt(Number(f.scale)):'–'} / ${f.volatility!=null?pct(Number(f.volatility)):'–'}</span></div>
+      <div class="row"><span>溢价率</span><span class="num">${f.premium!=null?pct(Number(f.premium)):'–'}</span></div>
+      <div class="sm mut" style="margin-top:8px">以上因子和分时统计作为手机端统一指导的研究证据；NAS不单独生成交易结论。</div>`;
+    renderMinuteStats(v.minuteStats);
+  }catch(e){ body.className="sm mut"; body.textContent="读取失败："+e.message;
+    $("minuteStats").className="sm mut"; $("minuteStats").textContent="长期分时统计读取失败："+e.message; }
+}
+
+/* ---------- 长期分时统计（NAS research.minute_stats 的原文渲染） ---------- */
+function renderMinuteStats(s){
+  const box=$("minuteStats"); box.className="";
+  if(!s||!s.days){ box.innerHTML='<div class="status err">NAS 上还没有这只标的的分时归档：长期结论不可用（不编造、不外推）</div>'; return; }
+  const q=s.quality||{}, f=s.freshness||{};
+  const windows=Object.entries(s.windows||{}).sort((a,b)=>Number(a[0])-Number(b[0]));
+  const rows=windows.map(([key,w])=>`<tr>
+      <td>${key} 日</td>
+      <td class="num">${w.daysUsed||0}/${w.expectedDays||key}</td>
+      <td class="num">${w.vwap||'–'}</td>
+      <td class="num ${(w.closeVsVwapPercent||0)>=0?'up':'down'}">${w.closeVsVwapPercent==null?'–':pct(w.closeVsVwapPercent)}</td>
+      <td class="num">${w.amplitudeMedianPercent==null?'–':fmt(w.amplitudeMedianPercent,2)+'%'}</td>
+      <td class="num">${w.roundTripsMedian==null?'–':fmt(w.roundTripsMedian,1)}</td>
+      <td class="num">${w.supportP10||w.support||'–'} – ${w.resistanceP90||w.resistance||'–'}</td>
+      <td class="num">${w.volatilityPercent==null?'–':fmt(w.volatilityPercent,2)+'%'}</td>
+      <td class="num">${Math.round((w.minuteCoverage||0)*100)}%</td>
+    </tr>`).join("");
+  box.innerHTML=`<div class="row"><span>归档</span><span class="right">${s.days} 天 · ${s.minutes} 分钟${q.enoughForLongTerm?'':' <span class="mut">（不足以支撑长期结论）</span>'}</span></div>
+    <div class="row"><span>分钟完整度</span><span class="num">${Math.round((q.minuteCoverage||0)*100)}%</span></div>
+    <div class="row"><span>新鲜度</span><span class="right">${f.lastDay||'–'} ${f.stale?'<span class="mut">· 已过期</span>':'· 新鲜'}${f.ageMinutes!=null?' · '+Math.round(f.ageMinutes)+' 分钟前':''}</span></div>
+    <div class="sm mut" style="margin-top:4px">成交量统计：${q.hasVolume?'有（VWAP 按成交量加权）':'无（VWAP 退化为时间等权，已标注）'}</div>
+    <table style="margin-top:6px"><tr><th>窗口</th><th>天数</th><th>VWAP</th><th>偏离</th><th>振幅中位</th><th>往返</th><th>支撑–压力(p10/p90)</th><th>波动率</th><th>覆盖</th></tr>${rows}</table>
+    <div class="sm mut" style="margin-top:4px">读法：偏离为正表示现价高于该窗口成交量加权均价；往返次数是价格穿越当日中位价的次数，代表日内可做T的次数；波动率是日收益标准差，不是年化。</div>`;
+}
+
+/* ---------- 新闻 → 持仓 → 计划 ---------- */
+const NEWS_MAJOR=["停牌","退市","立案","调查","处罚","清盘","清算","违约","暴雷","暴跌","跌停","涨停","重组","合并","收购","拆分","终止","风险警示","重大事项"];
+const NEWS_WATCH=["减持","增持","回购","分红","派息","调仓","费率","溢价","折价","规模","份额","跟踪","指数调整","流动性","公告","业绩","净值"];
+function newsLevel(title){
+  const t=String(title||"").toUpperCase();
+  const major=NEWS_MAJOR.filter(w=>t.includes(w.toUpperCase()));
+  if(major.length) return {level:"重大",tone:"var(--terra)",words:major};
+  const watch=NEWS_WATCH.filter(w=>t.includes(w.toUpperCase()));
+  if(watch.length) return {level:"关注",tone:"var(--gold)",words:watch};
+  return {level:"中性",tone:"var(--mut)",words:[]};
+}
+async function loadNews(){
+  const code=$("aiCode").value.trim(); if(!isSix(code)){toast("请输入6位代码");return;}
+  const box=$("newsBody"); box.className="sm mut"; box.textContent="正在向 NAS 取标题…";
+  try{
+    const v=await api("/v1/news/"+code);
+    const items=(v.items||[]);
+    if(!items.length){ box.className=""; box.innerHTML=`<div class="status err">新闻源没有返回标题（${v.state||'unavailable'}）：本次计划判断不含新闻因素。</div>`; return; }
+    const major=items.filter(i=>newsLevel(i.title).level==="重大").length;
+    box.className="";
+    box.innerHTML=`<div class="status ${major?'err':'ok'}">${items.length} 条标题，其中重大 ${major} 条${v.cached?' · 15 分钟内缓存':''}</div>
+      ${items.slice(0,8).map(i=>{const lv=newsLevel(i.title);return `<div style="padding:4px 0;border-bottom:1px dashed var(--line)">
+        <div style="font-size:12px">${escapeHtml(i.title)}</div>
+        <div class="sm mut"><span style="color:${lv.tone}">${lv.level}</span>${lv.words.length?' · 命中 '+escapeHtml(lv.words.join('/')):''}${i.source?' · '+escapeHtml(i.source):''}${i.publishedAt?' · '+escapeHtml(i.publishedAt):''}</div>
+      </div>`;}).join("")}
+      <div class="sm mut" style="margin-top:6px">重大事件未经人工确认前，手机端会收回原做T/网格计划；这里只做标题级提示，不读正文、不下单。</div>`;
+  }catch(e){ box.className=""; box.innerHTML='<div class="status err">新闻不可用：'+escapeHtml(e.message)+'</div>'; }
+}
+/* ---------- AI 结果排版 ----------
+   服务端 prompt 已固定输出「结论 / 置信度 / 证据 / 风险 / 等待条件 / 失效条件 / 后续跟踪」六节，
+   这里按小节渲染成卡片，和手机端 AIAnswerView 的解析保持一致；
+   万一模型没按格式来（解析不到小节），退回整段原文，不至于变得不可读。 */
+const AI_SECTIONS=[["结论","结论"],["证据","证据"],["事实依据","证据"],["推断","推断"],
+  ["风险","风险"],["等待条件","等待条件"],["等待","等待条件"],["观察","等待条件"],
+  ["失效条件","失效条件"],["后续跟踪","后续跟踪"],["跟踪","后续跟踪"]];
+function aiConfidence(text){
+  const at=String(text||"").indexOf("置信度"); if(at<0) return null;
+  const tail=String(text).slice(at, at+12);
+  if(tail.includes("高")) return "高"; if(tail.includes("中")) return "中"; if(tail.includes("低")) return "低"; return null;
+}
+function aiSections(text){
+  const out=[]; let cur=null, buf=[];
+  const flush=()=>{ if(cur){ const b=buf.join("\n").trim(); if(b) out.push({title:cur, body:b}); } cur=null; buf=[]; };
+  String(text||"").split("\n").forEach(raw=>{
+    const probe=raw.trim().replace(/^[\s*#>•\-\d.、]+/,"");
+    const hit=AI_SECTIONS.find(([m])=>probe.startsWith(m));
+    if(hit){ flush(); cur=hit[1]; const rest=probe.slice(hit[0].length).trim().replace(/^[:：]\s*/,""); if(rest) buf.push(rest); }
+    else if(cur) buf.push(raw.trim());
+  });
+  flush(); return out;
+}
+function aiHtml(text){
+  const secs=aiSections(text);
+  if(!secs.length) return `<div style="white-space:pre-wrap;font-size:12px;line-height:1.7;background:#f4f5f1;padding:10px;border-radius:8px">${escapeHtml(text||"")}</div>`;
+  const conf=aiConfidence(text);
+  let h="";
+  if(conf){
+    const color = conf==="高" ? "#315d58" : conf==="中" ? "#b46b58" : "#c24e58";
+    h+=`<div style="margin-top:8px"><span style="display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:999px;background:${color}22;color:${color}">置信度 ${conf}</span></div>`;
+  }
+  secs.forEach(sec=>{
+    const caution = sec.title==="风险"||sec.title==="失效条件";
+    const accent = caution ? "#c24e58" : "#315d58";
+    const lines = sec.body.split("\n").map(l=>l.trim()).filter(Boolean);
+    h+=`<div style="margin-top:8px;border-left:3px solid ${accent};padding:7px 11px;background:#f7f8f5;border-radius:0 8px 8px 0">`
+      +`<div style="font-size:11px;font-weight:600;color:${accent};letter-spacing:.3px">${escapeHtml(sec.title)}</div>`
+      +`<div style="margin-top:4px;font-size:12px;line-height:1.75;color:#252a3b">`;
+    lines.forEach(l=>{
+      const bullet=/^[·•\-\*]\s?/.test(l);
+      const txt=escapeHtml(l.replace(/^[·•\-\*]\s?/,""));
+      h += bullet
+        ? `<div style="display:flex;gap:6px"><span style="color:#94a3b8">·</span><span style="flex:1">${txt}</span></div>`
+        : `<div>${txt}</div>`;
+    });
+    h+=`</div></div>`;
+  });
+  return h;
+}
+function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+// ---------- 提醒 ----------
+function getAlerts(){ if(!ALERTS.length) ALERTS=JSON.parse(localStorage.getItem("gp_alerts")||"[]"); return ALERTS; }
+function setAlerts(){ localStorage.setItem("gp_alerts", JSON.stringify(ALERTS)); renderAlerts(); }
+function addAlert(){ const code=$("aCode").value.trim(); if(!isSix(code)){toast("请输入6位代码");return;}
+  const metric=$("aMetric").value, dir=$("aDir").value, val=Number($("aVal").value); if(isNaN(val)){toast("阈值无效");return;}
+  ALERTS.push({id:Date.now(),code,metric,dir,val}); setAlerts(); $("aCode").value="";$("aVal").value=""; }
+function metricVal(q,metric){ if(metric==="price") return q?Number(q.price):null; if(metric==="changePercent") return q&&q.previousClose? (Number(q.price)/Number(q.previousClose)-1)*100 : null; if(metric==="premiumPercent"){ if(!q||!q.iopv) return null; return (Number(q.price)/Number(q.iopv)-1)*100; } return null; }
+function metricLabel(m){ return m==="price"?"价格":m==="changePercent"?"涨跌幅":"溢折价"; }
+function renderAlerts(){
+  const list=$("alertList"); if(!list) return;
+  const alerts=getAlerts();
+  if(!alerts.length){ list.innerHTML='<span class="sm mut">还没有提醒规则。</span>'; return; }
+  list.innerHTML = alerts.map(a=>{
+    const q=QUOTES[a.code]; const cur=metricVal(q,a.metric);
+    const hit = cur!=null && (a.dir==="atOrAbove"? cur>=a.val : cur<=a.val);
+    const curTxt = cur==null? "无行情" : (a.metric==="price"? fmt(cur,4): fmt(cur,2)+"%");
+    return `<div class="row" style="${hit?'background:#fbe8e3;border-radius:8px':''}">
+      <span><span class="name">${a.code}</span> <span class="sm mut">${metricLabel(a.metric)} ${a.dir==="atOrAbove"?"≥":"≤"} ${a.metric==="price"?fmt(a.val,4):fmt(a.val,2)+(a.metric==="price"?"":"%")}</span></span>
+      <span class="right"><span class="num ${hit?'up':''}">${curTxt}</span>${hit?' <span class="tag" style="background:var(--terra)">触发</span>':''}</span>
+      <button class="act mini ghost" onclick="delAlert(${a.id})">删</button>
+    </div>`;
+  }).join("");
+}
+function delAlert(id){ ALERTS=ALERTS.filter(a=>a.id!==id); setAlerts(); }
+
+// ---------- 数据 ----------
+function renderEditor(){ if($("bookEditor")) $("bookEditor").value=JSON.stringify(BOOK,null,2); }
+async function saveBookFromEditor(){
+  if(!$("editConfirm").checked){ toast("请先勾选确认"); return; }
+  try{ JSON.parse($("bookEditor").value); }catch(e){ toast("JSON 格式错误"); return; }
+  try{
+    const r=await api("/v1/real/books/main",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"manual-confirmed",expectedRevision:REVISION,bookJSON:$("bookEditor").value})});
+    REVISION=r.revision; const s=$("dataStatus"); s.className="status ok"; s.textContent="已保存，修订 "+r.revision;
+    BOOK=JSON.parse($("bookEditor").value); renderHold(); renderAICode();
+  }catch(e){ const s=$("dataStatus"); s.className="status err"; s.textContent="保存失败："+(e.message.includes("409")?"修订冲突，请重读":"")+e.message; }
+}
+function downloadBook(){ if(!BOOK) return; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(BOOK,null,2)],{type:"application/json"})); a.download="guanpan-advisor-book-r"+REVISION+".json"; a.click(); URL.revokeObjectURL(a.href); }
+
+// ---------- 启动 ----------
+getWatch(); renderWatchChips(); getAlerts(); renderTradeCode();
+loadIndices(); loadQuotes(getWatch()); loadWorth();
+setInterval(()=>{ loadIndices(); if($("watch").classList.contains("on")) loadQuotes(getWatch()); renderAlerts(); }, 30000);
+</script>
+</body></html>
