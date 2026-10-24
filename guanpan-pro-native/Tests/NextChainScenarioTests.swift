@@ -149,6 +149,32 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertFalse(guidance.dataState.contains("离线"))
     }
 
+    func testFutureDatedMarketSamplesCannotChangeStateOrTradePrices() throws {
+        let closes = oscillatingCloses()
+        let intraday = minutes((0..<60).map { [1.386, 1.412, 1.387, 1.413, 1.388, 1.414][$0 % 6] })
+        let q = quote(price: 1.400)
+        let researchData = [code: research()]
+        let baseline = try XCTUnwrap(scan(book(), quote: q, daily: bars(closes), intraday: intraday,
+                                          research: researchData).items.first)
+        let future = NextChartSample(timestamp: now.addingTimeInterval(86_400), open: 5, high: 5, low: 5,
+                                     close: 5, iopv: nil, volume: 10_000_000)
+        let polluted = try XCTUnwrap(scan(book(), quote: q, daily: bars(closes) + [future],
+                                          intraday: intraday + [future], research: researchData).items.first)
+
+        XCTAssertEqual(polluted.state, baseline.state)
+        XCTAssertEqual(polluted.strategy, baseline.strategy)
+        XCTAssertEqual(polluted.confidence.dailyBarCount, baseline.confidence.dailyBarCount)
+        XCTAssertEqual(polluted.confidence.minuteSampleCount, baseline.confidence.minuteSampleCount)
+        guard case let .ready(expected) = try XCTUnwrap(baseline.tPlan),
+              case let .ready(actual) = try XCTUnwrap(polluted.tPlan) else {
+            return XCTFail("未来数据不能让既有的可靠计划变成缺失或改变策略")
+        }
+        XCTAssertEqual(actual.buyPrice, expected.buyPrice)
+        XCTAssertEqual(actual.sellPrice, expected.sellPrice)
+        XCTAssertEqual(actual.units, expected.units)
+        XCTAssertEqual(actual.netGain, expected.netGain)
+    }
+
     // MARK: - C 多日区间：网格档数由波动率与区间推导，不是固定 4 档
 
     func testScenarioC_GridTiersComeFromVolatilityNotAFixedFour() {

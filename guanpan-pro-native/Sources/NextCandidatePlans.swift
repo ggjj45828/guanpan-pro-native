@@ -215,8 +215,9 @@ enum NextOpportunityScanner {
 
         for position in book.positions where position.units > 0 {
             let quote = quotes[position.code]
-            let bars = daily[position.code] ?? []
-            let minutes = intraday[position.code] ?? []
+            // A provider's future-dated bar must not affect strategy selection, confidence, or plans.
+            let bars = (daily[position.code] ?? []).filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
+            let minutes = (intraday[position.code] ?? []).filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
             let reading = NextMarketStateEngine.classify(daily: bars, intraday: minutes, quote: quote, now: now)
             let gridCheck = NextGridCheckEngine.evaluate(code: position.code, name: position.name, samples: bars,
                                                          isOnExchange: NextDividendRules.isOnExchangeETF(position.code))
