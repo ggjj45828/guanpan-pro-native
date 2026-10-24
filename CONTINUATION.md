@@ -116,3 +116,6 @@
 - 修复 `be2e8b2` 已推送，触发 IPA 构建和 iOS 验证。首轮新构建进一步发现 `AIChatScreen` 状态摘要的 SwiftUI 类型检查复杂、`GPPalette` 阴影属性名引用错误；已在本地拆分字符串计算并改用 `cardShadowOpacity/cardShadowRadius`。需要提交并推送后重跑两条工作流。
 - 本轮本地回归复核：NAS research 12/12、旧服务 84/84、NAS同步 58/58、IPA校验 4/4；总计158项通过。旧服务和NAS同步回环HTTP测试需在放行本机随机端口后才可运行，已通过。
 - 当前 Actions 状态：`Validate iOS candidate`（run 40080847268）运行中；`Build iOS IPA`（run 40080847316）因上述两处Swift错误失败，尚未生成IPA。修复后继续推送和重跑。
+
+- 最新macOS编译已成功，确认NASService闭合、AI持仓聊天状态摘要、主题卡片阴影引用均可编译。IPA在打包校验阶段失败：脚本 `cd` 到临时IPA目录后仍以相对路径访问校验器；工作流已改为 `$GITHUB_WORKSPACE/$PROJECT_DIR/scripts/verify_ipa.py`，需推送后重跑。
+- 最新 Actions（2150bd0）：IPA run 40081298511 构建通过、打包路径失败；模拟器 run 40081298499 正在执行完整UI测试。继续等其结果和截图附件。

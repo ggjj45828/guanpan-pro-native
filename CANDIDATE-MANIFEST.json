@@ -9,8 +9,8 @@
     },
     {
       "path": ".github/workflows/build-ios.yml",
-      "size": 2397,
-      "sha256": "801780b194e3be9a2dba645f8e72b27759616416d765895560d8e5c71394faa1"
+      "size": 2415,
+      "sha256": "3221997eae3eaf211559a279351b246043423c27477749bbd4f54be000a87693"
     },
     {
       "path": ".github/workflows/validate-foundation.yml",
@@ -34,8 +34,8 @@
     },
     {
       "path": "CONTINUATION.md",
-      "size": 18965,
-      "sha256": "aa3fe696a0c5da94703f16100f8f890d0bc1caf3efcd7dadf58b50d7a4fa38b5"
+      "size": 19471,
+      "sha256": "ee3a12e351e8bef0b0516d48d008c58c2864a17e50078a7ae018c0bb5bb71286"
     },
     {
       "path": "CURRENT-HANDOFF-r2.md",
@@ -49,8 +49,8 @@
     },
     {
       "path": "Master Acceptance Matrix.md",
-      "size": 46168,
-      "sha256": "035bfafe0715f590a56bde202eed1b21a20926b3fc620e469d7345d3997e78bd"
+      "size": 46153,
+      "sha256": "aafb25bd839a7813b6c959d095284687ad7b693e5e4261c0b5db8bfbc7abd06d"
     },
     {
       "path": "README-GitHub构建.md",
