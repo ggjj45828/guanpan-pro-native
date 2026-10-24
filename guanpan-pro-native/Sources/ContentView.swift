@@ -7014,7 +7014,6 @@ enum SettingsViewMode {
 struct SettingsView: View {
     let mode: SettingsViewMode
     @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     @AppStorage(ThemeManager.storageKey) private var visualThemeRaw = VisualTheme.scene.rawValue
@@ -7154,7 +7153,6 @@ struct SettingsView: View {
         }
         .navigationTitle(mode == .sync ? "数据与同步" : mode == .app ? "应用设置" : "设置")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         .keyboardDoneToolbar()
         .scrollContentBackground(.hidden)
         .listStyle(.plain)

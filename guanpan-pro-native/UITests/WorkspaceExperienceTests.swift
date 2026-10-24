@@ -57,15 +57,15 @@ final class WorkspaceExperienceTests: XCTestCase {
         XCTAssertTrue(appSettings.waitForExistence(timeout: 10))
         appSettings.tap()
         XCTAssertTrue(app.navigationBars["应用设置"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["App 主题"].waitForExistence(timeout: 10))
-        app.navigationBars["应用设置"].buttons["完成"].tap()
+        XCTAssertTrue(app.buttons["视觉主题"].waitForExistence(timeout: 10))
+        app.navigationBars["应用设置"].buttons["我的"].tap()
         XCTAssertTrue(app.navigationBars["我的"].waitForExistence(timeout: 10))
 
         let dataSync = app.buttons["more.data-sync"]
         XCTAssertTrue(dataSync.waitForExistence(timeout: 10))
         dataSync.tap()
         XCTAssertTrue(app.navigationBars["数据与同步"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.staticTexts["App 主题"].exists)
+        XCTAssertFalse(app.buttons["视觉主题"].exists)
         app.terminate()
     }
 }
