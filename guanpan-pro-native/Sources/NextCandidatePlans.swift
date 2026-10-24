@@ -322,7 +322,21 @@ enum NextPortfolioRiskGuard {
         return .notWorthwhile([reason])
     }
 
+    static func currentPlanQuoteBlock(for plan: NextCandidatePlan, quote: NextQuote?, now: Date) -> String? {
+        guard let quote, quote.code == plan.code, quote.isFreshForPricePlan(at: now) else {
+            return "当前行情缺失、过期或来源时间不可核验，请刷新行情后重新保存计划"
+        }
+        if let cancelAbove = plan.cancelAbove, quote.price > cancelAbove {
+            return "现价已越过候选计划上方失效线 ¥\(NextMoney.text(cancelAbove, digits: 3))，请重新分析"
+        }
+        if let cancelBelow = plan.cancelBelow, quote.price < cancelBelow {
+            return "现价已越过候选计划下方失效线 ¥\(NextMoney.text(cancelBelow, digits: 3))，请重新分析"
+        }
+        return nil
+    }
+
     static func candidateSaveBlock(for item: NextGuidanceItem, guidanceGeneratedAt: Date?,
+                                   guidanceLedgerFingerprint: String?, currentLedgerFingerprint: String?,
                                    quote: NextQuote?, now: Date) -> String? {
         guard item.isActionable else {
             let reason = ([item.portfolioNote].compactMap { $0 } + item.riskNotes).first
@@ -331,6 +345,10 @@ enum NextPortfolioRiskGuard {
         guard let guidanceGeneratedAt, guidanceGeneratedAt <= now,
               now.timeIntervalSince(guidanceGeneratedAt) <= 120 else {
             return "今日指导已过期或缺少生成时间，请刷新整个持仓决策后再保存"
+        }
+        guard let guidanceLedgerFingerprint, let currentLedgerFingerprint,
+              guidanceLedgerFingerprint == currentLedgerFingerprint else {
+            return "真实持仓、现金或成交流水在生成指导后已变化；请刷新指导，不能保存旧账户状态下的计划"
         }
 
         let expiry: Date

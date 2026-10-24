@@ -25,6 +25,7 @@ import Combine
     @Published var nasNews: [String: [NextNewsInput]] = [:] { didSet { reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
     @Published var newsStatus: [String: String] = [:] { didSet {  } }
     @Published var dailyGuidance: NextDailyGuidance? { didSet {  } }
+    private var dailyGuidanceLedgerFingerprint: String?
     @Published var guidanceStatus = "尚未生成今日指导" { didSet {  } }
     @Published var unifiedAIAdvice: String? { didSet {  } }
     @Published var unifiedAIStatus: String? { didSet {  } }
@@ -423,6 +424,7 @@ import Combine
     func refreshGuidance() async {
         guard !book.positions.isEmpty else {
             dailyGuidance = nil
+            dailyGuidanceLedgerFingerprint = nil
             guidanceStatus = "还没有真实持仓：先录入持仓，AI 才能给出基于真实账户的建议"
             return
         }
@@ -450,6 +452,7 @@ import Combine
         guidanceStatus = "正在扫描全部持仓…"
         let guidance = buildGuidance(now: Date())
         dailyGuidance = guidance
+        dailyGuidanceLedgerFingerprint = book.syncFingerprint
         guidanceStatus = guidance.summary
         updateDecisionMemory(with: guidance, now: Date())
         evaluateCandidatePlans()
@@ -539,7 +542,10 @@ import Combine
     func saveCandidatePlan(from item: NextGuidanceItem) throws {
         let now = Date()
         if let block = NextPortfolioRiskGuard.candidateSaveBlock(for: item,
-            guidanceGeneratedAt: dailyGuidance?.generatedAt, quote: quotes[item.code]?.quote, now: now) {
+            guidanceGeneratedAt: dailyGuidance?.generatedAt,
+            guidanceLedgerFingerprint: dailyGuidanceLedgerFingerprint,
+            currentLedgerFingerprint: book.syncFingerprint,
+            quote: quotes[item.code]?.quote, now: now) {
             throw NextError.invalid(block)
         }
         var plan: NextCandidatePlan
@@ -581,6 +587,17 @@ import Combine
         }
         plan.decisionMemoryID = NextDecisionMemory.matchingRecordID(for: plan, records: decisionMemory)
         try plan.validate()
+        if let block = NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan, quote: quotes[plan.code]?.quote, now: now) {
+            throw NextError.invalid(block)
+        }
+        if let reason = NextCandidatePlanNewsGuard.invalidationReason(
+            for: plan, headlines: nasNews[plan.code] ?? [], now: now) {
+            throw NextError.invalid("最新相关新闻已使计划失效：\(reason)")
+        }
+        if let reason = NextCrossMarketRiskGuard.blockingReason(
+            evidence: nasResearch[plan.code]?.crossMarket, now: now) {
+            throw NextError.invalid("最新跨市场风险观察已暂停原计划：\(reason)")
+        }
         candidatePlans.insert(plan, at: 0)
         linkSuggestionToPlan(plan)
         notice = "候选计划已保存：只是价格建议，未成交前不影响持仓与现金。"

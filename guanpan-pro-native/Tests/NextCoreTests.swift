@@ -195,7 +195,7 @@ final class NextCoreTests: XCTestCase {
             recovery: nil, confidence: confidence, portfolioNote: "已超过目标权重", riskNotes: [],
             score: 0, rank: 1, isActionable: false)
         XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: blocked, guidanceGeneratedAt: now,
-            quote: nil, now: now)?
+            guidanceLedgerFingerprint: nil, currentLedgerFingerprint: nil, quote: nil, now: now)?
             .contains("已超过目标权重") == true)
         let quote = quote(time: now)
         let readyConfidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 60,
@@ -212,16 +212,44 @@ final class NextCoreTests: XCTestCase {
             recovery: nil, confidence: readyConfidence, portfolioNote: nil, riskNotes: [],
             score: 1, rank: 1, isActionable: true)
         XCTAssertNil(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
             quote: quote, now: now))
         XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
             quote: self.quote(time: now.addingTimeInterval(-121)), now: now)?
             .contains("过期") == true, "保存时必须复核当前行情，而不是只信任生成时的数据")
         XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
             quote: self.quote(time: now.addingTimeInterval(6 * 3600)), now: now.addingTimeInterval(6 * 3600))?
             .contains("交易时段") == true, "收盘后不得保存为当日可执行计划")
         XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable,
-            guidanceGeneratedAt: now.addingTimeInterval(-121), quote: quote, now: now)?
+            guidanceGeneratedAt: now.addingTimeInterval(-121), guidanceLedgerFingerprint: "account-v1",
+            currentLedgerFingerprint: "account-v1", quote: quote, now: now)?
             .contains("今日指导已过期") == true, "过期的持仓/新闻/风险决策不得重新包装成新计划")
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v2",
+            quote: quote, now: now)?.contains("真实持仓、现金或成交流水") == true,
+            "持仓或现金改变后不得保存旧账户状态对应的计划")
+        XCTAssertNotNil(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            guidanceLedgerFingerprint: nil, currentLedgerFingerprint: "account-v1", quote: quote, now: now),
+            "没有指导时账户快照必须拒绝保存")
+    }
+    func testCandidatePlanSaveRechecksLiveInvalidationLines() {
+        let plan = NextCandidatePlan(kind: .gridBuy, code: "159941", name: "纳指ETF",
+            limitPrice: Decimal(string: "1.300")!, units: 100, createdAt: now.addingTimeInterval(-60),
+            expiresAt: now.addingTimeInterval(3600), triggerNote: "回落买入", cancelNote: "突破区间",
+            quoteSource: "test", quoteTime: now, dailyBarCount: 120, minuteSampleCount: 0,
+            confidenceLevel: "high", rationale: "测试", expectedNetGain: nil, expectedCostReduction: nil,
+            riskNote: "波动", marketState: "震荡", cancelAbove: Decimal(string: "1.500")!,
+            cancelBelow: Decimal(string: "1.250")!)
+        XCTAssertNil(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
+            quote: quote(time: now, price: Decimal(string: "1.400")!), now: now))
+        XCTAssertTrue(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
+            quote: quote(time: now, price: Decimal(string: "1.240")!), now: now)?.contains("下方失效线") == true)
+        XCTAssertNotNil(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
+            quote: quote(time: now.addingTimeInterval(-121)), now: now))
+        XCTAssertNotNil(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
+            quote: nil, now: now))
     }
     func testHomeNASStatusRequiresRecentHealthProbe() {
         let now = Date(timeIntervalSince1970: 1_797_375_200)
