@@ -768,9 +768,15 @@ private struct InstrumentDetailScreen: View {
                 }
                 WorthBuyPanel(code: code)
                 EditorialSection(title: "交易盘口", trailing: model.rules[code]?.isVerified == true ? "规则已验证" : "规则待验证", accent: p.chartViolet) {
-                    if model.orderBooks[code] == nil { GPStatus(title: "盘口数据尚未连接", detail: "五档报价未到达前不展示模拟档位或推测成交。", symbol: "rectangle.split.3x1") }
-                    else if model.rules[code]?.isVerified != true { GPStatus(title: "交易规则尚未验证", detail: "不会假设 ETF 是 T+0，也不会固定推断手数或费用。", symbol: "checkmark.shield") }
-                    else { OrderBookView(snapshot: model.orderBooks[code]!) }
+                    if let snapshot = model.orderBooks[code] {
+                        if model.rules[code]?.isVerified != true {
+                            GPStatus(title: "交易规则尚未验证", detail: "不会假设 ETF 是 T+0，也不会固定推断手数或费用。", symbol: "checkmark.shield")
+                        } else {
+                            OrderBookView(snapshot: snapshot)
+                        }
+                    } else {
+                        GPStatus(title: "盘口数据尚未连接", detail: "五档报价未到达前不展示模拟档位或推测成交。", symbol: "rectangle.split.3x1")
+                    }
                 }
                 EditorialSection(title: "账户与规则", accent: p.chartGold) {
                     if let basis = model.book.costBasis(for: code) {
