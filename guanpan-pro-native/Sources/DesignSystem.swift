@@ -126,6 +126,7 @@ struct GPPalette {
     var chartBlue: Color { tokens.chartBlue }
     var chartViolet: Color { tokens.chartViolet }
     var chartGold: Color { tokens.chartGold }
+    var chartLongMA: Color { tokens.chartLongMA }
     var chartCost: Color { tokens.chartCost }
     /// 涨跌语义色（全局唯一来源）：国内口径「红涨绿跌」。
     /// 任何价格变动的着色都必须走 `changeTone(_:)` 或这两个属性；
