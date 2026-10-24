@@ -350,7 +350,10 @@ final class NextDecisionMemoryTests: XCTestCase {
         (0..<60).map { index in
             // 09:30 起每分钟一条，价格在 1.38–1.42 之间来回，保证 VWAP 与高低点都成立。
             let price = Decimal(string: String(format: "%.3f", index % 2 == 0 ? 1.386 : 1.414))!
-            return NextChartSample(timestamp: now.addingTimeInterval(Double(index) * 60),
+            // Keep every sample at or before the decision instant. Production
+            // code must discard future observations to prevent look-ahead bias.
+            let secondsBeforeNow = Double(59 - index) * 60
+            return NextChartSample(timestamp: now.addingTimeInterval(-secondsBeforeNow),
                                    open: price,
                                    high: price * Decimal(string: "1.002")!,
                                    low: price * Decimal(string: "0.998")!,

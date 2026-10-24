@@ -416,7 +416,9 @@ final class NextChainScenarioTests: XCTestCase {
     func testScenarioE_MajorNewsRetractsGridPlanInTheSameConclusion() {
         let closes = oscillatingCloses()
         let intraday = minutes((0..<60).map { 1.390 + Double($0) * 0.0003 })
-        let news = [code: [NextNewsInput(title: "159941 公告：因重大事项停牌", source: "测试源")]]
+        let freshAt = ISO8601DateFormatter().string(from: now.addingTimeInterval(-60))
+        let news = [code: [NextNewsInput(title: "159941 公告：因重大事项停牌", source: "测试源",
+                                        publishedAt: freshAt)]]
         let guidance = scan(book(), quote: quote(price: 1.400), daily: bars(closes),
                             intraday: intraday, news: news)
         let item = try! XCTUnwrap(guidance.items.first)
@@ -440,9 +442,11 @@ final class NextChainScenarioTests: XCTestCase {
                                           basis: ["用户设定"], updatedAt: now))
         let closes = oscillatingCloses()
         let intraday = minutes((0..<60).map { [1.386, 1.412, 1.387, 1.413, 1.388, 1.414][$0 % 6] })
-        let plain = scan(book(), quote: quote(price: 1.400), daily: bars(closes), intraday: intraday)
+        let researchData = [code: research()]
+        let plain = scan(book(), quote: quote(price: 1.400), daily: bars(closes), intraday: intraday,
+                         research: researchData)
         let withProfile = scan(book(), quote: quote(price: 1.400), daily: bars(closes),
-                               intraday: intraday, profile: profile)
+                               intraday: intraday, profile: profile, research: researchData)
         let a = try! XCTUnwrap(plain.items.first)
         let b = try! XCTUnwrap(withProfile.items.first)
         guard case let .ready(pa) = a.tPlan!, case let .ready(pb) = b.tPlan! else {
