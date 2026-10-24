@@ -69,7 +69,7 @@ jobs:
           cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/GuanpanPro.app"
           cd "$RUNNER_TEMP/ipa"
           ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/GuanpanPro-unsigned.ipa"
-          python3 "$PROJECT_DIR/scripts/verify_ipa.py" "$RUNNER_TEMP/GuanpanPro-unsigned.ipa"
+          python3 "$GITHUB_WORKSPACE/$PROJECT_DIR/scripts/verify_ipa.py" "$RUNNER_TEMP/GuanpanPro-unsigned.ipa"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
