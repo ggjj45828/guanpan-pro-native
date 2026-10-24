@@ -90,13 +90,13 @@ final class NativeNavigationTests: XCTestCase {
         let security = byId(app, "instrument.row.159941")
         XCTAssertTrue(security.waitForExistence(timeout: 5))
         security.tap()
-        XCTAssertTrue(app.navigationBars["纳指 ETF"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["行情图表"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["行情图表"].exists)
         attach(app, "instrument-detail")
         let fullscreen = byId(app, "chart.fullscreen")
         XCTAssertTrue(fullscreen.waitForExistence(timeout: 5))
         fullscreen.tap()
-        XCTAssertTrue(app.navigationBars["全屏行情分析"].waitForExistence(timeout: 5))
+        XCTAssertTrue(byId(app, "chart.fullscreen.security-name").waitForExistence(timeout: 5))
         attach(app, "chart-fullscreen")
         let plot = app.otherElements["chart.plot"]
         if plot.waitForExistence(timeout: 2) {
@@ -110,10 +110,10 @@ final class NativeNavigationTests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         let backStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.45))
         backStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45)))
-        XCTAssertTrue(app.navigationBars["纳指 ETF"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["行情图表"].waitForExistence(timeout: 5))
         let analyzeBuy = byId(app, "instrument.analyze-buy")
         if analyzeBuy.waitForExistence(timeout: 5) {
-            analyzeBuy.tap()
+            tapVisible(analyzeBuy)
             XCTAssertTrue(app.staticTexts["私人投资顾问"].waitForExistence(timeout: 5))
             attach(app, "instrument-ai-deep-link")
         } else {
@@ -134,7 +134,7 @@ final class NativeNavigationTests: XCTestCase {
         if analyze.waitForExistence(timeout: 3) {
             analyze.tap()
             XCTAssertTrue(app.staticTexts["私人投资顾问"].waitForExistence(timeout: 5))
-            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "纳指 ETF")).firstMatch.exists)
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "纳指ETF")).firstMatch.exists)
             attach(app, "market-swipe-ai-context")
         } else {
             attach(app, "market-swipe-no-ai-action")
@@ -151,9 +151,9 @@ final class NativeNavigationTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         field.tap()
         field.typeText("159941")
-        let analyze = app.buttons["分析 纳指 ETF 买入机会"]
+        let analyze = byId(app, "search.analyze.159941")
         XCTAssertTrue(analyze.waitForExistence(timeout: 5))
-        analyze.tap()
+        tapVisible(analyze)
         XCTAssertTrue(app.staticTexts["私人投资顾问"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "159941")).firstMatch.exists)
         attach(app, "global-search-security-to-ai")
@@ -182,7 +182,7 @@ final class NativeNavigationTests: XCTestCase {
         let assetsTab = byId(largeText, "tab.assets")
         XCTAssertTrue(assetsTab.waitForExistence(timeout: 5))
         assetsTab.tap()
-        let assetsHeader = largeText.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "真实资产")).firstMatch
+        let assetsHeader = largeText.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "持仓明细")).firstMatch
         XCTAssertTrue(assetsHeader.waitForExistence(timeout: 5))
         attach(largeText, "assets-accessibility-text")
     }
