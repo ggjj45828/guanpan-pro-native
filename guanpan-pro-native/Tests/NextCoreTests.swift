@@ -512,6 +512,24 @@ final class NextCoreTests: XCTestCase {
         XCTAssertTrue(confidence.missing.contains { $0.contains("供应商时间戳") })
     }
 
+    func testTConfidenceRejectsPriorDayOrStaleIntradaySamples() {
+        let quote = NextQuote(code: "159941", name: "纳指ETF", price: 1.2, previousClose: 1.2,
+                              time: now, source: "test")
+        let prior = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
+                                              minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-86_400))
+        XCTAssertEqual(prior.level, .blocked)
+        XCTAssertTrue(prior.missing.contains { $0.contains("上个交易日缓存") })
+
+        let stale = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
+                                              minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-301))
+        XCTAssertEqual(stale.level, .blocked)
+        XCTAssertTrue(stale.missing.contains { $0.contains("超过5分钟") })
+
+        let current = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
+                                                minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-60))
+        XCTAssertFalse(current.missing.contains { $0.contains("分时样本") })
+    }
+
     func testMACDSeriesWarmsUpBeforeReturningValues() {
         let flat = Array(repeating: 1.0, count: 60)
         let series = NextMACD.series(flat)

@@ -426,8 +426,10 @@ import Combine
         guidanceStatus = "正在补齐日 K 与分时数据…"
         await refreshQuotes(codes: book.positions.map(\.code))
         for position in book.positions where position.units > 0 {
-            if chartData["\(position.code):day"] == nil { await refreshDaily(position.code) }
-            if chartData[position.code] == nil { await refreshIntraday(position.code) }
+            // Cached charts are for display only until refreshed. In particular, a prior
+            // session's minute series must never be reused as today's T evidence.
+            await refreshDaily(position.code)
+            if NextMarketClock.isRegularSession() { await refreshIntraday(position.code) }
         }
         // NAS 长期分时统计是「市场状态 / 做T / 网格区间」的输入之一，
         // 每次生成指导都自动向NAS核对更新；只取压缩研究结果，不拉取整段历史分钟原始数据。

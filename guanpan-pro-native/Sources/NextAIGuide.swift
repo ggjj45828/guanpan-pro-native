@@ -33,7 +33,7 @@ struct NextDataConfidence: Equatable {
     /// 网格按「日 K ≥60 + 新鲜报价 + NAS 长期区间」出价，本地的当日分时点不是它的硬门槛，
     /// 传 false 时不再因缺分时而判 blocked。
     static func assess(quote: NextQuote?, now: Date, dailyBarCount: Int, minuteSampleCount: Int,
-                       intradayRequired: Bool = true) -> NextDataConfidence {
+                       intradayRequired: Bool = true, intradayLatestAt: Date? = nil) -> NextDataConfidence {
         var missing: [String] = []
         let age: Int?
         let source: String
@@ -50,10 +50,25 @@ struct NextDataConfidence: Equatable {
         }
         if dailyBarCount < 20 { missing.append("日 K 仅 \(dailyBarCount) 根，识别市场状态至少需要 20 根") }
         if intradayRequired && minuteSampleCount < 30 { missing.append("今日分时仅 \(minuteSampleCount) 点，估算做 T 价格至少需要 30 点") }
+        let sameTradingDate: Bool = {
+            guard let intradayLatestAt else { return false }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+            return calendar.isDate(intradayLatestAt, inSameDayAs: now)
+        }()
+        let minuteAge = intradayLatestAt.map { now.timeIntervalSince($0) }
+        if intradayRequired && !sameTradingDate {
+            missing.append("今日分时缺少当天样本；不使用上个交易日缓存生成做T价格")
+        } else if intradayRequired, let minuteAge, minuteAge < -60 {
+            missing.append("最新分时样本时间超前超过60秒，数据时钟异常")
+        } else if intradayRequired, let minuteAge, minuteAge > 300 {
+            missing.append("最新分时样本已超过5分钟，刷新后再评估做T")
+        }
         let completeness = min(1.0, Double(minuteSampleCount) / 240.0) * 100
         let staleQuote = (age ?? 9_999) > 120
         let futureQuote = quote.map { $0.time > now.addingTimeInterval(60) } ?? false
-        let blocked = staleQuote || futureQuote || quote?.hasReliableMarketTime != true || dailyBarCount < 20 || (intradayRequired && minuteSampleCount < 30)
+        let staleMinute = intradayRequired && (!sameTradingDate || (minuteAge.map { $0 < -60 || $0 > 300 } ?? true))
+        let blocked = staleQuote || futureQuote || quote?.hasReliableMarketTime != true || dailyBarCount < 20 || (intradayRequired && minuteSampleCount < 30) || staleMinute
         let level: Level
         if blocked { level = .blocked }
         else if (age ?? 9_999) <= 60 && dailyBarCount >= 60 && minuteSampleCount >= 120 { level = .high }
@@ -539,7 +554,10 @@ enum NextTradeTPlanner {
                      rules: NextInstrumentRules?, orderBook: NextOrderBookSnapshot? = nil, caps: NextPlanCaps? = nil,
                      now: Date, historyMissRate: Double? = nil) -> NextTPlannerResult {
         let bars = daily.filter { $0.close > 0 }
-        let confidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: bars.count, minuteSampleCount: intraday.filter { $0.close > 0 }.count)
+        let validIntraday = intraday.filter { $0.close > 0 }
+        let confidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: bars.count,
+                                                  minuteSampleCount: validIntraday.count,
+                                                  intradayLatestAt: validIntraday.map(\.timestamp).max())
         guard NextMarketClock.canGenerateActionablePlan(now) else {
             return .insufficientData(confidence, [NextMarketClock.sessionDescription(now), "开市后刷新实时行情，再评估是否有可执行的做T计划"])
         }
