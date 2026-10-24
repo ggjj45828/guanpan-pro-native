@@ -299,3 +299,4 @@
 - 上述修改分别提交为 `31c975d Link real fills to decision memory`、`f20c6a0 Avoid mutating published memory records in place`；新增可选字段缺失迁移用例，静态 `git diff --check`通过。将`@Published`数组元素先复制、修改再赋回，确保观察者和持久化didSet一致触发。工作树已清洁；Swift/XCTest仍未运行。
 - 再审计发现决策复盘此前对缓存行情不检查报价时效/时间可信度，也会在没有行情时永久设置`reviewedAt`。本轮已接入`laterReviewPrice`：必须为真实成交后的、两分钟内、供应商时间可靠报价；缺失或无效报价时维持待复盘，以便下一轮数据恢复后继续计算。新增过期、成交前、receipt-only和缺行情重试测试，矩阵第29行保持🟠。当前变更待静态检查和提交；Swift/XCTest仍不能在本机运行。
 - 保存入口审计继续发现旧指导可在真实账本修改后重新保存；现在存指导生成时的账本`syncFingerprint`，保存时必须相等，否则要求刷新指导。保存前还对当前新鲜报价的计划失效线、最新新闻和已验证的跨市场Risk Guard做最终复核。新增账本指纹丢失/变化及价格失效线用例，矩阵第26行保持🟡。当前改动未提交；下一步`git diff --check`、审计各类候选计划的边界后提交，然后继续。
+- 保存复核提交为 `a8ffffb Revalidate candidate plans against current account`；`git diff --check`通过，所有生产调用及Swift回归调用的参数已静态检索。未能执行Swift/XCTest。工作树随后记录检查点；矩阵状态维持，继续下一个核心链可处理缺口。
