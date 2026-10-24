@@ -93,6 +93,9 @@ final class NextChainScenarioTests: XCTestCase {
         let planPrices: Set<Decimal> = [Decimal(string: "0.850")!, Decimal(string: "0.830")!]
         XCTAssertFalse(NextAIOutputGuard.containsUnverifiedAction("建议卖出 500 份 @ 0.850 元，再在 0.830 买回 500 份。",
                                                                     approvedPrices: planPrices, approvedUnits: [500]))
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出 500 份 @ 0.850 元，再在 0.831 买回 500 份。",
+                                                                   approvedPrices: planPrices, approvedUnits: [500]),
+                      "命中合法卖价不能授权模型另造买回价")
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出 900 份 @ 0.850 元。",
                                                                    approvedPrices: planPrices, approvedUnits: [500]))
     }
