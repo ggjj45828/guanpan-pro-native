@@ -1299,8 +1299,19 @@ import Combine
                     fetched = direct.value
                 }
             }
+            let now = Date()
+            guard NextIntradayDatasetGuard.isCurrentSessionData(
+                fetched, now: now, marketOpen: NextMarketClock.isRegularSession(now)
+            ) else {
+                status = "分时源返回的样本不是今天的有效数据或盘中已超过5分钟；保留原缓存，不用于新指导"
+                return
+            }
             let dataset = quotes[code].map { fetched.attachingVerifiedIOPV($0.quote) } ?? fetched
             try dataset.validate()
+            guard NextIntradayDatasetGuard.shouldReplace(chartData[code], with: dataset) else {
+                status = "分时更新被拒绝 · 新数据时间早于本机缓存，继续保留较新数据"
+                return
+            }
             chartData[code] = dataset
             status = "分时已更新 · \(dataset.priceSource) · \(dataset.samples.count)点 · \(dataset.observedAt.formatted(date: .omitted, time: .shortened))"
         } catch {

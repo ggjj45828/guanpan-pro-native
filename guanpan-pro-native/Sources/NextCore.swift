@@ -534,6 +534,32 @@ struct NextChartDataset: Codable, Equatable {
                                 priceSource: priceSource, iopvSource: "Tencent ETF quote · 同一时段最近采样点", observedAt: observedAt)
     }
 }
+
+/// Validate minute sample timestamps independently from `observedAt`, which
+/// only records when the phone/NAS response arrived. A successful response may
+/// still contain yesterday's bars and must not be presented as live data.
+enum NextIntradayDatasetGuard {
+    static func isCurrentSessionData(_ dataset: NextChartDataset, now: Date,
+                                     marketOpen: Bool, maximumLiveAge: TimeInterval = 300) -> Bool {
+        guard dataset.interval == .intraday, !dataset.samples.isEmpty,
+              let latest = dataset.orderedSamples.last?.timestamp,
+              NextIntradayAxis.sameTradingDay(latest, now),
+              latest <= now.addingTimeInterval(60) else { return false }
+        guard marketOpen else { return true }
+        let age = now.timeIntervalSince(latest)
+        return age >= -60 && age <= maximumLiveAge
+    }
+
+    /// Never move the cached chart backward. Equal-minute updates remain
+    /// eligible because providers may revise the still-forming minute bar.
+    static func shouldReplace(_ cached: NextChartDataset?, with incoming: NextChartDataset) -> Bool {
+        guard let cached, cached.interval == .intraday,
+              let oldLatest = cached.orderedSamples.last?.timestamp,
+              let newLatest = incoming.orderedSamples.last?.timestamp else { return true }
+        return newLatest >= oldLatest
+    }
+}
+
 struct NextGoal: Codable, Equatable {
     var years = 10
     var monthlyBudget: Decimal = 1000

@@ -13,6 +13,30 @@ enum NextMarketChain {
         throw NextError.invalid("行情源全部不可用：\(trail)")
     }
 
+    /// Keep source priority, but continue when a technically valid response is
+    /// too sparse to be useful. If none reaches the target, return the richest
+    /// valid response so callers can show limited history while risk guards
+    /// decide whether it is enough for an actionable plan.
+    static func richest<T>(_ attempts: [(source: String, run: () async throws -> T)],
+                          minimumSamples: Int, sampleCount: (T) -> Int) async throws -> (value: T, source: String) {
+        var best: (value: T, source: String, count: Int)?
+        var failures: [(source: String, reason: String)] = []
+        for attempt in attempts {
+            do {
+                let value = try await attempt.run()
+                let count = sampleCount(value)
+                if best == nil || count > best!.count { best = (value, attempt.source, count) }
+                if count >= minimumSamples { return (value, attempt.source) }
+                failures.append((attempt.source, "仅返回 \(count) 个样本，继续尝试备用源"))
+            } catch { failures.append((attempt.source, error.localizedDescription)) }
+        }
+        if let best {
+            return (best.value, "\(best.source) · 当前可用来源中样本最多（\(best.count)）")
+        }
+        let trail = failures.map { "\($0.source)（\($0.reason)）" }.joined(separator: " → ")
+        throw NextError.invalid("行情源全部不可用：\(trail)")
+    }
+
     /// Query later providers only for codes missing from earlier responses.
     /// A partial but non-empty response must not silently suppress fallback sources.
     static func fillMissing<T, Key: Hashable>(requested: [Key],

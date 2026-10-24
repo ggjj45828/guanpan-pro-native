@@ -58,7 +58,7 @@ enum NextMarketDataService {
             ("腾讯分时", { try await tencentMinute(code: code, session: session) }),
             ("东财分时", { try await eastMoneyMinute(code: code, session: session) })
         ]
-        return try await NextMarketChain.first(attempts)
+        return try await NextMarketChain.richest(attempts, minimumSamples: 30) { $0.samples.count }
     }
 
     static func fetchDaily(code: String, session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
@@ -67,7 +67,7 @@ enum NextMarketDataService {
             ("东财日K", { try await eastMoneyDaily(code: code, session: session) }),
             ("新浪日K", { try await sinaDaily(code: code, session: session) })
         ]
-        return try await NextMarketChain.first(attempts)
+        return try await NextMarketChain.richest(attempts, minimumSamples: 120) { $0.samples.count }
     }
 
     // MARK: - 报价

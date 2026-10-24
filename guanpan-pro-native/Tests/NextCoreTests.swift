@@ -421,6 +421,40 @@ final class NextCoreTests: XCTestCase {
         XCTAssertNil(dataset.iopvSource)
         try dataset.validate()
     }
+    func testIntradayFreshnessUsesSampleTimeNotResponseReceiptTime() throws {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let now = try XCTUnwrap(formatter.date(from: "2026-10-20 10:05:00"))
+        func dataset(_ stamp: String) throws -> NextChartDataset {
+            let sampleTime = try XCTUnwrap(formatter.date(from: stamp))
+            return NextChartDataset(code: "159941", interval: .intraday,
+                                    samples: [NextChartSample(timestamp: sampleTime, open: nil, high: nil, low: nil,
+                                                              close: Decimal(string: "1.2")!, iopv: nil, volume: 100)],
+                                    costPerUnit: nil, costObservedAt: nil, priceSource: "fixture", iopvSource: nil,
+                                    observedAt: now)
+        }
+        XCTAssertTrue(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-20 10:04:00"), now: now, marketOpen: true))
+        XCTAssertFalse(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-19 15:00:00"), now: now, marketOpen: false),
+                       "A response received now must not make yesterday's minute bars look current")
+        XCTAssertFalse(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-20 09:59:00"), now: now, marketOpen: true),
+                       "During the session, minute samples older than five minutes are rejected")
+        XCTAssertFalse(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-20 10:06:30"), now: now, marketOpen: true),
+                       "Future sample timestamps are rejected")
+    }
+    func testIntradayRefreshCannotReplaceCacheWithOlderSamples() throws {
+        let first = Date(timeIntervalSince1970: 1_800_000_000)
+        func dataset(_ offset: TimeInterval) -> NextChartDataset {
+            NextChartDataset(code: "159941", interval: .intraday,
+                            samples: [NextChartSample(timestamp: first.addingTimeInterval(offset), open: nil, high: nil, low: nil,
+                                                      close: Decimal(string: "1.2")!, iopv: nil, volume: 100)],
+                            costPerUnit: nil, costObservedAt: nil, priceSource: "fixture", iopvSource: nil,
+                            observedAt: first.addingTimeInterval(10_000))
+        }
+        XCTAssertFalse(NextIntradayDatasetGuard.shouldReplace(dataset(120), with: dataset(60)))
+        XCTAssertTrue(NextIntradayDatasetGuard.shouldReplace(dataset(60), with: dataset(120)))
+        XCTAssertTrue(NextIntradayDatasetGuard.shouldReplace(dataset(120), with: dataset(120)),
+                      "Equal-minute samples may refresh a forming candle")
+    }
     func testCrossMarketResearchDecodesStatusFreshnessAndOlderServerPayloads() throws {
         let current = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"no_stable_relationship","reason":"没有稳定领先关系","source":"Eastmoney trends","asOf":"2026-10-23T09:30:00+09:00","sampleCount":120,"bestLagMinutes":null,"conditionalWinRate":null,"bestMarket":"KR_KOSPI","currentMarketStatus":"closed","ageSeconds":7200,"liveDivergences":[{"market":"JP_N225","state":"observed_divergence","reason":null,"windowMinutes":15,"leaderReturnPercent":-0.6,"assetReturnPercent":0.4,"leaderAgeSeconds":0,"assetAgeSeconds":0,"eligibleForTradingSignal":false,"expiresAt":"2026-10-23T10:00:00+09:00"}]}}"#.utf8)
         let decoded = try JSONDecoder().decode(NextNASResearch.self, from: current)

@@ -122,6 +122,26 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertEqual(result.source, "主源 1只 + 备用源 1只")
     }
 
+    func testHistoricalChainFallsThroughSparseSuccessAndKeepsSourcePriority() async throws {
+        struct Samples { let count: Int }
+        var tertiaryWasCalled = false
+        let result = try await NextMarketChain.richest([
+            ("优先源", { Samples(count: 2) }),
+            ("备用源", { Samples(count: 120) }),
+            ("第三源", { tertiaryWasCalled = true; return Samples(count: 200) })
+        ], minimumSamples: 120, sampleCount: { $0.count })
+        XCTAssertEqual(result.value.count, 120)
+        XCTAssertEqual(result.source, "备用源")
+        XCTAssertFalse(tertiaryWasCalled, "Stop once a fallback meets the history target")
+
+        let limited = try await NextMarketChain.richest([
+            ("短历史", { Samples(count: 8) }),
+            ("较完整历史", { Samples(count: 40) })
+        ], minimumSamples: 120, sampleCount: { $0.count })
+        XCTAssertEqual(limited.value.count, 40)
+        XCTAssertTrue(limited.source.contains("样本最多"))
+    }
+
     func testHistoricalCrossMarketCandidateDecodesAsNonTradingEvidence() throws {
         let payload = """
         {"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{
