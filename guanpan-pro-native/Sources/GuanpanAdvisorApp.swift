@@ -1154,7 +1154,7 @@ private struct DecisionScreen: View {
                         }
                         if let mobileAIResult = model.unifiedAIAdvice {
                             DataPanel(title: "唯一综合指导", accent: p.terracotta, caption: "已记录到历史决策") {
-                                Text(mobileAIResult).font(.system(size: 12)).foregroundStyle(p.ink).textSelection(.enabled)
+                                AIAdviceFormattedView(text: mobileAIResult)
                             }
                         }
                     }
@@ -2255,7 +2255,7 @@ private struct AlertCenterScreen: View {
     var body: some View {
         GPPageBackground {
             EditorialSection(title: "通知记录", trailing: "去重与静默时段") {
-                Text("支持价格、均线、组合风险、限价计划、模拟结果和 NAS 数据异常。本机提醒遵循系统通知权限；NAS 的 APNs 远程推送需单独配置。").font(.caption).foregroundStyle(p.muted)
+                Text("支持价格、均线、组合风险、限价计划、AI候选计划状态和 NAS 数据异常。本机提醒遵循系统通知权限；NAS 的 APNs 远程推送需单独配置。").font(.caption).foregroundStyle(p.muted)
                 HStack { Button("允许本机通知") { Task { await model.requestNotificationPermission() } }; Button("发送测试提醒") { model.postLocalAlert(level: "测试", fingerprint: "local-notification-test", title: "观盘 Pro 提醒测试", detail: "这是一条本机通知测试，不代表交易信号。", stamp: NextDataStamp(source: "本机测试", observedAt: Date(), quality: .live, detail: "用户手动触发")) } }.buttonStyle(.bordered).tint(p.forest)
                 Text(model.notificationStatus).font(.caption2).foregroundStyle(p.muted)
                 if model.preferences.notifications.alerts.isEmpty { GPStatus(title: "暂无通知记录", detail: "网络或 NAS 未连接时仍可查看本机已有提醒。", symbol: "bell.slash") }

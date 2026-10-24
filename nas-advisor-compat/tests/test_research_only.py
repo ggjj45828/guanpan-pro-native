@@ -12,6 +12,7 @@ import app
 import workers
 import mobile_research
 import market
+import ai
 from domain import NextDatabase
 
 
@@ -25,6 +26,7 @@ class RetiredRoutesTests(unittest.TestCase):
         return replies
 
     def test_simulation_routes_are_gone(self):
+        self.assertFalse(hasattr(ai, "generate_g_twin_plan"), "NAS must not ship the retired G twin AI planner")
         for method, path in (
             ("do_GET", "/v1/grid/status"),
             ("do_GET", "/v1/simulations/G"),

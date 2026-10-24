@@ -213,7 +213,7 @@ import Combine
             throw NextError.invalid("成交代码、方向、价格、份额、手续费或成交时间无效")
         }
         if rules[code]?.assetClass == .etf || quotes[code]?.quote.providerInstrumentType == "ETF" {
-            guard fee == Decimal(string: "0.10")! else { throw NextError.invalid("已核实 ETF 的手续费按每笔 ¥0.10 记录") }
+            guard fee == NextTradeFees.etfPerTrade else { throw NextError.invalid("已核实 ETF 的手续费按每笔 ¥0.10 记录") }
         }
         let gross = price * Decimal(units)
         var updated = book
@@ -430,16 +430,12 @@ import Combine
             if chartData[position.code] == nil { await refreshIntraday(position.code) }
         }
         // NAS 长期分时统计是「市场状态 / 做T / 网格区间」的输入之一，
-        // 缺了就补、过期就重取——但不允许用本地临时数据假装成 NAS 长期档案。
+        // 每次生成指导都自动向NAS核对更新；只取压缩研究结果，不拉取整段历史分钟原始数据。
+        // NAS离线时 refreshNASResearch 保留已缓存证据并标记状态，但计划仍按时间/质量门槛判断。
         if !preferences.nasBaseURL.isEmpty {
             guidanceStatus = "正在取 NAS 长期分时统计…"
             for position in book.positions where position.units > 0 {
-                if let cached = nasResearch[position.code] {
-                    let stats = cached.minuteStats
-                    if stats == nil || stats?.freshness.stale == true { await refreshNASResearch(position.code) }
-                } else {
-                    await refreshNASResearch(position.code)
-                }
+                await refreshNASResearch(position.code)
             }
         }
         // Headlines are refreshed for this guidance run; phone-direct mode does not depend on NAS.

@@ -39,14 +39,14 @@ final class NextCoreTests: XCTestCase {
                                  price: 1.2, fee: 0.1, realized: 0)
         XCTAssertNoThrow(try NextBook(fills: [validFill]).validate())
     }
-    func testVerifiedDividendFallbacksRemainHistoricalAndEstimatedEventsAreSeparate() {
+    func testDividendAnalyticsUsesSuppliedRecordsWithoutBundledHistory() {
         let events = NextDividendAnalytics.merged([
             NextETFDividendEvent(code: "159545", date: "2026-05-15", amountPerShare: Decimal(string: "0.014")!, isEstimated: true),
             NextETFDividendEvent(code: "159941", date: "2026-05-15", amountPerShare: Decimal(string: "0.100")!)
         ])
         XCTAssertTrue(events.contains { $0.code == "159545" && $0.isEstimated == true })
         XCTAssertTrue(events.contains { $0.code == "159941" && $0.date == "2026-05-15" })
-        XCTAssertTrue(events.contains { $0.code == "563020" && $0.isEstimated != true })
+        XCTAssertFalse(events.contains { $0.code == "563020" }, "没有真实来源时不得注入内置分红样例")
     }
 
     func testMissingQuoteDoesNotPretendAssetTotal() {

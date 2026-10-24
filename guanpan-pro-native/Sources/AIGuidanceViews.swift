@@ -1,5 +1,131 @@
 import SwiftUI
 
+private struct AIAdviceLine: Identifiable {
+    let id: Int
+    let text: String
+    let isBullet: Bool
+}
+
+private struct AIAdviceBlock: Identifiable {
+    let id: Int
+    let title: String?
+    let lines: [AIAdviceLine]
+}
+
+/// Presentation-only formatter. It recognizes common Chinese/Markdown headings while
+/// preserving every non-empty sentence and never changes any price or recommendation.
+private enum AIAdviceFormatter {
+    private static let headings = ["结论", "今日判断", "操作建议", "交易计划", "建议方案", "建议", "依据", "证据",
+                                   "新闻影响", "对持仓的影响", "组合风险", "风险", "失效条件", "有效期",
+                                   "置信度", "数据质量", "下一步", "后续跟踪", "等待条件", "补充说明"]
+
+    static func parse(_ source: String) -> [AIAdviceBlock] {
+        var blocks: [AIAdviceBlock] = []
+        var title: String?
+        var lines: [AIAdviceLine] = []
+        func flush() {
+            guard !lines.isEmpty else { title = nil; return }
+            blocks.append(AIAdviceBlock(id: blocks.count, title: title, lines: lines))
+            title = nil
+            lines = []
+        }
+        for raw in source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if let (heading, remainder) = splitHeading(line) {
+                flush()
+                title = heading
+                if !remainder.isEmpty { lines.append(makeLine(remainder, id: 0)) }
+            } else {
+                lines.append(makeLine(line, id: lines.count))
+            }
+        }
+        flush()
+        return blocks
+    }
+
+    private static func splitHeading(_ raw: String) -> (String, String)? {
+        var line = raw
+        while line.hasPrefix("#") || line.hasPrefix("**") { line.removeFirst(line.hasPrefix("**") ? 2 : 1) }
+        line = line.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespaces)
+        if let separator = line.firstIndex(where: { $0 == "：" || $0 == ":" }) {
+            let candidate = String(line[..<separator]).trimmingCharacters(in: .whitespaces)
+            if let match = headings.first(where: { candidate == $0 || candidate.hasPrefix($0) }) {
+                return (match, clean(String(line[line.index(after: separator)...])))
+            }
+        }
+        let exact = line.trimmingCharacters(in: CharacterSet(charactersIn: " ：:"))
+        return headings.contains(exact) ? (exact, "") : nil
+    }
+
+    private static func makeLine(_ raw: String, id: Int) -> AIAdviceLine {
+        var value = raw.trimmingCharacters(in: .whitespaces)
+        let bullet = ["•", "·", "-", "–", "—"].contains(where: { value.hasPrefix($0) })
+            || value.range(of: #"^\d+[\.、)]\s*"#, options: .regularExpression) != nil
+        if bullet {
+            value = value.replacingOccurrences(of: #"^(?:[•·\-–—]\s*|\d+[\.、)]\s*)"#, with: "", options: .regularExpression)
+        }
+        return AIAdviceLine(id: id, text: clean(value), isBullet: bullet)
+    }
+
+    private static func clean(_ value: String) -> String {
+        value.replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct AIAdviceFormattedView: View {
+    @Environment(\.gp) private var p
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(AIAdviceFormatter.parse(text)) { block in
+                VStack(alignment: .leading, spacing: 7) {
+                    if let title = block.title {
+                        HStack(spacing: 6) {
+                            Image(systemName: symbol(for: title)).font(.system(size: 11, weight: .bold)).foregroundStyle(tone(for: title))
+                            Text(title).font(.system(size: 12, weight: .bold)).foregroundStyle(p.ink)
+                            Rectangle().fill(p.line.opacity(0.75)).frame(height: 1)
+                        }
+                    }
+                    ForEach(block.lines) { line in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle().fill(line.isBullet ? tone(for: block.title ?? "") : p.line)
+                                .frame(width: line.isBullet ? 5 : 3, height: line.isBullet ? 5 : 3).padding(.top, 6)
+                            Text(line.text)
+                                .font(.system(size: block.title == "结论" && line.id == 0 ? 14 : 12,
+                                              weight: block.title == "结论" && line.id == 0 ? .semibold : .regular))
+                                .foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        }
+                    }
+                }
+                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(block.title == "结论" ? tone(for: "结论").opacity(0.09) : p.paperAlt.opacity(0.72),
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
+    private func tone(for title: String) -> Color {
+        if title.contains("风险") || title.contains("失效") { return p.risk }
+        if title.contains("依据") || title.contains("证据") { return p.chartBlue }
+        if title.contains("交易") || title.contains("操作") || title.contains("建议") { return p.forest }
+        if title.contains("新闻") { return p.chartGold }
+        return p.chartViolet
+    }
+    private func symbol(for title: String) -> String {
+        if title.contains("风险") || title.contains("失效") { return "exclamationmark.shield.fill" }
+        if title.contains("依据") || title.contains("证据") { return "checkmark.seal.fill" }
+        if title.contains("交易") || title.contains("操作") || title.contains("建议") { return "arrow.left.arrow.right" }
+        if title.contains("新闻") { return "newspaper.fill" }
+        if title.contains("结论") { return "sparkles" }
+        return "text.alignleft"
+    }
+}
+
 // MARK: - AI 今日指导（首页主入口）
 
 /// 打开 App 先看到的一句话：今天有没有值得操作的机会？
@@ -66,8 +192,7 @@ struct AIGuidanceSection: View {
                 Text(status).font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
             }
             if let advice = model.unifiedAIAdvice {
-                Text(advice).font(.system(size: 12)).foregroundStyle(p.ink)
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                AIAdviceFormattedView(text: advice)
             }
             GPActionButton(title: model.unifiedAIIsRunning ? "正在综合分析…" : "生成唯一综合指导",
                            systemImage: "sparkles") {

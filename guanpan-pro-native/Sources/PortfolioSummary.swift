@@ -181,14 +181,14 @@ enum NextPortfolioCalculator {
     static func anomalyReason(quote: NextQuote, storedCostPerUnit: Decimal) -> String? {
         guard quote.price > 0, quote.previousClose > 0 else { return "报价缺失或为零" }
         let change = quote.price / quote.previousClose - 1
-        let limit = Decimal(string: "0.25")!
+        let limit = Decimal(25) / Decimal(100)
         if change > limit || change < -limit {
             let percent = NextNum.double(change) * 100
             return "报价与昨收偏离 \(String(format: "%.3f", percent))%，疑似行情源串号，已排除在总资产之外"
         }
         guard storedCostPerUnit > 0 else { return nil }
         let ratio = quote.price / storedCostPerUnit
-        if ratio > 3 || ratio < Decimal(string: "0.3333")! {
+        if ratio > 3 || ratio < Decimal(3333) / Decimal(10_000) {
             return "报价是账本成本的 \(String(format: "%.3f", NextNum.double(ratio))) 倍，疑似行情源串号，已排除在总资产之外"
         }
         return nil

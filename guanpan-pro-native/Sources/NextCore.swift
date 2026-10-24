@@ -59,14 +59,6 @@ struct NextCashMovement: Codable, Identifiable, Equatable {
     let reason: String
 }
 enum NextDividendAnalytics {
-    static let verifiedHistory = [
-        NextETFDividendEvent(code: "515180", date: "2025-10-21", amountPerShare: Decimal(string: "0.061")!),
-        NextETFDividendEvent(code: "563020", date: "2025-12-10", amountPerShare: Decimal(string: "0.012")!),
-        NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: Decimal(string: "0.012")!),
-        NextETFDividendEvent(code: "563020", date: "2026-09-11", amountPerShare: Decimal(string: "0.012")!),
-        NextETFDividendEvent(code: "159545", date: "2025-11-12", amountPerShare: Decimal(string: "0.010")!),
-        NextETFDividendEvent(code: "159545", date: "2026-02-11", amountPerShare: Decimal(string: "0.015")!)
-    ]
     /// 已知**不分红**的 ETF：推算事件一律丢掉。官方记录仍然照收 ——
     /// 万一哪天真的派息，不该被这份名单挡住。
     /// 560780 半导体设备是用户确认不分红的；159941 纳指ETF 成立以来没有现金分红。
@@ -74,11 +66,11 @@ enum NextDividendAnalytics {
 
     /// 推算事件的金额上限（每份）。ETF 单次现金分红超过 0.5 元/份极罕见，
     /// 超过基本可以断定是把「份额折算 / 复权口径切换」当成了分红。
-    private static let estimatedAmountCap = Decimal(string: "0.5")!
+    private static let estimatedAmountCap = Decimal(5) / Decimal(10)
 
     static func merged(_ supplied: [NextETFDividendEvent]) -> [NextETFDividendEvent] {
         var byKey: [String: NextETFDividendEvent] = [:]
-        for item in verifiedHistory + supplied {
+        for item in supplied {
             if item.isEstimated == true {
                 if knownNonDividendCodes.contains(item.code) { continue }
                 if item.amountPerShare > estimatedAmountCap || item.amountPerShare <= 0 { continue }
@@ -367,7 +359,7 @@ enum NextSettlementRule: String, Codable { case t0, t1, unknown }
 enum NextAssetClass: String, Codable { case etf, equity, other, unknown }
 /// ETF 每笔固定手续费 ¥0.10：来自用户指定的核验规则，不按券商公告推断。
 enum NextTradeFees {
-    static let etfPerTrade = Decimal(string: "0.10")!
+    static let etfPerTrade = Decimal(10) / Decimal(100)
 }
 struct NextInstrumentRules: Codable, Equatable {
     let code: String
@@ -498,8 +490,8 @@ struct NextChartDataset: Codable, Equatable {
         var values = orderedSamples.flatMap { [$0.low, $0.high, Optional($0.close)].compactMap { $0 } }
         if includingIOPV { values.append(contentsOf: orderedSamples.compactMap(\.iopv)) }
         guard let low = values.min(), let high = values.max() else { return nil }
-        if low == high { let pad = max(abs(low) * Decimal(string: "0.01")!, Decimal(string: "0.0001")!); return (low - pad)...(high + pad) }
-        let pad = (high - low) * Decimal(string: "0.06")!
+        if low == high { let pad = max(abs(low) / Decimal(100), Decimal(1) / Decimal(10_000)); return (low - pad)...(high + pad) }
+        let pad = (high - low) * Decimal(6) / Decimal(100)
         return (low - pad)...(high + pad)
     }
     // Premium is available for numeric labels; the IOPV price itself shares the chart's price axis.
@@ -510,7 +502,7 @@ struct NextChartDataset: Codable, Equatable {
         }
         guard let low = values.min(), let high = values.max() else { return nil }
         if low == high { return (low - 0.1)...(high + 0.1) }
-        let pad = (high - low) * Decimal(string: "0.1")!
+        let pad = (high - low) / Decimal(10)
         return (low - pad)...(high + pad)
     }
     var timeDomain: ClosedRange<Date>? {
@@ -564,7 +556,7 @@ struct NextGoal: Codable, Equatable {
               concentrationLimit > 0, concentrationLimit <= 100,
               targetWeights.keys.allSatisfy({ $0.count == 6 && $0.allSatisfy(\.isNumber) }),
               targetWeights.values.allSatisfy({ !$0.isNaN && $0 >= 0 && $0 <= 100 }),
-              targetWeights.isEmpty || abs(totalWeight - 100) <= Decimal(string: "0.01")! else { throw NextError.invalid("目标、预算或目标仓位比例无效（目标仓位合计须为 100%）") }
+              targetWeights.isEmpty || abs(totalWeight - 100) <= Decimal(1) / Decimal(100) else { throw NextError.invalid("目标、预算或目标仓位比例无效（目标仓位合计须为 100%）") }
     }
 }
 struct NextEvidence: Codable, Identifiable, Equatable {

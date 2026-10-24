@@ -149,7 +149,7 @@ struct UnifiedChartView: View {
             let move = max(abs(up), abs(down), 0.005)
             return NextNum.decimal(base * (1 - move))...NextNum.decimal(base * (1 + move))
         }
-        let pad = low == high ? max(abs(low) * Decimal(string: "0.01")!, Decimal(string: "0.0001")!) : (high - low) * Decimal(string: "0.06")!
+        let pad = low == high ? max(abs(low) / Decimal(100), Decimal(1) / Decimal(10_000)) : (high - low) * Decimal(6) / Decimal(100)
         return (low - pad)...(high + pad)
     }
     private var displayedCrosshairTime: Date? {
@@ -368,7 +368,7 @@ struct UnifiedChartView: View {
             }
             return plot.minX + plot.width * CGFloat(min(1, max(0, fraction)))
         }
-        func priceY(_ value: Decimal) -> CGFloat { plot.maxY - plot.height * cg((value - domain.lowerBound) / max(Decimal(string: "0.0000001")!, domain.upperBound - domain.lowerBound)) }
+        func priceY(_ value: Decimal) -> CGFloat { plot.maxY - plot.height * cg((value - domain.lowerBound) / max(Decimal(1) / Decimal(10_000_000), domain.upperBound - domain.lowerBound)) }
         var pricePath = Path()
         for (i, point) in samples.enumerated() {
             let pos = CGPoint(x: x(point.timestamp), y: priceY(point.close))

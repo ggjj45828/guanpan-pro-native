@@ -75,7 +75,7 @@ enum NextMarketDataService {
     private static func tencentQuotes(codes: [String], session: URLSession) async throws -> [NextQuote] {
         let symbols = codes.compactMap(NextTencentQuoteParser.symbol(for:))
         guard !symbols.isEmpty, symbols.count == codes.count else { throw NextError.invalid("证券代码无效或交易所来源尚未支持") }
-        let url = URL(string: "https://qt.gtimg.cn/q=\(symbols.joined(separator: ","))&_t=\(Int(Date().timeIntervalSince1970))")!
+        guard let url = URL(string: "https://qt.gtimg.cn/q=\(symbols.joined(separator: ","))&_t=\(Int(Date().timeIntervalSince1970))") else { throw NextError.invalid("腾讯行情请求地址无效") }
         var request = URLRequest(url: url, timeoutInterval: 8)
         request.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Accept")
         let (data, response) = try await session.data(for: request)
@@ -89,14 +89,15 @@ enum NextMarketDataService {
     private static func eastMoneyQuotes(codes: [String], session: URLSession) async throws -> [NextQuote] {
         let secids = codes.compactMap(NextEastMoneySymbol.secid(for:))
         guard secids.count == codes.count, !secids.isEmpty else { throw NextError.invalid("证券代码无效或交易所来源尚未支持") }
-        var components = URLComponents(string: "https://push2.eastmoney.com/api/qt/ulist.np/get")!
+        guard var components = URLComponents(string: "https://push2.eastmoney.com/api/qt/ulist.np/get") else { throw NextError.invalid("东财行情请求地址无效") }
         components.queryItems = [
             URLQueryItem(name: "fields", value: "f12,f13,f14,f2,f3,f4,f6,f60"),
             URLQueryItem(name: "secids", value: secids.joined(separator: ",")),
             URLQueryItem(name: "fltt", value: "2"),
             URLQueryItem(name: "np", value: "1")
         ]
-        var request = URLRequest(url: components.url!, timeoutInterval: 8)
+        guard let url = components.url else { throw NextError.invalid("东财行情请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 8)
         request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NextError.invalid("东财行情服务暂不可用") }
@@ -109,9 +110,10 @@ enum NextMarketDataService {
     private static func sinaQuotes(codes: [String], session: URLSession) async throws -> [NextQuote] {
         let symbols = codes.compactMap(NextTencentQuoteParser.symbol(for:))
         guard symbols.count == codes.count, !symbols.isEmpty else { throw NextError.invalid("证券代码无效或交易所来源尚未支持") }
-        var components = URLComponents(string: "https://hq.sinajs.cn/list/\(symbols.joined(separator: ","))")!
+        guard var components = URLComponents(string: "https://hq.sinajs.cn/list/\(symbols.joined(separator: ","))") else { throw NextError.invalid("新浪行情请求地址无效") }
         components.queryItems = [URLQueryItem(name: "_t", value: "\(Int(Date().timeIntervalSince1970))")]
-        var request = URLRequest(url: components.url!, timeoutInterval: 8)
+        guard let url = components.url else { throw NextError.invalid("新浪行情请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 8)
         request.setValue("https://finance.sina.com.cn/", forHTTPHeaderField: "Referer")
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NextError.invalid("新浪行情服务暂不可用") }
@@ -128,7 +130,8 @@ enum NextMarketDataService {
             throw NextError.invalid("证券代码无效")
         }
         components.queryItems = [URLQueryItem(name: "code", value: symbol), URLQueryItem(name: "_var", value: "min_data_\(symbol)")]
-        var request = URLRequest(url: components.url!, timeoutInterval: 10)
+        guard let url = components.url else { throw NextError.invalid("腾讯分时请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
         request.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
         let (data, response) = try await session.data(for: request)
@@ -142,7 +145,7 @@ enum NextMarketDataService {
 
     private static func eastMoneyMinute(code: String, session: URLSession) async throws -> NextChartDataset {
         guard let secid = NextEastMoneySymbol.secid(for: code) else { throw NextError.invalid("证券代码无效") }
-        var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
+        guard var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get") else { throw NextError.invalid("东财分时请求地址无效") }
         components.queryItems = [
             URLQueryItem(name: "secid", value: secid),
             URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6"),
@@ -152,7 +155,8 @@ enum NextMarketDataService {
             URLQueryItem(name: "end", value: "20500101"),
             URLQueryItem(name: "lmt", value: "240")
         ]
-        var request = URLRequest(url: components.url!, timeoutInterval: 10)
+        guard let url = components.url else { throw NextError.invalid("东财分时请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
         let (data, response) = try await session.data(for: request)
         let receivedAt = Date()
@@ -167,9 +171,10 @@ enum NextMarketDataService {
 
     private static func tencentDaily(code: String, session: URLSession) async throws -> NextChartDataset {
         guard let symbol = NextTencentQuoteParser.symbol(for: code) else { throw NextError.invalid("证券代码无效") }
-        var components = URLComponents(string: "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get")!
+        guard var components = URLComponents(string: "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get") else { throw NextError.invalid("腾讯日K请求地址无效") }
         components.queryItems = [URLQueryItem(name: "param", value: "\(symbol),day,,,640,qfq")]
-        var request = URLRequest(url: components.url!, timeoutInterval: 12)
+        guard let url = components.url else { throw NextError.invalid("腾讯日K请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 12)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
         let (data, response) = try await session.data(for: request)
@@ -183,7 +188,7 @@ enum NextMarketDataService {
 
     private static func eastMoneyDaily(code: String, session: URLSession) async throws -> NextChartDataset {
         guard let secid = NextEastMoneySymbol.secid(for: code) else { throw NextError.invalid("证券代码无效") }
-        var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
+        guard var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get") else { throw NextError.invalid("东财日K请求地址无效") }
         components.queryItems = [
             URLQueryItem(name: "secid", value: secid),
             URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6"),
@@ -193,7 +198,8 @@ enum NextMarketDataService {
             URLQueryItem(name: "end", value: "20500101"),
             URLQueryItem(name: "lmt", value: "640")
         ]
-        var request = URLRequest(url: components.url!, timeoutInterval: 12)
+        guard let url = components.url else { throw NextError.invalid("东财日K请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 12)
         request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
         let (data, response) = try await session.data(for: request)
         let receivedAt = Date()
@@ -206,14 +212,15 @@ enum NextMarketDataService {
 
     private static func sinaDaily(code: String, session: URLSession) async throws -> NextChartDataset {
         guard let symbol = NextTencentQuoteParser.symbol(for: code) else { throw NextError.invalid("证券代码无效") }
-        var components = URLComponents(string: "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketDataService.getKLineData")!
+        guard var components = URLComponents(string: "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketDataService.getKLineData") else { throw NextError.invalid("新浪日K请求地址无效") }
         components.queryItems = [
             URLQueryItem(name: "symbol", value: symbol),
             URLQueryItem(name: "scale", value: "240"),
             URLQueryItem(name: "ma", value: "no"),
             URLQueryItem(name: "datalen", value: "320")
         ]
-        var request = URLRequest(url: components.url!, timeoutInterval: 10)
+        guard let url = components.url else { throw NextError.invalid("新浪日K请求地址无效") }
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("https://finance.sina.com.cn/", forHTTPHeaderField: "Referer")
         let (data, response) = try await session.data(for: request)
         let receivedAt = Date()
