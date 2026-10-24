@@ -147,7 +147,6 @@ final class NextLocalRepository {
     }
 }
 
-@MainActor
 final class NextAppModel: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     var ledger = NextAuditedBook(current: NextBook()) { didSet { objectWillChange.send(); reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
