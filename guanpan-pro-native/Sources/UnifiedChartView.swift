@@ -21,15 +21,14 @@ struct UnifiedChartView: View {
     @Binding var selectedTime: Date?
     var securityCode: String? = nil
     var expanded = false
-    /// 分时图是**固定窗口**（09:30–15:00 一整天），不做缩放：同花顺的分时也是固定的，
-    /// 能缩的只有日 K / 周 / 月这类按根数取窗口的图。
-    private var zoomAllowed: Bool { interval.wrappedValue != .intraday }
+    /// 所有周期都允许放大；分时默认显示完整交易时段，放大后聚焦最新区间。
+    private var zoomAllowed: Bool { true }
     /// 分时图比日 K 更吃高度。同花顺的分时主图几乎占满一屏，副图（MACD/量）也要能看清。
     /// 之前统一 250 / 430，手机上主图被压得只剩一条带，MACD 柱挤成一条缝。
     private var chartHeight: CGFloat {
         let isIntraday = interval.wrappedValue == .intraday
-        if expanded { return isIntraday ? 700 : 560 }
-        return isIntraday ? 440 : 320
+        if expanded { return isIntraday ? 760 : 640 }
+        return isIntraday ? 500 : 380
     }
     @State private var magnification = 1.0
     @State private var pinchBase: Double?
@@ -96,14 +95,13 @@ struct UnifiedChartView: View {
         case .year: window = min(252, chartBars.count)
         case .intraday, .day, .week, .month, .all: window = chartBars.count
         }
-        // 分时不接受缩放：放大只对按根数取窗口的周期生效。
-        let effectiveZoom = zoomAllowed ? magnification : 1.0
+        let effectiveZoom = magnification
         let count = max(1, Int(Double(min(chartBars.count, window)) / max(1, effectiveZoom)))
         return Array(chartBars.suffix(count))
     }
     private var visibleTimeDomain: ClosedRange<Date>? {
         guard let first = samples.first?.timestamp else { return nil }
-        if interval.wrappedValue == .intraday {
+        if interval.wrappedValue == .intraday && magnification <= 1.001 {
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
             guard let start = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: first),
@@ -198,18 +196,46 @@ struct UnifiedChartView: View {
                     Spacer(minLength: 0)
                 }
             }
-            HStack {
-                ForEach(NextChartInterval.allCases, id: \.rawValue) { value in
-                    Button { interval.wrappedValue = value; selectedTime = nil } label: {
-                        Text(label(value)).font(.system(size: 10, weight: interval.wrappedValue == value ? .semibold : .regular))
-                            .foregroundStyle(interval.wrappedValue == value ? p.forest : p.muted)
-                            .padding(.vertical, 6).padding(.horizontal, 7)
-                            .background(interval.wrappedValue == value ? p.tint : .clear, in: RoundedRectangle(cornerRadius: 7))
-                    }.buttonStyle(.plain).accessibilityIdentifier("chart.period.\(value.rawValue)")
+            HStack(spacing: 4) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        ForEach(NextChartInterval.allCases, id: \.rawValue) { value in
+                            Button { interval.wrappedValue = value; selectedTime = nil; magnification = 1; saveChartState() } label: {
+                                Text(label(value)).font(.system(size: 10, weight: interval.wrappedValue == value ? .semibold : .regular))
+                                    .foregroundStyle(interval.wrappedValue == value ? p.forest : p.muted)
+                                    .padding(.vertical, 6).padding(.horizontal, 6)
+                                    .background(interval.wrappedValue == value ? p.tint : .clear, in: RoundedRectangle(cornerRadius: 7))
+                            }.buttonStyle(.plain).accessibilityIdentifier("chart.period.\(value.rawValue)")
+                        }
+                    }
                 }
-                Spacer(minLength: 0)
                 if zoomAllowed {
-                    Button { magnification = magnification >= 4 ? 1 : magnification * 1.6; saveChartState() } label: { Image(systemName: "plus.magnifyingglass").font(.system(size: 12)).foregroundStyle(p.forest).frame(minWidth: 30, minHeight: 30) }.accessibilityLabel("缩放图表")
+                    HStack(spacing: 1) {
+                        Button { changeZoom(by: 1 / 1.5) } label: {
+                            Image(systemName: "minus.magnifyingglass").frame(width: 28, height: 30)
+                        }
+                        .accessibilityLabel("缩小图表")
+                        .accessibilityIdentifier("chart.zoom.out")
+                        .disabled(magnification <= 1.001)
+                        Text("×\(magnification, specifier: "%.1f")")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(p.muted).frame(minWidth: 27)
+                            .accessibilityIdentifier("chart.zoom.level")
+                        Button { changeZoom(by: 1.5) } label: {
+                            Image(systemName: "plus.magnifyingglass").frame(width: 28, height: 30)
+                        }
+                        .accessibilityLabel("放大图表")
+                        .accessibilityIdentifier("chart.zoom.in")
+                        .disabled(magnification >= 12)
+                        Button { magnification = 1; saveChartState() } label: {
+                            Text("复位").font(.system(size: 9, weight: .medium)).frame(height: 30).padding(.horizontal, 4)
+                        }
+                        .accessibilityIdentifier("chart.zoom.reset")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(p.forest)
+                    .background(p.tint.opacity(0.7), in: Capsule())
+                    .fixedSize()
                 }
             }
             ScrollView(.horizontal, showsIndicators: false) {
@@ -280,13 +306,13 @@ struct UnifiedChartView: View {
                         .simultaneousGesture(MagnifyGesture().onChanged { value in
                             guard zoomAllowed else { return }
                             if pinchBase == nil { pinchBase = magnification }
-                            magnification = min(8, max(1, (pinchBase ?? magnification) * Double(value.magnification)))
+                            magnification = min(12, max(1, (pinchBase ?? magnification) * Double(value.magnification)))
                         }.onEnded { _ in pinchBase = nil; saveChartState() })
                         .accessibilityElement(children: .ignore)
                         .accessibilityIdentifier("chart.plot")
                         .accessibilityLabel("价格、IOPV、成交量共用价格纵轴的图表")
                         .accessibilityValue(selectedSample.map { "\($0.timestamp.formatted(date: .numeric, time: .shortened))，价格 ¥\(NextMoney.text($0.close, digits: 3))" } ?? "拖动或使用前后数据点操作查看历史")
-                        .accessibilityAction(named: "放大图表") { guard zoomAllowed else { return }; magnification = min(8, magnification * 1.5); saveChartState() }
+                        .accessibilityAction(named: "放大图表") { guard zoomAllowed else { return }; magnification = min(12, magnification * 1.5); saveChartState() }
                         .accessibilityAction(named: "缩小图表") { guard zoomAllowed else { return }; magnification = max(1, magnification / 1.5); saveChartState() }
                         .accessibilityAction(named: "上一个数据点") { moveCrosshair(-1) }
                         .accessibilityAction(named: "下一个数据点") { moveCrosshair(1) }
@@ -301,7 +327,7 @@ struct UnifiedChartView: View {
                         if visibleLayers.contains("ma60") && activeDataset?.interval == .day && (activeDataset?.orderedSamples.count ?? 0) >= 60 { legend("MA60", color: p.chartViolet) }
                         if visibleLayers.contains("ma250") && activeDataset?.interval == .day {
                             let bars = activeDataset?.orderedSamples.count ?? 0
-                            legend(bars >= 250 ? "MA250" : "MA250·\(bars)根", color: p.terracotta)
+                            legend(bars >= 250 ? "MA250" : "MA250·\(bars)根", color: p.chartLongMA)
                         }
                         if visibleLayers.contains("previous") && activeDataset?.interval == .intraday { legend("昨收", color: p.muted) }
                         if activeDataset?.iopvSource != nil { legend("IOPV · 同轴", color: p.chartViolet) }
@@ -415,7 +441,7 @@ struct UnifiedChartView: View {
         }
         // Moving averages include earlier bars outside the zoom window.
         let fullSamples = workingSamples
-        for (key, period, color, width) in [("ma5", 5, p.chartGold, 1.2), ("ma10", 10, p.chartBlue, 1.1), ("ma20", 20, p.jade, 1.15), ("ma60", 60, p.chartViolet, 1.1), ("ma250", 250, p.terracotta, 1.25)]
+        for (key, period, color, width) in [("ma5", 5, p.chartGold, 1.2), ("ma10", 10, p.chartBlue, 1.1), ("ma20", 20, p.jade, 1.15), ("ma60", 60, p.chartViolet, 1.1), ("ma250", 250, p.chartLongMA, 1.25)]
         where visibleLayers.contains(key)
             && fullSamples.count >= (key == "ma250" ? 2 : period)
             && (key != "ma250" || dataset.interval == .day) {
@@ -651,7 +677,7 @@ struct UnifiedChartView: View {
         if !restored.visibleLayers.isEmpty { visibleLayers = restored.visibleLayers }
         selectedTime = state.crosshairTime
         // 分时窗口固定，历史缩放值不再套用，避免切到分时后还带着日 K 的放大倍数。
-        magnification = zoomAllowed ? min(8, max(1, state.scale)) : 1
+        magnification = min(12, max(1, state.scale))
         let datasetDay = dataset?.orderedSamples.last?.timestamp
         latestIntradaySessionDate = state.latestIntradaySessionDate ?? datasetDay ?? Date()
         intradaySessionDate = state.intradaySessionDate ?? datasetDay ?? latestIntradaySessionDate
@@ -686,6 +712,10 @@ struct UnifiedChartView: View {
         state.movingAverageDefaultsApplied = true
         model.saveChartState(state, for: securityCode)
     }
+    private func changeZoom(by factor: Double) {
+        magnification = min(12, max(1, magnification * factor))
+        saveChartState()
+    }
     private func moveCrosshair(_ offset: Int) {
         guard !samples.isEmpty else { return }
         let current = selectedSample.flatMap { sample in samples.firstIndex(of: sample) } ?? (offset > 0 ? -1 : samples.count)
@@ -701,7 +731,7 @@ struct UnifiedChartView: View {
         case "ma60": indicatorColor = p.chartViolet
         case "iopv": indicatorColor = p.chartViolet
         case "ma20", "trades": indicatorColor = p.jade
-        case "ma250": indicatorColor = p.terracotta
+        case "ma250": indicatorColor = p.chartLongMA
         case "cost": indicatorColor = p.chartCost
         case "price": indicatorColor = p.chartBlue
         default: indicatorColor = p.forest
