@@ -119,3 +119,11 @@
 
 - 最新macOS编译已成功，确认NASService闭合、AI持仓聊天状态摘要、主题卡片阴影引用均可编译。IPA在打包校验阶段失败：脚本 `cd` 到临时IPA目录后仍以相对路径访问校验器；工作流已改为 `$GITHUB_WORKSPACE/$PROJECT_DIR/scripts/verify_ipa.py`，需推送后重跑。
 - 最新 Actions（2150bd0）：IPA run 40081298511 构建通过、打包路径失败；模拟器 run 40081298499 正在执行完整UI测试。继续等其结果和截图附件。
+
+## 2026-10-24 NAS 外网/采集耗流量核查
+
+- 用户询问 NAS 容器外网、系统时钟、DNS/IPv6 是否有故障，以及后台是否会为旧 demo ETF 持续请求上游。
+- 源码静态检查结论：Compose 未禁用外网，也未配置自定义 DNS 或 IPv4/IPv6 策略；容器使用 Docker 主机时钟，`/health` 不检测时钟偏差。因此这三项是未诊断的运行环境风险，源码不能证明 NAS 上实际发生了任一故障。镜像拉取使用 DaoCloud 不能证明容器运行时出网失败或成功。
+- 发现并修正采集范围漏洞：旧 `tracked()` 会把 `daily_bars`/`minute_archive` 中曾经出现的所有代码永久加入采集集合；现在只允许空的默认列表、手机明确登记的标的与 NAS 真实账本正持仓触发采集。版本升至 `3.6.0-r17-holdings-only-collection`，NAS README 说明该改变和环境诊断限制。
+- 新增两个回归测试：历史 archive-only demo 代码不进入请求清单；显式登记标的与真实正持仓仍会采集。`nas-advisor-compat/tests` 本轮 14/14 通过。容器/NAS现场仍未验证。
+- 穿透流量区分：workers 从 NAS 容器向 Tencent/Eastmoney 发出的请求走 NAS 主机出站链路；手机通过映射域名读取 NAS API 才经过用户配置的穿透通道。当前 README 与手机默认模式是手机直连行情，NAS只提供长期研究；实际 NAS 主机若将所有出站流量再路由到代理仍需现场确认。当前 worker 日K每30分钟轮询、分时盘中每分钟轮询；以后可将日K调为收盘后一次，分时频率取决于上游接口是否每次提供完整当日分钟序列。
