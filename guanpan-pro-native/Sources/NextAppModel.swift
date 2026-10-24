@@ -48,7 +48,8 @@ struct LocalPreferences: Codable {
 
 /// The real ledger and app preferences use separate versioned files.
 /// No legacy defaults or mixed OTC records are silently imported.
-@MainActor final class NextLocalRepository {
+@MainActor
+final class NextLocalRepository {
     private let directory: URL
     private let recoveryDirectory: URL
     private var blockedFiles = Set<String>()
@@ -145,27 +146,28 @@ struct LocalPreferences: Codable {
     }
 }
 
-@MainActor final class NextAppModel: ObservableObject {
-    @Published var ledger: NextAuditedBook { didSet { reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
-    @Published var preferences: LocalPreferences { didSet { reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
-    @Published var quotes: [String: NextCachedQuote] { didSet { reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
-    @Published var chartData: [String: NextChartDataset] { didSet { reportSave(repository.save(chartData, filename: "chart-history-v1.json")) } }
-    @Published var rules: [String: NextInstrumentRules] { didSet { reportSave(repository.save(rules, filename: "instrument-rules-v1.json")) } }
-    @Published var orderBooks: [String: NextOrderBookSnapshot] { didSet { reportSave(repository.save(orderBooks, filename: "order-books-v1.json")) } }
-    @Published var decisions: [NextDecision] { didSet { reportSave(repository.save(decisions, filename: "decision-history-v1.json")) } }
-    @Published var nasResearch: [String: NextNASResearch] { didSet { reportSave(repository.save(nasResearch, filename: "nas-research-v1.json")) } }
+@MainActor
+final class NextAppModel: ObservableObject {
+    @Published var ledger = NextAuditedBook(current: NextBook()) { didSet { reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
+    @Published var preferences = LocalPreferences() { didSet { reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
+    @Published var quotes: [String: NextCachedQuote] = [:] { didSet { reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
+    @Published var chartData: [String: NextChartDataset] = [:] { didSet { reportSave(repository.save(chartData, filename: "chart-history-v1.json")) } }
+    @Published var rules: [String: NextInstrumentRules] = [:] { didSet { reportSave(repository.save(rules, filename: "instrument-rules-v1.json")) } }
+    @Published var orderBooks: [String: NextOrderBookSnapshot] = [:] { didSet { reportSave(repository.save(orderBooks, filename: "order-books-v1.json")) } }
+    @Published var decisions: [NextDecision] = [] { didSet { reportSave(repository.save(decisions, filename: "decision-history-v1.json")) } }
+    @Published var nasResearch: [String: NextNASResearch] = [:] { didSet { reportSave(repository.save(nasResearch, filename: "nas-research-v1.json")) } }
     @Published var researchStatus: [String: String] = [:]
-    @Published var dividendEvents: [String: [NextETFDividendEvent]] { didSet { reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json")) } }
-    @Published var patientLimitPlans: [NextPatientLimitPlan] { didSet { reportSave(repository.save(patientLimitPlans, filename: "patient-limit-plans-v1.json")) } }
-    @Published var candidatePlans: [NextCandidatePlan] { didSet { reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json")) } }
+    @Published var dividendEvents: [String: [NextETFDividendEvent]] = [:] { didSet { reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json")) } }
+    @Published var patientLimitPlans: [NextPatientLimitPlan] = [] { didSet { reportSave(repository.save(patientLimitPlans, filename: "patient-limit-plans-v1.json")) } }
+    @Published var candidatePlans: [NextCandidatePlan] = [] { didSet { reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json")) } }
     /// 动态投资者画像：只存结论与依据，不存原始成交流水（流水在账本里）。
-    @Published var profile: NextInvestorProfile { didSet { reportSave(repository.save(profile, filename: "investor-profile-v1.json")) } }
+    @Published var profile = NextInvestorProfile() { didSet { reportSave(repository.save(profile, filename: "investor-profile-v1.json")) } }
     /// AI 给过的每一次具体机会：曝光 → 反馈 → 是否真实成交，画像学习只吃这条链。
-    @Published var suggestions: [NextSuggestionRecord] { didSet { reportSave(repository.save(suggestions, filename: "ai-suggestions-v1.json")) } }
+    @Published var suggestions: [NextSuggestionRecord] = [] { didSet { reportSave(repository.save(suggestions, filename: "ai-suggestions-v1.json")) } }
     /// AI 决策记忆：每条建议「当时」的行情/持仓/NAS/新闻/画像/依据/风险/有效期，加上改判轨迹与复盘。
-    @Published var decisionMemory: [NextDecisionRecord] { didSet { reportSave(repository.save(decisionMemory, filename: "decision-memory-v1.json")) } }
+    @Published var decisionMemory: [NextDecisionRecord] = [] { didSet { reportSave(repository.save(decisionMemory, filename: "decision-memory-v1.json")) } }
     /// 每只持仓的最新新闻标题（只存标题与来源，不存正文）。新闻→持仓→计划的影响在扫描时统一计算。
-    @Published var nasNews: [String: [NextNewsInput]] { didSet { reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
+    @Published var nasNews: [String: [NextNewsInput]] = [:] { didSet { reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
     @Published var newsStatus: [String: String] = [:]
     @Published var dailyGuidance: NextDailyGuidance?
     @Published var guidanceStatus = "尚未生成今日指导"
