@@ -147,8 +147,8 @@ final class NextLocalRepository {
     }
 }
 
-final class NextAppModel {
-    let objectWillChange = ObservableObjectPublisher()
+@MainActor final class NextAppModel: ObservableObject {
+    let objectWillChange: ObservableObjectPublisher = ObservableObjectPublisher()
     var ledger = NextAuditedBook(current: NextBook()) { didSet { objectWillChange.send(); reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
     var preferences = LocalPreferences() { didSet { objectWillChange.send(); reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
     var quotes: [String: NextCachedQuote] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
@@ -1630,4 +1630,3 @@ final class NextAppModel {
     }
 }
 
-extension NextAppModel: ObservableObject {}
