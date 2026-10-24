@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 import Combine
 
-@MainActor final class NextAppModel {
+@MainActor final class NextAppModel: ObservableObject {
     @Published var ledger: NextAuditedBook = NextAuditedBook(current: NextBook()) { didSet { reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
     @Published var preferences = LocalPreferences() { didSet { reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
     @Published var quotes: [String: NextCachedQuote] = [:] { didSet { reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
@@ -11,7 +11,7 @@ import Combine
     @Published var orderBooks: [String: NextOrderBookSnapshot] = [:] { didSet { reportSave(repository.save(orderBooks, filename: "order-books-v1.json")) } }
     @Published var decisions: [NextDecision] = [] { didSet { reportSave(repository.save(decisions, filename: "decision-history-v1.json")) } }
     @Published var nasResearch: [String: NextNASResearch] = [:] { didSet { reportSave(repository.save(nasResearch, filename: "nas-research-v1.json")) } }
-    @Published var researchStatus: [String: String] = [:] { didSet { objectWillChange.send() } }
+    @Published var researchStatus: [String: String] = [:] { didSet {  } }
     @Published var dividendEvents: [String: [NextETFDividendEvent]] = [:] { didSet { reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json")) } }
     @Published var patientLimitPlans: [NextPatientLimitPlan] = [] { didSet { reportSave(repository.save(patientLimitPlans, filename: "patient-limit-plans-v1.json")) } }
     @Published var candidatePlans: [NextCandidatePlan] = [] { didSet { reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json")) } }
@@ -23,27 +23,27 @@ import Combine
     @Published var decisionMemory: [NextDecisionRecord] = [] { didSet { reportSave(repository.save(decisionMemory, filename: "decision-memory-v1.json")) } }
     /// 每只持仓的最新新闻标题（只存标题与来源，不存正文）。新闻→持仓→计划的影响在扫描时统一计算。
     @Published var nasNews: [String: [NextNewsInput]] = [:] { didSet { reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
-    @Published var newsStatus: [String: String] = [:] { didSet { objectWillChange.send() } }
-    @Published var dailyGuidance: NextDailyGuidance? { didSet { objectWillChange.send() } }
-    @Published var guidanceStatus = "尚未生成今日指导" { didSet { objectWillChange.send() } }
-    @Published var unifiedAIAdvice: String? { didSet { objectWillChange.send() } }
-    @Published var unifiedAIStatus: String? { didSet { objectWillChange.send() } }
-    @Published var unifiedAIIsRunning = false { didSet { objectWillChange.send() } }
-    @Published var gridStatus: NextNASGridStatus? { didSet { objectWillChange.send() } }
-    @Published var gridStatusMessage = "尚未读取 NAS 网格状态" { didSet { objectWillChange.send() } }
-    @Published var status = "行情尚未刷新 · 缓存可离线查看" { didSet { objectWillChange.send() } }
-    @Published var syncStatus = "NAS 未连接" { didSet { objectWillChange.send() } }
-    @Published var aiProviderStatus: NextAIProviderStatus? { didSet { objectWillChange.send() } }
-    @Published var legacyImportPreview: NextLegacyBookPreview? { didSet { objectWillChange.send() } }
-    @Published var dailyErrors: [String: String] = [:] { didSet { objectWillChange.send() } }
-    @Published var notificationStatus = "尚未检查系统通知权限" { didSet { objectWillChange.send() } }
-    @Published var errorMessage: String? { didSet { objectWillChange.send() } }
-    @Published var showSearch = false { didSet { objectWillChange.send() } }
-    @Published var searchText = "" { didSet { objectWillChange.send() } }
-    @Published var notice = "" { didSet { objectWillChange.send() } }
-    @Published var requestedTab: NextTab? { didSet { objectWillChange.send() } }
-    @Published var requestedRoute: GPRoute? { didSet { objectWillChange.send() } }
-    @Published var routeRequestID = UUID() { didSet { objectWillChange.send() } }
+    @Published var newsStatus: [String: String] = [:] { didSet {  } }
+    @Published var dailyGuidance: NextDailyGuidance? { didSet {  } }
+    @Published var guidanceStatus = "尚未生成今日指导" { didSet {  } }
+    @Published var unifiedAIAdvice: String? { didSet {  } }
+    @Published var unifiedAIStatus: String? { didSet {  } }
+    @Published var unifiedAIIsRunning = false { didSet {  } }
+    @Published var gridStatus: NextNASGridStatus? { didSet {  } }
+    @Published var gridStatusMessage = "尚未读取 NAS 网格状态" { didSet {  } }
+    @Published var status = "行情尚未刷新 · 缓存可离线查看" { didSet {  } }
+    @Published var syncStatus = "NAS 未连接" { didSet {  } }
+    @Published var aiProviderStatus: NextAIProviderStatus? { didSet {  } }
+    @Published var legacyImportPreview: NextLegacyBookPreview? { didSet {  } }
+    @Published var dailyErrors: [String: String] = [:] { didSet {  } }
+    @Published var notificationStatus = "尚未检查系统通知权限" { didSet {  } }
+    @Published var errorMessage: String? { didSet {  } }
+    @Published var showSearch = false { didSet {  } }
+    @Published var searchText = "" { didSet {  } }
+    @Published var notice = "" { didSet {  } }
+    @Published var requestedTab: NextTab? { didSet {  } }
+    @Published var requestedRoute: GPRoute? { didSet {  } }
+    @Published var routeRequestID = UUID() { didSet {  } }
     private let repository: NextLocalRepository
     /// 合并自动上传用的延迟任务；连点几次"录入"只发一次。
     private var autoUploadTask: Task<Void, Never>?
@@ -121,6 +121,7 @@ import Combine
         self.errorMessage = repository.integrityWarning
         // 启动时把「只有代码、没有名字」的标的补一次：账本里的旧数据、旧自选都能认出来。
         Task { await backfillNamesIfNeeded() }
+    }
     func commitRealLedger(_ updated: NextBook, action: String, reason: String) throws {
         try updated.validate()
         var copy = ledger
@@ -1483,6 +1484,3 @@ import Combine
         return archive
     }
 }
-
-
-extension NextAppModel: ObservableObject {}
