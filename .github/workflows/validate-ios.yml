@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'upgrade/v2.13.55-r2'
+      - 'validation/**'
 permissions:
   contents: read
 jobs:
