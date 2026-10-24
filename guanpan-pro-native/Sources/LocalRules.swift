@@ -930,6 +930,25 @@ enum NextAccountAdvisor {
                 severity: .watch))
         }
 
+        let targetCash: Decimal? = targetWeights.isEmpty
+            ? nil
+            : max(Decimal.zero, Decimal(100) - targetWeights.values.reduce(Decimal.zero, +))
+        if let targetCash {
+            let target = NextNum.double(targetCash)
+            let drift = cashWeight - target
+            if drift <= -5 {
+                findings.append(NextAccountFinding(
+                    title: "现金低于长期储备目标",
+                    detail: "当前现金 \(NextNum.percent(cashWeight, digits: 1))，你的ETF目标未分配比例为 \(NextNum.percent(target, digits: 1))；优先保留现金，除非机会通过价格、组合风险与数据质量检查。",
+                    severity: .act))
+            } else if drift >= 5 {
+                findings.append(NextAccountFinding(
+                    title: "现金高于长期储备目标",
+                    detail: "当前现金 \(NextNum.percent(cashWeight, digits: 1))，高于目标储备 \(NextNum.percent(target, digits: 1))；只有出现通过完整风险检查的机会时才考虑分批投入。",
+                    severity: .watch))
+            }
+        }
+
         if priced.count >= 2 {
             let topTwo = priced.sorted(by: { $0.value > $1.value }).prefix(2).reduce(0) { $0 + $1.value } / total * 100
             if topTwo >= 70 {

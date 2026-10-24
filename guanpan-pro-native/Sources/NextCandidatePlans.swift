@@ -683,7 +683,7 @@ enum NextAIOutputGuard {
 enum NextDecisionContextBuilder {
     static func build(guidance: NextDailyGuidance, book: NextBook, quotes: [String: NextQuote],
                       nasResearchLines: [String], crossMarketLines: [String] = [],
-                      newsLines: [String], profileLines: [String] = [],
+                      newsLines: [String], profileLines: [String] = [], goal: NextGoal = NextGoal(),
                       now: Date) -> NextDecisionContext {
         var holdings: [String] = []
         let timestampFormatter = DateFormatter()
@@ -726,9 +726,17 @@ enum NextDecisionContextBuilder {
             }
             planLines.append(line)
         }
+        var allocationLines = goal.targetWeights.sorted { $0.key < $1.key }.map { entry in
+            let name = book.positions.first(where: { $0.code == entry.key })?.name ?? entry.key
+            return "\(name)(\(entry.key)) 长期目标 \(NextNum.text(NextNum.double(entry.value), digits: 1))%"
+        }
+        if let targetCash = goal.targetCashPercent {
+            allocationLines.append("长期现金储备目标 \(NextNum.text(NextNum.double(targetCash), digits: 1))%（ETF目标未分配比例）；若没有通过价格、数据和组合风险检查的机会，应保留现金")
+        }
         let promptBlock = """
         你是观盘顾问，一位只基于用户真实持仓工作的投资顾问。以下是本次统一决策上下文，只能在此基础上给建议：
         【账户】现金 ¥\(NextMoney.text(book.cash))；持仓 \(book.positions.count) 只。
+        【长期配置】\(allocationLines.isEmpty ? "未设置ETF目标权重；按组合风险和真实机会判断，不强行投入现金。" : allocationLines.joined(separator: "；"))
         【持仓】\(holdings.joined(separator: "\n"))
         【A股交易日历】\(NextMarketClock.sessionDescription(now))。休市日、周末、盘前、午休和收盘后不得描述为“今天可挂”；只能引用规则引擎给出的有效候选计划，计划缺失就明确说没有当日可执行价格。
         【市场状态与候选计划】\(planLines.joined(separator: "\n"))

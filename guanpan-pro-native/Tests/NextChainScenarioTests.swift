@@ -100,10 +100,13 @@ final class NextChainScenarioTests: XCTestCase {
         let guidance = NextDailyGuidance(generatedAt: now, items: [item], summary: "今天不建议交易",
                                          noActionSummary: "继续持有", dataState: "持仓数据不足")
         let context = NextDecisionContextBuilder.build(guidance: guidance, book: NextBook(), quotes: [:],
-                                                       nasResearchLines: [], newsLines: [], now: now)
+                                                       nasResearchLines: [], newsLines: [],
+                                                       goal: NextGoal(targetWeights: ["159941": 60, "563020": 30]), now: now)
         XCTAssertTrue(context.promptBlock.contains("低于目标权重，仅作排序参考"))
         XCTAssertTrue(context.promptBlock.contains("组合行情不完整，暂停加仓"))
         XCTAssertTrue(context.promptBlock.contains("没有可靠来源报价"))
+        XCTAssertTrue(context.promptBlock.contains("长期现金储备目标 10.0%"))
+        XCTAssertTrue(context.promptBlock.contains("若没有通过价格、数据和组合风险检查的机会，应保留现金"))
     }
 
     func testOnlineAIOutputGuardBlocksUnplannedActionPrices() {

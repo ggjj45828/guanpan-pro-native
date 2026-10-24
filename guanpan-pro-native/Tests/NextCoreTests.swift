@@ -479,7 +479,22 @@ final class NextCoreTests: XCTestCase {
         var goal = NextGoal(targetWeights: ["159941": 60, "563020": 40])
         XCTAssertNoThrow(try goal.validate())
         goal.targetWeights["563020"] = 30
-        XCTAssertThrowsError(try goal.validate())
+        XCTAssertNoThrow(try goal.validate(), "目标ETF未分配的比例应成为现金储备")
+        XCTAssertEqual(goal.targetCashPercent, 10)
+        goal.targetWeights["563020"] = 50
+        XCTAssertThrowsError(try goal.validate(), "ETF目标合计超过100%时必须拒绝")
+    }
+    func testAccountAdvisorFlagsCashBelowConfiguredReserve() {
+        let book = NextBook(cash: 100, positions: [
+            NextPosition(code: "159941", name: "纳指ETF", units: 100, bookCost: 800)
+        ])
+        let currentQuote = NextQuote(code: "159941", name: "纳指ETF", price: 9, previousClose: 9,
+                                     time: now, source: "test")
+        let review = NextAccountAdvisor.review(book: book, quotes: ["159941": currentQuote],
+            concentrationLimitPercent: 100, targetWeights: ["159941": 80])
+        XCTAssertTrue(review?.findings.contains(where: {
+            $0.title == "现金低于长期储备目标" && $0.detail.contains("20.0%")
+        }) == true)
     }
     func testDailyChartCacheKeySurvivesBackupValidation() throws {
         let sample = NextChartSample(timestamp: now, open: 1.0, high: 1.1, low: 0.9, close: 1.05, iopv: nil, volume: 100)

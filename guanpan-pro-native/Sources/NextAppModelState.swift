@@ -714,6 +714,7 @@ import Combine
                                                 crossMarketLines: crossMarketLines,
                                                 newsLines: newsLines,
                                                 profileLines: NextProfileEngine.promptLines(profile: profile),
+                                                goal: goal,
                                                 now: Date())
     }
 

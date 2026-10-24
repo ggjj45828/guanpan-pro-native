@@ -565,6 +565,11 @@ struct NextGoal: Codable, Equatable {
     var monthlyBudget: Decimal = 1000
     var concentrationLimit: Decimal = 40
     var targetWeights: [String: Decimal] = [:]
+    /// If explicit ETF targets sum below 100%, the residual is an intentional cash reserve.
+    var targetCashPercent: Decimal? {
+        guard !targetWeights.isEmpty else { return nil }
+        return max(0, Decimal(100) - targetWeights.values.reduce(Decimal.zero, +))
+    }
     init(years: Int = 10, monthlyBudget: Decimal = 1000, concentrationLimit: Decimal = 40, targetWeights: [String: Decimal] = [:]) {
         self.years = years; self.monthlyBudget = monthlyBudget; self.concentrationLimit = concentrationLimit; self.targetWeights = targetWeights
     }
@@ -582,7 +587,7 @@ struct NextGoal: Codable, Equatable {
               concentrationLimit > 0, concentrationLimit <= 100,
               targetWeights.keys.allSatisfy({ $0.count == 6 && $0.allSatisfy(\.isNumber) }),
               targetWeights.values.allSatisfy({ !$0.isNaN && $0 >= 0 && $0 <= 100 }),
-              targetWeights.isEmpty || abs(totalWeight - 100) <= Decimal(1) / Decimal(100) else { throw NextError.invalid("目标、预算或目标仓位比例无效（目标仓位合计须为 100%）") }
+              targetWeights.isEmpty || totalWeight <= 100 else { throw NextError.invalid("目标、预算或目标仓位比例无效（ETF目标合计不能超过100%；未分配比例将作为现金储备）") }
     }
 }
 struct NextEvidence: Codable, Identifiable, Equatable {

@@ -1165,7 +1165,8 @@ private struct DecisionScreen: View {
                 EditorialSection(title: "你的目标与资金") {
                     GPCard {
                         HStack(spacing: 10) { compactField("期限（年）", text: $years); compactField("每月新增预算", text: $budget); compactField("集中度线 %", text: $limit) }
-                        Text("目标仓位（可留空；填写后合计须为 100%）").font(.caption2).foregroundStyle(p.muted)
+                        Text("长期目标仓位（ETF目标合计可低于100%；剩余比例自动作为现金储备）")
+                            .font(.caption2).foregroundStyle(p.muted)
                         ForEach(model.preferences.watch, id: \.self) { targetCode in
                             HStack(spacing: 8) {
                                 Text("\(knownName(targetCode)) · \(targetCode)").font(.caption).lineLimit(1)
