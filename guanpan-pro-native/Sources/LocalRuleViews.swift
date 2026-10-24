@@ -409,7 +409,7 @@ private struct GlobalIndexCard: View {
             Text(quote.price > 0 ? "\(NextNum.signed(quote.changePercent))%" : "无报价")
                 .font(.system(size: 9.5, weight: .medium, design: .monospaced)).foregroundStyle(tone)
         }
-        .frame(width: 78, alignment: .leading)
+        .frame(width: 92, height: 66, alignment: .leading)
         .padding(.horizontal, 8).padding(.vertical, 7)
         .background(
             LinearGradient(colors: [p.paper, tone.opacity(0.10)], startPoint: .topLeading, endPoint: .bottomTrailing),

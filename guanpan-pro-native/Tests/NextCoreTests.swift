@@ -184,6 +184,35 @@ final class NextCoreTests: XCTestCase {
         invalid.state = "已成交"
         XCTAssertThrowsError(try invalid.validate())
     }
+    func testCandidatePlanTracksTwoRealPartialFillsWithoutInventingTheRemainder() throws {
+        var plan = NextCandidatePlan(kind: .reverseT, code: "512480", name: "半导体ETF",
+            limitPrice: Decimal(string: "0.850")!, units: 500,
+            createdAt: now, expiresAt: now.addingTimeInterval(3600),
+            triggerNote: "券商手工卖出", cancelNote: "突破区间时取消",
+            quoteSource: "test", quoteTime: now, dailyBarCount: 120, minuteSampleCount: 200,
+            confidenceLevel: "high", rationale: "长期分时", expectedNetGain: 9,
+            expectedCostReduction: Decimal(string: "0.018")!, riskNote: "踏空",
+            marketState: "宽幅震荡", cancelAbove: nil, cancelBelow: nil)
+        try plan.confirmRealFill(price: Decimal(string: "0.850")!, units: 300,
+                                 fee: Decimal(string: "0.10")!, at: now.addingTimeInterval(10),
+                                 now: now.addingTimeInterval(10))
+        XCTAssertEqual(plan.state, .partiallyConfirmed)
+        XCTAssertEqual(plan.confirmedUnits, 300)
+        XCTAssertEqual(plan.remainingUnits, 200)
+        XCTAssertThrowsError(try plan.confirmRealFill(price: 0.86, units: 300, fee: 0.1,
+            at: now.addingTimeInterval(15), now: now.addingTimeInterval(15)))
+        XCTAssertEqual(plan.remainingUnits, 200, "超量成交反馈不得改变计划")
+        try plan.confirmRealFill(price: Decimal(string: "0.860")!, units: 200,
+                                 fee: Decimal(string: "0.10")!, at: now.addingTimeInterval(20),
+                                 now: now.addingTimeInterval(20))
+        XCTAssertEqual(plan.state, .confirmed)
+        XCTAssertEqual(plan.confirmedUnits, 500)
+        XCTAssertEqual(plan.remainingUnits, 0)
+        XCTAssertEqual(plan.confirmedPrice, Decimal(string: "0.854")!)
+        XCTAssertEqual(plan.confirmedFee, Decimal(string: "0.20")!)
+        XCTAssertThrowsError(try plan.confirmRealFill(price: 0.86, units: 1, fee: 0.1,
+            at: now.addingTimeInterval(30), now: now.addingTimeInterval(30)))
+    }
     // IOPV 图层是可选的：关掉时纵轴只按成交价，不被 IOPV 撑开；
     // 打开时才把 IOPV 纳入同一根价格轴（UnifiedChartView 也按 visibleLayers 处理）。
     func testChartPriceDomainFollowsIOPVLayerVisibility() throws {
@@ -225,6 +254,11 @@ final class NextCoreTests: XCTestCase {
         XCTAssertTrue(NextMarketClock.isRegularSession(formatter.date(from: "2026-10-20 14:00")!))
         XCTAssertFalse(NextMarketClock.isRegularSession(formatter.date(from: "2026-10-20 12:00")!))
         XCTAssertFalse(NextMarketClock.isRegularSession(formatter.date(from: "2026-10-18 10:00")!))
+        XCTAssertFalse(NextMarketClock.isRegularSession(formatter.date(from: "2026-10-05 10:00")!), "国庆休市不能被当作普通周一")
+        XCTAssertTrue(NextMarketClock.isRegularSession(formatter.date(from: "2026-10-08 10:00")!), "官方安排的节后开市日应允许正常交易时段")
+        let unsupportedYear = formatter.date(from: "2027-01-04 10:00")!
+        XCTAssertFalse(NextMarketClock.canGenerateActionablePlan(unsupportedYear), "缺少新年度官方日历时应禁止具体挂单价")
+        XCTAssertTrue(NextMarketClock.sessionDescription(unsupportedYear).contains("未同步"))
     }
     func testBackupChecksumAndSchemaMustValidateBeforeRestore() throws {
         var archive = NextAppArchive(); archive.book.cash = 250; archive.audits = []

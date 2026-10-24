@@ -17,6 +17,7 @@ struct AIGuidanceSection: View {
                 Image(systemName: "sparkles").font(.system(size: 14, weight: .semibold)).foregroundStyle(p.forest)
                 Text("AI 今日指导").font(.system(.headline, design: .serif).weight(.semibold)).foregroundStyle(p.ink)
                 Spacer(minLength: 6)
+                Text(NextMarketClock.sessionDescription()).font(.system(size: 9, weight: .medium)).foregroundStyle(p.muted).lineLimit(1).minimumScaleFactor(0.8)
                 if generating { ProgressView().controlSize(.mini) }
             }
             if let guidance = model.dailyGuidance {
@@ -210,6 +211,10 @@ struct CandidatePlanRow: View {
             }
             Text("\(NextMoney.text(plan.limitPrice, digits: 3)) × \(plan.units) 份 · 有效至 \(plan.expiresAt.formatted(date: .omitted, time: .shortened))")
                 .font(.system(size: 11, design: .rounded)).monospacedDigit().foregroundStyle(p.muted)
+            if let filled = plan.confirmedUnits, filled > 0 {
+                Text("券商已确认 \(filled) 份 · 剩余候选 \(plan.remainingUnits) 份 · 实际费用 ¥\(NextMoney.text(plan.confirmedFee ?? 0))")
+                    .font(.caption2).foregroundStyle(p.jade).fixedSize(horizontal: false, vertical: true)
+            }
             if plan.state.isOpen {
                 HStack(spacing: 8) {
                     Button("我已成交") { showFill = true }
@@ -240,7 +245,7 @@ struct CandidatePlanRow: View {
         .overlay(alignment: .bottom) { Rectangle().fill(p.line.opacity(0.6)).frame(height: 0.5) }
         .sheet(isPresented: $showFill) {
             AIFillSheet(plan: plan, code: plan.code, name: plan.name, side: plan.kind.side,
-                        suggestedPrice: plan.limitPrice, suggestedUnits: plan.units)
+                        suggestedPrice: plan.limitPrice, suggestedUnits: plan.remainingUnits)
         }
         .onAppear { model.markPlanViewed(plan.id) }
     }
@@ -249,6 +254,7 @@ struct CandidatePlanRow: View {
         switch plan.state {
         case .active: return p.forest
         case .triggered: return p.chartGold
+        case .partiallyConfirmed: return p.chartBlue
         case .confirmed: return p.jade
         case .expired, .invalidated, .withdrawn: return p.muted
         }
@@ -515,15 +521,22 @@ struct AIFillSheet: View {
     @State private var priceText = ""
     @State private var unitsText = ""
     @State private var feeText = "0.10"
+    @State private var tradedAt = Date()
     @State private var submitError: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("券商实际成交") {
+                    Text(side == "sell" ? "方向：实际卖出" : "方向：实际买入")
+                    if let plan {
+                        Text("本计划剩余 \(plan.remainingUnits) 份；只填写本次真正成交的份额")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     TextField("成交价（元）", text: $priceText).keyboardType(.decimalPad)
                     TextField("成交份额", text: $unitsText).keyboardType(.numberPad)
                     TextField("手续费（元）", text: $feeText).keyboardType(.decimalPad)
+                    DatePicker("成交时间", selection: $tradedAt, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
                 }
                 Section {
                     Text("只有券商已真实成交才填写。保存后会立刻更新真实份额、成本、现金与已实现收益，AI 随即按新账户状态重新分析。")
@@ -554,9 +567,9 @@ struct AIFillSheet: View {
             guard let units = Int(unitsText), units > 0 else { throw NextError.invalid("成交份额必须是正整数") }
             let fee = try NextMoney.parse(feeText)
             if let plan {
-                try model.confirmCandidatePlan(plan.id, price: price, units: units, fee: fee)
+                try model.confirmCandidatePlan(plan.id, price: price, units: units, fee: fee, at: tradedAt)
             } else {
-                try model.recordTrade(code: code, name: name, side: side, units: units, price: price, fee: fee)
+                try model.recordTrade(code: code, name: name, side: side, units: units, price: price, fee: fee, at: tradedAt)
                 Task { await model.refreshGuidance() }
             }
             dismiss()

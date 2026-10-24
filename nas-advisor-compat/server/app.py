@@ -1,31 +1,22 @@
-"""Independent NAS service and local web console for Guanpan Pro Next.
+"""NAS research and sync API for Guanpan Pro Next.
 
 The service intentionally has no application passphrase.  It is designed for a
-trusted home LAN / VPN; the iOS app and the web console make real-book writes
-explicit and revision-checked.
+trusted home LAN / VPN; the iOS app makes real-book writes explicit and
+revision-checked.
 """
 import json
 import os
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
-from ai import provider_status, verify_provider, analyze_user_context, build_analysis_context, AIProviderError, profile_from_environment
+from ai import provider_status, verify_provider, AIProviderError
 from domain import Conflict, InvalidData, NextDatabase, convert_legacy_web_book
-from market import (fetch_indices, fetch_tencent_quotes, fetch_tencent_daily, fetch_dividend_events, fetch_kline,
+from market import (fetch_indices, fetch_dividend_events, fetch_kline,
                     fetch_quotes, fetch_daily,
                     symbol_for, DIVIDEND_RULES_VERSION as dividend_rules_version)
 from workers import start_workers
-import grid
-import advisor
 import mobile_research
-from backtest import run_backtest
-from simulations import apply_action, create_account
-
-WEB_ROOT = Path(__file__).with_name("web")
 
 
 def code_version():
@@ -57,47 +48,6 @@ def code_source():
 
 
 def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_daily, dividend_fetcher=fetch_dividend_events):
-    def grid_bars(codes):
-        """网格参数只需要近 20 个交易日的振幅，用 NAS 已归档的日 K，够了。"""
-        bars = {}
-        for code in codes:
-            try:
-                stored = database.get_daily(code)
-                if stored:
-                    bars[code] = stored["bars"]
-            except Exception:
-                pass
-        return bars
-
-    def grid_quotes(codes):
-        """批量取报价；批量里缺哪只就单独补一次。
-
-        腾讯的批量接口偶发只返回一部分（之前 563020 还被串成过别的品种），
-        网格如果拿不到价就会用成本价当锚点，档位全是错的 —— 所以这里宁可慢一点。
-        """
-        if not codes:
-            return {}
-        result = {}
-        try:
-            result = {row["code"]: row for row in market_fetcher(codes)}
-        except Exception:
-            result = {}
-        missing = [code for code in codes if code not in result]
-        for code in missing:
-            try:
-                for row in market_fetcher([code]):
-                    result[row["code"]] = row
-            except Exception:
-                pass
-        return result
-
-    def grid_book():
-        remote = database.get_real("main")
-        raw = remote.get("bookJSON")
-        if not raw:
-            return None
-        return json.loads(raw)
-
     class Handler(BaseHTTPRequestHandler):
         server_version = "GuanpanAdvisor/1"
 
@@ -114,39 +64,23 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers(); self.wfile.write(body)
 
-        def html(self, name="index.html"):
-            body = (WEB_ROOT / name).read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers(); self.wfile.write(body)
-
         def do_GET(self):
             parsed = urlparse(self.path); path = parsed.path
             if path.startswith(("/v1/grid/", "/v1/simulations/", "/v1/backtests/")):
                 return self.reply(410, {"error": "模拟网格、虚拟账户与回测入口已停用；历史记录未删除"})
+            if path in ("/classic", "/classic.html", "/market", "/market.html", "/api/web/data", "/v1/advisor/inventory"):
+                return self.reply(410, {"error": "旧版网页入口已停用；NAS 只提供后台研究与同步 API，请使用手机 App"})
             if path == "/v1/mobile/research":
                 try:
                     return self.reply(200, mobile_research.snapshot(database, market_fetcher))
                 except Exception:
                     return self.reply(503, {"error": "NAS 历史档案暂不可用；未生成交易证据"})
-            if path == "/v1/advisor/inventory":
-                try:
-                    return self.reply(200, advisor.inventory(database))
-                except (InvalidData, ValueError, TypeError):
-                    return self.reply(422, {"error": "真实账本或分时档案无法读取；未生成建议"})
             if path in ("/", "/index.html"):
-                return self.html()
-            if path in ("/market", "/market.html"):
-                return self.html("market.html")
-            if path in ("/classic", "/classic.html"):
-                # 旧版《观盘 Pro 智能看盘》：数据本来只存 localStorage，换端口就丢；
-                # 现在托管在这里并配了 /api/web/data，数据落在 NAS 上。
-                return self.html("classic.html")
+                return self.reply(200, {"service": "guanpan-advisor", "role": "NAS 后台研究与数据服务",
+                                        "client": "请使用观盘 iOS App 查看真实持仓与唯一 AI 指导",
+                                        "health": "/health", "research": "/v1/mobile/research"})
             if path == "/health":
-                return self.reply(200, {"service": "guanpan-advisor", "schemaVersion": 1, "authentication": "none", "web": True,
+                return self.reply(200, {"service": "guanpan-advisor", "schemaVersion": 1, "authentication": "none", "web": False,
                                         "codeVersion": code_version(), "codeSource": code_source(),
                                         "workers": database.worker_health(), "aiProvider": provider_status()})
             if path == "/v1/ai/verify":
@@ -160,35 +94,6 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
             if path == "/api/data":
                 try: return self.reply(200, {"ok": True, **database.get_legacy_inbox("main")})
                 except InvalidData as error: return self.reply(400, {"error": str(error)})
-            if path == "/api/web/data":
-                # 旧版网页的整包数据（localStorage 的替代品）。只读，不会动真实账本。
-                try: return self.reply(200, {"ok": True, **database.get_web_snapshot("classic")})
-                except InvalidData as error: return self.reply(400, {"error": str(error)})
-            if path == "/v1/grid/status":
-                try:
-                    stored = database.get_grid_state()
-                    state = stored.get("state")
-                    if not state:
-                        return self.reply(200, {"ok": True, "initialized": False, "summary": None,
-                                                "daily": [], "fills": []})
-                    codes = list((state.get("plans") or {}).keys())
-                    quotes = grid_quotes(codes)
-                    return self.reply(200, {"ok": True, "initialized": True, "updatedAt": stored.get("updatedAt"),
-                                            "summary": grid.summary(state, quotes),
-                                            # 明天的挂单表：网格真正的"未来指导"，不是预测涨跌
-                                            "ladder": grid.ladder(state, quotes),
-                                            "daily": (state.get("daily") or [])[-90:],
-                                            "fills": (state.get("fills") or [])[-20:]})
-                except (InvalidData, ValueError) as error:
-                    return self.reply(400, {"error": str(error)})
-            if path == "/v1/grid/history":
-                try:
-                    stored = database.get_grid_state()
-                    state = stored.get("state") or {}
-                    return self.reply(200, {"ok": True, "daily": state.get("daily") or [],
-                                            "fills": (state.get("fills") or [])[-100:]})
-                except (InvalidData, ValueError) as error:
-                    return self.reply(400, {"error": str(error)})
             if path == "/v1/legacy/books/main":
                 try:
                     legacy = database.get_legacy_inbox("main")
@@ -205,23 +110,6 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                                             "providerConfigured": provider_status()["configured"],
                                             "providerStatus": provider_status()})
                 except (InvalidData, ValueError) as error: return self.reply(400, {"error": str(error)})
-            if path.startswith("/v1/backtests/runs/"):
-                try:
-                    run_id = path.rsplit("/", 1)[-1]
-                    result = database.get_experiment("backtest-" + run_id)
-                    return self.reply(200, result) if result else self.reply(404, {"error": "backtest run not found"})
-                except InvalidData as error: return self.reply(400, {"error": str(error)})
-            if path.startswith("/v1/simulations/"):
-                try:
-                    parts = path.strip("/").split("/")
-                    if len(parts) not in (3, 4): raise InvalidData("invalid simulation path")
-                    strategy = parts[2]
-                    current = database.get_twin_account(strategy)
-                    if len(parts) == 4:
-                        if parts[3] != "history": raise InvalidData("unknown simulation resource")
-                        return self.reply(200, {"strategy": strategy, "history": database.twin_account_history(strategy)})
-                    return self.reply(200, {"strategy": strategy, **current})
-                except InvalidData as error: return self.reply(400, {"error": str(error)})
             if path == "/v1/market/indices":
                 try: return self.reply(200, {"indices": fetch_indices()})
                 except Exception: return self.reply(502, {"error": "index source unavailable"})
@@ -263,10 +151,23 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                 try:
                     code = path.rsplit("/", 1)[-1]; symbol_for(code)
                     cached = database.get_daily(code)
-                    if cached is None:
-                        rows = daily_fetcher(code)
-                        database.put_daily(code, rows, datetime.now(timezone.utc).isoformat())
-                        cached = database.get_daily(code)
+                    try:
+                        fetched = datetime.fromisoformat(cached["fetchedAt"]) if cached else None
+                        stale = fetched is None or fetched.tzinfo is None or (datetime.now(timezone.utc) - fetched).total_seconds() > 1800
+                    except (ValueError, TypeError, KeyError):
+                        stale = True
+                    refreshed = False
+                    if stale:
+                        try:
+                            rows = daily_fetcher(code)
+                            database.put_daily(code, rows, datetime.now(timezone.utc).isoformat())
+                            cached = database.get_daily(code)
+                            refreshed = True
+                        except Exception:
+                            if cached is None:
+                                raise
+                    if cached is not None:
+                        cached["staleArchive"] = stale and not refreshed
                     return self.reply(200, cached)
                 except (InvalidData, ValueError) as error: return self.reply(400, {"error": str(error)})
                 except Exception: return self.reply(503, {"error": "daily source unavailable and no NAS cache"})
@@ -277,7 +178,13 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     if not 1 <= len(codes) <= 60 or len(set(codes)) != len(codes):
                         raise InvalidData("provide 1–60 unique exchange codes")
                     for code in codes: symbol_for(code)
-                    return self.reply(200, {"quotes": market_fetcher(codes)})
+                    quotes = market_fetcher(codes)
+                    if not quotes:
+                        return self.reply(503, {"error": "all quote sources unavailable or returned stale data",
+                                                "requestedCodes": codes})
+                    present = {quote.get("code") for quote in quotes}
+                    return self.reply(200, {"quotes": quotes,
+                                            "missingCodes": [code for code in codes if code not in present]})
                 except (InvalidData, ValueError) as error:
                     return self.reply(400, {"error": str(error)})
                 except Exception:
@@ -317,7 +224,7 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
 
         def do_POST(self):
             path = urlparse(self.path).path
-            if path.startswith(("/v1/grid/", "/v1/simulations/", "/v1/backtests/")) or path in ("/v1/advisor/analyze", "/v1/ai/analyze"):
+            if path.startswith(("/v1/grid/", "/v1/simulations/", "/v1/backtests/")) or path in ("/v1/advisor/analyze", "/v1/ai/analyze", "/api/web/data"):
                 return self.reply(410, {"error": "NAS 不再生成第二套交易建议或推进模拟账户；请在手机使用统一 AI 今日指导"})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -325,210 +232,11 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(413, {"error": "invalid body size"})
                 value = json.loads(self.rfile.read(length))
                 if not isinstance(value, dict): raise InvalidData("JSON object required")
-                if path == "/v1/advisor/analyze":
-                    if value.get("userConfirmed") is not True:
-                        return self.reply(400, {"error": "发送真实持仓与行情给 NAS DeepSeek 分析前必须逐次确认"})
-                    remote = database.get_real("main")
-                    book = json.loads(remote["bookJSON"]) if remote.get("bookJSON") else None
-                    if not book:
-                        return self.reply(422, {"error": "NAS 真实账本为空"})
-                    holdings = [p for p in book.get("positions", []) if p.get("units", 0) > 0]
-                    if not holdings:
-                        return self.reply(422, {"error": "真实持仓为空；未生成建议"})
-                    if len(holdings) > 20:
-                        return self.reply(422, {"error": "持仓超过 20 只，请先选择要分析的证券"})
-                    raw_rules = value.get("rules", {})
-                    if not isinstance(raw_rules, dict):
-                        raise InvalidData("verified rules must be an object")
-                    try:
-                        quote_rows = market_fetcher([p["code"] for p in holdings])
-                        quotes = {row["code"]: row for row in quote_rows}
-                    except Exception:
-                        quotes = {}
-                    total_market_value = sum((advisor._decimal(quotes.get(p["code"], {}).get("price")) or 0) * p["units"] for p in holdings)
-                    reports, headlines = [], []
-                    news_jobs = []
-                    cash = advisor._decimal(book.get("cash"))
-                    per_position_budget = cash / len(holdings) if cash is not None and holdings else None
-                    for position in holdings:
-                        code = position["code"]
-                        with database.connect() as db:
-                            minute_rows = [json.loads(row[0]) for row in db.execute(
-                                "SELECT body FROM (SELECT body, stamp FROM minute_archive WHERE code=? ORDER BY stamp DESC LIMIT 36000) ORDER BY stamp", (code,)).fetchall()]
-                        rules = raw_rules.get(code)
-                        if isinstance(rules, dict):
-                            rules = dict(rules)
-                            rules["sellableUnits"] = advisor.ledger_available_units(book, position)
-                        item = advisor.analyze_position(position, quotes.get(code), minute_rows,
-                                                        rules, per_position_budget)
-                        item["cashBudgetAssumption"] = str(per_position_budget) if per_position_budget is not None else None
-                        position_value = (advisor._decimal(quotes.get(code, {}).get("price")) or 0) * position["units"]
-                        item["portfolioWeightPercent"] = str((position_value / total_market_value * 100).quantize(advisor.Decimal("0.01"))) if total_market_value > 0 else None
-                        reports.append(item)
-                        news_jobs.append((code, position.get("name", code)))
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        news_results = list(executor.map(lambda row: advisor.fetch_headlines(*row), news_jobs))
-                    for report, (code, name), news in zip(reports, news_jobs, news_results):
-                        headlines.append({"code": code, "name": name, **news})
-                        report["newsState"] = news["state"]
-                    ai_result = advisor.online_synthesis(reports, headlines)
-                    return self.reply(200, {"bookRevision": remote["revision"],
-                                            "generatedAt": datetime.now(timezone.utc).isoformat(),
-                                            "positions": reports, "news": headlines, "ai": ai_result,
-                                            "realOrder": False,
-                                            "notice": "手工研究参考；限价不保证成交。任何交易必须由你在券商内自行核对和下单。"})
-                if path == "/v1/ai/analyze":
-                    if value.get("userConfirmed") is not True:
-                        return self.reply(400, {"error": "此分析必须由 iOS 页面明确确认后发起"})
-                    context = value.get("context")
-                    if not isinstance(context, dict):
-                        # 网页路径：只传 code，服务端用账本 + 行情 + 日K + 分红拼完整 context，
-                        # 客户端不再各自拼 schema（拼错就是 400 "schema is invalid"）。
-                        code = value.get("code")
-                        if not isinstance(code, str) or len(code) != 6 or not code.isdigit():
-                            return self.reply(400, {"error": "需要完整 context，或提供 6 位代码 code"})
-                        try:
-                            stored = database.get_real("main")
-                            book = json.loads(stored["bookJSON"]) if stored.get("bookJSON") else {}
-                            codes = sorted({str(p.get("code")) for p in (book.get("positions") or []) if p.get("code")} | {code})
-                            try:
-                                rows = market_fetcher(codes)
-                            except Exception:
-                                rows = []
-                            quotes = {row.get("code"): row for row in rows if isinstance(row, dict)}
-                            try:
-                                bars = daily_fetcher(code)
-                            except Exception:
-                                bars = []
-                            try:
-                                dividends = dividend_fetcher(code)
-                            except Exception:
-                                dividends = []
-                            context = build_analysis_context(book, code, quotes, bars, dividends)
-                        except InvalidData as error:
-                            return self.reply(400, {"error": str(error)})
-                        except Exception:
-                            return self.reply(503, {"error": "组装分析上下文失败：账本或行情不可用"})
-                    try:
-                        result = analyze_user_context(context, profile=profile_from_environment())
-                        result["createdAt"] = datetime.now(timezone.utc).isoformat()
-                        return self.reply(200, result)
-                    except AIProviderError as error:
-                        return self.reply(503, {"error": str(error)})
-                    except ValueError as error:
-                        return self.reply(400, {"error": str(error)})
-                    except Exception:
-                        return self.reply(502, {"error": "DeepSeek 分析失败；未生成建议"})
-                if path.startswith("/v1/simulations/"):
-                    parts = path.strip("/").split("/")
-                    if len(parts) != 3: raise InvalidData("invalid simulation path")
-                    strategy = parts[2]
-                    if value.get("userConfirmed") is not True:
-                        raise InvalidData("virtual account changes require explicit confirmation")
-                    expected = value.get("expectedRevision")
-                    if type(expected) is not int or expected < 0:
-                        raise InvalidData("expectedRevision is required")
-                    action = value.get("action")
-                    now = datetime.now(timezone.utc).isoformat()
-                    current = database.get_twin_account(strategy)
-                    if current["revision"] != expected:
-                        raise Conflict("simulation revision changed")
-                    if action == "start":
-                        if set(value) != {"action", "userConfirmed", "expectedRevision", "config"}:
-                            raise InvalidData("simulation start fields are invalid")
-                        if current["account"] is not None and current["account"].get("status") != "reset":
-                            raise InvalidData("account already exists; pause it or reset it before restarting")
-                        config = value.get("config")
-                        account = create_account(strategy, config, now)
-                    else:
-                        if current["account"] is None: raise InvalidData("start this virtual account first")
-                        if set(value) - {"action", "userConfirmed", "expectedRevision", "amount", "reason"}:
-                            raise InvalidData("unexpected simulation action fields")
-                        action_request = {"action": action}
-                        if action == "reset": action_request["userConfirmed"] = value.get("userConfirmed")
-                        if action in ("fund", "withdraw"):
-                            for key in ("amount", "reason"):
-                                if key in value: action_request[key] = value[key]
-                        account = apply_action(current["account"], action_request, now)
-                    revision = database.put_twin_account(strategy, expected, account)
-                    return self.reply(200, {"strategy": strategy, "revision": revision, "account": account, "realOrder": False})
                 if path == "/api/data":
                     if value.get("mode") != "legacy-stage-confirmed":
                         raise InvalidData("legacy staging requires explicit migration action")
                     revision = database.put_legacy_inbox("main", value.get("expectedRevision"), value.get("data"))
                     return self.reply(200, {"ok": True, "revision": revision})
-                if path == "/api/web/data":
-                    # 旧版网页 POST 的形状是 {tok, data}。没有 data 就拒，别猜。
-                    payload = value.get("data")
-                    if not isinstance(payload, dict):
-                        raise InvalidData("web snapshot requires a data object")
-                    expected = value.get("expectedRevision")
-                    revision = database.put_web_snapshot("classic", payload,
-                                                         int(expected) if isinstance(expected, int) else None)
-                    return self.reply(200, {"ok": True, "revision": revision})
-                if path == "/v1/grid/reset":
-                    # 按当前真实持仓重建网格账户。只影响模拟，不动账本。
-                    if value.get("mode") != "grid-reset-confirmed":
-                        raise InvalidData("grid reset requires explicit confirmation")
-                    book = grid_book()
-                    if not book:
-                        raise InvalidData("NAS 上还没有真实账本")
-                    codes = [p["code"] for p in book.get("positions") or []]
-                    quotes = grid_quotes(codes)
-                    state = grid.build(book, quotes, grid_bars(codes))
-                    database.put_grid_state(state)
-                    return self.reply(200, {"ok": True, "summary": grid.summary(state, quotes)})
-                if path == "/v1/grid/advance":
-                    # 手动推进一次（自动推进由后台线程做）。用来立刻看到结果。
-                    if value.get("mode") != "grid-advance-confirmed":
-                        raise InvalidData("grid advance requires explicit confirmation")
-                    book = grid_book()
-                    if not book:
-                        raise InvalidData("NAS 上还没有真实账本")
-                    stored = database.get_grid_state()
-                    state = stored.get("state")
-                    codes = [p["code"] for p in book.get("positions") or []]
-                    quotes = grid_quotes(codes)
-                    if not state:
-                        state = grid.build(book, quotes, grid_bars(codes))
-                    else:
-                        state = grid.sync_with_book(state, book, quotes, grid_bars(codes))
-                    state, fills = grid.tick(state, quotes)
-                    if datetime.now(ZoneInfo("Asia/Shanghai")).hour >= 15:
-                        state = grid.mark_day(state, quotes)
-                    database.put_grid_state(state)
-                    return self.reply(200, {"ok": True, "fills": len(fills),
-                                            "summary": grid.summary(state, quotes)})
-                if path.startswith("/v1/backtests/"):
-                    strategy = path.rsplit("/", 1)[-1]
-                    if value.get("strategy") != strategy:
-                        raise InvalidData("path and request strategy do not match")
-                    codes = value.get("codes")
-                    if not isinstance(codes, list) or not 1 <= len(codes) <= 12:
-                        raise InvalidData("choose 1–12 ETF codes")
-                    bars, dividends = {}, {}
-                    now = datetime.now(timezone.utc)
-                    for code in codes:
-                        symbol_for(code)
-                        cached = database.get_daily(code)
-                        if cached is None:
-                            try:
-                                rows = daily_fetcher(code)
-                                database.put_daily(code, rows, now.isoformat())
-                                cached = database.get_daily(code)
-                            except Exception:
-                                return self.reply(503, {"error": f"no verified daily archive or source for {code}"})
-                        if cached is None or len(cached["bars"]) < 2:
-                            return self.reply(422, {"error": f"at least two archived daily bars are required for {code}"})
-                        bars[code] = cached["bars"]
-                        distribution = database.get_dividend_events(code)
-                        dividends[code] = distribution["events"] if distribution else []
-                    result = run_backtest(value, bars, dividends)
-                    run_id = uuid.uuid4().hex
-                    result["runId"] = run_id
-                    result["createdAt"] = now.isoformat()
-                    database.put_experiment("backtest-" + run_id, result)
-                    return self.reply(200, result)
                 if path == "/v1/legacy/books/main":
                     converted = convert_legacy_web_book(value.get("data", value))
                     return self.reply(200, {"revision": database.get_legacy_inbox("main")["revision"], **converted})

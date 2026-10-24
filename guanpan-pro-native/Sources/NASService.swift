@@ -22,120 +22,9 @@ struct NextNASBookHistory: Decodable {
     let versions: [NextNASBookVersion]
 }
 
-/// `/v1/ai/verify` 的返回。`state == "verified"` 才代表 NAS 上的 key、模型和出网都真的通了。
-struct NextNASAIVerify: Decodable {
-    let state: String
-    let profile: String?
-    let model: String?
-    let message: String?
-}
-
 struct NextNASHealth: Decodable {
     let service: String
     let schemaVersion: Int
-    let aiProvider: NextAIProviderStatus?
-}
-struct NextNASAIAnalysis: Decodable {
-    let code: String
-    let provider: String
-    let model: String
-    let content: String
-    let realOrder: Bool
-    let createdAt: String
-}
-struct NextAdvisorInventory: Decodable {
-    struct Position: Decodable, Identifiable {
-        var id: String { code }
-        let code: String
-        let name: String
-        let units: Int
-        let days: Int
-        let completeDays: Int
-        let firstDay: String?
-        let lastDay: String?
-        let decision: String
-        let reasons: [String]
-    }
-    let bookRevision: Int
-    let notice: String
-    let positions: [Position]
-}
-struct NextAdvisorAnalysis: Decodable {
-    struct Position: Decodable, Identifiable {
-        struct CostBasis: Decodable {
-            let bookCost: String?
-            let averageCostPerUnit: String?
-            let breakEvenBeforeExitFee: String?
-            let breakEvenAfterOneEstimatedExitFee: String?
-            let unrealizedPnlBeforeExitFee: String?
-            let unrealizedReturnBeforeExitFeePercent: String?
-        }
-        var id: String { code }
-        let code: String
-        let name: String
-        let units: Int
-        let decision: String
-        let qualifiedDays: Int
-        // 以下三个为可选字段：旧版 NAS 不返回时解码为 nil，界面不显示，不影响老部署。
-        let dailyStats: [String: NextJSONValue]?
-        let intradayEvidence: [String: NextJSONValue]?
-        let plan: [String: NextJSONValue]?
-        let costBasis: CostBasis?
-        let portfolioWeightPercent: String?
-        let availableUnitsBasis: String?
-        let risks: [String]
-    }
-    struct AI: Decodable { let state: String; let provider: String?; let model: String?; let content: String?; let message: String? }
-    struct NewsItem: Decodable, Identifiable { var id: String { url }; let title: String; let url: String; let publishedAt: String?; let source: String? }
-    struct News: Decodable, Identifiable { var id: String { code }; let code: String; let name: String; let state: String; let provider: String; let items: [NewsItem] }
-    let bookRevision: Int
-    let notice: String
-    /// 服务端发现交易规则配置问题（缺费率/缺交割方式等）时列出；旧版 NAS 不返回为 nil。
-    let ruleConfigurationIssues: [String]?
-    let positions: [Position]
-    let news: [News]
-    let ai: AI
-}
-enum NextJSONValue: Decodable {
-    case string(String), number(Double), bool(Bool), object([String: NextJSONValue]), array([NextJSONValue]), null
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if container.decodeNil() { self = .null }
-        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
-        else if let value = try? container.decode(Double.self) { self = .number(value) }
-        else if let value = try? container.decode(String.self) { self = .string(value) }
-        else if let value = try? container.decode([String: NextJSONValue].self) { self = .object(value) }
-        else { self = .array(try container.decode([NextJSONValue].self)) }
-    }
-    var displayText: String {
-        switch self {
-        case .string(let value): return value
-        case .number(let value): return String(value)
-        case .bool(let value): return String(value)
-        case .null: return "—"
-        case .object(let value):
-            return value.keys.sorted().map { "\($0)=\(value[$0]!.displayText)" }.joined(separator: "; ")
-        case .array(let values):
-            return values.map(\.displayText).joined(separator: " | ")
-        }
-    }
-}
-struct NextAIProviderStatus: Decodable {
-    let state: String
-    let configured: Bool
-    let profile: String?
-    let model: String?
-    let message: String
-
-    enum CodingKeys: String, CodingKey { case state, configured, profile, model, message }
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        state = try values.decodeIfPresent(String.self, forKey: .state) ?? "unknown"
-        configured = try values.decodeIfPresent(Bool.self, forKey: .configured) ?? false
-        profile = try values.decodeIfPresent(String.self, forKey: .profile)
-        model = try values.decodeIfPresent(String.self, forKey: .model)
-        message = try values.decodeIfPresent(String.self, forKey: .message) ?? "NAS 未返回 AI 配置状态"
-    }
 }
 struct NextLegacyBookSummary: Decodable {
     let positions: Int
@@ -156,45 +45,6 @@ struct NextLegacyBookPreview: Decodable {
 }
 
 enum NextNASService {
-    static func analyzeRealHoldings(baseURL: String, book: NextBook, rules: [String: NextInstrumentRules], now: Date = Date(), session: URLSession = .shared) async throws -> NextAdvisorAnalysis {
-        var rulePayload: [String: [String: Any]] = [:]
-        for position in book.positions where position.units > 0 {
-            guard let rule = rules[position.code], rule.isVerified, rule.assetClass == .etf,
-                  let lot = rule.lotSize, let fee = rule.feePerTrade else { continue }
-            rulePayload[position.code] = ["verified": true, "source": rule.source,
-                "verifiedAt": ISO8601DateFormatter().string(from: rule.verifiedAt ?? now),
-                "settlement": rule.settlement.rawValue, "lotSize": lot,
-                "feePerTrade": NSDecimalNumber(decimal: fee).stringValue]
-        }
-        let body = try JSONSerialization.data(withJSONObject: ["userConfirmed": true, "rules": rulePayload])
-        let url = try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("advisor").appendingPathComponent("analyze")
-        var request = URLRequest(url: url, timeoutInterval: 120); request.httpMethod = "POST"; request.httpBody = body
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        NextNASService.attachAdvisorToken(&request)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw NextError.invalid("顾问分析失败：\(serverMessage(data, status: (response as? HTTPURLResponse)?.statusCode ?? -1))")
-        }
-        return try JSONDecoder().decode(NextAdvisorAnalysis.self, from: data)
-    }
-    static func advisorInventory(baseURL: String, session: URLSession = .shared) async throws -> NextAdvisorInventory {
-        let url = try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("advisor").appendingPathComponent("inventory")
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        NextNASService.attachAdvisorToken(&request)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw NextError.invalid("顾问检查失败：\(serverMessage(data, status: (response as? HTTPURLResponse)?.statusCode ?? -1))")
-        }
-        return try JSONDecoder().decode(NextAdvisorInventory.self, from: data)
-    }
-    /// 顾问接口口令（r31 安全加固）：用户在「我的」保存了 ≥32 位口令就带上 Bearer 头。
-    /// 新旧 NAS 都兼容——旧服务端不校验该头，新服务端（GUANPAN_ADVISOR_TOKEN）必须校验。
-    /// 没保存口令时不发头；此时连新服务端会返回 401/503，设置页会提示保存口令。
-    static func attachAdvisorToken(_ request: inout URLRequest) {
-        if let token = AdvisorAccessToken.load(), token.count >= 32 {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-    }
     static func validateURL(_ raw: String) throws -> URL {
         guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(),
@@ -315,20 +165,6 @@ enum NextNASService {
         guard http.statusCode == 200 else { throw NextError.invalid("NAS 保存失败：\(serverMessage(data, status: http.statusCode))；本机账本未修改") }
         return try JSONDecoder().decode(RevisionResponse.self, from: data).revision
     }
-    /// 让 NAS 用自己配置的 key 发一条最小探针（不携带持仓/行情），验证 AI 是否真的可用。
-    static func verifyAI(baseURL: String, session: URLSession = .shared) async throws -> NextNASAIVerify {
-        let url = try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("ai").appendingPathComponent("verify")
-        // DeepSeek 冷启动可能较慢，给足 40 秒。
-        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 40))
-        guard let http = response as? HTTPURLResponse else { throw NextError.invalid("NAS 没有返回 HTTP 状态") }
-        if http.statusCode == 200 {
-            return try JSONDecoder().decode(NextNASAIVerify.self, from: data)
-        }
-        struct Failure: Decodable { let error: String?; let message: String? }
-        let failure = try? JSONDecoder().decode(Failure.self, from: data)
-        throw NextError.invalid(failure?.error ?? failure?.message ?? "AI 验证失败（HTTP \(http.statusCode)）")
-    }
-
     /// 列出 NAS 上的账本历史版本。
     static func readBookHistory(baseURL: String, session: URLSession = .shared) async throws -> NextNASBookHistory {
         let url = try endpoint(baseURL).appendingPathComponent("history")
@@ -388,7 +224,7 @@ enum NextNASService {
         let dataset = NextChartDataset(code: code, interval: .intraday, samples: samples, costPerUnit: nil, costObservedAt: nil,
                                        priceSource: "NAS 永久分时档案 · \(payload.day)",
                                        iopvSource: samples.contains(where: { $0.iopv != nil }) ? "NAS 分钟采样核验 · Tencent ETF IOPV" : nil,
-                                       observedAt: Date())
+                                       observedAt: samples.map(\.timestamp).max() ?? .distantPast)
         try dataset.validate()
         return dataset
     }
@@ -410,29 +246,6 @@ enum NextNASService {
         }
     }
 
-    static func analyzeETF(context: [String: Any], baseURL: String, session: URLSession = .shared) async throws -> NextNASAIAnalysis {
-        guard let security = context["security"] as? [String: Any],
-              let code = security["code"] as? String, code.count == 6, code.allSatisfy(\.isNumber) else {
-            throw NextError.invalid("AI 研究证券上下文无效")
-        }
-        let url = try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("ai").appendingPathComponent("analyze")
-        var request = URLRequest(url: url, timeoutInterval: 55); request.httpMethod = "POST"
-        // 与网页一致：只发 6 位代码，由 NAS 用账本 + 行情 + 日K + 分红拼出 context。
-        // 客户端各自拼 schema，一旦与服务端口径不一致就会被判 "analysis context schema is invalid"。
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["userConfirmed": true, "code": code], options: [.fragmentsAllowed])
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw NextError.invalid("NAS AI 没有返回 HTTP 状态") }
-        guard http.statusCode == 200 else {
-            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
-            throw NextError.invalid("NAS AI 分析失败：\(message ?? "HTTP \(http.statusCode)")")
-        }
-        let result = try JSONDecoder().decode(NextNASAIAnalysis.self, from: data)
-        guard result.code == code, result.realOrder == false, !result.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw NextError.invalid("NAS AI 返回内容未通过证券和真实交易安全校验")
-        }
-        return result
-    }
     private struct DividendWire: Decodable {
         let code: String; let source: String; let fetchedAt: String?; let events: [Event]
         struct Event: Decodable { let code: String; let date: String; let amountPerShare: String; let isEstimated: Bool?; let recordDate: String?; let payDate: String? }
@@ -496,7 +309,10 @@ enum NextNASService {
             return NextChartSample(timestamp: date, open: open, high: high, low: low, close: close, iopv: nil, volume: volume)
         }
         let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let observed = iso.date(from: wire.fetchedAt) ?? ISO8601DateFormatter().date(from: wire.fetchedAt) ?? Date()
+        guard let observed = iso.date(from: wire.fetchedAt) ?? ISO8601DateFormatter().date(from: wire.fetchedAt),
+              observed <= Date().addingTimeInterval(60) else {
+            throw NextError.invalid("NAS 日 K 归档时间无效；不能把旧数据标为刚刚获取")
+        }
         let dataset = NextChartDataset(code: code, interval: .day, samples: samples, costPerUnit: nil, costObservedAt: nil,
                                        priceSource: wire.source + " · 前复权", iopvSource: nil, observedAt: observed)
         try dataset.validate()
@@ -547,127 +363,4 @@ enum NextNASService {
         try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("real").appendingPathComponent("books").appendingPathComponent("main")
     }
 
-    // MARK: - 网格状态（明日挂单表）
-    /// NAS 网格引擎的整包状态：账户汇总 + 每只标的的「明日挂单表」(ladder)。
-    /// 网格不预测涨跌，只回答「若明天走到某价，该买/卖多少」——这是真实的未来操作指引。
-    static func fetchGridStatus(baseURL: String, session: URLSession = .shared) async throws -> NextNASGridStatus {
-        let url = try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("grid").appendingPathComponent("status")
-        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 12))
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw NextError.invalid("NAS 网格状态读取失败；确认 NAS 容器与 8789 端口可达") }
-        return try JSONDecoder().decode(NextNASGridStatus.self, from: data)
-    }
-}
-
-/// `GET /v1/grid/status` 的返回。价格字段来自服务端 Decimal 量化，一律以字符串传输，客户端再转 Decimal。
-struct NextNASGridStatus: Decodable {
-    let ok: Bool
-    let initialized: Bool
-    let updatedAt: String?
-    let summary: NextNASGridSummary?
-    let ladder: [NextNASGridLadderRow]
-    /// 价格触及过哪一档。这是观察日志，**不是成交**：真正的成交只发生在券商。
-    let touches: [NextNASGridTouch]
-    let skipped: [NextNASGridSkipped]
-
-    enum CodingKeys: String, CodingKey { case ok, initialized, updatedAt, summary, ladder, touches, skipped }
-
-    // 未初始化的 NAS 只回 {ok, initialized:false, summary:null, daily:[], fills:[]}，
-    // 整个 ladder 键都不存在。用合成 Decodable 会抛 keyNotFound，导致新 NAS 一打开就报错，
-    // 所以这里对 ladder/daily/fills 一律按「缺省空数组」处理。
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        ok = try c.decode(Bool.self, forKey: .ok)
-        initialized = try c.decode(Bool.self, forKey: .initialized)
-        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt)
-        summary = try c.decodeIfPresent(NextNASGridSummary.self, forKey: .summary)
-        ladder = try c.decodeIfPresent([NextNASGridLadderRow].self, forKey: .ladder) ?? []
-        touches = try c.decodeIfPresent([NextNASGridTouch].self, forKey: .touches) ?? []
-        skipped = try c.decodeIfPresent([NextNASGridSkipped].self, forKey: .skipped) ?? []
-    }
-}
-/// 网格计划的整体口径。**没有虚拟本金、没有模拟盈亏**——这里描述的是
-/// 「按我的真实持仓和真实现金，能挂出多少档、每档占用多少、单档往返净赚多少」。
-struct NextNASGridSummary: Decodable {
-    let mode: String
-    let holdingsCovered: Int
-    let plannedBuyCapital: String
-    let plannedSellUnits: Int
-    let deployableCash: String
-    let reservedCash: String
-    let netPerRungTotal: String
-    let feePerRungTotal: String
-    let todayTouches: Int
-    let cashEnoughForAllBuys: Bool
-    let plans: [NextNASGridPlan]
-
-    enum CodingKeys: String, CodingKey {
-        case mode, holdingsCovered, plannedBuyCapital, plannedSellUnits, deployableCash,
-             reservedCash, netPerRungTotal, feePerRungTotal, todayTouches, cashEnoughForAllBuys, plans
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? "plan-only"
-        holdingsCovered = try c.decodeIfPresent(Int.self, forKey: .holdingsCovered) ?? 0
-        plannedBuyCapital = try c.decodeIfPresent(String.self, forKey: .plannedBuyCapital) ?? "0"
-        plannedSellUnits = try c.decodeIfPresent(Int.self, forKey: .plannedSellUnits) ?? 0
-        deployableCash = try c.decodeIfPresent(String.self, forKey: .deployableCash) ?? "0"
-        reservedCash = try c.decodeIfPresent(String.self, forKey: .reservedCash) ?? "0"
-        netPerRungTotal = try c.decodeIfPresent(String.self, forKey: .netPerRungTotal) ?? "0"
-        feePerRungTotal = try c.decodeIfPresent(String.self, forKey: .feePerRungTotal) ?? "0"
-        todayTouches = try c.decodeIfPresent(Int.self, forKey: .todayTouches) ?? 0
-        cashEnoughForAllBuys = try c.decodeIfPresent(Bool.self, forKey: .cashEnoughForAllBuys) ?? false
-        plans = try c.decodeIfPresent([NextNASGridPlan].self, forKey: .plans) ?? []
-    }
-}
-struct NextNASGridPlan: Decodable {
-    let code: String
-    let anchor: String
-    let stepPercent: String
-    let levels: Int
-    let sharesPerRung: Int
-    let units: Int
-    let price: String?
-    let buyCapital: String?
-    let sellUnits: Int?
-    let netPerRung: String?
-}
-struct NextNASGridLadderRow: Decodable, Identifiable {
-    let code: String
-    let price: String
-    let anchor: String
-    let stepPercent: String
-    let position: Int
-    let buysLeft: Int
-    let sellsLeft: Int
-    let cashEnoughFor: Int
-    let rungs: [NextNASGridRung]
-    let note: String
-    var id: String { code }
-}
-struct NextNASGridRung: Decodable, Identifiable {
-    let side: String
-    let level: Int
-    let price: String
-    let units: Int
-    let reachable: Bool
-    var id: String { "\(side)-\(level)" }
-    var isBuy: Bool { side == "buy" }
-}
-/// 价格触及某档的记录。**不是成交**：只说明「价格到过这里」。
-struct NextNASGridTouch: Decodable, Identifiable {
-    let code: String?
-    let side: String?
-    let level: Int?
-    let price: String?
-    let units: Int?
-    let at: String?
-    var id: String { "\(code ?? "")-\(side ?? "")-\(level ?? 0)-\(at ?? "")" }
-    var isBuy: Bool { side == "buy" }
-}
-/// 因为市值不足一手而没能建出档位的标的。**如实说**，不假装有网格。
-struct NextNASGridSkipped: Decodable {
-    let code: String?
-    let reason: String?
-}
 private extension NextBook { func validated() throws -> NextBook { try validate(); return self } }

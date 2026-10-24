@@ -11,6 +11,7 @@ services:
       GUANPAN_AI_PROFILE: ${GUANPAN_AI_PROFILE:-flash}
       GUANPAN_AI_BASE_URL: ${GUANPAN_AI_BASE_URL:-}
       GUANPAN_AI_MODEL: ${GUANPAN_AI_MODEL:-}
+      GUANPAN_ADVISOR_PORT: ${GUANPAN_ADVISOR_PORT:-8789}
     volumes:
       - guanpan_advisor_data:/data
     restart: unless-stopped

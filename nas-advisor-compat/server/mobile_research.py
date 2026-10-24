@@ -80,13 +80,16 @@ def snapshot(database, market_fetcher, now=None):
     for code in codes:
         bars = []
         stored = database.get_daily(code)
+        available_at = milliseconds(stored.get("fetchedAt")) if stored else None
         for item in (stored or {}).get("bars", [])[-640:]:
             day = item.get("date")
             at = milliseconds(day + "T15:00:00+08:00") if isinstance(day, str) else None
             values = {key: price_units(item.get(key)) for key in ("open", "high", "low", "close")}
             if at is None or at > now_ms or any(value is None for value in values.values()):
                 continue
-            bars.append({"at": at, "availableAt": now_ms, **values})
+            if available_at is None or available_at > now_ms:
+                continue
+            bars.append({"at": at, "availableAt": available_at, **values})
         quote = quotes.get(code)
         quote_at = milliseconds(quote.get("time")) if isinstance(quote, dict) else None
         quote_price = price_units(quote.get("price")) if isinstance(quote, dict) else None

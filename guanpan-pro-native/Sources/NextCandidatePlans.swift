@@ -23,12 +23,13 @@ enum NextPlanKind: String, Codable, Equatable {
 enum NextPlanState: String, Codable, Equatable {
     case active = "待观察"
     case triggered = "价格已触及"
+    case partiallyConfirmed = "部分真实成交"
     case confirmed = "已成交确认"
     case expired = "已过期"
     case invalidated = "建议作废"
     case withdrawn = "已取消"
 
-    var isOpen: Bool { self == .active || self == .triggered }
+    var isOpen: Bool { self == .active || self == .triggered || self == .partiallyConfirmed }
 }
 
 struct NextCandidatePlan: Codable, Identifiable, Equatable {
@@ -69,13 +70,14 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
     var confirmedPrice: Decimal? = nil
     var confirmedUnits: Int? = nil
     var confirmedFee: Decimal? = nil
+    var remainingUnits: Int { max(0, units - (confirmedUnits ?? 0)) }
 
     var priceWasEdited: Bool {
         guard let confirmedPrice else { return false }
         return abs(confirmedPrice - limitPrice) > (Decimal(string: "0.0005") ?? 0)
     }
     var unitsWereEdited: Bool {
-        guard let confirmedUnits else { return false }
+        guard state == .confirmed, let confirmedUnits else { return false }
         return confirmedUnits != units
     }
 
@@ -86,6 +88,25 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
               !rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NextError.invalid("候选计划的证券、价格、份额或有效期无效")
         }
+    }
+
+    /// 只更新候选计划的真实成交反馈；账本写入由调用方在校验通过后单独提交。
+    mutating func confirmRealFill(price: Decimal, units filledUnits: Int, fee: Decimal,
+                                  at tradedAt: Date, now: Date) throws {
+        guard state.isOpen, now <= expiresAt, filledUnits > 0, filledUnits <= remainingUnits,
+              price > 0, !price.isNaN, fee >= 0, !fee.isNaN,
+              tradedAt >= createdAt, tradedAt <= now.addingTimeInterval(60) else {
+            throw NextError.invalid("候选计划已结束，或本次成交价、手续费、时间及剩余份额无效")
+        }
+        let previousUnits = confirmedUnits ?? 0
+        let totalUnits = previousUnits + filledUnits
+        let previousPrice = confirmedPrice ?? price
+        confirmedPrice = (previousPrice * Decimal(previousUnits) + price * Decimal(filledUnits)) / Decimal(totalUnits)
+        confirmedUnits = totalUnits
+        confirmedFee = (confirmedFee ?? 0) + fee
+        confirmedAt = tradedAt
+        stateChangedAt = now
+        state = totalUnits == units ? .confirmed : .partiallyConfirmed
     }
 
     /// 状态迁移（只前进，不回退）：
@@ -413,6 +434,7 @@ enum NextDecisionContextBuilder {
         你是观盘顾问，一位只基于用户真实持仓工作的投资顾问。以下是本次统一决策上下文，只能在此基础上给建议：
         【账户】现金 ¥\(NextMoney.text(book.cash))；持仓 \(book.positions.count) 只。
         【持仓】\(holdings.joined(separator: "\n"))
+        【A股交易日历】\(NextMarketClock.sessionDescription(now))。休市日、周末、盘前、午休和收盘后不得描述为“今天可挂”；只能引用规则引擎给出的有效候选计划，计划缺失就明确说没有当日可执行价格。
         【市场状态与候选计划】\(planLines.joined(separator: "\n"))
         【NAS 长期研究】\(nasResearchLines.isEmpty ? "暂无（NAS 离线或未返回）" : nasResearchLines.joined(separator: "\n"))
         【新闻】\(newsLines.isEmpty ? "暂无" : newsLines.joined(separator: "\n"))

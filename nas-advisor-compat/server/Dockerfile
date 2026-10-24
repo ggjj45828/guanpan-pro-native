@@ -5,10 +5,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir tzdata
 # 代码仍然打进镜像：这是**兜底基线**。宿主机挂载的代码由 start.sh 在启动时覆盖进来，
 # 所以即使挂载源写错（NAS 上 ./server 解析不到），容器也能正常起来，不会整个 /app 变空。
-# 用通配符而不是逐个文件名：worker 依赖 simulations/backtest，漏一个就是启动即崩。
+# 只打包当前研究服务的 Python 模块；已下线的网页与模拟模块不再进入镜像。
 COPY *.py ./
 COPY VERSION ./
-COPY web ./web
 COPY start.sh /app/start.sh
 # 构建期做一次导入自检，漏文件会在 build 阶段就失败，而不是等你部署完看日志。
 RUN python -c "import app; print('imports ok')"

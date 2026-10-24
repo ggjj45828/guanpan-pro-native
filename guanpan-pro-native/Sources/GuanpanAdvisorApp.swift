@@ -7,13 +7,15 @@ import UniformTypeIdentifiers
     var body: some Scene { WindowGroup { RootView().environmentObject(model) } }
 }
 
-enum GPRoute: Hashable { case instrument(String), chart(String), decision(String?), dividends(String?), news, settings, alerts, fills, history, backups, worthOverview, indexDetail(String), profile }
+enum GPRoute: Hashable { case instrument(String), chart(String), decision(String?), grid, portfolioAnalysis, dividends(String?), news, settings, alerts, fills, history, backups, worthOverview, indexDetail(String), profile }
 private extension GPRoute {
     var persisted: NextRoute {
         switch self {
         case .instrument(let code): .instrument(code)
         case .chart(let code): .chart(code)
         case .decision(let code): .intent("decision", code ?? "")
+        case .grid: .intent("grid", "")
+        case .portfolioAnalysis: .intent("portfolio-analysis", "")
         case .dividends(let code): .intent("dividends", code ?? "")
         case .news: .intent("news", "")
         case .settings: .settings
@@ -32,6 +34,8 @@ private extension GPRoute {
         case .chart(let code): .chart(code)
         case .intent(let action, let code):
             if action == "decision" { .decision(code.isEmpty ? nil : code) }
+            else if action == "grid" { .grid }
+            else if action == "portfolio-analysis" { .portfolioAnalysis }
             else if action == "dividends" { .dividends(code.isEmpty ? nil : code) }
             else if action == "news" { .news }
             else if action == "worth" { .worthOverview }
@@ -57,18 +61,15 @@ private struct GPTabItem {
     let id: String
 }
 
-/// 自绘底部导航：iOS 的 TabView 最多平铺 5 个位置，6 个页签会被折叠进「More」，
-/// 所以这里不用系统 TabView，六个入口全部平铺、永不被折叠。
-/// 网格图标用 iOS 14 起就有的 `square.grid.2x2.fill`，避免旧符号 `grid.cornersections.fill` 在某些系统上渲染成空白。
+/// 五项主导航；做T/网格由 AI 指导进入，收息从真实持仓进入。
 private struct GPTabBar: View {
     @Binding var selection: NextTab
     @Environment(\.gp) private var p
     private let items: [GPTabItem] = [
+        GPTabItem(tab: .decision, title: "首页", icon: "house.fill", id: "tab.decision"),
         GPTabItem(tab: .market, title: "行情", icon: "chart.xyaxis.line", id: "tab.market"),
         GPTabItem(tab: .assets, title: "持仓", icon: "square.stack.3d.up.fill", id: "tab.assets"),
-        GPTabItem(tab: .laboratory, title: "网格", icon: "square.grid.2x2.fill", id: "tab.laboratory"),
-        GPTabItem(tab: .income, title: "收息", icon: "yensign.circle.fill", id: "tab.income"),
-        GPTabItem(tab: .decision, title: "首页", icon: "house.fill", id: "tab.decision"),
+        GPTabItem(tab: .ai, title: "AI", icon: "sparkles", id: "tab.ai"),
         GPTabItem(tab: .mine, title: "我的", icon: "person.crop.circle.fill", id: "tab.mine")
     ]
     var body: some View {
@@ -123,33 +124,30 @@ private struct GPTabBar: View {
     }
 }
 
-enum GPMainTab: String, CaseIterable, Identifiable {
-    case overview, market, decision, laboratory, assets
-    var id: String { rawValue }
-    var title: String { switch self { case .overview: "总览"; case .market: "行情"; case .decision: "AI 决策"; case .laboratory: "量化"; case .assets: "资产" } }
-    var icon: String { switch self { case .overview: "sun.horizon"; case .market: "chart.xyaxis.line"; case .decision: "sparkles"; case .laboratory: "waveform.path.ecg.rectangle"; case .assets: "circle.hexagongrid" } }
-    var core: NextTab { switch self { case .overview: .overview; case .market: .market; case .decision: .decision; case .laboratory: .laboratory; case .assets: .assets } }
-}
-
 struct RootView: View {
     @EnvironmentObject private var model: NextAppModel
-    @Environment(\.colorScheme) private var systemScheme
     @Environment(\.scenePhase) private var scenePhase
     /// 底栏没有「overview」页签：历史默认值 / 旧版本存档里的 .overview 一律落到今日指导，
     /// 否则首次启动会整屏空白（所有页面 opacity 都是 0）。
     private var activeTab: NextTab {
         if let forced = Self.tabArgument { return forced }
         let stored = model.preferences.navigation.selectedTab
-        return stored == .overview ? .decision : stored
+        switch stored {
+        case .overview: return .decision
+        case .laboratory: return .ai
+        case .income: return .assets
+        default: return stored
+        }
     }
     private var tabSelection: Binding<NextTab> { Binding(get: { activeTab }, set: { model.preferences.navigation.selectedTab = $0; model.preferences = model.preferences }) }
-    /// 当前页签对应的场景：首页编辑室、盘中仪表盘、持仓拼图、AI 日报杂志、详情现代卡片。
+    /// 保留当前页面场景作为语义信息；主题解析固定使用同一主题，避免跨页面忽明忽暗。
     private var activeScene: ThemeScene {
         switch activeTab {
         case .decision: return .home
         case .market: return .market
         case .assets: return .holdings
         case .income: return .aiReport
+        case .ai: return .aiReport
         case .laboratory, .mine, .overview: return .detail
         }
     }
@@ -173,24 +171,28 @@ struct RootView: View {
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: "-tab"), args.indices.contains(index + 1) else { return nil }
         let tab = NextTab(rawValue: args[index + 1])
-        return tab == .overview ? .decision : tab
+        switch tab {
+        case .overview: return .decision
+        case .laboratory: return .ai
+        case .income: return .assets
+        default: return tab
+        }
     }()
-    /// 手动选择优先于场景推断；没选过就跟随场景。
+    /// 手动选择优先；未选择时使用统一的东方编辑室默认主题，保证跨页配色一致。
     private var themeSelection: ThemeSelection {
         if let forced = Self.themeArgument { return .fixed(forced) }
         return model.preferences.themeStyle.map { ThemeSelection.fixed($0) } ?? .auto
     }
     private var resolvedTheme: AppTheme {
-        ThemeManager.resolve(selection: themeSelection, scene: activeScene)
+        // 自动主题采用编辑室作为全 App 的一致默认；用户选定任一主题后，所有页面共享它。
+        ThemeManager.resolve(selection: themeSelection, scene: .home)
     }
     private var palette: GPPalette {
-        GPPalette(scheme: effectiveScheme, comfort: model.theme == .comfort,
+        GPPalette(scheme: effectiveScheme, comfort: model.theme == .comfort && !resolvedTheme.forcesDark,
                   appearance: model.preferences.appearance, theme: resolvedTheme)
     }
     var body: some View {
-        // iOS 的 TabView 最多平铺 5 个位置：6 个 tab 会自动把多余的折叠进「More」，
-        // 这就是底栏一直显示 4 个 + More 的根因。六个页签要全部平铺，
-        // 必须自绘底栏（GPTabBar）。隐藏页用透明度切换，状态和 TabView 一样保留。
+        // 五个主入口；隐藏页用透明度切换，保留各页导航状态。
         ZStack {
             PrimaryNavigation(title: "行情", tab: .market) { MarketScreen() }
                 .opacity(tabSelection.wrappedValue == .market ? 1 : 0)
@@ -200,19 +202,15 @@ struct RootView: View {
                 .opacity(tabSelection.wrappedValue == .assets ? 1 : 0)
                 .allowsHitTesting(tabSelection.wrappedValue == .assets)
                 .accessibilityHidden(tabSelection.wrappedValue != .assets)
-            PrimaryNavigation(title: "网格", tab: .laboratory) { GridLabScreen() }
-                .opacity(tabSelection.wrappedValue == .laboratory ? 1 : 0)
-                .allowsHitTesting(tabSelection.wrappedValue == .laboratory)
-                .accessibilityHidden(tabSelection.wrappedValue != .laboratory)
-            PrimaryNavigation(title: "收息", tab: .income) { DividendHistoryScreen(code: nil) }
-                .opacity(tabSelection.wrappedValue == .income ? 1 : 0)
-                .allowsHitTesting(tabSelection.wrappedValue == .income)
-                .accessibilityHidden(tabSelection.wrappedValue != .income)
+            PrimaryNavigation(title: "AI", tab: .ai) { AIHubScreen() }
+                .opacity(tabSelection.wrappedValue == .ai ? 1 : 0)
+                .allowsHitTesting(tabSelection.wrappedValue == .ai)
+                .accessibilityHidden(tabSelection.wrappedValue != .ai)
             PrimaryNavigation(title: "首页", tab: .decision, showsHeader: false) { ThemeHomeScreen() }
                 .opacity(tabSelection.wrappedValue == .decision ? 1 : 0)
                 .allowsHitTesting(tabSelection.wrappedValue == .decision)
                 .accessibilityHidden(tabSelection.wrappedValue != .decision)
-            PrimaryNavigation(title: "我的", tab: .mine) { SettingsScreen() }
+            PrimaryNavigation(title: "我的", tab: .mine) { MyHubScreen() }
                 .opacity(tabSelection.wrappedValue == .mine ? 1 : 0)
                 .allowsHitTesting(tabSelection.wrappedValue == .mine)
                 .accessibilityHidden(tabSelection.wrappedValue != .mine)
@@ -267,12 +265,10 @@ struct RootView: View {
             }
         }
     }
-    // Comfort mode is an intentionally warm light palette. Do not let a dark
-    // system appearance pair its ivory canvas with the dark palette's light ink.
     private var effectiveScheme: ColorScheme {
-        // 交易仪表盘是深色盘面：不管系统浅色还是深色，都用深色，否则数字对比度不够。
-        if resolvedTheme.forcesDark { return .dark }
-        return model.theme == .system ? systemScheme : model.theme == .dark ? .dark : .light
+        // 五套主题各自保持完整的明暗语言。系统深色不会把浅色主题的二级页
+        // 或原生导航栏单独翻成黑色；仪表盘也不会出现白色设置页。
+        resolvedTheme.forcesDark || model.theme == .dark ? .dark : .light
     }
 }
 
@@ -323,18 +319,23 @@ private struct PrimaryNavigation<Content: View>: View {
                             }
                             .accessibilityLabel("全局搜索证券")
                             .accessibilityIdentifier("search.open")
-                            Button { path.append(.settings) } label: {
-                                Image(systemName: "slider.horizontal.3").font(.system(size: 17, weight: .medium))
-                                    .foregroundStyle(p.ink).frame(width: 44, height: 44).contentShape(Rectangle())
+                            if tab != .mine {
+                                Button { path.append(.settings) } label: {
+                                    Image(systemName: "slider.horizontal.3").font(.system(size: 17, weight: .medium))
+                                        .foregroundStyle(p.ink).frame(width: 44, height: 44).contentShape(Rectangle())
+                                }
+                                .accessibilityLabel("设置")
+                                .accessibilityIdentifier("settings.open")
                             }
-                            .accessibilityLabel("设置")
-                            .accessibilityIdentifier("settings.open")
                         }
                         .padding(.leading, 20).padding(.trailing, 10).padding(.vertical, 4)
                         .background(p.canvas)
                     }
                 }
         }
+        .toolbarBackground(p.canvas, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(p.scheme, for: .navigationBar)
         .onAppear { path = (model.preferences.navigation.tabRoutes[tab.rawValue] ?? []).compactMap(GPRoute.restore) }
         .onChange(of: path) { _, value in model.saveNavigationPath(value.map(\.persisted), for: tab) }
         .onChange(of: model.routeRequestID) { _, _ in
@@ -351,6 +352,8 @@ private struct RouteDestination: View {
         case .instrument(let code): InstrumentDetailScreen(code: code)
         case .chart(let code): FullscreenChartScreen(code: code)
         case .decision(let code): DecisionScreen(code: code)
+        case .grid: GridCandidateListScreen()
+        case .portfolioAnalysis: PortfolioAnalysisScreen()
         case .dividends(let code): DividendHistoryScreen(code: code)
         case .news: HoldingsNewsScreen()
         case .settings: SettingsScreen()
@@ -362,6 +365,91 @@ private struct RouteDestination: View {
         case .indexDetail(let symbol): IndexDetailScreen(symbol: symbol)
         case .profile: InvestorProfileScreen()
         }
+    }
+}
+
+/// AI 主入口只给今天的结论与清晰的二级入口，避免把研究工具堆成一页长清单。
+private struct AIHubScreen: View {
+    @EnvironmentObject private var model: NextAppModel
+    @Environment(\.gp) private var p
+
+    var body: some View {
+        GPPageBackground {
+            VStack(alignment: .leading, spacing: 0) {
+                EditorialSection(title: "今天需要做什么？", trailing: NextMarketClock.sessionDescription(), accent: p.chartViolet) {
+                    GPCard(accent: p.chartViolet) {
+                        Text(model.dailyGuidance?.summary ?? model.guidanceStatus)
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(p.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let guidance = model.dailyGuidance {
+                            Text("已扫描 \(guidance.items.count) 只真实持仓 · \(guidance.generatedAt.formatted(date: .omitted, time: .shortened))生成")
+                                .font(.caption2).foregroundStyle(p.muted)
+                        }
+                        NavigationLink(value: GPRoute.decision(nil)) {
+                            IntentRow(icon: "sparkles", title: "打开完整 AI 今日指导", detail: "逐只查看做T、网格、持有或不交易的依据")
+                        }.accessibilityIdentifier("ai.guidance.open")
+                    }
+                }
+                EditorialSection(title: "研究与复盘", accent: p.jade) {
+                    GPCard(accent: p.jade) {
+                        NavigationLink(value: GPRoute.grid) {
+                            IntentRow(icon: "square.grid.2x2", title: "智能网格候选", detail: "只展示今日统一指导生成的网格计划")
+                        }.accessibilityIdentifier("ai.grid.open")
+                        NavigationLink(value: GPRoute.news) {
+                            IntentRow(icon: "newspaper", title: "新闻与持仓影响", detail: "查看与真实持仓相关的事件")
+                        }
+                        NavigationLink(value: GPRoute.history) {
+                            IntentRow(icon: "clock.arrow.circlepath", title: "决策记忆与复盘", detail: "查看过去判断和真实成交反馈")
+                        }
+                    }
+                }
+            }
+        }
+        .task { if model.dailyGuidance == nil { await model.refreshGuidance() } }
+    }
+}
+
+/// 网格只是统一指导的一个结果；本页不维护第二套网格状态或模拟成交。
+private struct GridCandidateListScreen: View {
+    @EnvironmentObject private var model: NextAppModel
+    @Environment(\.gp) private var p
+    @State private var selected: NextGuidanceItem?
+
+    private var items: [NextGuidanceItem] {
+        (model.dailyGuidance?.items ?? []).filter { $0.strategy == .grid }
+    }
+
+    var body: some View {
+        GPPageBackground {
+            EditorialSection(title: "智能网格候选", trailing: "真实持仓", accent: p.chartViolet) {
+                if items.isEmpty {
+                    GPStatus(title: "今天没有合格的网格计划",
+                             detail: "市场状态、长期分时、成交量、交易规则和现金门槛不满足时，顾问不会强行生成档位。",
+                             symbol: "square.grid.2x2")
+                }
+                ForEach(items) { item in
+                    Button { selected = item } label: {
+                        GPCard(accent: p.chartViolet) {
+                            GPDataRow(title: item.name, value: item.headline,
+                                      note: "\(item.code) · \(item.confidence.summary)")
+                        }
+                    }.buttonStyle(.plain)
+                }
+            }
+        }
+        .navigationTitle("智能网格候选").navigationBarTitleDisplayMode(.inline)
+        .task { if model.dailyGuidance == nil { await model.refreshGuidance() } }
+        .sheet(item: $selected) { item in AIGuidanceDetailSheet(item: item).environmentObject(model) }
+    }
+}
+
+private struct PortfolioAnalysisScreen: View {
+    var body: some View {
+        GPPageBackground {
+            HoldingsBreakdownPanel()
+            AccountReviewPanel()
+        }
+        .navigationTitle("持仓盈亏与风险").navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -831,9 +919,6 @@ private struct DecisionScreen: View {
     @State private var analyzed = false
     @State private var result: NextDecision?
     @State private var mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil
-    @State private var advisorInventory: NextAdvisorInventory?
-    @State private var advisorInventoryError: String?
-    @State private var checkingAdvisorInventory = false
 
     @State private var patientLimitPrice = ""
     @State private var patientLimitUnits = "100"
@@ -940,72 +1025,6 @@ private struct DecisionScreen: View {
         }
     }
     /// NAS 授权分析结果：一卡一只持仓 + 新闻 + AI 结论，全部只读。
-    @ViewBuilder private func advisorAnalysisCard(_ analysis: NextAdvisorAnalysis) -> some View {
-        DataPanel(title: "AI 综合分析与交易方案", accent: p.terracotta, caption: "只读 · 不会下单") {
-            if let issues = analysis.ruleConfigurationIssues, !issues.isEmpty {
-                Text("规则配置待处理：" + issues.joined(separator: "；")).font(.caption2).foregroundStyle(p.terracotta).fixedSize(horizontal: false, vertical: true)
-            }
-            Text(analysis.notice).font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-            ForEach(analysis.positions) { position in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text("\(position.name) · \(position.decision)").font(.subheadline.weight(.medium)).foregroundStyle(p.ink)
-                        GPPillBadge(text: "分时 \(position.qualifiedDays) 天", color: p.jade)
-                    }
-                    if let basis = position.costBasis {
-                        Text("成本 ¥\(basis.bookCost ?? "—") · 均价 ¥\(basis.averageCostPerUnit ?? "—") · 回本参考 ¥\(basis.breakEvenAfterOneEstimatedExitFee ?? basis.breakEvenBeforeExitFee ?? "—") · 浮盈亏 ¥\(basis.unrealizedPnlBeforeExitFee ?? "—") · 占比 \(position.portfolioWeightPercent ?? "—")%").font(.caption).foregroundStyle(p.muted)
-                    }
-                    if let availableBasis = position.availableUnitsBasis { Text(availableBasis).font(.caption2).foregroundStyle(p.muted) }
-                    if let stats = position.dailyStats { Text("历史波动与档案：" + stats.keys.sorted().map { "\($0)=\(stats[$0]!.displayText)" }.joined(separator: " · ")).font(.caption2).foregroundStyle(p.muted).textSelection(.enabled) }
-                    if let liquidity = position.intradayEvidence { Text("VWAP、成交覆盖与流动性检查：" + liquidity.keys.sorted().map { "\($0)=\(liquidity[$0]!.displayText)" }.joined(separator: " · ")).font(.caption2).foregroundStyle(p.muted).textSelection(.enabled) }
-                    if let plan = position.plan {
-                        Text(plan.keys.sorted().map { "\($0)：\(plan[$0]!.displayText)" }.joined(separator: " · ")).font(.caption).foregroundStyle(p.ink).textSelection(.enabled)
-                    }
-                    if !position.risks.isEmpty { Text(position.risks.joined(separator: "；")).font(.caption2).foregroundStyle(p.terracotta) }
-                }
-                .padding(.vertical, 5)
-                .overlay(alignment: .bottom) { Rectangle().fill(p.line.opacity(0.6)).frame(height: 0.5) }
-            }
-            ForEach(analysis.news) { news in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text("\(news.name) 新闻").font(.caption.weight(.semibold)).foregroundStyle(p.ink)
-                        GPPillBadge(text: news.state == "ok" ? "Google News RSS" : "暂不可用", color: news.state == "ok" ? p.chartBlue : p.muted)
-                    }
-                    ForEach(news.items.prefix(4)) { item in
-                        if let url = URL(string: item.url) { Link(item.title, destination: url).font(.caption).lineLimit(2) }
-                    }
-                    if news.items.isEmpty { Text("暂无可用新闻标题；AI 分析会把新闻数据缺口标明").font(.caption2).foregroundStyle(p.muted) }
-                }.padding(.vertical, 5)
-            }
-            if let content = analysis.ai.content {
-                AIAnswerView(text: content)
-            } else {
-                GPInlineEmpty(symbol: "sparkles", text: analysis.ai.message ?? "在线 AI 暂不可用；以上为本地规则与数据统计。")
-            }
-        }
-    }
-    /// NAS 真实持仓检查结果：修订号 + 逐持仓分时数据质量。
-    @ViewBuilder private func advisorInventoryCard(_ inventory: NextAdvisorInventory) -> some View {
-        DataPanel(title: "NAS 真实持仓", accent: p.forest, caption: "修订 \(inventory.bookRevision)") {
-            Text(inventory.notice).font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-            if inventory.positions.isEmpty {
-                GPInlineEmpty(symbol: "tray", text: "NAS 真实账本没有持仓。")
-            }
-            ForEach(inventory.positions) { position in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text("\(position.name) · \(position.code)").font(.subheadline.weight(.medium)).foregroundStyle(p.ink)
-                        GPPillBadge(text: position.decision, color: p.chartBlue)
-                    }
-                    Text("\(position.units) 份 · 分时 \(position.days) 天，其中 \(position.completeDays) 天满足最低点数；\(position.firstDay ?? "—") 至 \(position.lastDay ?? "—")").font(.caption).foregroundStyle(p.muted)
-                    if !position.reasons.isEmpty { Text(position.reasons.joined(separator: "；")).font(.caption2).foregroundStyle(p.muted) }
-                }
-                .padding(.vertical, 5)
-                .overlay(alignment: .bottom) { Rectangle().fill(p.line.opacity(0.6)).frame(height: 0.5) }
-            }
-        }
-    }
     @ViewBuilder private func inspectRow(_ r: InspectHolding) -> some View {
         let yldText = r.yieldPercent.map { "股息率 \(NextMoney.text(Decimal($0), digits: 3))%" } ?? "股息率 —"
         HStack(alignment: .top, spacing: 8) {
@@ -1039,24 +1058,6 @@ private struct DecisionScreen: View {
                 AIGuidanceSection().padding(.top, 10)
                 // 选中标的时先给一张大字价格卡（参考设计稿英雄卡）：价格、涨跌、口径一屏可见，后面的 AI 结论才有锚点。
                 if let code { decisionHeroCard(code: code).padding(.top, 12) }
-                EditorialSection(title: "真实持仓 · 分时数据检查", trailing: "只读", accent: p.forest) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        GPActionButton(title: checkingAdvisorInventory ? "正在检查…" : "检查 NAS 真实持仓", secondary: true, systemImage: "chart.xyaxis.line") {
-                            Task {
-                                checkingAdvisorInventory = true
-                                defer { checkingAdvisorInventory = false }
-                                do {
-                                    advisorInventory = try await NextNASService.advisorInventory(baseURL: model.preferences.nasBaseURL)
-                                    advisorInventoryError = nil
-                                } catch { advisorInventory = nil; advisorInventoryError = error.localizedDescription }
-                            }
-                        }.disabled(checkingAdvisorInventory || model.preferences.nasBaseURL.isEmpty)
-                        Text("NAS只负责长期行情、统计和新闻研究；最终综合判断由 AI 今日指导中的手机端统一入口完成。")
-                            .font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                        if let error = advisorInventoryError { Text(error).font(.caption).foregroundStyle(p.risk).fixedSize(horizontal: false, vertical: true) }
-                        if let inventory = advisorInventory { advisorInventoryCard(inventory) }
-                    }
-                }
                 // 账户体检：按报告方法论，先看账户（集中度、现金覆盖），再看单只资产，最后看执行。
                 EditorialSection(title: "账户体检 · 一键扫描", trailing: inspecting ? "扫描中" : "本机规则", accent: p.forest) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -1154,10 +1155,10 @@ private struct DecisionScreen: View {
                 }
                 if analyzed {
                     if let code, let report = model.nasResearch[code] {
-                        EditorialSection(title: "NAS 独立研究", trailing: "已归档", accent: p.chartViolet) {
-                            DataPanel(title: "NAS DeepSeek 研究", accent: p.chartViolet, caption: report.ai?.provider ?? "本地因子") {
+                        EditorialSection(title: "NAS 长期研究证据", trailing: "已归档", accent: p.chartViolet) {
+                            DataPanel(title: "后台研究记录 · 非最终建议", accent: p.chartViolet, caption: report.ai?.provider ?? "本地因子") {
                                 if let ai = report.ai {
-                                    AIAnswerView(text: ai.content)
+                                    Text("NAS 后台研究已归档；最终交易判断由手机端统一指导生成。")
                                     GPDataRow(title: "来源", value: "\(ai.provider) · \(ai.model)", note: "数据截至 \(ai.asOf) · 不连接券商")
                                     if let staleMessage = researchDateStatus(report, code: code) {
                                         Label(staleMessage, systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(p.terracotta)
@@ -1418,163 +1419,10 @@ private struct AIInputsCard: View {
     }
 }
 
-private struct GridLabScreen: View {
-    @EnvironmentObject private var model: NextAppModel
-    @Environment(\.gp) private var p
-    private func dec(_ s: String) -> Decimal? { Decimal(string: s, locale: Locale(identifier: "en_US_POSIX")) }
-    var body: some View {
-        GPPageBackground {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("网格实验室").font(.system(.title2, design: .serif).weight(.semibold)).foregroundStyle(p.ink)
-                        Text("网格不预测涨跌，只回答「若明天走到某价，该买／卖多少」").font(.caption).foregroundStyle(p.muted)
-                    }
-                    Spacer()
-                    Button { Task { await model.refreshGridStatus() } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 18)).foregroundStyle(p.forest).frame(width: 42, height: 42).background(p.tint, in: Circle()) }
-                        .accessibilityLabel("刷新网格状态")
-                }.padding(.top, 6).padding(.bottom, 10)
-                GridCheckPanel()
-                EditorialSection(title: "明日挂单表 · NAS 网格引擎", trailing: model.gridStatus.map { "\($0.ladder.count) 只" }, accent: p.chartViolet) {
-                    Text(model.gridStatusMessage).font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                    if let status = model.gridStatus, status.initialized, let summary = status.summary {
-                        // 参考设计稿英雄卡：大数字 + 关键口径一行排开，不再另挂三张重复的统计小块。
-                        gridHeroCard(summary)
-                    } else if let status = model.gridStatus, !status.initialized {
-                        GPStatus(title: "NAS 网格尚未初始化", detail: "后台会按你的真实持仓自动建网格；首次连接后稍等片刻再刷新。", symbol: "grid")
-                    }
-                    if let status = model.gridStatus {
-                        if status.ladder.isEmpty {
-                            GPStatus(title: "暂无挂单档位", detail: "持仓为空或网格尚未建好；先录入持仓并连接 NAS。", symbol: "list.bullet")
-                        }
-                        ForEach(status.ladder) { row in ladderCard(row) }
-                    }
-                }
-                EditorialSection(title: "怎么用这张表") {
-                    Text("每一行是某只标的的完整网格档位：卖档（红，价格高于现价）和买档（绿，价格低于现价）。「可挂」表示以当前现金／持仓足以挂出；不可达的档位先不挂，等价格触发或资金变化。这不是预测，是条件单——价格不到就不成交。").font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }.safeAreaInset(edge: .bottom) { Color.clear.frame(height: 4) }
-        .task { await model.refreshGridStatus() }
-    }
-    /// 网格计划英雄卡：**只讲计划，不讲模拟收益**。
-    /// 参考稿那张紫色大数字卡原本是虚拟账户权益，产品明确不要模拟账户，所以这里换成
-    /// 「覆盖几只 / 计划占用多少现金 / 单档往返净收益 / 今日触达几档」。
-    @ViewBuilder private func gridHeroCard(_ summary: NextNASGridSummary) -> some View {
-        let buyCapital = dec(summary.plannedBuyCapital) ?? 0
-        let deployable = dec(summary.deployableCash) ?? 0
-        let reserved = dec(summary.reservedCash) ?? 0
-        let net = dec(summary.netPerRungTotal) ?? 0
-        let fee = dec(summary.feePerRungTotal) ?? 0
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("网格计划 · 按真实持仓计算").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.white.opacity(0.78))
-                    Text("覆盖 \(summary.holdingsCovered) 只").font(.system(size: 26, weight: .medium, design: .rounded)).foregroundStyle(.white).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "square.grid.3x3.fill").font(.system(size: 22)).foregroundStyle(Color.white.opacity(0.85))
-            }
-            HStack(spacing: 8) {
-                Text("计划占用 ¥\(NextMoney.text(buyCapital))").font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(.white)
-                Text(summary.cashEnoughForAllBuys ? "现金够" : "现金不够全挂")
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Color.white.opacity(0.2), in: Capsule())
-                    .foregroundStyle(.white)
-            }
-            Text("可部署 ¥\(NextMoney.text(deployable)) · 预留 ¥\(NextMoney.text(reserved)) · 单档往返净收益 ¥\(NextMoney.text(net))（含手续费 ¥\(NextMoney.text(fee))）")
-                .font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.72))
-                .fixedSize(horizontal: false, vertical: true)
-            Text("今日触达 \(summary.todayTouches) 档 · 触达只代表价格到过，不等于成交")
-                .font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.6))
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(colors: [Color(hex: 0x3B2E7E), Color(hex: 0x5B3CC4), Color(hex: 0x795CE0)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: Color(hex: 0x795CE0).opacity(0.3), radius: 12, x: 0, y: 6)
-    }
-    /// 单只标的网格卡：名称/现价一行，可买可卖一行，价格轴 + 档位表紧凑排布。
-    @ViewBuilder private func ladderCard(_ row: NextNASGridLadderRow) -> some View {
-        let name = model.book.positions.first(where: { $0.code == row.code })?.name
-            ?? InstrumentCatalog.name(for: row.code) ?? row.code
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(name).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.ink).lineLimit(1)
-                    Text(row.code).font(.system(size: 9, design: .monospaced)).foregroundStyle(p.muted)
-                }
-                Spacer(minLength: 6)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text("现价 ¥\(NextMoney.text(dec(row.price) ?? 0))").font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit()).foregroundStyle(p.ink)
-                    Text("步长 \(String(format: "%.3f", NextNum.double(dec(row.stepPercent) ?? 0)))% · 第 \(row.position) 档").font(.system(size: 9)).foregroundStyle(p.muted)
-                }
-            }
-            HStack(spacing: 10) {
-                Label("可卖 \(row.sellsLeft) 档", systemImage: "arrow.up.circle.fill").font(.system(size: 10)).foregroundStyle(p.gpUp)
-                Label("可买 \(row.buysLeft) 档", systemImage: "arrow.down.circle.fill").font(.system(size: 10)).foregroundStyle(p.gpDown)
-                Spacer(minLength: 0)
-            }
-            gridAxisView(row).padding(.vertical, 2)
-            VStack(spacing: 2) {
-                ForEach(row.rungs) { rung in
-                    HStack {
-                        Text(rung.isBuy ? "买" : "卖").font(.system(size: 9, weight: .bold)).foregroundStyle(rung.isBuy ? p.gpDown : p.gpUp).frame(width: 20)
-                        Text("¥\(NextMoney.text(dec(rung.price) ?? 0))").font(.system(size: 11).monospacedDigit()).foregroundStyle(p.ink)
-                        Spacer()
-                        Text("\(rung.units) 份").font(.system(size: 10)).foregroundStyle(p.muted)
-                        Text(rung.reachable ? "可挂" : "暂不挂").font(.system(size: 9)).foregroundStyle(rung.reachable ? p.forest : p.muted).frame(width: 44, alignment: .trailing)
-                    }
-                }
-            }.padding(7).background(p.tint, in: RoundedRectangle(cornerRadius: 9))
-            if !row.note.isEmpty { Text(row.note).font(.system(size: 10)).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true) }
-        }
-        .padding(11)
-        .background(p.paper, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(p.line, lineWidth: 0.8))
-    }
-    /// 价格档位条：把买档（绿，现价下方）和卖档（红，现价上方）画成一根价格轴上的圆点，
-    /// 中间用「现价」竖线标出当前位置——一眼看出价格离各网格档位还有多远。
-    private func gridAxisMetrics(_ row: NextNASGridLadderRow) -> (minP: Double, maxP: Double, span: Double, curFrac: Double)? {
-        let decRow: (String) -> Double? = { s in guard let d = Decimal(string: s, locale: Locale(identifier: "en_US_POSIX")) else { return nil }; return NSDecimalNumber(decimal: d).doubleValue }
-        let prices = ([row.price] + row.rungs.map { $0.price }).compactMap(decRow)
-        guard let minP = prices.min(), let maxP = prices.max(), maxP > minP else { return nil }
-        let span = maxP - minP
-        let cur = decRow(row.price) ?? minP
-        return (minP, maxP, span, (cur - minP) / span)
-    }
-    @ViewBuilder private func gridAxisView(_ row: NextNASGridLadderRow) -> some View {
-        if let m = gridAxisMetrics(row) {
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(p.line).frame(height: 4)
-                    ForEach(Array(row.rungs.enumerated()), id: \.offset) { _, rung in
-                        if let rp = Decimal(string: rung.price, locale: Locale(identifier: "en_US_POSIX")) {
-                            let f = (NSDecimalNumber(decimal: rp).doubleValue - m.minP) / m.span
-                            Circle().fill(rung.isBuy ? p.gpDown : p.gpUp).frame(width: 9, height: 9)
-                                .position(x: CGFloat(f) * w, y: 14)
-                        }
-                    }
-                    Rectangle().fill(p.forestDeep).frame(width: 2.5, height: 24)
-                        .position(x: CGFloat(m.curFrac) * w, y: 14)
-                    Text("现价").font(.system(size: 8, weight: .medium)).foregroundStyle(p.forestDeep)
-                        .position(x: CGFloat(m.curFrac) * w, y: 33)
-                }.frame(height: 40)
-            }.frame(height: 40)
-        }
-    }
-}
-
 private struct AssetsScreen: View {
     @EnvironmentObject private var model: NextAppModel
     @Environment(\.gp) private var p
-    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var addPosition = false
-    @State private var addIncome = false
     @State private var cashAmount = ""
     /// 「按券商余额校准」输入框：填券商显示的可用，系统只补差额。
     @State private var brokerCash = ""
@@ -1586,81 +1434,27 @@ private struct AssetsScreen: View {
     @State private var assetsConfirm: AssetsConfirm?
 
     private enum AssetsConfirm: Identifiable {
-        case income(UUID), cash, undo
+        case cash, undo
         var id: String {
             switch self {
-            case .income(let id): return "income-\(id)"
             case .cash: return "cash"
             case .undo: return "undo"
             }
         }
         var title: String {
             switch self {
-            case .income: return "确认这笔收益已实际到账？"
             case .cash: return "确认真实账本变更？"
             case .undo: return "撤销最近账本变更？"
             }
         }
         var message: String {
             switch self {
-            case .income: return "只有收到券商或银行实际到账后才确认。本操作会把税后净额写入真实现金和审计流水，不会下单。"
             case .cash: return "本操作会改变真实场内账本，写入审计记录；不会向券商下单。"
             case .undo: return "撤销前会检查当前账本版本，仅当账本仍匹配该审计版本时生效。"
             }
         }
     }
     private var valuation: NextAssetValuation { model.book.valuation(using: model.quotes, at: Date()) }
-    private var confirmedDividendPerShare: Decimal {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -365, to: Date()) ?? .distantPast
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
-        let cutoffText = formatter.string(from: cutoff)
-        let allEvents = NextDividendAnalytics.merged(model.book.dividendEvents + model.dividendEvents.values.flatMap { $0 })
-        return allEvents.filter { $0.isEstimated != true && $0.date >= cutoffText }
-            .reduce(Decimal.zero) { total, event in
-                let units = model.book.positions.first(where: { $0.code == event.code })?.units ?? 0
-                return total + event.amountPerShare * Decimal(units)
-            }
-        }
-    /// 预计年股息：按各持仓近 12 个月已核实每份派息 × 账面份额 求和。
-    private var annualDividend: Decimal {
-        model.book.positions.reduce(Decimal.zero) { total, pos in
-            let events = NextDividendAnalytics.merged(model.book.dividendEvents + (model.dividendEvents[pos.code] ?? []))
-            let per = NextDividendAnalytics.recentVerifiedPerShare(code: pos.code, events: events, today: dividendTodayString())
-            return total + per * Decimal(pos.units)
-        }
-    }
-    /// 持仓结构：按 ETF / 股票 / 现金 三类汇总市值（份额型百分比保持 1 位小数）。
-    private var donutSegments: [GPDonutSegment] {
-        var etfValue = 0.0, stockValue = 0.0
-        for position in model.book.positions {
-            let price = model.quotes[position.code]?.quote.price ?? 0
-            let marketValue = NextNum.double(price) * Double(position.units)
-            if NextDividendRules.isOnExchangeETF(position.code) { etfValue += marketValue } else { stockValue += marketValue }
-        }
-        let cash = NextNum.double(model.book.cash)
-        var segments: [GPDonutSegment] = []
-        if stockValue > 0 { segments.append(GPDonutSegment(title: "股票", value: stockValue, color: p.chartBlue)) }
-        if etfValue > 0 { segments.append(GPDonutSegment(title: "ETF", value: etfValue, color: p.jade)) }
-        if cash > 0 { segments.append(GPDonutSegment(title: "现金", value: cash, color: p.chartGold)) }
-        if segments.isEmpty { segments.append(GPDonutSegment(title: "现金", value: 1, color: p.chartGold)) }
-        return segments
-    }
-    /// 市场温度：自选与持仓今日涨跌的均值映射到 0–100（50 为持平）。本机粗算，不是预测。
-    private var marketTemp: Double {
-        let changes = model.monitoredCodes.compactMap { model.quotes[$0]?.quote.changePercent }.map { NextNum.double($0) }
-        guard !changes.isEmpty else { return 50 }
-        let average = changes.reduce(0, +) / Double(changes.count)
-        return NextNum.clamp(50 + average * 6, 0, 100)
-    }
-    private var marketTempCaption: String {
-        switch marketTemp {
-        case ..<30: return "偏冷 · 观望"
-        case ..<45: return "偏弱 · 耐心等待"
-        case ..<55: return "平稳 · 低价分批"
-        case ..<70: return "偏热 · 别追高"
-        default: return "过热 · 谨慎"
-        }
-    }
     var body: some View {
         GPPageBackground {
             VStack(alignment: .leading, spacing: 12) {
@@ -1673,37 +1467,22 @@ private struct AssetsScreen: View {
                     history: model.book.history
                 )
                 .padding(.top, 6)
-                // 持仓结构 + 市场温度：窄屏（compact，iPhone 竖屏）上下堆叠，宽屏（regular，iPad/横屏）并排。
-                // 之前恒为并排，窄屏下环形卡的图例列被压到约 1 字宽，「现金 / 100.0%」逐字竖排——即"字体显示不出来"。
-                Group {
-                    if hSizeClass == .regular {
-                        HStack(spacing: 10) {
-                            GPDonutView(segments: donutSegments, centerValue: "¥\(NextMoney.text(valuation.total ?? 0))", centerLabel: "总资产")
-                            GPGaugeView(value: marketTemp, caption: marketTempCaption)
-                        }
-                    } else {
-                        VStack(spacing: 10) {
-                            GPDonutView(segments: donutSegments, centerValue: "¥\(NextMoney.text(valuation.total ?? 0))", centerLabel: "总资产")
-                            GPGaugeView(value: marketTemp, caption: marketTempCaption)
-                        }
+                NavigationLink(value: GPRoute.portfolioAnalysis) {
+                    GPCard(accent: p.jade) {
+                        IntentRow(icon: "chart.pie", title: "持仓盈亏与风险分析", detail: "成本口径、区间表现、集中度与账户诊断")
                     }
-                }
-                HStack(spacing: 10) {
-                    GPQuickActionCard(icon: "gauge.with.dots.needle.50percent", title: "值不值得买", detail: "本机规则打分，逐只看依据", tint: p.jade, route: .worthOverview)
-                    GPQuickActionCard(icon: "list.bullet.rectangle", title: "资产流水", detail: "买入卖出与现金留痕", tint: p.chartBlue, route: .fills)
-                    GPQuickActionCard(icon: "clock.arrow.circlepath", title: "决策历史", detail: "历次 AI 与规则结论", tint: p.terracotta, route: .history)
-                }
-                HoldingsBreakdownPanel()
+                }.buttonStyle(.plain).accessibilityIdentifier("assets.analysis.open")
                 EditorialSection(title: "持仓明细", trailing: "\(model.book.positions.count) 项", accent: p.jade) {
                     HStack { Button { addPosition = true } label: { Label("录入已确认持仓", systemImage: "plus") }.font(.caption.weight(.semibold)); Spacer(); NavigationLink(value: GPRoute.fills) { Label("资产流水", systemImage: "list.bullet.rectangle") }.font(.caption) }.tint(p.forest)
                     if model.book.positions.isEmpty { GPStatus(title: "账本为空", detail: "只录入你确认的场内证券，不自动导入旧账本或场外基金。", symbol: "tray") }
                     ForEach(model.book.positions) { position in
                         PositionRow(position: position, quote: model.quotes[position.code])
                     }
+                    NavigationLink(value: GPRoute.dividends(nil)) {
+                        IntentRow(icon: "yensign.circle", title: "收息与派息", detail: "实际到账、待到账及股息买入参考")
+                    }.buttonStyle(.plain)
                 }
-                AccountReviewPanel()
-                // 分红与收息已整体并入「收息」页（收息总览）：同一份数据只在一处出现，
-                // 持仓页只保留持仓与现金，不再重复展示派息，避免两处口径打架。
+                // 收息通过持仓明细进入，共用同一真实账本，不再占一个主导航位。
                 EditorialSection(title: "现金变动", trailing: "可用 ¥\(NextMoney.text(model.book.cash))") {
                     HStack { Button("转入") { cashDirection = 1 }; Button("转出") { cashDirection = -1 }.foregroundStyle(p.risk) }.buttonStyle(.bordered)
                     compactField("金额", text: $cashAmount); compactField("用途/备注", text: $cashReason)
@@ -1733,15 +1512,9 @@ private struct AssetsScreen: View {
                 }
             }
         }.sheet(isPresented: $addPosition) { AddPositionSheet { code, name, units, cost, acquiredAt in do { try model.addPosition(code: code, name: name, units: units, cost: cost, acquiredAt: acquiredAt) } catch { model.errorMessage = error.localizedDescription } } }
-        .sheet(isPresented: $addIncome) { IncomeRecordSheet { event in do { try model.addIncomeEvent(event) } catch { model.errorMessage = error.localizedDescription } } }
         .confirmationDialog(assetsConfirm?.title ?? "", isPresented: Binding(get: { assetsConfirm != nil }, set: { if !$0 { assetsConfirm = nil } }), titleVisibility: .visible) {
             if let action = assetsConfirm {
                 switch action {
-                case .income(let id):
-                    Button("确认到账并计入现金", role: .destructive) {
-                        do { try model.receiveIncomeEvent(id) } catch { model.errorMessage = error.localizedDescription }
-                        assetsConfirm = nil
-                    }
                 case .cash:
                     Button("确认记录", role: .destructive) {
                         do { try model.adjustRealCash(cashDirection * NextMoney.parse(cashAmount), reason: cashReason); cashAmount = "" } catch { model.errorMessage = error.localizedDescription }
@@ -2046,6 +1819,47 @@ struct TradeEntrySheet: View {
     }
 }
 
+/// 「我的」只展示身份、连接与少量高频入口。具体配置进入二级页，
+/// 避免把全部开关和工具堆在底栏页面形成无限长的滚动列表。
+private struct MyHubScreen: View {
+    @EnvironmentObject private var model: NextAppModel
+    @Environment(\.gp) private var p
+
+    var body: some View {
+        GPPageBackground {
+            EditorialSection(title: "账户与顾问", accent: p.chartViolet) {
+                GPCard(accent: p.chartViolet) {
+                    Text("一个真实账户 · 一份 AI 指导")
+                        .font(.headline).foregroundStyle(p.ink)
+                    Text("\(model.book.positions.count) 只持仓 · \(model.syncStateText)")
+                        .font(.caption).foregroundStyle(p.muted)
+                    NavigationLink(value: GPRoute.profile) {
+                        IntentRow(icon: "person.text.rectangle", title: "AI 对我的了解", detail: "真实成交与反馈形成的投资者画像")
+                    }
+                }
+            }
+            EditorialSection(title: "连接与设置", accent: p.chartBlue) {
+                GPCard(accent: p.chartBlue) {
+                    GPDataRow(title: "NAS", value: model.syncStatus)
+                    NavigationLink(value: GPRoute.settings) {
+                        IntentRow(icon: "gearshape", title: "应用设置", detail: "主题、手机 AI、NAS 同步与通知")
+                    }.accessibilityIdentifier("my.settings.open")
+                }
+            }
+            EditorialSection(title: "我的记录", accent: p.chartGold) {
+                GPCard(accent: p.chartGold) {
+                    NavigationLink(value: GPRoute.fills) {
+                        IntentRow(icon: "list.bullet.rectangle", title: "真实成交与账本", detail: "查看已确认的交易记录")
+                    }
+                    NavigationLink(value: GPRoute.history) {
+                        IntentRow(icon: "clock.arrow.circlepath", title: "AI 判断历史", detail: "回看建议、变化原因和复盘")
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct SettingsScreen: View {
     @EnvironmentObject private var model: NextAppModel
     @Environment(\.gp) private var p
@@ -2054,8 +1868,6 @@ private struct SettingsScreen: View {
     @State private var confirmSync = false
     @State private var confirmDownload = false
     @State private var deepSeekKey = ""
-    @State private var testingNASAI = false
-    @State private var nasAIStatus: String?
     @State private var deepSeekProfile = UserDefaults.standard.string(forKey: "guanpan.deepseek.profile") ?? "flash"
     @State private var mobileAIStatus = DeepSeekMobile.loadKey() == nil ? "未保存 API key" : "本机钥匙串已保存 API key"
     @State private var mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil
@@ -2107,9 +1919,6 @@ private struct SettingsScreen: View {
         guard !tags.isEmpty else { return "还没有足够行为样本：记录几笔真实成交后 AI 会开始形成结论" }
         return tags.prefix(3).joined(separator: " · ") + "（点开可修改或否掉）"
     }
-    /// NAS 顾问访问口令（r31 安全加固）：与 NAS .env 的 GUANPAN_ADVISOR_TOKEN 相同，≥32 位。
-    @State private var advisorToken = ""
-    @State private var advisorTokenAvailable = AdvisorAccessToken.load() != nil
     var body: some View {
         GPPageBackground {
             VStack(alignment: .leading, spacing: 0) {
@@ -2119,7 +1928,7 @@ private struct SettingsScreen: View {
                         Text("视觉主题").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.ink)
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
-                                themeChip(title: "跟随场景", hexes: [0xFBF4E4, 0x2F6BFF, 0x121B2B], selected: model.preferences.themeStyle == nil) {
+                                themeChip(title: "东方默认", hexes: [0xFBF4E4, 0xC9893A, 0x496B56], selected: model.preferences.themeStyle == nil) {
                                     model.saveAppTheme(nil)
                                 }
                                 ForEach(AppTheme.allCases) { theme in
@@ -2132,7 +1941,7 @@ private struct SettingsScreen: View {
                             .padding(.vertical, 2)
                         }
                         Text(model.preferences.themeStyle == nil
-                             ? "跟随场景：首页用东方编辑室、盘中用交易仪表盘、AI 日报告用杂志卡片、持仓快览用创意拼图、详情与设置用现代卡片。"
+                             ? "当前使用东方编辑室作为统一默认主题；你选择任一主题后，首页、持仓、行情和详情都会保持同一套视觉。"
                              : "已固定为「\(model.preferences.themeStyle?.title ?? "")」：所有页面统一这一套外观，数据与 AI 结论不受影响。")
                             .font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                         Picker("明暗", selection: Binding(get: { model.theme }, set: model.saveTheme)) { ForEach(GPTheme.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).accessibilityIdentifier("settings.theme")
@@ -2231,37 +2040,10 @@ private struct SettingsScreen: View {
                             } catch { mobileAIStatus = "连接失败 · \(error.localizedDescription)" }
                         }
                     }.disabled(testingMobileAI)
-                    Text("连接测试会向 DeepSeek 发送一条简短探针，不发送持仓、账本或行情；服务商可能计费。手机端 key 与 NAS 后台 key 分别管理。")
+                    Text("连接测试只发送简短探针，不发送持仓、账本或行情；服务商可能计费。API Key 只保存在本机钥匙串。")
                         .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                    GPDataRow(title: "DeepSeek", value: model.aiProviderStatus?.message ?? "尚未检查 NAS 配置")
-                    if let status = model.aiProviderStatus {
-                        GPDataRow(title: "模型档案", value: status.model ?? status.profile ?? "未知")
-                        if status.configured {
-                            Text("NAS 已配置密钥；此状态只证明环境变量非空，不能证明密钥和模型可用。点上方「验证 NAS 上的 DeepSeek」做真实探针（只发一句 OK，不携带持仓）。")
-                                .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                        } else {
-                            Text("此项是 NAS 后台研究配置。请在 NAS 部署目录的 .env 设置 DEEPSEEK_API_KEY，再重建服务。手机端 key 与 NAS 后台 key 分开保存。")
-                                .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                        }
-                    } else {
-                        Text("连接 NAS 后可查看后台研究配置状态。手机端 key 单独保存在本机；NAS 后台研究仍需在 NAS 部署目录配置自己的 key。")
-                            .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                    }
-                    GPActionButton(title: testingNASAI ? "正在验证…" : "验证 NAS 上的 DeepSeek", secondary: true, systemImage: "checkmark.seal") {
-                        Task {
-                            testingNASAI = true
-                            defer { testingNASAI = false }
-                            do {
-                                let result = try await NextNASService.verifyAI(baseURL: model.preferences.nasBaseURL)
-                                nasAIStatus = "已验证 · \(result.model ?? "模型未知") · state=\(result.state)"
-                            } catch { nasAIStatus = "验证失败 · \(error.localizedDescription)" }
-                        }
-                    }.disabled(testingNASAI || model.preferences.nasBaseURL.isEmpty)
-                    if let nasAIStatus {
-                        Text(nasAIStatus).font(.caption).foregroundStyle(nasAIStatus.hasPrefix("已验证") ? p.jade : p.terracotta)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    GPActionButton(title: "检查 NAS 连接与 AI 配置状态", secondary: true, systemImage: "arrow.clockwise") { Task { await model.probeNAS() } }
+                    Text("NAS 只负责长期行情、统计和新闻研究；手机端 API Key 由本机安全保存，最终建议由手机统一生成。")
+                        .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 EditorialSection(title: "股息策略", accent: p.chartGold) {
@@ -2307,27 +2089,14 @@ private struct SettingsScreen: View {
                     Text("这是设备本机定时提醒（非远端推送，不需要苹果证书）；到点打开 App，到「AI 引擎」点「一键巡检持仓」即可扫描全部持仓的盈亏、股息率与机会。").font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                EditorialSection(title: "新 NAS 连接") {
+                EditorialSection(title: "NAS 数据服务") {
                     GPCard {
                     TextField("NAS 地址，例如 http://192.168.1.10:8789", text: $nasURL).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).textFieldStyle(.roundedBorder).accessibilityIdentifier("settings.nas.address")
                     HStack { Button("保存并测试") { do { try model.configureNAS(baseURL: nasURL); Task { await model.probeNAS() } } catch { model.errorMessage = error.localizedDescription } }.font(.caption.weight(.semibold)).accessibilityIdentifier("settings.nas.save-test"); Spacer(); Button("重新检查") { Task { await model.probeNAS() } }.font(.caption).accessibilityIdentifier("settings.nas.recheck") }.tint(p.forest)
-                    // 顾问口令：新版 NAS 服务端要求 Bearer 令牌才能读真实持仓；旧版不校验，保存了也不会破坏旧部署。
-                    SecureField("NAS 顾问访问口令（至少 32 位）", text: $advisorToken).textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.roundedBorder).accessibilityIdentifier("settings.nas.advisor-token")
-                    HStack {
-                        Text(advisorTokenAvailable ? "顾问口令已保存在本机钥匙串" : "尚未保存顾问口令").font(.caption2).foregroundStyle(p.muted)
-                        Spacer()
-                        Button("保存口令") {
-                            do { try AdvisorAccessToken.save(advisorToken); advisorToken = ""; advisorTokenAvailable = true; model.notice = "NAS 顾问访问口令已保存在 iPhone 钥匙串" }
-                            catch { model.errorMessage = error.localizedDescription }
-                        }.font(.caption.weight(.semibold)).disabled(advisorToken.count < 32)
-                        Button("删除") { do { try AdvisorAccessToken.delete(); advisorToken = ""; advisorTokenAvailable = false } catch { model.errorMessage = error.localizedDescription } }.font(.caption)
-                    }.tint(p.forest)
-                    Text("顾问持仓与分析接口需要服务器 GUANPAN_ADVISOR_TOKEN 和此处相同口令；口令仅保存在 iPhone 钥匙串。此并行服务默认地址为 http://NAS内网地址:8789；公网连接必须使用 HTTPS。")
-                        .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     GPActionButton(title: "从 NAS 下载账本", secondary: true, systemImage: "arrow.down.doc") { confirmDownload = true }
                     GPActionButton(title: "上传本机账本到 NAS", secondary: true, systemImage: "arrow.up.doc") { confirmSync = true }
                     Divider().padding(.vertical, 4)
-                    Text("此并行顾问服务默认地址为 http://NAS内网地址:8789；原服务仍为 30001。公网连接必须使用 HTTPS。新服务使用独立数据库，账本同步采用修订号保护。")
+                    Text("NAS 负责长期行情研究和数据同步；账本同步只记录你确认的真实账户变更，并通过修订号防止覆盖冲突。公网连接请使用 HTTPS。")
                         .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -2342,7 +2111,8 @@ private struct SettingsScreen: View {
                 let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
                 Text("观盘 Next · v\(appVer) (build \(appBuild))").font(.caption2).foregroundStyle(p.muted).padding(.vertical, 18)
             }
-        }.onAppear { mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil; nasURL = model.preferences.nasBaseURL; advisorTokenAvailable = AdvisorAccessToken.load() != nil }
+        }.navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
+            .onAppear { mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil; nasURL = model.preferences.nasBaseURL }
             .confirmationDialog("确认从 NAS 下载真实账本并替换本机账本？", isPresented: $confirmDownload, titleVisibility: .visible) {
                 Button("确认下载", role: .destructive) { Task { await model.downloadBookManually() } }
                 Button("取消", role: .cancel) { }

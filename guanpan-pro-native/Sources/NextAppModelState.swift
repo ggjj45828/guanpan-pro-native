@@ -29,11 +29,8 @@ import Combine
     @Published var unifiedAIAdvice: String? { didSet {  } }
     @Published var unifiedAIStatus: String? { didSet {  } }
     @Published var unifiedAIIsRunning = false { didSet {  } }
-    @Published var gridStatus: NextNASGridStatus? { didSet {  } }
-    @Published var gridStatusMessage = "尚未读取 NAS 网格状态" { didSet {  } }
     @Published var status = "行情尚未刷新 · 缓存可离线查看" { didSet {  } }
     @Published var syncStatus = "NAS 未连接" { didSet {  } }
-    @Published var aiProviderStatus: NextAIProviderStatus? { didSet {  } }
     @Published var legacyImportPreview: NextLegacyBookPreview? { didSet {  } }
     @Published var dailyErrors: [String: String] = [:] { didSet {  } }
     @Published var notificationStatus = "尚未检查系统通知权限" { didSet {  } }
@@ -208,9 +205,13 @@ import Combine
                              reason: "\(note)；金额 ¥\(NextMoney.text(abs(amount)))")
     }
 
-    func recordTrade(code: String, name: String, side: String, units: Int, price: Decimal, fee: Decimal) throws {
+    func recordTrade(code: String, name: String, side: String, units: Int, price: Decimal, fee: Decimal,
+                     at tradedAt: Date = Date()) throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), units > 0, price > 0,
-              side == "buy" || side == "sell", fee >= 0, !fee.isNaN else { throw NextError.invalid("成交代码、方向、价格、份额或手续费无效") }
+              side == "buy" || side == "sell", fee >= 0, !fee.isNaN,
+              tradedAt.timeIntervalSince1970.isFinite, tradedAt <= Date().addingTimeInterval(60) else {
+            throw NextError.invalid("成交代码、方向、价格、份额、手续费或成交时间无效")
+        }
         if rules[code]?.assetClass == .etf || quotes[code]?.quote.providerInstrumentType == "ETF" {
             guard fee == Decimal(string: "0.10")! else { throw NextError.invalid("已核实 ETF 的手续费按每笔 ¥0.10 记录") }
         }
@@ -228,14 +229,14 @@ import Combine
                 updated.positions[positionIndex].units += units
                 updated.positions[positionIndex].bookCost += gross + fee
             } else {
-                updated.positions.append(NextPosition(code: code, name: name, units: units, bookCost: gross + fee, acquiredAt: Date()))
+                updated.positions.append(NextPosition(code: code, name: name, units: units, bookCost: gross + fee, acquiredAt: tradedAt))
             }
         } else {
             guard let positionIndex, updated.positions[positionIndex].units >= units else { throw NextError.invalid("卖出份额超过真实账本持有份额") }
             // T+1：今天买入的份额当天不能卖。券商显示「持仓 700 / 可用 400」就是这个意思。
-            let available = updated.availableUnits(for: code, at: Date())
+            let available = updated.availableUnits(for: code, at: tradedAt)
             guard units <= available else {
-                let locked = updated.lockedUnits(for: code, at: Date())
+                let locked = updated.lockedUnits(for: code, at: tradedAt)
                 throw NextError.invalid("可卖份额不足：持有 \(updated.positions[positionIndex].units) 份，其中今天买入的 \(locked) 份要等下一个交易日才能卖，当前可卖 \(available) 份。")
             }
             let oldUnits = updated.positions[positionIndex].units
@@ -246,7 +247,7 @@ import Combine
             if updated.positions[positionIndex].units == 0 { updated.positions.remove(at: positionIndex) }
             updated.cash += gross - fee
         }
-        updated.fills.append(NextFill(date: Date(), code: code, side: side, units: units, price: price, fee: fee, realized: realized))
+        updated.fills.append(NextFill(date: tradedAt, code: code, side: side, units: units, price: price, fee: fee, realized: realized))
         try commitRealLedger(updated, action: side == "buy" ? "记录成交买入" : "记录成交卖出", reason: "用户核对成交；本笔手续费 ¥\(NextMoney.text(fee))")
         // 真实成交是画像的主要证据来源：记完账立刻重算一次，界面上的「AI 对我的了解」同步变化。
         learnProfile()
@@ -304,9 +305,9 @@ import Combine
     func openInstrumentIntent(_ code: String) {
         preferences.navigation.selectedSecurity = code
         preferences.navigation.routes = [.intent("buy-opportunity", code)]
-        preferences.navigation.selectedTab = .decision
+        preferences.navigation.selectedTab = .ai
         preferences = preferences
-        requestedTab = .decision
+        requestedTab = .ai
         requestedRoute = .decision(code)
         routeRequestID = UUID()
     }
@@ -327,7 +328,7 @@ import Combine
         requestedRoute = route
         routeRequestID = UUID()
     }
-    /// 手动选择五套视觉主题；传 nil 恢复「跟随场景」。
+    /// 手动选择五套视觉主题；传 nil 恢复全 App 一致的东方默认主题。
     func saveAppTheme(_ theme: AppTheme?) {
         preferences.themeStyle = theme
         notice = theme.map { "外观主题已切换为「\($0.title)」：只改展示，持仓与 AI 结论不变" } ?? "外观已改为跟随场景：首页编辑室、盘中仪表盘、AI 日报杂志卡片"
@@ -564,23 +565,20 @@ import Combine
         notice = "候选计划已保存：只是价格建议，未成交前不影响持仓与现金。"
     }
 
-    /// 「我已成交」：把券商实际成交写进真实账本（复用真实成交录入），
-    /// 再标记计划完成并立即重新分析下一步。未成交的候选计划永远不会进入真实流水。
-    func confirmCandidatePlan(_ planID: UUID, price: Decimal, units: Int, fee: Decimal) throws {
+    /// 每次只记录券商实际成交的份额；部分成交继续保留剩余候选份额。
+    /// 未成交的候选计划永远不会进入真实流水。
+    func confirmCandidatePlan(_ planID: UUID, price: Decimal, units: Int, fee: Decimal,
+                              at tradedAt: Date = Date()) throws {
         guard let index = candidatePlans.firstIndex(where: { $0.id == planID }) else {
             throw NextError.invalid("找不到这条候选计划")
         }
         let plan = candidatePlans[index]
-        guard plan.state.isOpen else { throw NextError.invalid("这条计划已结束（\(plan.state.rawValue)），不能再次确认成交") }
-        try recordTrade(code: plan.code, name: plan.name, side: plan.kind.side, units: units, price: price, fee: fee)
-        candidatePlans[index].state = .confirmed
-        candidatePlans[index].confirmedAt = Date()
-        candidatePlans[index].stateChangedAt = Date()
-        candidatePlans[index].confirmedPrice = price
-        candidatePlans[index].confirmedUnits = units
-        candidatePlans[index].confirmedFee = fee
-        markSuggestionExecuted(for: plan, price: price, units: units)
-        notice = "已按真实成交更新账本：份额、成本、现金和已实现收益已重算。"
+        var revised = plan
+        try revised.confirmRealFill(price: price, units: units, fee: fee, at: tradedAt, now: Date())
+        try recordTrade(code: plan.code, name: plan.name, side: plan.kind.side, units: units, price: price, fee: fee, at: tradedAt)
+        candidatePlans[index] = revised
+        markSuggestionExecuted(for: revised, price: revised.confirmedPrice ?? price, units: revised.confirmedUnits ?? units)
+        notice = "已记录真实成交 \(units) 份；计划剩余 \(candidatePlans[index].remainingUnits) 份。真实持仓、现金与收益已重算。"
         learnProfile()
         Task { await refreshGuidance() }
     }
@@ -908,10 +906,8 @@ import Combine
     func cancelLegacyWebImport() { legacyImportPreview = nil }
     func probeNAS() async {
         do {
-            let health = try await NextNASService.checkHealth(baseURL: preferences.nasBaseURL)
-            aiProviderStatus = health.aiProvider
+            _ = try await NextNASService.checkHealth(baseURL: preferences.nasBaseURL)
         } catch {
-            aiProviderStatus = nil
             syncStatus = "NAS 离线或健康检查失败 · \(error.localizedDescription)"
             postLocalAlert(level: "NAS", fingerprint: "nas-connectivity", title: "NAS 连接不可用", detail: "\(error.localizedDescription)。本机账本和缓存仍可使用。", stamp: NextDataStamp(source: "NAS 连通性检查", observedAt: Date(), quality: .stale, detail: "用户触发检查"))
             return
@@ -1049,25 +1045,6 @@ import Combine
         preferences.navigation.tabRoutes[tab.rawValue] = routes
         preferences.navigation.routes = routes
         preferences = preferences
-    }
-    /// 拉取 NAS 网格引擎状态与「明日挂单表」。网格不预测涨跌，只给出现价附近的买卖档位与可达成数量。
-    func refreshGridStatus() async {
-        guard !preferences.nasBaseURL.isEmpty else { gridStatusMessage = "请先在「我的」里连接 NAS"; return }
-        let baseURL = preferences.nasBaseURL
-        gridStatusMessage = "正在读取 NAS 网格状态…"
-        do {
-            let result = try await NextNASService.fetchGridStatus(baseURL: baseURL)
-            guard preferences.nasBaseURL == baseURL else { throw NextError.invalid("NAS 地址已变化；未采用旧连接结果") }
-            gridStatus = result
-            if !result.initialized {
-                gridStatusMessage = "NAS 网格尚未初始化；首次启动后由后台按持仓自动建网格"
-            } else if let summary = result.summary {
-                let rungs = result.ladder.reduce(0) { $0 + $1.rungs.count }
-                gridStatusMessage = "网格计划 · 覆盖 \(summary.holdingsCovered) 只 · 计划占用 ¥\(NextMoney.text(Decimal(string: summary.plannedBuyCapital) ?? 0)) · 单档净收益 ¥\(NextMoney.text(Decimal(string: summary.netPerRungTotal) ?? 0)) · 档位 \(rungs) 档"
-            } else {
-                gridStatusMessage = "NAS 网格已连接，但无汇总数据"
-            }
-        } catch { gridStatusMessage = "NAS 网格读取失败 · \(error.localizedDescription)" }
     }
     func recordDecision(_ decision: NextDecision) {
         decisions.removeAll { $0.id == decision.id }

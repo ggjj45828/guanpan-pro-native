@@ -1,6 +1,6 @@
 # 观盘 NAS：基于你提供的 guanpan2 改造
 
-版本：3.6.0-r14-phone-advisor-research。保留原 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data`、原网页和真实账本。此包不包含原压缩包内的 `.env`、API Key 或数据库。
+版本：3.6.0-r14-phone-advisor-research。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
 
 ## 这次改了什么
 
@@ -8,6 +8,8 @@
 - 停止虚拟账户 G 和模拟网格的后台线程；相关旧接口返回 410。历史数据库表保留，避免升级时破坏原数据。NAS 的 `/v1/advisor/analyze` 与 `/v1/ai/analyze` 不再生成另一套手机交易指导。
 - 增加只读 `/v1/mobile/research`，把 NAS 已归档日 K、分钟覆盖情况和真实时间戳交给手机。腾讯分钟累计成交量的单位尚未核实，接口不把它冒充“股数”或计算 VWAP，因此不会提供具体挂单价。
 - `/health` 中的 `codeVersion` 可用于确认更新真的生效。
+- 行情优先使用腾讯，缺失代码回退到东方财富；备用报价必须含上游事件时间戳，过期数据会被丢弃。日 K 超过 30 分钟会尝试更新，源失败时保留归档并标记 `staleArchive`，无归档则返回服务错误。
+- `/v1/market/quotes` 对部分缺失代码返回 `missingCodes`；所有来源都没有有效报价时返回 503，不再以空数组伪装成功。
 
 ## 与当前手机 App 连接
 
@@ -23,4 +25,4 @@ App 的“数据与同步”中，**真实账本同步地址**继续使用原来
 4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`。空档案、旧行情或缺量时手机应显示数据不足。
 5. 如需回滚，先停止新容器，再以备份的旧代码和原数据卷启动；不要使用 `docker compose down -v`。
 
-当前只完成源码改造、Python 测试和 Compose 配置校验。尚未在你的 NAS 上构建容器、连接真实行情或与真机联调。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。
+当前已完成源码改造、9 项 Python 测试、Compose 配置校验，并从开发环境实测腾讯报价和 640 根日 K 返回。Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。

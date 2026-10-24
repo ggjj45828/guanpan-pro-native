@@ -2,7 +2,7 @@ import XCTest
 
 /// 导航与主要页面渲染测试。
 ///
-/// 背景：App 底栏是**自绘 GPTabBar**（iOS 的 TabView 平铺不下 6 个页签会被折叠进 More），
+/// 背景：App 底栏是自绘的五项 GPTabBar，
 /// 所以 XCUITest 里 `app.tabBars` 永远查不到任何东西 —— 旧版测试全部因此失败。
 /// 页签现在带 `tab.<case>` 无障碍标识，本文件一律用 `byId(app, "tab.xxx")` 定位。
 final class NativeNavigationTests: XCTestCase {
@@ -34,13 +34,13 @@ final class NativeNavigationTests: XCTestCase {
         return app
     }
 
-    /// 自绘底栏的六个页签。新页签加进 GPTabBar 时同步这里。
+    /// 自绘底栏的五个页签。新页签加进 GPTabBar 时同步这里。
     private let tabs: [(id: String, title: String)] = [
-        ("tab.market", "行情"), ("tab.assets", "持仓"), ("tab.laboratory", "网格"),
-        ("tab.income", "收息"), ("tab.decision", "首页"), ("tab.mine", "我的")
+        ("tab.decision", "首页"), ("tab.market", "行情"), ("tab.assets", "持仓"),
+        ("tab.ai", "AI"), ("tab.mine", "我的")
     ]
 
-    func testSixPrimaryScreensAndSettingsRenderOnDevice() throws {
+    func testFivePrimaryScreensAndSettingsRenderOnDevice() throws {
         let app = launch()
         // 底栏常驻，等任一页签出现即认为首帧就绪。
         XCTAssertTrue(byId(app, "tab.decision").waitForExistence(timeout: 10), "自绘底栏未出现")
@@ -53,11 +53,25 @@ final class NativeNavigationTests: XCTestCase {
         }
         // 首帧刚出时按钮还没进无障碍树，直接 tap 会 "Failed to tap ... Button"。
         // 所有首次点击都必须先等元素出现。
+        byId(app, "tab.market").tap()
         let settingsButton = byId(app, "settings.open")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
         attach(app, "settings")
+    }
+
+    func testMineTabDoesNotOpenANestedCopyOfSettings() throws {
+        let app = launch()
+        let mine = byId(app, "tab.mine")
+        XCTAssertTrue(mine.waitForExistence(timeout: 10))
+        mine.tap()
+        XCTAssertTrue(app.staticTexts["账户与顾问"].waitForExistence(timeout: 5))
+        XCTAssertFalse(byId(app, "settings.open").exists, "我的首页不重复展示工具栏设置按钮")
+        let settings = byId(app, "my.settings.open")
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
     }
 
     func testInstrumentAndFullscreenChartNavigation() throws {
@@ -174,20 +188,18 @@ final class NativeNavigationTests: XCTestCase {
         attach(app, "settings-deepseek-key-entry")
     }
 
-    /// 数字孪生（NAS G 虚拟账户）已下线：网格页只出「明日挂单表」纯档位计划，
-    /// 不再有「启动独立虚拟账户」一类的控件。这里验证改版后的真实控件。
-    func testGridPlanControlsAreVisibleInLaboratory() throws {
+    /// 网格 tab 仅呈现统一手机 AI 指导中的真实持仓候选，不连接 NAS 模拟网格。
+    func testGridCandidatesComeFromUnifiedMobileGuidance() throws {
         let app = launch()
-        let labTab = byId(app, "tab.laboratory")
-        XCTAssertTrue(labTab.waitForExistence(timeout: 10))
-        labTab.tap()
-        XCTAssertTrue(app.staticTexts["网格实验室"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "明日挂单表")).firstMatch.waitForExistence(timeout: 5))
-        let refresh = byLabel(app, "刷新网格状态")
-        XCTAssertTrue(refresh.waitForExistence(timeout: 5))
-        refresh.tap()
-        // 旧版虚拟账户控件必须已经不存在：网格是纯计划，不碰资金。
+        let aiTab = byId(app, "tab.ai")
+        XCTAssertTrue(aiTab.waitForExistence(timeout: 10))
+        aiTab.tap()
+        let gridEntry = byId(app, "ai.grid.open")
+        XCTAssertTrue(gridEntry.waitForExistence(timeout: 8))
+        gridEntry.tap()
+        XCTAssertTrue(app.staticTexts["智能网格候选"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "明日挂单表")).firstMatch.exists)
         XCTAssertFalse(app.buttons["启动独立虚拟账户"].exists, "虚拟账户启动控件应已随数字孪生下线")
-        attach(app, "laboratory-grid-plan-controls")
+        attach(app, "mobile-grid-candidates")
     }
 }

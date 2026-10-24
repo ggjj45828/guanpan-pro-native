@@ -531,7 +531,7 @@ class NextDatabase:
         if len(code) != 6 or not code.isdigit(): raise InvalidData("invalid exchange code")
         with self.connect() as db:
             row = db.execute("SELECT fetched_at, body FROM daily_bars WHERE code=?", (code,)).fetchone()
-        return {"code": code, "source": "Tencent newfqkline qfqday", "fetchedAt": row[0], "bars": json.loads(row[1])} if row else None
+        return {"code": code, "source": "NAS validated Tencent/Eastmoney daily archive", "fetchedAt": row[0], "bars": json.loads(row[1])} if row else None
 
     def put_daily(self, code, rows, stamp):
         self.validate_id(code)

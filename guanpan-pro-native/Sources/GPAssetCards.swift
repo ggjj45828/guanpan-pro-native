@@ -68,6 +68,7 @@ struct GPSparkline: View {
 
 /// 英雄卡内的区间选择胶囊（日/周/月/年 形态，值取自真实数据区间）。
 struct GPRangePills: View {
+    @Environment(\.gp) private var p
     @Binding var selection: GPAssetRange
     var body: some View {
         HStack(spacing: 2) {
@@ -79,7 +80,7 @@ struct GPRangePills: View {
                         .font(.system(size: 11, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
-                        .foregroundStyle(selection == range ? Color(hex: 0x1B3E8F) : Color.white.opacity(0.82))
+                        .foregroundStyle(selection == range ? p.primaryDeep : p.heroMutedInk)
                         .background(selection == range ? Color.white : Color.clear, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -92,6 +93,7 @@ struct GPRangePills: View {
 
 /// 首页「账户总资产」英雄卡：深蓝渐变 + 大数 + 当日盈亏 + 区间胶囊 + 迷你走势。
 struct GPHeroAssetCard: View {
+    @Environment(\.gp) private var p
     let totalText: String
     var totalCaption: String? = nil
     var changeText: String? = nil
@@ -110,10 +112,10 @@ struct GPHeroAssetCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
-                Text("账户总资产").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.white.opacity(0.82))
+                Text("账户总资产").font(.system(size: 12, weight: .medium)).foregroundStyle(p.heroMutedInk)
                 if let infoText {
                     Button { showInfo.toggle() } label: {
-                        Image(systemName: "info.circle").font(.system(size: 12)).foregroundStyle(Color.white.opacity(0.7))
+                        Image(systemName: "info.circle").font(.system(size: 12)).foregroundStyle(p.heroMutedInk)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("总资产口径说明")
@@ -122,29 +124,29 @@ struct GPHeroAssetCard: View {
             }
             Text(totalText)
                 .font(.system(size: 34, weight: .medium, design: .rounded)).monospacedDigit()
-                .foregroundStyle(.white)
+                .foregroundStyle(p.heroInk)
                 .lineLimit(1).minimumScaleFactor(0.72)
             if let changeText, let changePercentText {
                 HStack(spacing: 8) {
-                    Text("今日盈亏").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.72))
-                    Text(changeText).font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.white)
+                    Text("今日盈亏").font(.system(size: 11)).foregroundStyle(p.heroMutedInk)
+                    Text(changeText).font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(p.heroInk)
                     Text(changePercentText)
                         .font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Color.white.opacity(0.2), in: Capsule())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(p.heroInk)
                 }
             }
             if let totalCaption {
-                Text(totalCaption).font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.62))
+                Text(totalCaption).font(.system(size: 10)).foregroundStyle(p.heroMutedInk)
             }
             if showInfo, let infoText {
-                Text(infoText).font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.78))
+                Text(infoText).font(.system(size: 10)).foregroundStyle(p.heroMutedInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if series.count >= 2 {
                 GPRangePills(selection: $range)
-                GPSparkline(values: series, color: .white, lineWidth: 1.7, height: 76)
+                GPSparkline(values: series, color: p.heroInk, lineWidth: 1.7, height: 76)
                 HStack {
                     Text(axisLabel(rangePoints.first?.date))
                     Spacer(minLength: 0)
@@ -153,16 +155,15 @@ struct GPHeroAssetCard: View {
                     Text(axisLabel(rangePoints.last?.date))
                 }
                 .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(p.heroMutedInk)
             }
         }
         .padding(16)
         .background(
-            LinearGradient(colors: [Color(hex: 0x1B3E8F), Color(hex: 0x2A5FD0), Color(hex: 0x3E7BEB)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing),
+            p.heroGradient,
             in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.14), lineWidth: 0.8))
-        .shadow(color: Color(hex: 0x1F4FBE).opacity(0.28), radius: 14, x: 0, y: 8)
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(p.heroInk.opacity(0.14), lineWidth: 0.8))
+        .shadow(color: p.primaryDeep.opacity(p.shadowOpacity * 2), radius: p.shadowRadius + 4, x: 0, y: 8)
     }
     private func axisLabel(_ date: Date?) -> String {
         guard let date else { return "" }
@@ -243,31 +244,39 @@ struct GPGaugeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("市场温度").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.ink)
-            ZStack {
-                Circle()
-                    .trim(from: 0, to: 0.5)
-                    .stroke(LinearGradient(colors: [p.jade, p.chartGold, p.risk],
-                                           startPoint: .leading, endPoint: .trailing),
-                            style: StrokeStyle(lineWidth: 11, lineCap: .round))
-                    .rotationEffect(.degrees(180))
-                    .frame(width: 104, height: 104)
-                    .offset(y: 52)
-                Capsule()
-                    .fill(p.ink)
-                    .frame(width: 2.5, height: 38)
-                    .offset(y: 52)
-                    .rotationEffect(.degrees(180 - 180 * clamped / 100))
-                VStack(spacing: 1) {
-                    Text("\(Int(clamped.rounded()))")
-                        .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(p.ink)
-                    Text(caption).font(.system(size: 9)).foregroundStyle(p.muted)
-                }
-                .offset(y: 22)
+            HStack(alignment: .firstTextBaseline) {
+                Text("市场温度").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.ink)
+                Spacer()
+                Text(caption).font(.system(size: 10, weight: .semibold)).foregroundStyle(p.primary)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(p.tint, in: Capsule())
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 58)
-            .clipped()
+            GeometryReader { geometry in
+                let start = CGPoint(x: 8, y: geometry.size.height - 5)
+                let control = CGPoint(x: geometry.size.width / 2, y: 4)
+                let end = CGPoint(x: geometry.size.width - 8, y: geometry.size.height - 5)
+                let t = CGFloat(clamped / 100)
+                let tip = GPGaugeCurve.point(start: start, control: control, end: end, t: t)
+                let pivot = CGPoint(x: geometry.size.width / 2, y: geometry.size.height - 5)
+                ZStack(alignment: .topLeading) {
+                    GPGaugeCurve(progress: 1)
+                        .stroke(LinearGradient(colors: [p.jade, p.chartGold, p.risk], startPoint: .leading, endPoint: .trailing),
+                                style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    GPGaugeCurve(progress: t)
+                        .stroke(p.primary.opacity(0.9), style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    Path { path in path.move(to: pivot); path.addLine(to: tip) }
+                        .stroke(p.ink.opacity(0.9), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    Circle().fill(p.primary).frame(width: 10, height: 10)
+                        .position(pivot)
+                    VStack(spacing: 0) {
+                        Text("\(Int(clamped.rounded()))")
+                            .font(.system(size: 25, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(p.ink)
+                        Text("/ 100").font(.system(size: 9, weight: .medium, design: .rounded)).foregroundStyle(p.muted)
+                    }
+                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.62)
+                }
+            }
+            .frame(height: 84)
             HStack {
                 Text(leftLabel).font(.system(size: 9)).foregroundStyle(p.muted)
                 Spacer(minLength: 0)
@@ -278,6 +287,33 @@ struct GPGaugeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(p.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(p.line, lineWidth: 0.8))
+    }
+}
+
+/// 可裁切的二次曲线仪表弧；指针端点与进度共用同一条曲线，避免旋转中心错位。
+private struct GPGaugeCurve: Shape {
+    var progress: CGFloat
+
+    static func point(start: CGPoint, control: CGPoint, end: CGPoint, t: CGFloat) -> CGPoint {
+        let value = min(max(t, 0), 1)
+        let inverse = 1 - value
+        return CGPoint(
+            x: inverse * inverse * start.x + 2 * inverse * value * control.x + value * value * end.x,
+            y: inverse * inverse * start.y + 2 * inverse * value * control.y + value * value * end.y
+        )
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let start = CGPoint(x: rect.minX + 8, y: rect.maxY - 5)
+        let control = CGPoint(x: rect.midX, y: rect.minY + 4)
+        let end = CGPoint(x: rect.maxX - 8, y: rect.maxY - 5)
+        let t = min(max(progress, 0), 1)
+        let subControl = CGPoint(x: start.x + (control.x - start.x) * t,
+                                 y: start.y + (control.y - start.y) * t)
+        var path = Path()
+        path.move(to: start)
+        path.addQuadCurve(to: Self.point(start: start, control: control, end: end, t: t), control: subControl)
+        return path
     }
 }
 

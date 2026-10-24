@@ -56,9 +56,14 @@ final class NextLocalRepository {
     private var blockedFiles = Set<String>()
     private(set) var integrityWarning: String?
     init(fileManager: FileManager = .default) {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base = appSupport ?? fileManager.temporaryDirectory
         directory = base.appendingPathComponent("GuanpanProNative", isDirectory: true)
         recoveryDirectory = base.appendingPathComponent("GuanpanProNative-Recovery", isDirectory: true)
+        guard appSupport != nil else {
+            integrityWarning = "iOS 未提供持久化应用目录；真实账本写入已停止。"
+            return
+        }
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try fileManager.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true)

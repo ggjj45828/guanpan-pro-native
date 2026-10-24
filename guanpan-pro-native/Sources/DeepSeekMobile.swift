@@ -121,54 +121,11 @@ enum DeepSeekMobile {
     }
 }
 
-/// NAS 顾问接口访问口令（r31 安全加固）：与 NAS 部署目录 .env 的 GUANPAN_ADVISOR_TOKEN 相同。
-/// 只存本机钥匙串，不进入账本、不上传任何第三方。
-enum AdvisorAccessToken {
-    private static let service = "com.guanpan.advisor.ios.nas"
-    private static let account = "advisor-access-token"
-
-    static func load() -> String? { read() }
-    static func save(_ token: String) throws {
-        let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.count >= 32 else { throw DeepSeekError.invalidAdvisorToken }
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecAttrAccount as String: account]
-        SecItemDelete(query as CFDictionary)
-        var item = query
-        item[kSecValueData as String] = Data(value.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        item[kSecAttrSynchronizable as String] = false
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else { throw DeepSeekError.keychain(status) }
-    }
-    static func delete() throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecAttrAccount as String: account]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw DeepSeekError.keychain(status) }
-    }
-    private static func read() -> String? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecAttrAccount as String: account,
-                                    kSecReturnData as String: true,
-                                    kSecMatchLimit as String: kSecMatchLimitOne,
-                                    kSecAttrSynchronizable as String: false]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-}
-
 enum DeepSeekError: LocalizedError {
-    case invalidKey, invalidAdvisorToken, invalidProfile, unauthorized, rateLimited, serviceUnavailable, invalidResponse, network, http(Int), keychain(OSStatus)
+    case invalidKey, invalidProfile, unauthorized, rateLimited, serviceUnavailable, invalidResponse, network, http(Int), keychain(OSStatus)
     var errorDescription: String? {
         switch self {
         case .invalidKey: "请输入 DeepSeek API key。"
-        case .invalidAdvisorToken: "NAS 顾问访问口令至少需要 32 位。"
         case .invalidProfile: "请选择有效的 DeepSeek 模型。"
         case .unauthorized: "API key 无效或没有该模型权限。"
         case .rateLimited: "请求频率或账户额度受限，请检查 DeepSeek 账户。"

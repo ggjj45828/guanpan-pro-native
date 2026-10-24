@@ -168,7 +168,7 @@ def fetch_eastmoney_quotes(codes):
         try: secids.append(em_secid(code))
         except ValueError: continue
     if not secids: return []
-    query = urlencode({"fields": "f12,f13,f14,f2,f3,f4,f6,f60",
+    query = urlencode({"fields": "f12,f13,f14,f2,f3,f4,f6,f60,f124",
                       "secids": ",".join(secids), "fltt": "2", "np": "1"})
     request = Request("https://push2.eastmoney.com/api/qt/ulist.np/get?" + query,
                       headers={"Referer": "https://quote.eastmoney.com/",
@@ -183,12 +183,18 @@ def fetch_eastmoney_quotes(codes):
         price, prev, pct = row.get("f2"), row.get("f60"), row.get("f3")
         if not code or price in (None, 0) or prev in (None, 0): continue
         try:
-            price = str(Decimal(str(price))); prev = str(Decimal(str(prev)))
-        except (InvalidOperation, ValueError): continue
+            price_value, prev_value = Decimal(str(price)), Decimal(str(prev))
+            event_at = datetime.fromtimestamp(int(row["f124"]), timezone.utc)
+            if (not price_value.is_finite() or not prev_value.is_finite() or
+                    price_value <= 0 or prev_value <= 0 or
+                    not _quote_is_fresh(event_at, datetime.now(timezone.utc))):
+                continue
+            price, prev = str(price_value), str(prev_value)
+        except (InvalidOperation, ValueError, TypeError, KeyError, OverflowError, OSError): continue
         found[code] = {
             "code": code, "name": row.get("f14") or code,
             "price": price, "previousClose": prev,
-            "time": datetime.now(timezone.utc).isoformat(),
+            "time": event_at.isoformat(),
             "source": "Eastmoney quote", "providerInstrumentType": None, "iopv": None,
             "changePercent": (float(pct) if isinstance(pct, (int, float)) else None),
         }

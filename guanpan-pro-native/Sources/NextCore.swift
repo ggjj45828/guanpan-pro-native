@@ -622,7 +622,7 @@ enum NextResearch {
 
 // Persisted navigation lets deep links, search and scene restoration return to
 // the same user context instead of rebuilding a flow from an internal menu.
-enum NextTab: String, Codable, CaseIterable { case overview, market, decision, laboratory, assets, income, mine }
+enum NextTab: String, Codable, CaseIterable { case overview, market, decision, laboratory, assets, income, ai, mine }
 enum NextRoute: Codable, Equatable {
     case instrument(String), intent(String, String), chart(String), portfolio(String), replay(String)
     case settings, alerts, fills, history, backups, twin(String)
@@ -1051,17 +1051,58 @@ struct NextAuditedBook: Codable, Equatable {
 enum NextTheme: String, Codable, CaseIterable { case system, light, dark, comfort }
 
 enum NextMarketClock {
-    /// Lightweight foreground polling window. It intentionally does not claim
-    /// an exchange holiday calendar; stale/closed-session quotes never trigger
-    /// a plan and the user can always refresh manually.
-    static func isRegularSession(_ date: Date = Date()) -> Bool {
+    /// Mainland exchange calendar for 2026, published by SSE on 2025-12-22.
+    /// Weekends are closed as usual. Update this table when the exchange publishes
+    /// the next year's official schedule; quote freshness remains a second gate.
+    private static let officialClosures2026: Set<String> = [
+        "2026-01-01", "2026-01-02", // New Year; weekend dates are rejected separately
+        "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23",
+        "2026-04-06", "2026-05-01", "2026-05-04", "2026-05-05",
+        "2026-06-19", "2026-09-25", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07"
+    ]
+
+    static func isExchangeOpenDay(_ date: Date = Date()) -> Bool {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let parts = calendar.dateComponents([.weekday, .hour, .minute], from: date)
-        guard let weekday = parts.weekday, (2...6).contains(weekday),
-              let hour = parts.hour, let minute = parts.minute else { return false }
+        let parts = calendar.dateComponents([.weekday, .year, .month, .day], from: date)
+        guard let weekday = parts.weekday, (2...6).contains(weekday) else { return false }
+        if parts.year == 2026 {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd"
+            return !officialClosures2026.contains(formatter.string(from: date))
+        }
+        // No published schedule embedded for this year: do not claim a holiday
+        // is known. Fresh provider timestamps still prevent stale actionable prices.
+        return true
+    }
+
+    static func hasVerifiedAnnualSchedule(_ date: Date = Date()) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar.component(.year, from: date) == 2026
+    }
+
+    static func canGenerateActionablePlan(_ date: Date = Date()) -> Bool {
+        hasVerifiedAnnualSchedule(date) && isRegularSession(date)
+    }
+
+    static func isRegularSession(_ date: Date = Date()) -> Bool {
+        guard isExchangeOpenDay(date) else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { return false }
         let current = hour * 60 + minute
         return (570...690).contains(current) || (780...900).contains(current)
+    }
+
+    static func sessionDescription(_ date: Date = Date()) -> String {
+        if !hasVerifiedAnnualSchedule(date) { return "该年度官方交易日历尚未同步 · 不生成可执行挂单价" }
+        if !isExchangeOpenDay(date) { return "A股休市日或周末 · 不提供当日可执行挂单价" }
+        return isRegularSession(date) ? "A股交易时段" : "非交易时段 · 只做研究，不提供当日可执行挂单价"
     }
 }
 

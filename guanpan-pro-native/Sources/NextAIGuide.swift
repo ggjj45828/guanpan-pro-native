@@ -533,6 +533,9 @@ enum NextTradeTPlanner {
                      now: Date, historyMissRate: Double? = nil) -> NextTPlannerResult {
         let bars = daily.filter { $0.close > 0 }
         let confidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: bars.count, minuteSampleCount: intraday.filter { $0.close > 0 }.count)
+        guard NextMarketClock.canGenerateActionablePlan(now) else {
+            return .insufficientData(confidence, [NextMarketClock.sessionDescription(now), "开市后刷新实时行情，再评估是否有可执行的做T计划"])
+        }
         guard confidence.canPriceTPlan, let quote else {
             return .insufficientData(confidence, confidence.missing.isEmpty ? ["当前无法评估做T机会"] : confidence.missing)
         }
@@ -730,6 +733,9 @@ enum NextGridPlanner {
         // 网格永远出不了 ready 计划——这是生产 bug，不是测试问题。
         let confidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: bars.count,
                                                    minuteSampleCount: 0, intradayRequired: false)
+        guard NextMarketClock.canGenerateActionablePlan(now) else {
+            return .insufficientData(confidence, [NextMarketClock.sessionDescription(now), "开市后刷新实时行情，再评估是否有可执行的网格计划"])
+        }
         guard let gridCheck else {
             return .insufficientData(confidence, ["还没有网格适合度评估（需要先读取日 K）"])
         }

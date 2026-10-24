@@ -449,14 +449,8 @@ private struct HomeIndexBoard: View {
     }
 
     private var columns: [GridItem] {
-        switch style {
-        case .chips, .editorialRow:
-            return [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8),
-                    GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
-        case .cards, .tiles:
-            return [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10),
-                    GridItem(.flexible(), spacing: 10)]
-        }
+        // 三个指数一律等宽；各主题只改变色彩与装饰，不再让指数卡因主题切换而忽宽忽窄。
+        [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
     }
 
     var body: some View {
@@ -464,9 +458,6 @@ private struct HomeIndexBoard: View {
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(rows) { row in
                     cell(row)
-                }
-                if style == .chips || style == .editorialRow {
-                    nasCell
                 }
             }
             if !message.isEmpty {
@@ -489,7 +480,7 @@ private struct HomeIndexBoard: View {
                 ChangePill(percent: row.percent, compact: true)
             }
             .padding(.horizontal, 7).padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 100, alignment: .topLeading)
             .background(p.paper.opacity(0.92), in: RoundedRectangle(cornerRadius: p.chipRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: p.chipRadius, style: .continuous).stroke(tone.opacity(0.18), lineWidth: 0.8))
         case .cards:
@@ -502,7 +493,7 @@ private struct HomeIndexBoard: View {
                 Sparkline(values: row.spark, tone: tone).frame(height: 22)
             }
             .padding(9)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 100, alignment: .topLeading)
             .background(p.paper, in: RoundedRectangle(cornerRadius: p.cardRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: p.cardRadius, style: .continuous).stroke(p.line, lineWidth: 0.8))
         case .tiles:
@@ -515,7 +506,7 @@ private struct HomeIndexBoard: View {
                 Sparkline(values: row.spark, tone: tone).frame(height: 18)
             }
             .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 100, alignment: .topLeading)
             .background(p.paperAlt, in: RoundedRectangle(cornerRadius: p.chipRadius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: p.chipRadius, style: .continuous).stroke(tone.opacity(0.22), lineWidth: 0.8))
         }

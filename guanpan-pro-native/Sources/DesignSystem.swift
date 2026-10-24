@@ -6,7 +6,7 @@ import UIKit
 enum GPTheme: String, CaseIterable, Identifiable, Codable {
     case system, light, dark, comfort
     var id: String { rawValue }
-    var title: String { switch self { case .system: "跟随系统"; case .light: "浅色"; case .dark: "深色"; case .comfort: "护眼" } }
+    var title: String { switch self { case .system: "主题默认"; case .light: "浅色"; case .dark: "深色"; case .comfort: "护眼" } }
     var colorScheme: ColorScheme? { switch self { case .system, .comfort: nil; case .light: .light; case .dark: .dark } }
 }
 
