@@ -503,6 +503,8 @@ struct NextDecisionContext: Equatable {
 enum NextAIOutputGuard {
     private static let actionPricePatterns = [
         #"(?:卖出|买回|买入|卖|买|挂单|限价|建议卖价|建议买价)\s*(?:价)?[^\n。；;]{0,40}?(?:¥|￥)?\s*(\d+\.\d{1,4})"#,
+        #"(?:卖出|买回|买入|卖|买|挂单|限价)[^\n。；;]{0,40}?(?:¥|￥)\s*(\d+(?:\.\d{1,4})?)"#,
+        #"(?:建议卖价|建议买价|卖出价|买回价|买入价|限价)\s*[:：]?\s*(\d+(?:\.\d{1,4})?)\s*(?:元)?"#,
         #"(\d+\.\d{1,4})\s*(?:元)?\s*(?:卖出|买回|买入|挂单|限价)"#
     ]
     private static let actionUnitPatterns = [

@@ -98,6 +98,9 @@ final class NextChainScenarioTests: XCTestCase {
                       "命中合法卖价不能授权模型另造买回价")
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出 900 份 @ 0.850 元。",
                                                                    approvedPrices: planPrices, approvedUnits: [500]))
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出价 1 元。",
+                                                                   approvedPrices: planPrices, approvedUnits: [500]),
+                      "整数价位同样不能绕过价格授权检查")
     }
 
     func testHistoricalCrossMarketCandidateDecodesAsNonTradingEvidence() throws {
