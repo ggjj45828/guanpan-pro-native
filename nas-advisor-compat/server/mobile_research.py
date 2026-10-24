@@ -142,6 +142,25 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
         latest_at = newest_timestamp(reports)
         source = ", ".join(sorted({row["source"] for row in reports if row["source"] != "未验证来源"})) or None
         current_status, age_seconds = "unknown", None
+    # A historical relationship cannot quietly become a trading input.  At
+    # least two independently pre-registered, non-overlapping future windows
+    # must pass before the phone may use a *fresh* live divergence to pause a
+    # plan.  Even then this only informs a Risk Guard; it never creates prices.
+    validations = []
+    for row in database.list_research("cross_market_pre_registered_hypothesis", 100):
+        definition = row["record"].get("definition")
+        if isinstance(definition, dict) and definition.get("asset") == code:
+            status = prospective_replication_status(database, row["id"])
+            validations.append({"registrationId": row["id"], "leader": definition.get("leader"), **status})
+    validated_markets = {row["leader"] for row in validations
+                         if row.get("state") == "prospectively_replicated" and isinstance(row.get("leader"), str)}
+    eligible = best_market in validated_markets if best_market else False
+    live_divergences = []
+    for row in reports:
+        observation = dict(row["liveDivergence"])
+        observation["eligibleForTradingSignal"] = bool(
+            row["market"] in validated_markets and observation.get("state") == "observed_divergence")
+        live_divergences.append({"market": row["market"], **observation})
     tail_to_next_day = cross_market.tail_to_next_day(follower_rows, as_of=now)
     # The app needs the auditable summary, not an entire minute archive payload.
     tail_to_next_day.pop("sessions", None)
@@ -151,13 +170,16 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             "bestMarket": best_market, "currentMarketStatus": current_status,
             "ageSeconds": age_seconds, "researchWindow": {"start": start, "end": end_text},
             "leadSources": lead_sources, "rankedHistoricalCandidates": ranked_sources,
-            "liveDivergences": [{"market": row["market"], **row["liveDivergence"]} for row in reports],
+            "liveDivergences": live_divergences,
             "overnightAbsorption": [{"market": row["market"], **row["overnightAbsorption"]} for row in reports],
             "rollingValidity": [{"market": row["market"], **row["rollingValidity"]} for row in reports],
             "timeProfiles": [{"market": row["market"], **row["timeProfiles"]} for row in reports],
             "tailToNextDay": tail_to_next_day,
-            "eligibleForTradingSignal": False,
-            "validationState": "requires_pre_registered_future_replication" if ranked_sources else "no_validated_candidate"}
+            "preRegisteredValidations": validations,
+            "eligibleForTradingSignal": eligible,
+            "validationState": ("prospectively_replicated" if eligible else
+                                "requires_pre_registered_future_replication" if ranked_sources else
+                                "no_validated_candidate")}
 
 
 def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samples=30):
@@ -298,6 +320,60 @@ def evaluate_pre_registered_hypothesis(database, registration_id, start, end, mi
         "definition": definition, "minimumSamples": minimum_samples})
     saved["eligibleForTradingSignal"] = False
     return saved
+
+
+def prospective_replication_status(database, registration_id):
+    """Return a deliberately strict, read-only future-replication verdict.
+
+    A single attractive out-of-sample segment is still only a candidate.  Two
+    non-overlapping, post-registration segments must each pass their own
+    holdout/control assessment.  This does not create a signal or mutate the
+    registration; it only exposes whether a later Risk Guard may consider a
+    fresh divergence as a reason to withdraw an existing plan.
+    """
+    registration = database.get_research(registration_id)
+    if not registration or registration.get("kind") != "cross_market_pre_registered_hypothesis":
+        raise ValueError("pre-registered hypothesis not found")
+    accepted, rejected, incomplete = [], [], []
+    for row in database.list_research("cross_market_point_in_time_replay", 100):
+        payload = row["record"]
+        request = payload.get("request") if isinstance(payload, dict) else None
+        hypothesis = request.get("hypothesis") if isinstance(request, dict) else None
+        if not isinstance(hypothesis, dict) or hypothesis.get("registrationId") != registration_id:
+            continue
+        report = payload.get("report")
+        interval = report.get("range") if isinstance(report, dict) else None
+        if not isinstance(interval, dict) or not isinstance(interval.get("start"), str) or not isinstance(interval.get("end"), str):
+            incomplete.append(row["id"]); continue
+        try:
+            start, end = date.fromisoformat(interval["start"]), date.fromisoformat(interval["end"])
+        except ValueError:
+            incomplete.append(row["id"]); continue
+        item = {"replayId": row["id"], "start": start, "end": end,
+                "state": report.get("state"), "evidenceState": report.get("evidenceState")}
+        if report.get("evidenceState") != "available": incomplete.append(row["id"])
+        elif report.get("state") == "candidate_requires_replication": accepted.append(item)
+        elif report.get("state") in ("no_stable_relationship", "inconclusive"): rejected.append(item)
+        else: incomplete.append(row["id"])
+    accepted.sort(key=lambda item: (item["start"], item["end"], item["replayId"]))
+    independent = []
+    for item in accepted:
+        if not independent or item["start"] > independent[-1]["end"]:
+            independent.append(item)
+    if rejected:
+        state = "no_stable_relationship"
+        note = "至少一个预注册未来样本未支持稳定增量关系；不能用于风险判断"
+    elif len(independent) >= 2:
+        state = "prospectively_replicated"
+        note = "两个不重叠的预注册未来样本均通过各自的留出/对照评估；仅可用于新鲜背离的保守风险拦截"
+    else:
+        state = "awaiting_future_replication"
+        note = "需要至少两个不重叠的预注册未来样本分别通过评估；当前不能用于风险判断"
+    return {"state": state, "eligibleForTradingSignal": state == "prospectively_replicated",
+            "passingIndependentEvaluations": [{"replayId": item["replayId"], "range": {
+                "start": item["start"].isoformat(), "end": item["end"].isoformat()}} for item in independent],
+            "rejectedEvaluations": [item["replayId"] for item in rejected],
+            "incompleteEvaluations": incomplete, "note": note}
 
 
 def persist_replay(database, report, hypothesis):

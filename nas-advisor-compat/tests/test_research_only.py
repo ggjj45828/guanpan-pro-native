@@ -331,6 +331,39 @@ class PreRegisteredHypothesisTests(unittest.TestCase):
         self.assertEqual(database.list_research("cross_market_point_in_time_replay"), [])
         del database
 
+    def test_future_replication_requires_two_non_overlapping_passing_windows(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).resolve().parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        registered = mobile_research.preregister_hypothesis(
+            database, "KR_KOSPI", "512480", {"id": "kr-lunch-v1"},
+            "2026-01-01T00:00:00+00:00", now=datetime(2025, 12, 1, tzinfo=timezone.utc))
+        def evaluation(run_id, start, end, state="candidate_requires_replication"):
+            database.put_research(run_id, {"kind": "cross_market_point_in_time_replay",
+                "request": {"hypothesis": {"registrationId": registered["registrationId"]}},
+                "report": {"range": {"start": start, "end": end},
+                           "evidenceState": "available", "state": state}})
+        evaluation("replay-first", "2026-01-01", "2026-05-31")
+        waiting = mobile_research.prospective_replication_status(database, registered["registrationId"])
+        self.assertEqual(waiting["state"], "awaiting_future_replication")
+        self.assertFalse(waiting["eligibleForTradingSignal"])
+        evaluation("replay-overlap", "2026-05-01", "2026-09-30")
+        self.assertEqual(mobile_research.prospective_replication_status(database, registered["registrationId"])["state"],
+                         "awaiting_future_replication")
+        evaluation("replay-second", "2026-06-01", "2026-10-23")
+        replicated = mobile_research.prospective_replication_status(database, registered["registrationId"])
+        self.assertEqual(replicated["state"], "prospectively_replicated")
+        self.assertTrue(replicated["eligibleForTradingSignal"])
+        self.assertEqual(len(replicated["passingIndependentEvaluations"]), 2)
+        evaluation("replay-failure", "2026-10-24", "2026-10-25", "no_stable_relationship")
+        rejected = mobile_research.prospective_replication_status(database, registered["registrationId"])
+        self.assertEqual(rejected["state"], "no_stable_relationship")
+        self.assertFalse(rejected["eligibleForTradingSignal"])
+        self.assertIsNone(database.get_real("main")["bookJSON"])
+        del database
+
 
 class PointInTimeArchiveTests(unittest.TestCase):
     def test_first_observed_snapshots_survive_later_provider_corrections(self):
