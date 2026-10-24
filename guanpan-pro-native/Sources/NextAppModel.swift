@@ -149,47 +149,48 @@ final class NextLocalRepository {
 
 @MainActor
 final class NextAppModel: ObservableObject {
-    @Published var ledger = NextAuditedBook(current: NextBook()) { didSet { reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
-    @Published var preferences = LocalPreferences() { didSet { reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
-    @Published var quotes: [String: NextCachedQuote] = [:] { didSet { reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
-    @Published var chartData: [String: NextChartDataset] = [:] { didSet { reportSave(repository.save(chartData, filename: "chart-history-v1.json")) } }
-    @Published var rules: [String: NextInstrumentRules] = [:] { didSet { reportSave(repository.save(rules, filename: "instrument-rules-v1.json")) } }
-    @Published var orderBooks: [String: NextOrderBookSnapshot] = [:] { didSet { reportSave(repository.save(orderBooks, filename: "order-books-v1.json")) } }
-    @Published var decisions: [NextDecision] = [] { didSet { reportSave(repository.save(decisions, filename: "decision-history-v1.json")) } }
-    @Published var nasResearch: [String: NextNASResearch] = [:] { didSet { reportSave(repository.save(nasResearch, filename: "nas-research-v1.json")) } }
-    @Published var researchStatus: [String: String] = [:]
-    @Published var dividendEvents: [String: [NextETFDividendEvent]] = [:] { didSet { reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json")) } }
-    @Published var patientLimitPlans: [NextPatientLimitPlan] = [] { didSet { reportSave(repository.save(patientLimitPlans, filename: "patient-limit-plans-v1.json")) } }
-    @Published var candidatePlans: [NextCandidatePlan] = [] { didSet { reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json")) } }
+    let objectWillChange = ObservableObjectPublisher()
+    var ledger = NextAuditedBook(current: NextBook()) { didSet { objectWillChange.send(); reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
+    var preferences = LocalPreferences() { didSet { objectWillChange.send(); reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
+    var quotes: [String: NextCachedQuote] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
+    var chartData: [String: NextChartDataset] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(chartData, filename: "chart-history-v1.json")) } }
+    var rules: [String: NextInstrumentRules] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(rules, filename: "instrument-rules-v1.json")) } }
+    var orderBooks: [String: NextOrderBookSnapshot] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(orderBooks, filename: "order-books-v1.json")) } }
+    var decisions: [NextDecision] = [] { didSet { objectWillChange.send(); reportSave(repository.save(decisions, filename: "decision-history-v1.json")) } }
+    var nasResearch: [String: NextNASResearch] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(nasResearch, filename: "nas-research-v1.json")) } }
+    var researchStatus: [String: String] = [:] { didSet { objectWillChange.send() } }
+    var dividendEvents: [String: [NextETFDividendEvent]] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json")) } }
+    var patientLimitPlans: [NextPatientLimitPlan] = [] { didSet { objectWillChange.send(); reportSave(repository.save(patientLimitPlans, filename: "patient-limit-plans-v1.json")) } }
+    var candidatePlans: [NextCandidatePlan] = [] { didSet { objectWillChange.send(); reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json")) } }
     /// 动态投资者画像：只存结论与依据，不存原始成交流水（流水在账本里）。
-    @Published var profile = NextInvestorProfile() { didSet { reportSave(repository.save(profile, filename: "investor-profile-v1.json")) } }
+    var profile = NextInvestorProfile() { didSet { objectWillChange.send(); reportSave(repository.save(profile, filename: "investor-profile-v1.json")) } }
     /// AI 给过的每一次具体机会：曝光 → 反馈 → 是否真实成交，画像学习只吃这条链。
-    @Published var suggestions: [NextSuggestionRecord] = [] { didSet { reportSave(repository.save(suggestions, filename: "ai-suggestions-v1.json")) } }
+    var suggestions: [NextSuggestionRecord] = [] { didSet { objectWillChange.send(); reportSave(repository.save(suggestions, filename: "ai-suggestions-v1.json")) } }
     /// AI 决策记忆：每条建议「当时」的行情/持仓/NAS/新闻/画像/依据/风险/有效期，加上改判轨迹与复盘。
-    @Published var decisionMemory: [NextDecisionRecord] = [] { didSet { reportSave(repository.save(decisionMemory, filename: "decision-memory-v1.json")) } }
+    var decisionMemory: [NextDecisionRecord] = [] { didSet { objectWillChange.send(); reportSave(repository.save(decisionMemory, filename: "decision-memory-v1.json")) } }
     /// 每只持仓的最新新闻标题（只存标题与来源，不存正文）。新闻→持仓→计划的影响在扫描时统一计算。
-    @Published var nasNews: [String: [NextNewsInput]] = [:] { didSet { reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
-    @Published var newsStatus: [String: String] = [:]
-    @Published var dailyGuidance: NextDailyGuidance?
-    @Published var guidanceStatus = "尚未生成今日指导"
-    @Published var unifiedAIAdvice: String?
-    @Published var unifiedAIStatus: String?
-    @Published var unifiedAIIsRunning = false
-    @Published var gridStatus: NextNASGridStatus?
-    @Published var gridStatusMessage = "尚未读取 NAS 网格状态"
-    @Published var status = "行情尚未刷新 · 缓存可离线查看"
-    @Published var syncStatus = "NAS 未连接"
-    @Published var aiProviderStatus: NextAIProviderStatus?
-    @Published var legacyImportPreview: NextLegacyBookPreview?
-    @Published var dailyErrors: [String: String] = [:]
-    @Published var notificationStatus = "尚未检查系统通知权限"
-    @Published var errorMessage: String?
-    @Published var showSearch = false
-    @Published var searchText = ""
-    @Published var notice = ""
-    @Published var requestedTab: NextTab?
-    @Published var requestedRoute: GPRoute?
-    @Published var routeRequestID = UUID()
+    var nasNews: [String: [NextNewsInput]] = [:] { didSet { objectWillChange.send(); reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
+    var newsStatus: [String: String] = [:] { didSet { objectWillChange.send() } }
+    var dailyGuidance: NextDailyGuidance? { didSet { objectWillChange.send() } }
+    var guidanceStatus = "尚未生成今日指导" { didSet { objectWillChange.send() } }
+    var unifiedAIAdvice: String? { didSet { objectWillChange.send() } }
+    var unifiedAIStatus: String? { didSet { objectWillChange.send() } }
+    var unifiedAIIsRunning = false { didSet { objectWillChange.send() } }
+    var gridStatus: NextNASGridStatus? { didSet { objectWillChange.send() } }
+    var gridStatusMessage = "尚未读取 NAS 网格状态" { didSet { objectWillChange.send() } }
+    var status = "行情尚未刷新 · 缓存可离线查看" { didSet { objectWillChange.send() } }
+    var syncStatus = "NAS 未连接" { didSet { objectWillChange.send() } }
+    var aiProviderStatus: NextAIProviderStatus? { didSet { objectWillChange.send() } }
+    var legacyImportPreview: NextLegacyBookPreview? { didSet { objectWillChange.send() } }
+    var dailyErrors: [String: String] = [:] { didSet { objectWillChange.send() } }
+    var notificationStatus = "尚未检查系统通知权限" { didSet { objectWillChange.send() } }
+    var errorMessage: String? { didSet { objectWillChange.send() } }
+    var showSearch = false { didSet { objectWillChange.send() } }
+    var searchText = "" { didSet { objectWillChange.send() } }
+    var notice = "" { didSet { objectWillChange.send() } }
+    var requestedTab: NextTab? { didSet { objectWillChange.send() } }
+    var requestedRoute: GPRoute? { didSet { objectWillChange.send() } }
+    var routeRequestID = UUID() { didSet { objectWillChange.send() } }
     private let repository: NextLocalRepository
     /// 合并自动上传用的延迟任务；连点几次"录入"只发一次。
     private var autoUploadTask: Task<Void, Never>?
