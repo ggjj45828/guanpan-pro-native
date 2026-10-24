@@ -31,6 +31,9 @@ import Combine
     @Published var unifiedAIIsRunning = false { didSet {  } }
     @Published var status = "行情尚未刷新 · 缓存可离线查看" { didSet {  } }
     @Published var syncStatus = "NAS 未连接" { didSet {  } }
+    /// Runtime health only: configured address and prior ledger sync never imply that NAS is online.
+    @Published var nasReachable: Bool?
+    @Published var nasProbedAt: Date?
     @Published var legacyImportPreview: NextLegacyBookPreview? { didSet {  } }
     @Published var dailyErrors: [String: String] = [:] { didSet {  } }
     @Published var notificationStatus = "尚未检查系统通知权限" { didSet {  } }
@@ -872,6 +875,8 @@ import Combine
         let normalized = try NextNASService.validateURL(baseURL).absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if preferences.nasBaseURL != normalized { preferences.nasRevision = nil }
         preferences.nasBaseURL = normalized; preferences = preferences
+        nasReachable = nil
+        nasProbedAt = nil
         syncStatus = "NAS 地址已保存；请测试连接"
     }
     func configureLegacyWeb(baseURL: String) throws {
@@ -934,19 +939,29 @@ import Combine
         }
     }
     func cancelLegacyWebImport() { legacyImportPreview = nil }
-    func probeNAS() async {
-        do {
-            _ = try await NextNASService.checkHealth(baseURL: preferences.nasBaseURL)
-        } catch {
-            syncStatus = "NAS 离线或健康检查失败 · \(error.localizedDescription)"
-            postLocalAlert(level: "NAS", fingerprint: "nas-connectivity", title: "NAS 连接不可用", detail: "\(error.localizedDescription)。本机账本和缓存仍可使用。", stamp: NextDataStamp(source: "NAS 连通性检查", observedAt: Date(), quality: .stale, detail: "用户触发检查"))
+    func probeNAS(notifyOnFailure: Bool = true) async {
+        let baseURL = preferences.nasBaseURL
+        guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            nasReachable = nil
+            nasProbedAt = nil
+            syncStatus = "NAS 未配置"
             return
         }
         do {
-            let remote = try await NextNASService.readStatus(baseURL: preferences.nasBaseURL)
-            syncStatus = "NAS 可连接 · 修订 \(remote.revision) · \(remote.hasBook ? "已有数据，可下载" : "空账本")"
+            _ = try await NextNASService.checkHealth(baseURL: baseURL)
+            guard preferences.nasBaseURL == baseURL else { return }
+            nasReachable = true
+            nasProbedAt = Date()
+            syncStatus = "NAS 在线 · 健康检查通过"
         } catch {
-            syncStatus = "NAS 在线 · 账本接口读取失败：\(error.localizedDescription)"
+            guard preferences.nasBaseURL == baseURL else { return }
+            nasReachable = false
+            nasProbedAt = Date()
+            syncStatus = "NAS 离线或健康检查失败 · \(error.localizedDescription)"
+            if notifyOnFailure {
+                postLocalAlert(level: "NAS", fingerprint: "nas-connectivity", title: "NAS 连接不可用", detail: "\(error.localizedDescription)。本机账本和缓存仍可使用。", stamp: NextDataStamp(source: "NAS 连通性检查", observedAt: Date(), quality: .stale, detail: "用户触发检查"))
+            }
+            return
         }
     }
     func downloadBookManually() async {

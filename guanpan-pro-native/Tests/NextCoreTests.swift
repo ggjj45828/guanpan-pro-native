@@ -9,6 +9,29 @@ final class NextCoreTests: XCTestCase {
     func etfRules(_ code: String = "159941", settlement: NextSettlementRule = .t0, assetClass: NextAssetClass = .etf) -> NextInstrumentRules {
         NextInstrumentRules(code: code, market: "SZ", assetClass: assetClass, settlement: settlement, lotSize: 100, feePerTrade: Decimal(string: "0.10"), source: "verified test fixture", verifiedAt: now)
     }
+    func testHomeNASStatusRequiresRecentHealthProbe() {
+        func snapshot(reachable: Bool?, probedAt: Date?) -> HomeSnapshot {
+            HomeSnapshot(now: Date(), guidance: nil, lead: nil, positions: [], quotes: [:], totalEquity: 0,
+                         pnlAmount: nil, pnlPercent: nil, cashPercent: 0, nasConfigured: true,
+                         nasReachable: reachable, nasProbedAt: probedAt, actionableCount: 0,
+                         profileTags: [], openPlanCount: 0, dataState: "本地规则", hasPositions: false)
+        }
+        let unknown = snapshot(reachable: nil, probedAt: nil)
+        XCTAssertFalse(unknown.nasOnline)
+        XCTAssertEqual(unknown.nasText, "待检测")
+
+        let offline = snapshot(reachable: false, probedAt: Date())
+        XCTAssertFalse(offline.nasOnline)
+        XCTAssertTrue(offline.nasText.contains("离线"))
+
+        let stale = snapshot(reachable: true, probedAt: Date().addingTimeInterval(-600))
+        XCTAssertFalse(stale.nasOnline)
+        XCTAssertEqual(stale.nasText, "状态待检测")
+
+        let online = snapshot(reachable: true, probedAt: Date())
+        XCTAssertTrue(online.nasOnline)
+        XCTAssertTrue(online.nasText.contains("在线"))
+    }
     func testIncomeAndDividendDataRoundTripsAndDoesNotRequireOldBookKeys() throws {
         let planned = NextIncomeEvent(kind: .etfDistribution, code: "563020", name: "红利ETF",
             exDate: now, payDate: now.addingTimeInterval(86400), units: 100,

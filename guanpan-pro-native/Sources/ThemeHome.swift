@@ -16,7 +16,8 @@ struct HomeSnapshot {
     let pnlPercent: Double?
     let cashPercent: Double
     let nasConfigured: Bool
-    let nasSyncedAt: Date?
+    let nasReachable: Bool?
+    let nasProbedAt: Date?
     let actionableCount: Int
     let profileTags: [String]
     let openPlanCount: Int
@@ -67,12 +68,17 @@ struct HomeSnapshot {
     }
 
     var nasText: String {
-        if !nasConfigured { return "未连接" }
-        guard let nasSyncedAt else { return "已连接" }
-        let minutes = Int(max(0, Date().timeIntervalSince(nasSyncedAt)) / 60)
-        if minutes < 1 { return "刚刚同步" }
-        if minutes < 60 { return "\(minutes) 分钟前" }
-        return "\(minutes / 60) 小时前"
+        guard nasConfigured else { return "未配置" }
+        guard let nasReachable, let nasProbedAt else { return "待检测" }
+        let age = max(0, Date().timeIntervalSince(nasProbedAt))
+        guard age <= 360 else { return "状态待检测" }
+        let minutes = Int(age / 60)
+        if nasReachable { return minutes < 1 ? "刚刚检测在线" : "\(minutes) 分钟前在线" }
+        return minutes < 1 ? "刚刚检测离线" : "\(minutes) 分钟前离线"
+    }
+
+    var nasOnline: Bool {
+        nasConfigured && nasReachable == true && nasProbedAt.map { Date().timeIntervalSince($0) <= 360 } == true
     }
 
     @MainActor
@@ -99,7 +105,8 @@ struct HomeSnapshot {
                             quotes: quotes, totalEquity: equity, pnlAmount: costBasis > 0 ? marketValue - costBasis : nil,
                             pnlPercent: pnl, cashPercent: cashPercent,
                             nasConfigured: !model.preferences.nasBaseURL.isEmpty,
-                            nasSyncedAt: model.preferences.nasSyncedAt,
+                            nasReachable: model.nasReachable,
+                            nasProbedAt: model.nasProbedAt,
                             actionableCount: items.filter(\.isActionable).count,
                             profileTags: model.profile.styleTags,
                             openPlanCount: model.candidatePlans.filter { $0.state.isOpen }.count,
@@ -129,7 +136,13 @@ struct ThemeHomeScreen: View {
             }
         }
         .task {
+            if !model.preferences.nasBaseURL.isEmpty { await model.probeNAS(notifyOnFailure: false) }
             if model.dailyGuidance == nil { await model.refreshGuidance() }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                guard !Task.isCancelled else { break }
+                if !model.preferences.nasBaseURL.isEmpty { await model.probeNAS(notifyOnFailure: false) }
+            }
         }
     }
 }
@@ -516,8 +529,8 @@ private struct HomeIndexBoard: View {
         let snapshot = HomeSnapshot.make(model: model)
         return VStack(alignment: .leading, spacing: 3) {
             Text("NAS").font(.system(size: 9.5, weight: .medium)).foregroundStyle(p.muted).lineLimit(1)
-            Text(snapshot.nasConfigured ? "在线" : "未连").font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(snapshot.nasConfigured ? p.jade : p.muted).lineLimit(1)
+            Text(snapshot.nasText).font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(snapshot.nasOnline ? p.jade : p.muted).lineLimit(1)
             Text(snapshot.nasText).font(.system(size: 9)).foregroundStyle(p.muted).lineLimit(1)
         }
         .padding(.horizontal, 7).padding(.vertical, 7)
@@ -1433,7 +1446,7 @@ private struct PuzzleHome: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("NAS 状态").font(.system(size: 9.5)).foregroundStyle(p.muted)
                             Text(snapshot.nasText).font(.system(size: 13, weight: .heavy, design: .rounded))
-                                .foregroundStyle(snapshot.nasConfigured ? p.jade : p.muted)
+                                .foregroundStyle(snapshot.nasOnline ? p.jade : p.muted)
                             Text("新闻与市场解读").font(.system(size: 9)).foregroundStyle(p.muted)
                         }
                     } action: { model.requestTab(.decision, route: .decision(nil)) }
