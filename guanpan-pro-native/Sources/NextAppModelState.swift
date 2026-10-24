@@ -478,9 +478,11 @@ import Combine
     /// 账本更新仍然由真实流水入口负责，这里不改持仓、不改现金。
     func confirmDecisionFilled(id: UUID, price: Decimal, units: Int, at now: Date = Date()) {
         guard let index = decisionMemory.firstIndex(where: { $0.id == id }) else { return }
-        guard NextDecisionMemory.confirmFill(&decisionMemory[index], price: price, units: units, at: now) else {
+        var updated = decisionMemory[index]
+        guard NextDecisionMemory.confirmFill(&updated, price: price, units: units, at: now) else {
             notice = "成交价与份额必须为正值，且决策仍可确认真实成交"; return
         }
+        decisionMemory[index] = updated
         notice = "已记录真实成交 \(units) 份 @ ¥\(price)。持仓与现金请在「录入真实成交」里更新。"
     }
 
@@ -906,7 +908,9 @@ import Combine
               let recordID = plan.decisionMemoryID
                 ?? NextDecisionMemory.matchingRecordID(for: plan, records: decisionMemory),
               let index = decisionMemory.firstIndex(where: { $0.id == recordID }) else { return }
-        _ = NextDecisionMemory.confirmFill(&decisionMemory[index], price: price, units: units, at: time)
+        var updated = decisionMemory[index]
+        guard NextDecisionMemory.confirmFill(&updated, price: price, units: units, at: time) else { return }
+        decisionMemory[index] = updated
     }
 
     // MARK: 画像的「用户最终控制权」
