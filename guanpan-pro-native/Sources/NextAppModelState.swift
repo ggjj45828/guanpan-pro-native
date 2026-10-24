@@ -504,7 +504,8 @@ import Combine
         }
         return NextOpportunityScanner.scan(book: book, quotes: quoteMap, daily: daily, intraday: intraday,
                                            rules: rules, orderBooks: orderBooks,
-                                           goal: goal, nasAvailable: !preferences.nasBaseURL.isEmpty,
+                                           goal: goal, nasConfigured: !preferences.nasBaseURL.isEmpty,
+                                           nasReachable: nasReachable, nasProbedAt: nasProbedAt,
                                            profile: profile, research: nasResearch, news: nasNews, now: now)
     }
 

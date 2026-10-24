@@ -206,7 +206,8 @@ enum NextOpportunityScanner {
     static func scan(book: NextBook, quotes: [String: NextQuote], daily: [String: [NextChartSample]],
                      intraday: [String: [NextChartSample]], rules: [String: NextInstrumentRules],
                      orderBooks: [String: NextOrderBookSnapshot] = [:],
-                     goal: NextGoal, nasAvailable: Bool, profile: NextInvestorProfile? = nil,
+                     goal: NextGoal, nasConfigured: Bool = false, nasReachable: Bool? = nil,
+                     nasProbedAt: Date? = nil, profile: NextInvestorProfile? = nil,
                      research: [String: NextNASResearch] = [:],
                      news: [String: [NextNewsInput]] = [:],
                      now: Date) -> NextDailyGuidance {
@@ -395,10 +396,50 @@ enum NextOpportunityScanner {
                 : "今天有 \(actionable.count) 只出现机会，其中 \(heldBack.count) 只低于你通常执行的门槛：\(names)"
         }
         let noAction = ranked.filter { !$0.isActionable }.map { "\($0.name)：\($0.strategy.rawValue)" }.joined(separator: "；")
-        let dataState: String
-        if quotes.isEmpty { dataState = "断网/无行情 · 仅本地缓存与离线规则" }
-        else if nasAvailable { dataState = "NAS 长期研究可用 · 实时行情正常" }
-        else { dataState = "NAS 离线 · 仅实时行情 + 本地规则，长期统计缺失" }
+        let held = book.positions.filter { $0.units > 0 }
+        let freshQuoteCount = held.filter { position in
+            guard let quote = quotes[position.code] else { return false }
+            return quote.hasReliableMarketTime && quote.isFresh(at: now)
+        }.count
+        let quoteState = held.isEmpty
+            ? "没有真实持仓"
+            : (freshQuoteCount == held.count
+                ? "实时行情 \(freshQuoteCount)/\(held.count) 只持仓可核验"
+                : "新鲜可核验行情 \(freshQuoteCount)/\(held.count) 只持仓")
+
+        let nasProbeAge = nasProbedAt.map { now.timeIntervalSince($0) }
+        let nasProbeRecent = nasProbeAge.map { $0 >= 0 && $0 <= 360 } == true
+        let nasOnline = nasConfigured && nasReachable == true && nasProbeRecent
+        let nasConfirmedOffline = nasConfigured && nasReachable == false && nasProbeRecent
+        let heldResearch = held.compactMap { research[$0.code]?.minuteStats }
+        let usableResearchCount = heldResearch.filter {
+            !$0.freshness.stale && $0.quality.enoughForLongTerm
+        }.count
+        let nasState: String
+        if !nasConfigured {
+            nasState = "NAS 未配置"
+        } else if nasOnline {
+            if usableResearchCount > 0 {
+                nasState = "NAS 在线 · \(usableResearchCount) 只持仓有新鲜长期研究"
+            } else if !heldResearch.isEmpty {
+                nasState = "NAS 在线，但长期研究已过期或质量不足"
+            } else {
+                nasState = "NAS 在线，但尚无持仓长期研究数据"
+            }
+        } else if nasConfirmedOffline && usableResearchCount > 0 {
+            nasState = "NAS 当前不可达 · 使用本机缓存的 \(usableResearchCount) 只有效长期研究"
+        } else if nasConfirmedOffline && !heldResearch.isEmpty {
+            nasState = "NAS 当前不可达 · 本机研究缓存已过期或质量不足"
+        } else if nasConfirmedOffline {
+            nasState = "NAS 当前不可达 · 长期研究数据缺失"
+        } else if usableResearchCount > 0 {
+            nasState = "NAS 连接待检测 · 使用本机缓存的 \(usableResearchCount) 只有效长期研究"
+        } else if !heldResearch.isEmpty {
+            nasState = "NAS 连接待检测 · 本机研究缓存已过期或质量不足"
+        } else {
+            nasState = "NAS 连接状态待检测 · 长期研究数据缺失"
+        }
+        let dataState = "\(quoteState) · \(nasState)"
 
         return NextDailyGuidance(generatedAt: now, items: ranked, summary: summary,
                                  noActionSummary: noAction.isEmpty ? "全部持仓都可以继续持有。" : "不建议操作：" + noAction,
