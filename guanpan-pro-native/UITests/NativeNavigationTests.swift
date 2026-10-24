@@ -42,6 +42,17 @@ final class NativeNavigationTests: XCTestCase {
         element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 
+    /// Avoid XCTest's implicit scroll-to-visible, which can resolve controls
+    /// underneath the app's persistent bottom tab bar as a tab-bar tap.
+    private func revealAndTap(_ element: XCUIElement, in app: XCUIApplication, maxSwipes: Int = 10) {
+        XCTAssertTrue(element.waitForExistence(timeout: 10))
+        for _ in 0..<maxSwipes where !element.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(element.isHittable, "Target should be visible above the bottom tab bar")
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+    }
+
     /// 自绘底栏的五个页签。新页签加进 GPTabBar 时同步这里。
     private let tabs: [(id: String, title: String)] = [
         ("tab.decision", "首页"), ("tab.market", "行情"), ("tab.assets", "持仓"),
@@ -75,7 +86,9 @@ final class NativeNavigationTests: XCTestCase {
         XCTAssertTrue(mine.waitForExistence(timeout: 10))
         mine.tap()
         XCTAssertTrue(app.staticTexts["账户与顾问"].waitForExistence(timeout: 5))
-        XCTAssertFalse(byId(app, "settings.open").exists, "我的首页不重复展示工具栏设置按钮")
+        // Other retained tab stacks may stay in the accessibility hierarchy;
+        // only a hittable toolbar action would be a visible duplicate here.
+        XCTAssertFalse(byId(app, "settings.open").isHittable, "我的首页不重复展示工具栏设置按钮")
         let settings = byId(app, "my.settings.open")
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
@@ -94,9 +107,8 @@ final class NativeNavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["行情图表"].exists)
         attach(app, "instrument-detail")
         let fullscreen = byId(app, "chart.fullscreen")
-        XCTAssertTrue(fullscreen.waitForExistence(timeout: 5))
-        fullscreen.tap()
-        XCTAssertTrue(byId(app, "chart.fullscreen.security-name").waitForExistence(timeout: 5))
+        revealAndTap(fullscreen, in: app)
+        XCTAssertTrue(byId(app, "chart.fullscreen.header").waitForExistence(timeout: 5))
         attach(app, "chart-fullscreen")
         let plot = app.otherElements["chart.plot"]
         if plot.waitForExistence(timeout: 2) {
@@ -108,12 +120,13 @@ final class NativeNavigationTests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         attach(app, "chart-landscape")
         XCUIDevice.shared.orientation = .portrait
-        let backStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.45))
-        backStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45)))
+        let backButton = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(backButton.waitForExistence(timeout: 5))
+        tapVisible(backButton)
         XCTAssertTrue(app.staticTexts["行情图表"].waitForExistence(timeout: 5))
         let analyzeBuy = byId(app, "instrument.analyze-buy")
         if analyzeBuy.waitForExistence(timeout: 5) {
-            tapVisible(analyzeBuy)
+            revealAndTap(analyzeBuy, in: app)
             XCTAssertTrue(app.staticTexts["私人投资顾问"].waitForExistence(timeout: 5))
             attach(app, "instrument-ai-deep-link")
         } else {
