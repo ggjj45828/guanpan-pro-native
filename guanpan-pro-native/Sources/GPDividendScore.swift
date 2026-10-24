@@ -4,7 +4,7 @@ import SwiftUI
 struct DividendBuyScoreCard: View {
     @EnvironmentObject private var model: NextAppModel
     @Environment(\.gp) private var p
-    @State private var targetYieldText: String = UserDefaults.standard.string(forKey: "guanpan.targetYield") ?? "4"
+    @AppStorage("guanpan.targetYield") private var targetYieldText = "4"
     @State private var methodExpanded = false
     @State private var refreshing = false
 
@@ -78,14 +78,14 @@ struct DividendBuyScoreCard: View {
 
     private var targetYieldEditor: some View {
         HStack(spacing: 6) {
-            Text("目标股息率 %").font(.caption).foregroundStyle(p.muted)
+            Text("目标年化股息率门槛 %").font(.caption).foregroundStyle(p.muted)
             TextField("4", text: $targetYieldText).keyboardType(.decimalPad).textFieldStyle(.roundedBorder).frame(width: 64)
                 .onChange(of: targetYieldText) { _, value in
                     let trimmed = value.trimmingCharacters(in: .whitespaces)
                     if let v = Decimal(string: trimmed), v > 0 { UserDefaults.standard.set(NextMoney.text(v, digits: 3), forKey: "guanpan.targetYield") }
                 }
             Spacer(minLength: 4)
-            Text("改后分数立即重算").font(.caption2).foregroundStyle(p.muted)
+            Text("统一设置 · 仅供参考筛选").font(.caption2).foregroundStyle(p.muted)
         }
     }
 

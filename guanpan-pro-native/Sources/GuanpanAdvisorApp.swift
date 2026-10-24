@@ -1881,7 +1881,7 @@ private struct SettingsScreen: View {
     @State private var mobileAIStatus = DeepSeekMobile.loadKey() == nil ? "未保存 API key" : "本机钥匙串已保存 API key"
     @State private var mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil
     // MARK: 外观（字号 / 字体 / 自定义颜色）
-    @State private var targetYieldInput: String = UserDefaults.standard.string(forKey: "guanpan.targetYield") ?? "4"
+    @AppStorage("guanpan.targetYield") private var targetYieldInput = "4"
     @State private var inspectEnabled = UserDefaults.standard.bool(forKey: "guanpan.inspect.enabled")
     @State private var inspectHourText = "9"
     private var appearance: GPAppearance { model.preferences.appearance }
@@ -2059,17 +2059,12 @@ private struct SettingsScreen: View {
                 EditorialSection(title: "股息策略", accent: p.chartGold) {
                     GPCard(accent: p.chartGold) {
                     HStack(spacing: 8) {
-                        Text("目标股息率").font(.subheadline.weight(.medium)).foregroundStyle(p.ink)
+                    Text("目标年化股息率门槛").font(.subheadline.weight(.medium)).foregroundStyle(p.ink)
                         Spacer()
                         TextField("4", text: $targetYieldInput).keyboardType(.decimalPad).textFieldStyle(.roundedBorder).frame(width: 72).multilineTextAlignment(.trailing)
                         Text("%").font(.subheadline).foregroundStyle(p.muted)
-                        Button("保存") {
-                            let v = Decimal(string: targetYieldInput.trimmingCharacters(in: .whitespaces)) ?? 0
-                            UserDefaults.standard.set(NextMoney.text(v, digits: 3), forKey: "guanpan.targetYield")
-                            model.notice = "目标股息率已设为 \(NextMoney.text(v, digits: 3))%；股息买入参考与持仓标签会按此计算目标价。"
-                        }.font(.caption.weight(.semibold)).tint(p.forest)
                     }
-                    Text("用于「收息 → 股息买入参考」的默认目标股息率，也作为持仓股息率标签的对照基准；只影响参考价计算，不构成买入建议。").font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+                    Text("全App共用，修改后自动保存。按近12个月已核实派息反推参考买入价，并作为收息评分门槛；默认4%，不是收益承诺或买入建议，派息会变化。").font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 EditorialSection(title: "AI 巡检提醒", accent: p.forest) {
@@ -2416,7 +2411,7 @@ private struct DividendAdviceCard: View {
     @Environment(\.gp) private var p
     @State private var entry = ""
     @State private var code: String?
-    @State private var targetYieldText: String = UserDefaults.standard.string(forKey: "guanpan.targetYield") ?? "4"
+    @AppStorage("guanpan.targetYield") private var targetYieldText = "4"
     @State private var loading = false
     @State private var note: String?
 
@@ -2498,7 +2493,7 @@ private struct DividendAdviceCard: View {
                     }.padding(.vertical, 4)
                 }
                 HStack(spacing: 6) {
-                    Text("目标股息率 %").font(.caption2).foregroundStyle(p.muted)
+                    Text("统一目标年化股息率 %").font(.caption2).foregroundStyle(p.muted)
                     TextField("4", text: $targetYieldText).keyboardType(.decimalPad).textFieldStyle(.roundedBorder).frame(width: 64)
                 }
             }
