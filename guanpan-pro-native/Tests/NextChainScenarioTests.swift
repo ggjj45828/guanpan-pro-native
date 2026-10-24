@@ -446,7 +446,7 @@ final class NextChainScenarioTests: XCTestCase {
         let plain = scan(book(), quote: quote(price: 1.400), daily: bars(closes), intraday: intraday,
                          research: researchData)
         let withProfile = scan(book(), quote: quote(price: 1.400), daily: bars(closes),
-                               intraday: intraday, profile: profile, research: researchData)
+                               intraday: intraday, research: researchData, profile: profile)
         let a = try! XCTUnwrap(plain.items.first)
         let b = try! XCTUnwrap(withProfile.items.first)
         guard case let .ready(pa) = a.tPlan!, case let .ready(pb) = b.tPlan! else {
