@@ -11,3 +11,6 @@ DerivedData/
 # 系统文件
 .DS_Store
 Thumbs.db
+__pycache__/
+*.py[cod]
+work-test-tmp/
