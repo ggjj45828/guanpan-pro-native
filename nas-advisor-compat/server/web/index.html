@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>观盘 Next · NAS 账本</title>
+<style>
+:root{--paper:#fcfcff;--canvas:#f1f2f9;--ink:#252a3b;--muted:#73798c;--line:#dfe2ec;--forest:#315d58;--risk:#c24e58;--jade:#347e63;--warn:#b46b58}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-text-size-adjust:100%}
+.wrap{max-width:900px;margin:0 auto;padding:14px 14px 40px}
+h1{margin:0;font-size:20px;font-family:Georgia,"Songti SC",serif}
+.sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+.card h2{margin:0 0 10px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card h2 .tag{margin-left:auto;font-size:11px;font-weight:500;color:var(--muted)}
+.dot{width:3px;height:14px;border-radius:2px;background:var(--forest)}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media(min-width:660px){.grid{grid-template-columns:repeat(4,1fr)}}
+.kv{background:var(--canvas);border-radius:10px;padding:9px 10px}
+.kv .k{font-size:11px;color:var(--muted)}
+.kv .v{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px;word-break:break-all}
+.kv .n{font-size:10.5px;color:var(--muted);margin-top:1px}
+.up{color:var(--risk)}.down{color:var(--jade)}.flat{color:var(--muted)}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px}
+th,td{padding:7px 5px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+th{font-weight:500;color:var(--muted);font-size:11px}
+th:first-child,td:first-child{text-align:left;white-space:normal}
+td.num{font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+.nm{font-weight:600}
+.cd{font-size:10.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+button{font:inherit;font-size:13px;padding:9px 13px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer}
+button.primary{background:var(--forest);border-color:var(--forest);color:#fff;font-weight:600}
+button.danger{color:var(--risk);border-color:rgba(194,78,88,.35)}
+button.small{padding:6px 10px;font-size:12px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+label.chk{display:flex;gap:7px;align-items:flex-start;font-size:12px;color:var(--muted);margin:9px 0}
+label.chk input{margin-top:2px}
+input[type=text],input[type=number],input[type=date],textarea{font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);width:100%}
+textarea{min-height:190px;font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;overflow:auto}
+.note{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.65}
+.stat{font-size:12px;padding:8px 10px;border-radius:9px;background:var(--canvas);color:var(--muted);margin-top:8px;white-space:pre-wrap;word-break:break-word}
+.stat.ok{background:rgba(52,126,99,.10);color:var(--jade)}
+.stat.err{background:rgba(194,78,88,.10);color:var(--risk)}
+.hist{display:flex;flex-direction:column;gap:6px}
+.hitem{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 9px;border:1px solid var(--line);border-radius:9px}
+.hitem .r{font-variant-numeric:tabular-nums;font-weight:600;min-width:48px}
+.hitem .b{margin-left:auto;display:flex;gap:6px}
+details summary{cursor:pointer;font-size:13px;color:var(--forest);font-weight:600;outline:none;padding:4px 0}
+details[open] summary{margin-bottom:6px}
+a{color:var(--forest)}
+.hint{font-size:11px;color:var(--muted);font-weight:400}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="padding:10px 2px 4px">
+    <h1>观盘 Next · NAS 账本</h1>
+    <div class="sub">网页、iPhone、NAS 共用同一份真实账本 · 写入一律修订号保护，冲突不覆盖</div>
+  </header>
+
+  <section class="card">
+    <h2><span class="dot"></span>账本概览<span class="tag" id="revTag">读取中…</span></h2>
+    <div class="grid" id="summary"></div>
+    <div class="stat" id="loadState">正在读取 NAS 账本…</div>
+    <div class="row">
+      <button class="small" onclick="refreshAll()">刷新账本与报价</button>
+      <button class="small" onclick="downloadBook()">下载账本 JSON</button>
+      <a class="hint" href="/market" style="margin-left:auto">行情看板 ›</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>持仓<span class="tag" id="posTag"></span></h2>
+    <div class="scroll" id="positions"><div class="note">读取中…</div></div>
+    <div id="contrib"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>私人顾问 · 数据检查</h2>
+    <div class="note">只读取 NAS 真实账本和已归档分时。该检查尚不生成做 T、网格或限价方案，不会下单。</div>
+    <button class="small" onclick="loadAdvisorInventory()">检查真实持仓分时</button>
+    <button class="primary small" onclick="runAdvisorAnalysis()">授权 NAS AI 综合分析</button>
+    <div class="stat" id="advisorInventory">尚未检查</div>
+    <div class="stat" id="advisorAnalysis" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>写入 NAS</h2>
+    <div class="note">三种写入都走同一条接口（修订号保护）。万一修订号走岔（恢复过备份、换过手机、别的设备写过），可以用「强制覆盖」以当前内容为准。</div>
+
+    <details>
+      <summary>用文件恢复 / 导入账本</summary>
+      <input type="file" id="file" accept="application/json,.json">
+      <label class="chk"><input type="checkbox" id="confirmFile"> 我已核对这个文件，确认把它写成 NAS 上的新修订</label>
+      <button class="primary" onclick="uploadFile()">写入 NAS</button>
+      <div class="stat" id="fileState" hidden></div>
+    </details>
+
+    <details>
+      <summary>按券商余额校准现金</summary>
+      <div class="note">只补差额，不改写历史；差额会作为一条现金流水留痕。</div>
+      <input type="number" id="cashTarget" step="0.01" placeholder="券商里显示的可用金额">
+      <label class="chk"><input type="checkbox" id="confirmCash"> 确认按这个金额校准账本现金</label>
+      <button class="primary" onclick="calibrateCash()">校准并写入</button>
+      <div class="stat" id="cashState" hidden></div>
+    </details>
+
+    <details>
+      <summary>直接编辑账本 JSON</summary>
+      <textarea id="editor" spellcheck="false" placeholder="这里是 NAS 上的账本原文"></textarea>
+      <label class="chk"><input type="checkbox" id="confirmEdit"> 我确认把编辑内容保存为下一版账本</label>
+      <button class="primary" onclick="saveEdited()">保存编辑</button>
+      <button class="danger" onclick="forceOverwrite()">强制覆盖 NAS</button>
+      <div class="stat" id="editState" hidden></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>修订历史<span class="tag" id="histTag"></span></h2>
+    <div class="note">每次写入都会留一份完整账本。回滚 = 把旧版内容写成一个新的修订，旧记录不会消失。</div>
+    <div class="hist" id="history"><div class="note">读取中…</div></div>
+    <div class="row"><button class="small" onclick="pruneHistory()">只保留最近 20 个版本</button></div>
+    <div class="stat" id="histState" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>NAS 运行状态</h2>
+    <div class="stat" id="workers">读取中…</div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>DeepSeek 连接<span class="tag" id="aiTag">—</span></h2>
+    <div class="note">这里测的是 <b>NAS 通道</b>，请求路径是「手机 → NAS → DeepSeek」，用的是 NAS 上 <code>.env</code> 里的 key。手机端<b>另有一条直连 DeepSeek 的通道</b>（key 存在手机本地钥匙串，在手机设置里单独存、单独测），没有 NAS 也能分析；两条路 key 分开管理、互不影响。本卡只测 NAS 这条路：点按钮向 DeepSeek 发一句 "OK" 探针（<b>不含任何持仓</b>）。验证失败会显示真实原因：密钥未配置 / 模型 400 / 网络不可达。</div>
+    <div class="row"><button class="primary small" onclick="testAI()">测试 DeepSeek 连接</button>
+      <span class="hint">手机端详情页「授权并通过 NAS 分析」走的就是这条路</span></div>
+    <div class="stat" id="aiState" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>行情档案核对</h2>
+    <div class="note">读取 NAS 已归档的日 K 或某交易日分时；空结果表示尚未采集，不会伪造曲线。</div>
+    <div class="row">
+      <input type="text" id="code" inputmode="numeric" maxlength="6" value="159941" style="width:110px">
+      <input type="date" id="day" style="width:165px">
+      <button class="small" onclick="loadDaily()">读取日 K</button>
+      <button class="small" onclick="loadMinute()">读取分时</button>
+    </div>
+    <div class="stat" id="market" hidden></div>
+  </section>
+
+  <div class="note" style="text-align:center">数据只在你自己的设备和 NAS 之间传输 · 手机端「上传本机账本」和这里写的是同一本书</div>
+</div>
+
+<script>
+var API = { book: '/v1/real/books/main', history: '/v1/real/books/main/history', quotes: '/v1/market/quotes?codes=' };
+var state = { revision: 0, book: null, quotes: {}, version: [] };
+var COCOA = 978307200;
+
+function $(id){ return document.getElementById(id); }
+async function loadAdvisorInventory(){
+  var el = $('advisorInventory'); el.textContent = '正在检查…';
+  try {
+    var response = await fetch('/v1/advisor/inventory', {cache:'no-store'});
+    var data = await response.json();
+    if (!response.ok) throw new Error(data.error || '读取失败');
+    var lines = [data.notice, '账本修订：' + data.bookRevision];
+    if (!data.positions.length) lines.push('NAS 真实账本没有持仓。');
+    data.positions.forEach(function(p){
+      lines.push(p.name + ' ' + p.code + ' · ' + p.units + ' 份：' + p.decision + '\n分时 ' + p.days + ' 天，满足最低点数 ' + p.completeDays + ' 天；范围 ' + (p.firstDay || '—') + ' 至 ' + (p.lastDay || '—') + '\n' + p.reasons.join('；'));
+    });
+    el.textContent = lines.join('\n\n');
+  } catch (e) { el.textContent = '检查失败：' + e.message; }
+}
+async function runAdvisorAnalysis(){
+  if (!window.confirm('本次分析将把真实持仓、现金、行情和分时发送给 NAS DeepSeek；证券代码和名称会用于 Google News RSS 搜索并发送给 Google。继续吗？')) return;
+  var el = $('advisorAnalysis'); el.hidden = false; el.textContent = '正在读取数据并分析…';
+  try {
+    var response = await fetch('/v1/advisor/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({userConfirmed:true,rules:{}})});
+    var data = await response.json();
+    if (!response.ok) throw new Error(data.error || '分析失败');
+    var lines = [data.notice, '账本修订：' + data.bookRevision];
+    data.positions.forEach(function(p){
+      lines.push(p.name + ' ' + p.code + '：' + p.decision + '；有效分时 ' + p.qualifiedDays + ' 天。' +
+        (p.plan ? '\n手工限价参考：' + JSON.stringify(p.plan) : '\n暂不提供具体交易数值：' + p.risks.join('；')));
+    });
+    data.news.forEach(function(n){
+      lines.push(n.name + ' 新闻标题（' + n.provider + '）：' + (n.items.length ? n.items.map(function(i){return i.title + ' · ' + i.source + ' · ' + i.publishedAt + ' · ' + i.url;}).join('\n') : '无可用结果'));
+    });
+    lines.push('在线 AI：' + (data.ai.content || data.ai.message || data.ai.state));
+    el.textContent = lines.join('\n\n');
+  } catch (e) { el.textContent = '分析失败：' + e.message; }
+}
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function money(n, digits){
+  var d = digits == null ? 2 : digits;
+  if (n == null || !isFinite(n)) return '—';
+  return Number(n).toLocaleString('zh-CN', {minimumFractionDigits:d, maximumFractionDigits:d});
+}
+function signed(n, digits){ return (n >= 0 ? '+' : '') + money(n, digits == null ? 2 : digits); }
+function cls(n){ return n > 0 ? 'up' : (n < 0 ? 'down' : 'flat'); }
+function setState(id, text, kind){ var el = $(id); if (!el) return; el.hidden = false; el.className = 'stat' + (kind ? ' ' + kind : ''); el.textContent = text; }
+
+async function call(path, opts){
+  var res = await fetch(path, Object.assign({cache:'no-store'}, opts || {}));
+  var data = null;
+  try { data = await res.json(); } catch (e) { data = {}; }
+  if (!res.ok) { var err = new Error((data && data.error) || ('HTTP ' + res.status)); err.status = res.status; throw err; }
+  return data;
+}
+
+async function refreshAll(){
+  var el = $('loadState'); el.hidden = false; el.className = 'stat'; el.textContent = '正在读取 NAS 账本…';
+  try {
+    var remote = await call(API.book);
+    state.revision = remote.revision || 0;
+    state.book = remote.bookJSON ? JSON.parse(remote.bookJSON) : null;
+    $('revTag').textContent = state.book ? ('修订 ' + state.revision) : 'NAS 还没有账本';
+    if (!state.book){
+      el.textContent = 'NAS 上还没有账本。可以在手机上「上传本机账本」，或用下面的文件恢复导入。';
+      $('summary').innerHTML = ''; $('positions').innerHTML = '<div class="note">没有账本</div>'; $('editor').value = '';
+    } else {
+      el.hidden = true;
+      $('editor').value = JSON.stringify(state.book, null, 2);
+      await loadQuotes();
+      render();
+    }
+  } catch (e) { el.textContent = '读取失败：' + e.message; el.className = 'stat err'; }
+  loadHistory(); loadWorkers();
+}
+
+async function loadQuotes(){
+  var codes = (state.book.positions || []).map(function(p){ return p.code; }).filter(Boolean);
+  state.quotes = {}; state.quoteError = '';
+  if (!codes.length) return;
+  try {
+    var j = await call(API.quotes + encodeURIComponent(codes.join(',')));
+    (j.quotes || []).forEach(function(q){ state.quotes[q.code] = q; });
+  } catch (e) { state.quoteError = e.message; }
+}
+
+function todayFills(code){
+  var out = [], fills = (state.book && state.book.fills) || [], now = new Date();
+  for (var i = 0; i < fills.length; i++){
+    var f = fills[i];
+    if (f.code !== code) continue;
+    var d = new Date((Number(f.date) + COCOA) * 1000);
+    if (d.toDateString() === now.toDateString()) out.push(f);
+  }
+  return out;
+}
+
+function compute(){
+  var book = state.book || { positions: [], cash: 0, fills: [] };
+  var rows = [], marketValue = 0, cost = 0, daily = 0, missing = 0;
+  var positions = book.positions || [];
+  for (var i = 0; i < positions.length; i++){
+    var p = positions[i];
+    var units = Number(p.units) || 0, bookCost = Number(p.bookCost) || 0;
+    var q = state.quotes[p.code];
+    var price = q ? Number(q.price) : null, prev = q ? Number(q.previousClose) : null;
+    var value = price != null ? price * units : bookCost;
+    var delta = 0, locked = 0, tf = todayFills(p.code);
+    for (var k = 0; k < tf.length; k++){
+      var f = tf[k], fu = Number(f.units) || 0, fp = Number(f.price) || 0, fee = Number(f.fee) || 0;
+      if (f.side === 'buy') locked += fu;
+      if (prev != null){
+        delta += f.side === 'buy' ? ((prev - fp) * fu - fee) : ((fp - prev) * fu - fee);
+      }
+    }
+    if (price != null && prev != null){ delta += (price - prev) * units; } else { missing++; }
+    rows.push({ code: p.code, name: p.name || p.code, units: units, bookCost: bookCost,
+      perUnit: units > 0 ? bookCost / units : 0, price: price, value: value,
+      pnl: value - bookCost, daily: delta, available: Math.max(0, units - locked), locked: locked });
+    marketValue += value; cost += bookCost; daily += delta;
+  }
+  var total = marketValue + (Number(book.cash) || 0);
+  rows.forEach(function(r){ r.weight = total > 0 ? r.value / total * 100 : 0; });
+  rows.sort(function(a, b){ return b.value - a.value; });
+  return { rows: rows, marketValue: marketValue, cost: cost, daily: daily, total: total,
+           cash: Number(book.cash) || 0, missing: missing };
+}
+
+function render(){
+  var m = compute();
+  $('summary').innerHTML =
+    '<div class="kv"><div class="k">总资产</div><div class="v">¥' + money(m.total) + '</div><div class="n">市值 + 可用现金</div></div>' +
+    '<div class="kv"><div class="k">可用现金</div><div class="v">¥' + money(m.cash) + '</div><div class="n">不含券商冻结/在途</div></div>' +
+    '<div class="kv"><div class="k">当日盈亏</div><div class="v ' + cls(m.daily) + '">¥' + signed(m.daily) + '</div><div class="n">昨仓按昨收、今买按买入价</div></div>' +
+    '<div class="kv"><div class="k">浮动盈亏</div><div class="v ' + cls(m.marketValue - m.cost) + '">¥' + signed(m.marketValue - m.cost) + '</div><div class="n">' + (m.cost > 0 ? signed((m.marketValue - m.cost) / m.cost * 100) + '%' : '—') + '</div></div>';
+
+  $('posTag').textContent = m.rows.length + ' 只' + (m.missing ? ' · ' + m.missing + ' 只缺报价' : '');
+  if (!m.rows.length){ $('positions').innerHTML = '<div class="note">还没有持仓。</div>'; }
+  else {
+    var html = '<table><thead><tr><th>标的</th><th>份额</th><th>成本</th><th>现价</th><th>市值</th><th>权重</th><th>盈亏</th><th>当日</th></tr></thead><tbody>';
+    m.rows.forEach(function(r){
+      html += '<tr><td><div class="nm">' + esc(r.name) + '</div><div class="cd">' + esc(r.code) +
+        (r.locked ? ' · 可卖 ' + r.available + ' / 持仓 ' + r.units : '') + '</div></td>' +
+        '<td class="num">' + r.units + '</td>' +
+        '<td class="num">' + money(r.perUnit, 4) + '</td>' +
+        '<td class="num">' + (r.price == null ? '—' : money(r.price, 3)) + '</td>' +
+        '<td class="num">' + money(r.value) + '</td>' +
+        '<td class="num">' + money(r.weight, 1) + '%</td>' +
+        '<td class="num ' + cls(r.pnl) + '">' + signed(r.pnl) + '</td>' +
+        '<td class="num ' + cls(r.daily) + '">' + signed(r.daily) + '</td></tr>';
+    });
+    $('positions').innerHTML = html + '</tbody></table>';
+  }
+
+  var top = m.rows.slice().sort(function(a, b){ return Math.abs(b.daily) - Math.abs(a.daily); }).slice(0, 4);
+  if (top.length && Math.abs(m.daily) > 0){
+    var ch = '<div class="note" style="margin-top:12px">今日贡献</div>';
+    top.forEach(function(r){
+      ch += '<div class="hitem"><span>' + esc(r.name) + '</span><span class="b ' + cls(r.daily) + '">' + signed(r.daily) + '</span></div>';
+    });
+    $('contrib').innerHTML = ch;
+  } else { $('contrib').innerHTML = ''; }
+
+  if (m.missing){
+    var el = $('loadState'); el.hidden = false; el.className = 'stat';
+    el.textContent = '有 ' + m.missing + ' 只持仓拿不到报价，市值按成本估算（不冒充实时）。' + (state.quoteError ? ' 报价源：' + state.quoteError : '');
+  }
+}
+
+async function postBook(book, expected){
+  var body = JSON.stringify({ mode: 'manual-confirmed', expectedRevision: expected, bookJSON: JSON.stringify(book) });
+  return await call(API.book, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body });
+}
+
+async function saveBook(book){ return await postBook(book, state.revision); }
+
+function needConfirm(id, msg){ if (!$(id).checked){ alert(msg); return false; } return true; }
+
+function downloadBook(){
+  if (!state.book){ alert('NAS 上还没有账本'); return; }
+  var blob = new Blob([JSON.stringify(state.book, null, 2)], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '观盘账本-r' + state.revision + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 3000);
+}
+
+async function uploadFile(){
+  var f = $('file').files[0];
+  if (!f){ alert('先选择账本 JSON 文件'); return; }
+  if (!needConfirm('confirmFile', '请先勾选确认再写入')) return;
+  try {
+    var book = JSON.parse(await f.text());
+    if (!book || book.schemaVersion !== 1 || !Array.isArray(book.positions)) throw new Error('这不是新账本（缺少 schemaVersion:1 或 positions）');
+    setState('fileState', '正在写入…');
+    var j = await saveBook(book);
+    setState('fileState', '已写入 NAS · 修订 ' + j.revision + '（手机下次「下载账本」即可拿到这一版）', 'ok');
+    $('confirmFile').checked = false;
+    await refreshAll();
+  } catch (e) {
+    setState('fileState', '写入失败：' + e.message + (e.status === 409 ? '（NAS 修订已变化；先刷新核对，或用「强制覆盖」）' : ''), 'err');
+  }
+}
+
+async function calibrateCash(){
+  if (!state.book){ alert('NAS 上还没有账本'); return; }
+  if (!needConfirm('confirmCash', '请先勾选确认再校准')) return;
+  var target = Number($('cashTarget').value);
+  if (!isFinite(target) || target < 0){ alert('请输入券商的可用金额'); return; }
+  var delta = target - Number(state.book.cash || 0);
+  if (Math.abs(delta) < 0.005){ setState('cashState', '与账本现金一致，无需校准', 'ok'); return; }
+  var next = JSON.parse(JSON.stringify(state.book));
+  next.cash = Math.round(target * 100) / 100;
+  next.cashMovements = next.cashMovements || [];
+  next.cashMovements.push({
+    id: (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + '-web'),
+    date: Date.now() / 1000 - COCOA,
+    amount: Math.round(delta * 100) / 100,
+    reason: '网页按券商余额校准到 ¥' + money(target)
+  });
+  try {
+    setState('cashState', '正在写入…');
+    var j = await saveBook(next);
+    setState('cashState', '已校准 ' + signed(delta) + ' · 修订 ' + j.revision, 'ok');
+    $('confirmCash').checked = false; $('cashTarget').value = '';
+    await refreshAll();
+  } catch (e) { setState('cashState', '校准失败：' + e.message, 'err'); }
+}
+
+async function saveEdited(){
+  if (!needConfirm('confirmEdit', '请先勾选确认再保存')) return;
+  try {
+    var book = JSON.parse($('editor').value);
+    if (!book || book.schemaVersion !== 1 || !Array.isArray(book.positions)) throw new Error('账本结构不完整');
+    setState('editState', '正在写入…');
+    var j = await saveBook(book);
+    setState('editState', '已保存 · 修订 ' + j.revision, 'ok');
+    $('confirmEdit').checked = false;
+    await refreshAll();
+  } catch (e) { setState('editState', '保存失败：' + e.message, 'err'); }
+}
+
+async function forceOverwrite(){
+  if (!state.book){ alert('NAS 上还没有账本，用文件导入即可'); return; }
+  var book;
+  try { book = JSON.parse($('editor').value); } catch (e) { alert('JSON 解析失败：' + e.message); return; }
+  if (!confirm('强制覆盖：会用下面这段 JSON 覆盖 NAS 当前账本（当前修订 ' + state.revision + '）。\n\n历史版本仍保留，可回滚。确定继续？')) return;
+  try {
+    setState('editState', '正在强制写入…');
+    var fresh = await call(API.book);
+    var j = await postBook(book, fresh.revision || 0);
+    setState('editState', '已强制覆盖 · 新修订 ' + j.revision, 'ok');
+    await refreshAll();
+  } catch (e) { setState('editState', '强制覆盖失败：' + e.message, 'err'); }
+}
+
+async function loadHistory(){
+  try {
+    var j = await call(API.history);
+    var versions = j.versions || [];
+    $('histTag').textContent = '当前 r' + (j.current || 0) + ' · 共 ' + versions.length + ' 版';
+    if (!versions.length){ $('history').innerHTML = '<div class="note">还没有历史版本。</div>'; return; }
+    var html = '';
+    versions.forEach(function(v){
+      html += '<div class="hitem"><span class="r">r' + v.revision + '</span><span>' +
+        (v.bytes >= 1024 ? money(v.bytes / 1024, 1) + ' KB' : v.bytes + ' B') + '</span>' +
+        (v.current ? '<span class="hint">当前</span>' : '') + '<span class="b">' +
+        (v.current ? '' : '<button class="small" onclick="rollback(' + v.revision + ')">回滚</button>' +
+                         '<button class="small danger" onclick="dropVersion(' + v.revision + ')">删除</button>') +
+        '</span></div>';
+    });
+    $('history').innerHTML = html;
+  } catch (e) { $('history').innerHTML = '<div class="note">历史读取失败：' + esc(e.message) + '</div>'; }
+}
+
+async function rollback(rev){
+  if (!confirm('把 r' + rev + ' 的内容写成新的修订（不会删除任何历史）。继续？')) return;
+  try {
+    var j = await call(API.history + '/' + rev);
+    var book = JSON.parse(j.bookJSON);
+    var fresh = await call(API.book);
+    var out = await postBook(book, fresh.revision || 0);
+    setState('histState', '已用 r' + rev + ' 的内容写入新修订 r' + out.revision, 'ok');
+    await refreshAll();
+  } catch (e) { setState('histState', '回滚失败：' + e.message, 'err'); }
+}
+
+async function dropVersion(rev){
+  if (!confirm('删除历史版本 r' + rev + '？当前生效版本不能删。')) return;
+  try {
+    await call(API.history + '/' + rev, { method: 'DELETE' });
+    setState('histState', '已删除 r' + rev, 'ok');
+    loadHistory();
+  } catch (e) { setState('histState', '删除失败：' + e.message, 'err'); }
+}
+
+async function pruneHistory(){
+  if (!confirm('只保留最近 20 个版本，其余删除？')) return;
+  try {
+    var j = await call(API.history + '?keep=20', { method: 'DELETE' });
+    setState('histState', '已清理 ' + j.removed + ' 个旧版本', 'ok');
+    loadHistory();
+  } catch (e) { setState('histState', '清理失败：' + e.message, 'err'); }
+}
+
+async function loadWorkers(){
+  try {
+    var j = await call('/health');
+    var ai = j.aiProvider || {}, ws = j.workers || [];
+    var lines = (Array.isArray(ws) ? ws : []).map(function(w){
+      return '· ' + w.name + ' — ' + (w.health || w.state || '') + (w.detail ? '：' + w.detail : '');
+    });
+    $('workers').textContent = '服务版本 ' + (j.codeVersion || '未知') +
+      '\nAI 提供方 ' + (ai.state || '未知') + (ai.model ? '（' + ai.model + '）' : '') +
+      (lines.length ? '\n' + lines.join('\n') : '\n（没有后台线程状态）');
+    if ($('aiTag')) $('aiTag').textContent = (ai.state || '未知') + (ai.model ? ' · ' + ai.model : '');
+  } catch (e) { $('workers').textContent = '读取失败：' + e.message; }
+}
+
+async function testAI(){
+  setState('aiState', '正在向 DeepSeek 发送探针（只发一句 OK，不含持仓）…');
+  try {
+    var res = await fetch('/v1/ai/verify', { method: 'GET', cache: 'no-store' });
+    var data = {}; try { data = await res.json(); } catch(e){}
+    if (res.ok){
+      setState('aiState', '验证成功 · state=' + (data.state || '') + ' · 模型 ' + (data.model || '未知') + '\n' + (data.message || ''), 'ok');
+    } else {
+      setState('aiState', '验证失败 · state=' + (data.state || '') + '\n' + (data.error || data.message || ('HTTP ' + res.status)), 'err');
+    }
+  } catch (e){ setState('aiState', '请求异常：' + e.message, 'err'); }
+}
+
+function showMarket(obj){ var el = $('market'); el.hidden = false; el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
+function marketCode(){
+  var code = $('code').value.trim();
+  if (!/^\d{6}$/.test(code)) throw new Error('请输入 6 位证券代码');
+  return code;
+}
+async function loadDaily(){
+  try { showMarket(await call('/v1/market/daily/' + marketCode())); }
+  catch (e) { showMarket('读取失败：' + e.message); }
+}
+async function loadMinute(){
+  try {
+    var code = marketCode(), day = $('day').value;
+    showMarket(await call('/v1/market/minute/' + code + (day ? '?day=' + encodeURIComponent(day) : '')));
+  } catch (e) { showMarket('读取失败：' + e.message); }
+}
+
+$('day').value = new Date().toISOString().slice(0, 10);
+refreshAll();
+setInterval(function(){ if (document.visibilityState === 'visible') refreshAll(); }, 60000);
+</script>
+</body>
+</html>

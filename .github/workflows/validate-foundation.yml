@@ -1,0 +1,29 @@
+name: Validate isolated foundation
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'nas-sync-server/**'
+      - 'tests/**'
+      - 'guanpan-pro-native/Sources/Lab/**'
+      - '.github/workflows/validate-foundation.yml'
+permissions:
+  contents: read
+jobs:
+  offline-core-and-channel-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test offline simulator
+        run: node --test tests/*.test.cjs
+      - name: Test NAS channels against disposable databases
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Python syntax
+        run: python -m py_compile nas-sync-server/server.py nas-sync-server/channel_store.py nas-sync-server/market_data.py nas-sync-server/market_runtime.py
+
