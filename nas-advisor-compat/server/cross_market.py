@@ -188,6 +188,10 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="A
     negative_pairs = [(x, r) for x, r in zip(lead_changes, future_returns) if x < 0]
     directional_pairs = positive_pairs + negative_pairs
     directional_wins = sum((r > 0 if x > 0 else r < 0) for x, r in directional_pairs)
+    # A relation driven by a few event days is not a dependable cross-market
+    # finding. At least 30 genuinely directional sessions and 30% of the
+    # observed days must contribute before it can even be a candidate.
+    minimum_directional_days = max(30, int(n * 0.30))
     half = n // 2
     first_corr = _correlation(lead_changes[:half], future_returns[:half])
     second_corr = _correlation(lead_changes[half:], future_returns[half:])
@@ -205,7 +209,8 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="A
         center = atanh(bounded_corr)
         confidence = [tanh(center - margin), tanh(center + margin)]
         adjusted_p = min(1.0, erfc(abs(z_score) / sqrt(2.0)) * comparison_count)
-    stable = (n >= MIN_SAMPLES and corr is not None and stability is not None
+    stable = (n >= MIN_SAMPLES and len(directional_pairs) >= minimum_directional_days
+              and corr is not None and stability is not None
               and stability >= 0.65 and adjusted_p is not None and adjusted_p <= 0.05)
     return {"sampleCount": n, "state": "stable_candidate" if stable else "unstable",
             "sampleUnit": "independent trading sessions",
@@ -221,6 +226,8 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="A
             "negativeLeadSampleCount": len(negative_pairs),
             "negativeLeadWinRate": (sum(r < 0 for _, r in negative_pairs) / len(negative_pairs)
                                     if negative_pairs else None),
+            "directionalSampleCount": len(directional_pairs),
+            "minimumDirectionalSampleCount": minimum_directional_days,
             "meanForwardReturn": mean(future_returns), "medianForwardReturn": median(future_returns),
             "maxAdverseMove": min(future_returns), "stability": stability}
 

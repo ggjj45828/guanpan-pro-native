@@ -698,6 +698,32 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(report["state"], "no_stable_relationship")
         self.assertIn("没有稳定领先关系", report["reason"])
 
+    def test_sparse_event_days_cannot_promote_a_spurious_stable_lead(self):
+        from zoneinfo import ZoneInfo
+        leader, follower = [], []
+        zone, day, added = ZoneInfo("Asia/Shanghai"), datetime(2026, 1, 5).date(), 0
+        while added < 100:
+            if day.weekday() < 5:
+                stamp = datetime.combine(day, datetime.min.time(), zone)
+                direction = (1 if (added // 5) % 2 else -1) if added % 5 == 0 else 0
+                leader.extend([
+                    {"timestamp": stamp.replace(hour=9, minute=25).isoformat(), "price": "100"},
+                    {"timestamp": stamp.replace(hour=9, minute=30).isoformat(), "price": str(100 * (1 + direction * .01))},
+                ])
+                follower.extend([
+                    {"timestamp": stamp.replace(hour=9, minute=30).isoformat(), "price": "1"},
+                    {"timestamp": stamp.replace(hour=9, minute=35).isoformat(), "price": str(1 + direction * .01)},
+                ])
+                added += 1
+            day += timedelta(days=1)
+        report = cross_market.analyze_pair(leader, follower, as_of="2026-12-31T00:00:00+08:00",
+                                            source="sparse-event fixture", market_status="closed")
+        window = next(row for row in report["windows"] if row["lagMinutes"] == 0 and row["horizonMinutes"] == 5)
+        self.assertEqual(window["directionalSampleCount"], 20)
+        self.assertEqual(window["minimumDirectionalSampleCount"], 30)
+        self.assertNotEqual(window["state"], "stable_candidate")
+        self.assertEqual(report["state"], "no_stable_relationship")
+
     def test_holding_research_reads_archived_minute_rows_and_finds_only_supported_pair(self):
         import shutil
         from datetime import date, time, timedelta
