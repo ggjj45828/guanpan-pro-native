@@ -1,6 +1,6 @@
 # 观盘 Pro v2.13.55 升级候选 r2：编译交接
 
-这是当前开发源码快照，基于 v2.13.55 保留成熟功能继续修改，不是已经完成 iOS 编译的正式版。请先阅读本文件。旧文档、旧需求矩阵及旧 SOURCE-MANIFEST.json 属于 r1 或原始版本的历史记录，不代表 r2 当前验收结果；当前文件清单以 CANDIDATE-MANIFEST.json 为准。
+此文件属于 r2 历史交接说明，已由 `CURRENT-HANDOFF-r3.md` 和 `Master Acceptance Matrix.md` 取代。不要按本文件中的旧模拟引擎、独立 NAS worker 或旧布局指引继续开发；当前方向是一个真实账户、手机唯一 AI 指导、NAS 长期行情研究。
 
 ## 内容与验证
 - guanpan-pro-native：iOS 源码、共享 JavaScript 模拟核心与研究模块、XcodeGen 配置、Apple 运行时单元测试。
@@ -13,7 +13,7 @@
 ## 编译步骤
 在 macOS 安装 Xcode 与 XcodeGen，在 guanpan-pro-native 下运行 `xcodegen generate`，打开生成的 GuanpanProNative.xcodeproj。先运行 GuanpanProValidation 的模拟器测试，再检查 GuanpanProNative 应用。仓库根目录 .github/workflows/validate-ios.yml 提供手动触发的 macOS Actions 编译与测试流程；需把整个压缩包内容放在仓库根目录，不能只上传 iOS 子目录。尚未替用户上传或触发远程构建。
 
-本机验证：Python 3.10+ 和 Node 可用后，在根目录运行 `python tests/run-validation.py`。NAS 的 Compose 包含独立 Node worker，必须保留相邻目录结构和 Sources/Lab 共享代码。部署前请检查令牌、端口、挂载路径与现有 NAS 兼容性。
+本地 NAS 检查可运行 `python tests/run-validation.py`。旧版本的 Node 虚拟策略 worker 已从 Compose 部署清单移除；当前以 `CURRENT-HANDOFF-r3.md` 和 `Master Acceptance Matrix.md` 为准。
 
 ## 已新增但需要继续核对的部分
 五项导航、场外基金只读归档、三通道状态、真实资产手动同步预览、虚拟账户与资金流、分批限价与手续费版本、A–G 研究策略、离线顾问及现有 AI 服务调用入口、行情归档与虚拟自动执行均有候选代码。不能据此声称所有完整需求已实现。

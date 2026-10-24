@@ -10,16 +10,14 @@ import hashlib
 import json
 import re
 import sqlite3
-import time
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-CHANNELS = {"assets": "manual", "market": "automatic", "quant": "automatic"}
+CHANNELS = {"assets": "manual", "market": "automatic"}
 FIELDS = {
     "assets": {"holdings", "cash", "ledger", "costs", "cashFlows", "asOf"},
     "market": {"quotes", "iopv", "intraday", "daily", "books", "quality", "asOf"},
-    "quant": {"lab", "strategies", "orders", "fills", "decisions", "reviews", "backtests", "asOf", "executor", "preferences", "opportunityScan"},
 }
 
 
@@ -50,7 +48,7 @@ def validate_payload(channel: str, payload: object) -> dict:
         elif name == "asOf":
             if not nonnegative_int(value):
                 raise ChannelError(422, "asOf_must_be_epoch_milliseconds")
-        elif name in {"lab", "quality", "costs", "executor", "preferences", "opportunityScan"}:
+        elif name in {"quality", "costs", "preferences"}:
             if not isinstance(value, dict):
                 raise ChannelError(422, "expected_object")
         elif not isinstance(value, list):
@@ -89,9 +87,6 @@ class ChannelStore:
             CREATE TABLE IF NOT EXISTS channel_requests(
                 channel TEXT NOT NULL, request_id TEXT NOT NULL, request_hash TEXT NOT NULL,
                 result TEXT NOT NULL, PRIMARY KEY(channel,request_id));
-            CREATE TABLE IF NOT EXISTS execution_lease(
-                id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL,
-                expires_ms INTEGER NOT NULL, fence INTEGER NOT NULL);
         """)
         return db
 
@@ -138,15 +133,6 @@ class ChannelStore:
         with closing(self.connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                if channel == 'quant':
-                    lease = db.execute('SELECT * FROM execution_lease WHERE id=1').fetchone()
-                    supplied = body.get('executionLease')
-                    now = int(time.time()*1000)
-                    if supplied is not None:
-                        if not isinstance(supplied, dict) or not lease or lease['expires_ms'] <= now or supplied.get('owner') != lease['owner'] or supplied.get('fence') != lease['fence']:
-                            raise ChannelError(409, 'expired_or_invalid_execution_lease')
-                    elif lease and lease['expires_ms'] > now:
-                        raise ChannelError(409, 'virtual_executor_busy_retry')
                 prior = db.execute("SELECT * FROM channel_requests WHERE channel=? AND request_id=?", (channel, request_id)).fetchone()
                 if prior:
                     if prior["request_hash"] != request_hash:
@@ -198,30 +184,6 @@ class ChannelStore:
             db.backup(out)
         return destination
 
-    def acquire_execution(self, owner, ttl=15, now=None):
-        if not isinstance(owner,str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}',owner) or type(ttl) is not int or not 1 <= ttl <= 30:
-            raise ChannelError(422,'invalid_execution_lease_request')
-        now = int(time.time()*1000) if now is None else now
-        with closing(self.connect()) as db:
-            db.execute('BEGIN IMMEDIATE')
-            try:
-                old=db.execute('SELECT * FROM execution_lease WHERE id=1').fetchone()
-                if old and old['expires_ms']>now and old['owner']!=owner:
-                    raise ChannelError(409,'virtual_executor_busy_retry')
-                fence = old['fence'] if old and old['owner']==owner and old['expires_ms']>now else (old['fence']+1 if old else 1)
-                expiry=now+ttl*1000
-                db.execute('INSERT INTO execution_lease VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,expires_ms=excluded.expires_ms,fence=excluded.fence',(owner,expiry,fence))
-                db.commit()
-                return dict(ok=True,owner=owner,fence=fence,expiresAt=expiry)
-            except BaseException:db.rollback();raise
-
-    def release_execution(self, owner, fence):
-        with closing(self.connect()) as db:
-            changed=db.execute('UPDATE execution_lease SET expires_ms=0 WHERE id=1 AND owner=? AND fence=?',(owner,fence)).rowcount
-        if not changed:raise ChannelError(409,'execution_lease_not_owned')
-        return dict(ok=True)
-
-
 def route(handler, method, path, body=None):
     """Called by existing HTTP handler before old API routes; no legacy DB access."""
     if not path.startswith("/api/v2/"):
@@ -250,15 +212,12 @@ def route(handler, method, path, body=None):
             result = store.get(channel)
         elif method == "GET" and suffix == "history":
             result = store.history(channel)
-        elif method == "POST" and suffix in ("", "restore", "lease", "release"):
+        elif method == "POST" and suffix in ("", "restore"):
             if int(handler.headers.get("Content-Length", "0")) > 16 * 1024 * 1024:
                 handler.close_connection = True
                 raise ChannelError(413, "channel_document_too_large")
             body = body if body is not None else handler.read_body()
-            if suffix in ('lease','release'):
-                if channel!='quant':raise ChannelError(404,'route_not_found')
-                result=store.acquire_execution(body.get('owner'),body.get('ttlSeconds',15)) if suffix=='lease' else store.release_execution(body.get('owner'),body.get('fence'))
-            else:result = store.restore(channel, body) if suffix else store.put(channel, body)
+            result = store.restore(channel, body) if suffix else store.put(channel, body)
         else:
             raise ChannelError(404, "route_not_found")
         handler.send_json(200, result)

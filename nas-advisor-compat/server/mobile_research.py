@@ -191,17 +191,13 @@ def minute_summary(rows, now_ms):
             "limitations": ["本字段只描述分钟时间点覆盖；分钟量校验及VWAP见同响应 minuteStats"]}
 
 
-def snapshot(database, market_fetcher, now=None):
+def snapshot(database, now=None):
     now = now or datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
     with database.connect() as db:
         codes = [row[0] for row in db.execute(
             "SELECT code FROM tracked_instruments UNION SELECT code FROM daily_bars "
             "UNION SELECT DISTINCT code FROM minute_archive ORDER BY code LIMIT 60").fetchall()]
-    try:
-        quotes = {row["code"]: row for row in market_fetcher(codes)} if codes else {}
-    except Exception:
-        quotes = {}
     instruments = []
     for code in codes:
         bars = []
@@ -216,9 +212,6 @@ def snapshot(database, market_fetcher, now=None):
             if available_at is None or available_at > now_ms:
                 continue
             bars.append({"at": at, "availableAt": available_at, **values})
-        quote = quotes.get(code)
-        quote_at = milliseconds(quote.get("time")) if isinstance(quote, dict) else None
-        quote_price = price_units(quote.get("price")) if isinstance(quote, dict) else None
         with database.connect() as db:
             minutes = db.execute("SELECT body FROM minute_archive WHERE code=? ORDER BY stamp DESC LIMIT 30000", (code,)).fetchall()
         asset = "etf" if code.startswith(("15", "16", "50", "51", "52", "56", "58", "59")) and not code.startswith("508") else "stock"
@@ -226,11 +219,6 @@ def snapshot(database, market_fetcher, now=None):
                "evidenceIDs": ["guanpan2:" + code], "bars": bars,
                "intradayResearch": minute_summary(minutes, now_ms),
                "minuteStats": minute_stats(database, code, now)}
-        # Eastmoney fallback currently stamps reception time, not the exchange
-        # event time.  It must not become apparently fresh trading evidence.
-        if (quote_at is not None and 0 < quote_at <= now_ms and quote_price is not None
-                and quote.get("source") == "Tencent qt.gtimg.cn"):
-            row["quote"] = {"at": quote_at, "price": quote_price}
         instruments.append(row)
     research = {"asOf": now_ms, "scope": "NAS archived tracked symbols; phone filters to real holdings",
                 "universeComplete": False, "instruments": instruments, "books": [],

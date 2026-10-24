@@ -1,7 +1,0 @@
-FROM node:22-alpine
-ENV LAB_CORE_DIR=/core
-WORKDIR /worker
-COPY lab-worker.cjs /worker/lab-worker.cjs
-COPY core /core
-USER node
-CMD ["node", "/worker/lab-worker.cjs"]

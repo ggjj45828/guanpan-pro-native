@@ -562,9 +562,23 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(payload["source"], "Tencent newfqkline qfqday")
 
     def test_simulation_experiences_and_legacy_classic_ui_are_disabled(self):
+        self.assertFalse(hasattr(self.db, "put_twin_account"))
+        self.assertFalse(hasattr(self.db, "get_twin_account"))
         status, result = self.request("GET", "/classic")
         self.assertEqual(status, 410)
-        self.assertEqual(result["code"], "legacy_classic_removed")
+        self.assertEqual(result["code"], "legacy_web_removed")
+        for path in ("/", "/index.html", "/market", "/market.html", "/api/web/data"):
+            status, result = self.request("GET", path)
+            self.assertEqual(status, 410, path)
+            self.assertEqual(result["code"], "legacy_web_removed", path)
+        for path in ("/v1/grid/status", "/v1/grid/history"):
+            status, result = self.request("GET", path)
+            self.assertEqual(status, 410, path)
+            self.assertEqual(result["code"], "nas_grid_retired", path)
+        for path in ("/v1/grid/reset", "/v1/grid/advance"):
+            status, result = self.request("POST", path, {"mode": "grid-reset-confirmed"})
+            self.assertEqual(status, 410, path)
+            self.assertEqual(result["code"], "nas_grid_retired", path)
         request = {"strategy": "B", "codes": ["159941"], "initialCash": "10000",
                    "weights": {"159941": "1"}, "lotSizes": {"159941": 100}}
         status, result = self.request("POST", "/v1/backtests/B", request)
@@ -627,12 +641,5 @@ class HTTPTests(unittest.TestCase):
         status, body = self.request("POST", "/v1/market/track/159941", {"mode": "track-confirmed"})
         self.assertEqual((status, body), (200, {"code": "159941", "tracked": True}))
         self.assertEqual(self.db.tracked_instruments(), ["159941"])
-
-    def test_web_console_is_available(self):
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=3)
-        connection.request("GET", "/")
-        response = connection.getresponse(); body = response.read().decode(); connection.close()
-        self.assertEqual(response.status, 200); self.assertIn("观盘 Next", body); self.assertIn("行情档案核对", body)
-
 
 if __name__ == "__main__": unittest.main()

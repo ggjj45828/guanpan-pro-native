@@ -34,7 +34,6 @@ V2_RUNTIME = None
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "sync.sqlite3"
-WEB_DIR = Path(__file__).resolve().parent / "web"
 MAX_BODY = int(os.environ.get("MAX_BODY_BYTES", str(256 * 1024 * 1024)))
 WRITE_LOCK = threading.Lock()
 UPSTREAM_TIMEOUT = float(os.environ.get("UPSTREAM_TIMEOUT", "12"))
@@ -580,36 +579,6 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
-    def send_static(self, path: str) -> None:
-        rel = "index.html" if path in ("/", "") else path.lstrip("/")
-        if rel in ("", "."):
-            rel = "index.html"
-        file_path = (WEB_DIR / rel).resolve()
-        if WEB_DIR.resolve() not in file_path.parents and file_path != WEB_DIR.resolve():
-            self.send_json(403, {"err": "路径不合法"}, cors=False)
-            return
-        if not file_path.is_file():
-            self.send_json(404, {"err": "网页版文件未打包"}, cors=False)
-            return
-        try:
-            raw = file_path.read_bytes()
-        except OSError:
-            self.send_json(503, {"err": "网页版文件未打包"}, cors=False)
-            return
-        ct = "text/html; charset=utf-8"
-        if file_path.suffix.lower() == ".json":
-            ct = "application/json; charset=utf-8"
-        elif file_path.suffix.lower() in (".js", ".mjs"):
-            ct = "application/javascript; charset=utf-8"
-        elif file_path.suffix.lower() == ".css":
-            ct = "text/css; charset=utf-8"
-        self.send_response(200)
-        self.send_header("Content-Type", ct)
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(raw)
-
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._cors()
@@ -774,7 +743,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"err": "接口不存在"})
             return
 
-        self.send_static(path)
+        self.send_json(410, {"err": "NAS 网页入口已停用，请在 iOS App 使用真实持仓和统一 AI 指导"})
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path.rstrip("/")

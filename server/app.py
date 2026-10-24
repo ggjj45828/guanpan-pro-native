@@ -1,8 +1,8 @@
-"""Independent NAS service and local web console for Guanpan Pro Next.
+"""Legacy NAS API retained for migration compatibility.
 
 The service intentionally has no application passphrase.  It is designed for a
-trusted home LAN / VPN; the iOS app and the web console make real-book writes
-explicit and revision-checked.
+trusted home LAN / VPN. The supported deployment is nas-advisor-compat; this
+legacy service does not host an App UI or generate grid execution plans.
 """
 import json
 import os
@@ -19,11 +19,9 @@ from market import (fetch_indices, fetch_tencent_quotes, fetch_tencent_daily, fe
                     fetch_quotes, fetch_daily,
                     symbol_for, DIVIDEND_RULES_VERSION as dividend_rules_version)
 from workers import start_workers
-import grid
 import advisor
 import research
 
-WEB_ROOT = Path(__file__).with_name("web")
 
 
 def code_version():
@@ -55,47 +53,6 @@ def code_source():
 
 
 def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_daily, dividend_fetcher=fetch_dividend_events):
-    def grid_bars(codes):
-        """网格参数只需要近 20 个交易日的振幅，用 NAS 已归档的日 K，够了。"""
-        bars = {}
-        for code in codes:
-            try:
-                stored = database.get_daily(code)
-                if stored:
-                    bars[code] = stored["bars"]
-            except Exception:
-                pass
-        return bars
-
-    def grid_quotes(codes):
-        """批量取报价；批量里缺哪只就单独补一次。
-
-        腾讯的批量接口偶发只返回一部分（之前 563020 还被串成过别的品种），
-        网格如果拿不到价就会用成本价当锚点，档位全是错的 —— 所以这里宁可慢一点。
-        """
-        if not codes:
-            return {}
-        result = {}
-        try:
-            result = {row["code"]: row for row in market_fetcher(codes)}
-        except Exception:
-            result = {}
-        missing = [code for code in codes if code not in result]
-        for code in missing:
-            try:
-                for row in market_fetcher([code]):
-                    result[row["code"]] = row
-            except Exception:
-                pass
-        return result
-
-    def grid_book():
-        remote = database.get_real("main")
-        raw = remote.get("bookJSON")
-        if not raw:
-            return None
-        return json.loads(raw)
-
     class Handler(BaseHTTPRequestHandler):
         server_version = "GuanpanAdvisor/1"
 
@@ -112,15 +69,6 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers(); self.wfile.write(body)
 
-        def html(self, name="index.html"):
-            body = (WEB_ROOT / name).read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers(); self.wfile.write(body)
-
         def do_GET(self):
             parsed = urlparse(self.path); path = parsed.path
             if path == "/v1/advisor/inventory":
@@ -128,18 +76,11 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(200, advisor.inventory(database))
                 except (InvalidData, ValueError, TypeError):
                     return self.reply(422, {"error": "真实账本或分时档案无法读取；未生成建议"})
-            if path in ("/", "/index.html"):
-                return self.html()
-            if path in ("/market", "/market.html"):
-                return self.html("market.html")
-            if path in ("/classic", "/classic.html"):
-                # The legacy page still exposes virtual grid fills and a control
-                # that applies simulated results to the real ledger. Keep the
-                # file only for migration reference; never serve it as a product UI.
+            if path in ("/", "/index.html", "/market", "/market.html", "/classic", "/classic.html", "/api/web/data"):
                 return self.reply(410, {"error": "旧版实验页面已停用；请使用真实持仓顾问页面。",
-                                        "code": "legacy_classic_removed"})
+                                        "code": "legacy_web_removed"})
             if path == "/health":
-                return self.reply(200, {"service": "guanpan-advisor", "schemaVersion": 1, "authentication": "none", "web": True,
+                return self.reply(200, {"service": "guanpan-advisor", "schemaVersion": 1, "authentication": "none", "web": False,
                                         "codeVersion": code_version(), "codeSource": code_source(),
                                         "workers": database.worker_health(), "aiProvider": provider_status()})
             if path == "/v1/ai/verify":
@@ -153,37 +94,8 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
             if path == "/api/data":
                 try: return self.reply(200, {"ok": True, **database.get_legacy_inbox("main")})
                 except InvalidData as error: return self.reply(400, {"error": str(error)})
-            if path == "/api/web/data":
-                # 旧版网页的整包数据（localStorage 的替代品）。只读，不会动真实账本。
-                try: return self.reply(200, {"ok": True, **database.get_web_snapshot("classic")})
-                except InvalidData as error: return self.reply(400, {"error": str(error)})
-            if path == "/v1/grid/status":
-                try:
-                    stored = database.get_grid_state()
-                    state = stored.get("state")
-                    if not state:
-                        return self.reply(200, {"ok": True, "initialized": False, "summary": None,
-                                                "touches": [], "skipped": []})
-                    codes = list((state.get("plans") or {}).keys())
-                    quotes = grid_quotes(codes)
-                    return self.reply(200, {"ok": True, "initialized": True, "updatedAt": stored.get("updatedAt"),
-                                            # 只有计划口径：覆盖几只、计划占用多少现金、单档往返净收益。
-                                            # 没有虚拟本金、没有模拟盈亏。
-                                            "summary": grid.summary(state, quotes),
-                                            # 明天的挂单表：网格真正的"未来指导"，不是预测涨跌
-                                            "ladder": grid.ladder(state, quotes),
-                                            # 价格触及过哪一档（观察日志，不是成交）
-                                            "touches": (state.get("touches") or [])[-20:],
-                                            "skipped": state.get("skipped") or []})
-                except (InvalidData, ValueError) as error:
-                    return self.reply(400, {"error": str(error)})
-            if path == "/v1/grid/history":
-                try:
-                    stored = database.get_grid_state()
-                    state = stored.get("state") or {}
-                    return self.reply(200, {"ok": True, "touches": (state.get("touches") or [])[-100:]})
-                except (InvalidData, ValueError) as error:
-                    return self.reply(400, {"error": str(error)})
+            if path.startswith("/v1/grid/"):
+                return self.reply(410, {"error": "NAS 网格执行与明日挂单入口已停用；请查看手机 AI 今日指导。", "code": "nas_grid_retired"})
             if path == "/v1/legacy/books/main":
                 try:
                     legacy = database.get_legacy_inbox("main")
@@ -245,15 +157,10 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(400, {"error": str(error)})
                 except Exception:
                     return self.reply(502, {"error": "news source unavailable"})
-            if path.startswith("/v1/backtests/runs/"):
-                return self.reply(410, {"error": "模拟回测入口已停用；产品只保留真实持仓顾问。",
-                                        "code": "backtest_removed"})
             if path.startswith("/v1/backtests/"):
                 return self.reply(410, {"error": "模拟回测入口已停用；产品只保留真实持仓顾问。",
                                         "code": "backtest_removed"})
-            if path.startswith("/v1/simulations/"):
-                # 数字孪生 / 虚拟账户已下线：产品只允许真实账户。这里保留 410，
-                # 让旧客户端与旧收藏脚本明确知道「接口没了」，而不是拿到一份假的模拟数据。
+            if path.startswith(("/v1/simulations/", "/v1/experiments/")):
                 return self.reply(410, {"error": "数字孪生与虚拟账户已下线：观盘只使用真实持仓与真实成交。",
                                         "code": "simulation_removed"})
             if path == "/v1/market/indices":
@@ -378,45 +285,9 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     revision = database.put_legacy_inbox("main", value.get("expectedRevision"), value.get("data"))
                     return self.reply(200, {"ok": True, "revision": revision})
                 if path == "/api/web/data":
-                    # 旧版网页 POST 的形状是 {tok, data}。没有 data 就拒，别猜。
-                    payload = value.get("data")
-                    if not isinstance(payload, dict):
-                        raise InvalidData("web snapshot requires a data object")
-                    expected = value.get("expectedRevision")
-                    revision = database.put_web_snapshot("classic", payload,
-                                                         int(expected) if isinstance(expected, int) else None)
-                    return self.reply(200, {"ok": True, "revision": revision})
-                if path == "/v1/grid/reset":
-                    # 按当前真实持仓重建网格计划。只写档位计划，不动账本。
-                    if value.get("mode") != "grid-reset-confirmed":
-                        raise InvalidData("grid reset requires explicit confirmation")
-                    book = grid_book()
-                    if not book:
-                        raise InvalidData("NAS 上还没有真实账本")
-                    codes = [p["code"] for p in book.get("positions") or []]
-                    quotes = grid_quotes(codes)
-                    state = grid.build(book, quotes, grid_bars(codes))
-                    database.put_grid_state(state)
-                    return self.reply(200, {"ok": True, "summary": grid.summary(state, quotes)})
-                if path == "/v1/grid/advance":
-                    # 手动推进一次（自动推进由后台线程做）。用来立刻看到结果。
-                    if value.get("mode") != "grid-advance-confirmed":
-                        raise InvalidData("grid advance requires explicit confirmation")
-                    book = grid_book()
-                    if not book:
-                        raise InvalidData("NAS 上还没有真实账本")
-                    stored = database.get_grid_state()
-                    state = stored.get("state")
-                    codes = [p["code"] for p in book.get("positions") or []]
-                    quotes = grid_quotes(codes)
-                    if not state:
-                        state = grid.build(book, quotes, grid_bars(codes))
-                    else:
-                        state = grid.sync_with_book(state, book, quotes, grid_bars(codes))
-                    state, touches = grid.tick(state, quotes)
-                    database.put_grid_state(state)
-                    return self.reply(200, {"ok": True, "touches": len(touches),
-                                            "summary": grid.summary(state, quotes)})
+                    return self.reply(410, {"error": "旧版网页同步入口已停用。", "code": "legacy_web_removed"})
+                if path.startswith("/v1/grid/"):
+                    return self.reply(410, {"error": "NAS 网格执行与明日挂单入口已停用；请查看手机 AI 今日指导。", "code": "nas_grid_retired"})
                 if path == "/v1/legacy/books/main":
                     converted = convert_legacy_web_book(value.get("data", value))
                     return self.reply(200, {"revision": database.get_legacy_inbox("main")["revision"], **converted})

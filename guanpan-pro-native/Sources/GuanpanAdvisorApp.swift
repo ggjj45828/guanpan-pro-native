@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
     var body: some Scene { WindowGroup { RootView().environmentObject(model) } }
 }
 
-enum GPRoute: Hashable { case instrument(String), chart(String), decision(String?), grid, portfolioAnalysis, dividends(String?), news, settings, alerts, fills, history, backups, worthOverview, indexDetail(String), profile }
+enum GPRoute: Hashable { case instrument(String), chart(String), decision(String?), grid, chat, portfolioAnalysis, dividends(String?), news, settings, alerts, fills, history, backups, worthOverview, indexDetail(String), profile }
 private extension GPRoute {
     var persisted: NextRoute {
         switch self {
@@ -15,6 +15,7 @@ private extension GPRoute {
         case .chart(let code): .chart(code)
         case .decision(let code): .intent("decision", code ?? "")
         case .grid: .intent("grid", "")
+        case .chat: .intent("ai-chat", "")
         case .portfolioAnalysis: .intent("portfolio-analysis", "")
         case .dividends(let code): .intent("dividends", code ?? "")
         case .news: .intent("news", "")
@@ -35,6 +36,7 @@ private extension GPRoute {
         case .intent(let action, let code):
             if action == "decision" { .decision(code.isEmpty ? nil : code) }
             else if action == "grid" { .grid }
+            else if action == "ai-chat" { .chat }
             else if action == "portfolio-analysis" { .portfolioAnalysis }
             else if action == "dividends" { .dividends(code.isEmpty ? nil : code) }
             else if action == "news" { .news }
@@ -353,6 +355,7 @@ private struct RouteDestination: View {
         case .chart(let code): FullscreenChartScreen(code: code)
         case .decision(let code): DecisionScreen(code: code)
         case .grid: GridCandidateListScreen()
+        case .chat: AIChatScreen()
         case .portfolioAnalysis: PortfolioAnalysisScreen()
         case .dividends(let code): DividendHistoryScreen(code: code)
         case .news: HoldingsNewsScreen()
@@ -392,6 +395,9 @@ private struct AIHubScreen: View {
                 }
                 EditorialSection(title: "研究与复盘", accent: p.jade) {
                     GPCard(accent: p.jade) {
+                        NavigationLink(value: GPRoute.chat) {
+                            IntentRow(icon: "bubble.left.and.bubble.right", title: "AI 持仓问答", detail: "基于真实持仓、最新行情和 NAS 研究继续追问")
+                        }.accessibilityIdentifier("ai.chat.open")
                         NavigationLink(value: GPRoute.grid) {
                             IntentRow(icon: "square.grid.2x2", title: "智能网格候选", detail: "只展示今日统一指导生成的网格计划")
                         }.accessibilityIdentifier("ai.grid.open")
@@ -937,13 +943,13 @@ private struct DecisionScreen: View {
         return result.evidence.contains { $0.id == "deepseek-mobile-\(code)" }
     }
     private func researchDateStatus(_ report: NextNASResearch, code: String) -> String? {
-        guard let aiDate = report.ai?.asOf else { return nil }
+        guard let researchDateString = report.factors?.asOf else { return nil }
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
         guard let latestBar = model.chartData["\(code):day"]?.samples.last,
               let latestDate = formatter.date(from: formatter.string(from: latestBar.timestamp)),
-              let researchDate = formatter.date(from: aiDate), latestDate > researchDate else { return nil }
-        return "研究截至 \(aiDate)；本机已有更新日 K 至 \(formatter.string(from: latestBar.timestamp))"
+              let researchDate = formatter.date(from: researchDateString), latestDate > researchDate else { return nil }
+        return "NAS统计研究截至 \(researchDateString)；本机已有更新日 K 至 \(formatter.string(from: latestBar.timestamp))"
     }
     /// 账户体检的逐持仓结论（本机规则扫描，非 AI 预测）。
     private struct InspectHolding: Identifiable, Equatable {
@@ -1056,7 +1062,7 @@ private struct DecisionScreen: View {
                     Image(systemName: "sparkles").foregroundStyle(p.forest)
                     Text("私人投资顾问").font(.caption.weight(.semibold)).foregroundStyle(p.forest)
                     Spacer()
-                    Text(code.flatMap { model.researchStatus[$0] } ?? (code.flatMap { model.nasResearch[$0]?.ai } == nil ? "本地规则 · AI 待连接" : "显示已保存研究"))
+                    Text(code.flatMap { model.researchStatus[$0] } ?? (code.flatMap { model.nasResearch[$0]?.factors } == nil ? "本地规则 · NAS研究待同步" : "NAS统计研究已同步"))
                         .font(.caption2).foregroundStyle(p.muted).lineLimit(2).multilineTextAlignment(.trailing)
                 }.padding(.top, 7)
                 Text(code.map { "围绕 \(knownName($0))，把已知信息整理成下一步" } ?? "你的真实持仓，今天怎么处理").font(.system(.title2, design: .serif).weight(.semibold)).foregroundStyle(p.ink).padding(.top, 10)
@@ -1162,17 +1168,14 @@ private struct DecisionScreen: View {
                 if analyzed {
                     if let code, let report = model.nasResearch[code] {
                         EditorialSection(title: "NAS 长期研究证据", trailing: "已归档", accent: p.chartViolet) {
-                            DataPanel(title: "后台研究记录 · 非最终建议", accent: p.chartViolet, caption: report.ai?.provider ?? "本地因子") {
-                                if let ai = report.ai {
-                                    Text("NAS 后台研究已归档；最终交易判断由手机端统一指导生成。")
-                                    GPDataRow(title: "来源", value: "\(ai.provider) · \(ai.model)", note: "数据截至 \(ai.asOf) · 不连接券商")
+                            DataPanel(title: "NAS长期统计研究", accent: p.chartViolet, caption: "最终AI只在手机运行") {
+                                if let factors = report.factors {
+                                    GPDataRow(title: "本地因子", value: factors.state, note: "\(factors.source) · \(factors.asOf)")
+                                    Text("NAS 只提供归档数据与可追溯统计研究；手机端使用本机 API Key 调用大模型，生成唯一指导。")
+                                        .font(.caption).foregroundStyle(p.muted)
                                     if let staleMessage = researchDateStatus(report, code: code) {
                                         Label(staleMessage, systemImage: "clock.badge.exclamationmark").font(.caption).foregroundStyle(p.terracotta)
                                     }
-                                } else if let factors = report.factors {
-                                    GPDataRow(title: "本地因子", value: factors.state, note: "\(factors.source) · \(factors.asOf)")
-                                    Text(report.providerStatus?.message ?? (report.providerConfigured ? "已配置模型服务；尚无该日成功生成的 DeepSeek 结论。" : "NAS 尚未配置 DeepSeek API key；当前只有可追溯的本地因子。"))
-                                        .font(.caption).foregroundStyle(p.muted)
                                 } else { GPInlineEmpty(symbol: "clock", text: "NAS 尚无研究记录：等待日 K 归档与后台研究任务完成。") }
                             }
                         }

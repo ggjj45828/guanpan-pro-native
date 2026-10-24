@@ -94,3 +94,19 @@
 
 - 回答云编译/签名问题后继续改进打包：GitHub Actions的macOS构建工作流仍在 .github/workflows/build-ios.yml，模拟器验证在 validate-ios.yml；当前未跑的原因是本机GitHub推送网络被代理/DNS阻断，不是撤掉了云构建。当前Edge的GitHub页可浏览公开仓库，但没有可供命令行推送的gh CLI。
 - IPA签名报错路径明确出现乱码中文 .app 名及中文主程序名，符合旧版本 PRODUCT_NAME/CFBundleExecutable 中文导致某些Windows sideload zip解码器找不到文件的症状；当前project.yml为ASCII产品名，但我进一步固定 EXECUTABLE_NAME=GuanpanPro，新增 verify_ipa.py 在云端检查包内 app 路径、Info.plist的可执行名、Mach-O头、Bundle ID、ZIP CRC与签名文件，发现错包即阻止上传。4个合成IPA正反例测试通过；还需实际云构建证明本轮产物。
+
+- 当前会话确认了旧同步 NAS 包残留独立模拟策略 worker。已从两个 NAS Compose 文件移除 worker，删掉 worker 源码和 Dockerfile，禁用旧 `quant` 虚拟账户/租约接口（历史数据库表不删除），旧 NAS 网页路由返回410；对应过时模拟 Swift 包、工作流和测试已清理。NAS r29 格式继续以 `nas-advisor-compat` 为准，版本号升至 3.6.0-r15，最终压缩包应保留 `compose.yml`、`.env.example`、`README-NAS.md`、`update.sh`、`server/`，不含 `.env`、密钥和数据库。
+- 本轮 NAS 研究测试11/11、旧同步存储/行情测试41/41通过，三套 Compose 文件解析通过，`git diff --check`通过；需要在可用回环网络的 CI 复跑 HTTP 测试。生成 NAS zip、完整源清单仍待最后回归。
+- 为修复签名器找不到中文路径，IPA 校验改动已提交 `cb360d6`，本地推送分支为 `validation/acceptance-20261024`。此前命令行 push 在普通与提权网络下均无法连接 github.com:443，因此 Actions 尚未触发；用户指出浏览器可打开仓库，下一轮先从当前 Actions 页确认是否已有远端运行，再判断能否由已授权的浏览器/仓库路径提交。
+
+
+## 2026-10-24 继续验收记录（手机端问答与回归）
+
+- 补齐 AI Hub 的手机端“AI 持仓问答”二级页面：每次提问先刷新统一决策上下文，复用真实持仓、手机行情、NAS研究、新闻和画像；缺少真实持仓或本机 Key 时不给调用；对话只保存在当前页面状态，不修改账本或计划。AI回答通过已有结构化格式器呈现。
+- 新增 XCUITest 导航用例，覆盖从 AI Hub 打开问答页、输入框和发送按钮。尚未运行：当前 Windows 环境无 Xcode/Swift。
+- 本轮回归：nas-advisor-compat 12/12、legacy server 84/84、NAS同步服务 58/58、IPA校验 4/4，共158项通过。需要注意，legacy server 与 NAS同步测试使用合成测试夹具，不代表真实NAS/iPhone联调。
+- 待继续：复查已生成的r16 NAS zip与校验清单、全部115项矩阵和Git差异；尝试已授权的远端同步/Actions但仅在网络通畅时进行；macOS构建、模拟器截图、NAS实机升级仍属于外部验证。
+
+- 继续审计后，发现 NAS compat 服务仍带有独立 DeepSeek Key、每日模型研究和验证入口，与“手机唯一最终AI、NAS仅提供证据”冲突。已从当前部署包移除模型模块和 Compose 密钥注入，关闭 `/v1/ai/verify`（410），研究端点仅返回本地因子与分钟统计；旧数据库中的历史 AI 研究不删除但不再暴露给手机。iOS 研究页只展示 NAS统计证据，不再显示旧 NAS 模型文字。NAS版本升至 `3.6.0-r16-phone-only-ai-research`。
+- 新增回归验证：NAS研究12/12；legacy server 84/84；NAS同步58/58；IPA校验4/4；Python语法与四套Compose配置解析通过；`git diff --check`通过。合计158项测试通过。
+- 已生成 r16 NAS 包并通过 ZIP CRC、13个文件路径、SHA256清单和无 `.env`/模型模块/数据库检查；包 SHA256 为 `b1b77546c683cff9e1b7bd3e82e81cab2f3a108c397057fd704cd7e3d1e7e108`。iOS构建、模拟器截图、真实NAS部署仍需对应环境。

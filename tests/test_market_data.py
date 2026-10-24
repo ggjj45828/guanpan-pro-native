@@ -129,7 +129,6 @@ class MarketTests(unittest.TestCase):
   self.assertEqual(report['completeMinuteDays'],0)
   self.assertEqual(report['minuteEvidence'],[])
  def test_runtime_normalized_feed_publishes_only_market_channel(self):
-  self.channels.put('quant',dict(schemaVersion=2,expectedRevision=0,requestID='seed',data={'lab':{'seed':{'positions':[{'symbol':'510300','asset':'etf'}]}}}))
   runtime=MarketRuntime(self.channels,self.archive)
   runtime.poll_feed('https://configured.example/quotes',fetch=lambda *_:{'records':[row()]},now=T)
   self.assertEqual(self.channels.get('market')['revision'],1);self.assertEqual(self.channels.get('assets')['revision'],0)
@@ -150,8 +149,8 @@ class MarketTests(unittest.TestCase):
  def test_unregistered_symbol_not_imported_by_minute_bridge(self):
   MarketRuntime(self.channels,self.archive).ingest_minutes('000001',[{'timestamp':T//1000,'price':1}],T)
   self.assertEqual(self.archive.query('000001','quote'),[])
- def test_virtual_lab_symbols_never_register_for_nas_collection(self):
-  self.channels.put('quant',dict(schemaVersion=2,expectedRevision=0,requestID='legacy',data={'lab':{'seed':{'positions':[{'symbol':'510300','asset':'etf'}]}}}))
+ def test_nas_collection_uses_only_explicit_real_holding_provider(self):
+  with self.assertRaises(ChannelError):self.channels.put('quant',dict(schemaVersion=2,expectedRevision=0,requestID='legacy',data={'lab':{'seed':{'positions':[{'symbol':'510300','asset':'etf'}]}}}))
   runtime=MarketRuntime(self.channels,self.archive,holdings_provider=lambda:[{'symbol':'159919','asset':'etf'}])
   self.assertEqual([item['symbol'] for item in runtime.definitions()],['159919'])
  def test_collector_persists_daily_and_source_quote_timestamp(self):
@@ -172,16 +171,6 @@ class MarketTests(unittest.TestCase):
   runtime.collect_registered(T)
   self.assertEqual(len(self.archive.query('510300','quote')),1)
   self.assertEqual(self.archive.query('510300','intraday'),[])
- def test_lease_fencing_rejects_late_executor_and_active_client(self):
-  lease=self.channels.acquire_execution('worker1');body=dict(schemaVersion=2,expectedRevision=0,requestID='write',data={'strategies':[]})
-  with self.assertRaises(ChannelError):self.channels.put('quant',body)
-  with self.assertRaises(ChannelError):self.channels.acquire_execution('worker2')
-  self.channels.release_execution('worker1',lease['fence']);new=self.channels.acquire_execution('worker2')
-  with self.assertRaises(ChannelError):self.channels.put('quant',dict(body,executionLease={'owner':'worker1','fence':lease['fence']}))
-  self.assertEqual(self.channels.put('quant',dict(body,executionLease={'owner':'worker2','fence':new['fence']}))['revision'],1)
- def test_lease_expires_and_fence_increments(self):
-  one=self.channels.acquire_execution('w1',now=1000,ttl=1);two=self.channels.acquire_execution('w2',now=2001,ttl=1)
-  self.assertGreater(two['fence'],one['fence'])
  def test_configured_provider_book_requires_confirmed_volume_multiplier(self):
   fields=['']*31
   for start in (9,19):

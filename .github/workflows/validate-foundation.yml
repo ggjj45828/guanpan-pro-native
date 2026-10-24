@@ -3,9 +3,10 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - 'nas-advisor-compat/**'
+      - 'server/**'
       - 'nas-sync-server/**'
       - 'tests/**'
-      - 'guanpan-pro-native/Sources/Lab/**'
       - '.github/workflows/validate-foundation.yml'
 permissions:
   contents: read
@@ -14,16 +15,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Test offline simulator
-        run: node --test tests/*.test.cjs
-      - name: Test NAS channels against disposable databases
+      - name: Test NAS long-term research service
+        run: python -m unittest discover -s nas-advisor-compat/tests -v
+      - name: Test disabled legacy service and research API
+        working-directory: server
+        run: python -m unittest discover -s tests -v
+      - name: Test NAS sync channels and market archive
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Python syntax
-        run: python -m py_compile nas-sync-server/server.py nas-sync-server/channel_store.py nas-sync-server/market_data.py nas-sync-server/market_runtime.py
+        run: python -m compileall -q nas-advisor-compat/server server nas-sync-server guanpan-pro-native/scripts
+      - name: Validate NAS deployment manifests
+        run: |
+          docker compose -f compose.yml config -q
+          docker compose -f nas-advisor-compat/compose.yml config -q
+          docker compose -f nas-sync-server/docker-compose.yml config -q
+          docker compose -f nas-sync-server/compose.yaml config -q
 

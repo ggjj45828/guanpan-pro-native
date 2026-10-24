@@ -14,7 +14,6 @@ services:
       - ./market_runtime.py:/app/market_runtime.py:ro
       - ./market_universe.py:/app/market_universe.py:ro
       - ./fundamentals.py:/app/fundamentals.py:ro
-      - ./web:/app/web:ro
       - ./data:/data
     environment:
       PORT: "8787"
@@ -35,19 +34,3 @@ services:
       timeout: 3s
       start_period: 5s
       retries: 3
-
-  guanpan-lab-worker:
-    image: node:22-alpine
-    restart: unless-stopped
-    working_dir: /worker
-    command: ["node", "/worker/lab-worker.cjs"]
-    depends_on:
-      - guanpan-nas-sync
-    volumes:
-      - ./lab-worker.cjs:/worker/lab-worker.cjs:ro
-      - ../guanpan-pro-native/Sources/Lab:/core:ro
-    environment:
-      SYNC_URL: "http://guanpan-nas-sync:8787"
-      SYNC_TOKEN: "${SYNC_TOKEN:-}"
-      LAB_CORE_DIR: "/core"
-      LAB_POLL_MS: "2000"

@@ -72,5 +72,5 @@ class ResearchInputTests(unittest.TestCase):
   script=Path(__file__).resolve().parents[1]/'nas-sync-server/offline_market.py'
   result=subprocess.run([sys.executable,str(script),'--input',str(bundle),'--data-dir',str(self.root),'--report',str(report),'--at',str(at)],capture_output=True,text=True)
   self.assertEqual(result.returncode,0,result.stderr)
-  self.assertFalse(json.loads(report.read_text())['realAssetsReadOrWritten'])
+  self.assertFalse(json.loads(report.read_text(encoding='utf-8'))['realAssetsReadOrWritten'])
   self.assertEqual(legacy.read_bytes(),b'private legacy fixture - must never open')

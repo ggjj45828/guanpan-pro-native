@@ -202,4 +202,18 @@ final class NativeNavigationTests: XCTestCase {
         XCTAssertFalse(app.buttons["启动独立虚拟账户"].exists, "虚拟账户启动控件应已随数字孪生下线")
         attach(app, "mobile-grid-candidates")
     }
+
+    func testAIHoldingsChatOpensFromAIHub() throws {
+        let app = launch()
+        let aiTab = byId(app, "tab.ai")
+        XCTAssertTrue(aiTab.waitForExistence(timeout: 10))
+        aiTab.tap()
+        let chatEntry = byId(app, "ai.chat.open")
+        XCTAssertTrue(chatEntry.waitForExistence(timeout: 8))
+        chatEntry.tap()
+        XCTAssertTrue(app.navigationBars["AI 持仓问答"].waitForExistence(timeout: 5))
+        XCTAssertTrue(byId(app, "ai.chat.message").waitForExistence(timeout: 5))
+        XCTAssertTrue(byId(app, "ai.chat.send").exists)
+        attach(app, "ai-holdings-chat")
+    }
 }

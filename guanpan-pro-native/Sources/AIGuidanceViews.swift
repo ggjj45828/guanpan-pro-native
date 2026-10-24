@@ -126,6 +126,184 @@ struct AIAdviceFormattedView: View {
     }
 }
 
+// MARK: - AI 持仓问答
+
+private struct AdvisorChatMessage: Identifiable {
+    enum Role { case user, advisor }
+    let id = UUID()
+    let role: Role
+    let text: String
+}
+
+/// 手机端问答始终复用统一决策上下文，NAS只作为长期研究证据源。
+/// 聊天内容不写入账户账本，也不能创建或修改交易计划。
+struct AIChatScreen: View {
+    @EnvironmentObject private var model: NextAppModel
+    @Environment(\.gp) private var p
+    @State private var messages: [AdvisorChatMessage] = [
+        AdvisorChatMessage(role: .advisor, text: "我会结合你的真实持仓、手机行情、NAS长期研究、相关新闻和投资者画像回答。涉及交易时，我只解释已通过规则校验的候选计划；数据不足就会明确说明。")
+    ]
+    @State private var question = ""
+    @State private var isSending = false
+    @State private var errorText: String?
+    @FocusState private var inputFocused: Bool
+
+    private let suggestions = ["今天我的持仓有值得操作的机会吗？", "哪些数据让这条计划仍然有效？", "最近的判断和上次相比有什么变化？"]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        contextStatus
+                        if model.book.positions.isEmpty {
+                            GPCard(accent: p.chartGold) {
+                                GPInlineEmpty(symbol: "person.crop.circle.badge.questionmark", text: "还没有录入真实持仓。添加持仓后，手机 AI 才能基于你的账户回答。")
+                            }
+                        }
+                        ForEach(messages) { message in
+                            messageBubble(message)
+                                .id(message.id)
+                        }
+                        if isSending {
+                            HStack(spacing: 8) {
+                                ProgressView().tint(p.chartViolet)
+                                Text("正在更新行情与决策上下文…").font(.caption).foregroundStyle(p.muted)
+                            }.padding(.horizontal, 12).padding(.vertical, 8)
+                        }
+                        if let errorText {
+                            GPCard(accent: p.risk) {
+                                Text(errorText).font(.caption).foregroundStyle(p.risk).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Color.clear.frame(height: 1).id("chat-bottom")
+                    }
+                    .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 12)
+                    .frame(maxWidth: 820).frame(maxWidth: .infinity, alignment: .top)
+                }
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: messages.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                }
+            }
+            composer
+        }
+        .background(LinearGradient(colors: [p.canvas, p.forest.opacity(0.07), p.canvas],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea())
+        .navigationTitle("AI 持仓问答")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { if model.book.positions.isEmpty == false { await model.refreshGuidance() } }
+    }
+
+    private var contextStatus: some View {
+        GPCard(accent: p.chartViolet) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles").font(.system(size: 17, weight: .semibold)).foregroundStyle(p.chartViolet)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("手机 AI · 统一顾问").font(.subheadline.weight(.semibold)).foregroundStyle(p.ink)
+                    Text("真实持仓 " + String(model.book.positions.filter { $0.units > 0 }.count) + " 只 · NAS长期研究 " +
+                         (model.nasResearch.isEmpty ? "尚无已同步数据" : "已加载 " + String(model.nasResearch.count) + " 只研究"))
+                        .font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            if messages.count == 1 {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 7) {
+                        ForEach(suggestions, id: \.self) { item in
+                            Button { question = item; inputFocused = true } label: {
+                                Text(item).font(.caption2.weight(.medium)).foregroundStyle(p.forest)
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                                    .background(p.tint.opacity(0.75), in: Capsule())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }.scrollIndicators(.hidden)
+            }
+        }
+    }
+
+    private func messageBubble(_ message: AdvisorChatMessage) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            if message.role == .advisor {
+                Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.chartViolet).padding(.top, 9)
+            } else { Spacer(minLength: 30) }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(message.role == .advisor ? "AI 顾问" : "我")
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(p.muted)
+                if message.role == .advisor {
+                    AIAdviceFormattedView(text: message.text)
+                } else {
+                    Text(message.text).font(.subheadline).foregroundStyle(p.ink)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+            }
+            .padding(11).frame(maxWidth: .infinity, alignment: .leading)
+            .background(message.role == .advisor ? p.paper : p.tint.opacity(0.7),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(p.line.opacity(0.7), lineWidth: 0.7))
+            if message.role == .advisor { Spacer(minLength: 20) }
+        }
+    }
+
+    private var composer: some View {
+        HStack(alignment: .bottom, spacing: 9) {
+            TextField("询问你的真实持仓…", text: $question, axis: .vertical)
+                .lineLimit(1...4).font(.subheadline).focused($inputFocused)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(p.paper, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(p.line, lineWidth: 0.8))
+                .accessibilityIdentifier("ai.chat.message")
+                .onSubmit { send() }
+            Button(action: send) {
+                Image(systemName: isSending ? "hourglass" : "arrow.up")
+                    .font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(p.forestDeep, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            }
+            .disabled(isSending || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.book.positions.allSatisfy { $0.units <= 0 })
+            .accessibilityLabel("发送问题")
+            .accessibilityIdentifier("ai.chat.send")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(p.canvas.opacity(0.97))
+        .overlay(alignment: .top) { Rectangle().fill(p.line.opacity(0.7)).frame(height: 0.6) }
+    }
+
+    private func send() {
+        guard !isSending else { return }
+        let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard text.count <= 1200 else { errorText = "问题不能超过 1200 字。"; return }
+        guard let key = DeepSeekMobile.loadKey() else {
+            errorText = "请先在「我的 / 手机 AI 接口设置」保存 API Key。密钥只保存在本机钥匙串。"
+            return
+        }
+        guard model.book.positions.contains(where: { $0.units > 0 }) else {
+            errorText = "当前没有真实持仓，请先在持仓页录入账户事实。"
+            return
+        }
+        errorText = nil
+        question = ""
+        inputFocused = false
+        messages.append(AdvisorChatMessage(role: .user, text: text))
+        isSending = true
+        let recent = messages.suffix(10).map { "\($0.role == .user ? "用户" : "顾问")：\($0.text)" }.joined(separator: "\n")
+        let profile = UserDefaults.standard.string(forKey: "guanpan.deepseek.profile") ?? "flash"
+        Task {
+            defer { isSending = false }
+            do {
+                let reply = try await model.askUnifiedMobileAI(question: text, recentConversation: recent,
+                                                               key: key, profile: profile)
+                messages.append(AdvisorChatMessage(role: .advisor, text: reply))
+            } catch {
+                errorText = "暂时无法完成分析：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
 // MARK: - AI 今日指导（首页主入口）
 
 /// 打开 App 先看到的一句话：今天有没有值得操作的机会？

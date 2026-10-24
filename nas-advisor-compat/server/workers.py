@@ -8,7 +8,6 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 from market import symbol_for, fetch_daily, fetch_quotes, fetch_dividend_events
-from ai import generate_research
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Collection follows explicitly tracked symbols and the real book.  The old
@@ -162,20 +161,11 @@ def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minu
                     result = research_factors(code, data["bars"]) if data else None
                     if result:
                         database.put_research("factors-" + code, result)
-                        # One provider call per completed business day; no key means offline factor record only.
-                        previous = database.get_research("deepseek-" + code)
-                        if previous is None or previous.get("asOf") != result["asOf"]:
-                            narrative = generate_research(result)
-                            if narrative: database.put_research("deepseek-" + code, narrative)
                         researched += 1
                 except Exception as error: failures.append(f"{code}:{type(error).__name__}")
             update("factor-research", "ok" if not failures else "degraded",
                    f"{researched}/{len(codes)} codes have usable 250-day research; next run in 15m{missing_note(failures)}")
             time.sleep(900)
 
-    # Existing virtual/grid records are retained for rollback and audit, but
-    # no background process advances them or records simulated fills.
-    update("g-live-simulation", "idle", "retired: no virtual account processing")
-    update("portfolio-grid", "idle", "retired: no simulated grid fills")
     for name, target in (("daily-archive", daily_loop), ("minute-archive", minute_loop), ("dividend-research", dividend_loop), ("factor-research", research_loop)):
         threading.Thread(target=target, name=name, daemon=True).start()

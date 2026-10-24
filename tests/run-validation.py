@@ -1,6 +1,5 @@
-"""Run reproducible offline foundation tests. Uses synthetic data only.
-Requires Node on PATH and Python 3.10+. No external dependencies or network sources.
-The Python HTTP tests open a loopback-only server on a random port.
+"""Run the retained NAS data-channel tests with synthetic fixtures only.
+Requires Python 3.10+. The HTTP tests bind only to loopback on a random port.
 """
 from pathlib import Path
 import json
@@ -16,15 +15,13 @@ out = root / 'docs' / 'validation'
 out.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, PYTHONUTF8='1')
 commands = [
-    ('simulation-core', ['node', '--test', *[str(p.relative_to(root)) for p in sorted((root/'tests').glob('*.test.cjs'))]]),
     ('nas-channels', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py', '-v']),
-    ('synthetic-demo', ['node', 'tests/demo-lab.cjs']),
 ]
 results = []
 for name, cmd in commands:
     result = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True, encoding='utf-8')
-    (out / (name + ('.json' if name == 'synthetic-demo' else '.log'))).write_text(result.stdout + result.stderr, encoding='utf-8')
-    results.append({'name': name, 'exitCode': result.returncode, 'log': name + ('.json' if name == 'synthetic-demo' else '.log')})
+    (out / (name + '.log')).write_text(result.stdout + result.stderr, encoding='utf-8')
+    results.append({'name': name, 'exitCode': result.returncode, 'log': name + '.log'})
     print(name + ': ' + ('PASS' if result.returncode == 0 else 'FAIL'))
 for name in ['server.py', 'channel_store.py', 'market_data.py', 'market_runtime.py', 'fundamentals.py', 'market_universe.py']:
     py_compile.compile(str(root / 'nas-sync-server' / name), doraise=True)

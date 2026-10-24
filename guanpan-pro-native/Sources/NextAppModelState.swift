@@ -637,6 +637,34 @@ import Combine
         }
     }
 
+    /// 持仓问答继续复用同一份手机决策上下文；聊天模型不能另造交易计划或覆盖规则引擎。
+    func askUnifiedMobileAI(question: String, recentConversation: String = "",
+                            key: String, profile modelProfile: String) async throws -> String {
+        guard book.positions.contains(where: { $0.units > 0 }) else {
+            throw NextError.invalid("当前没有真实持仓，无法进行持仓顾问问答")
+        }
+        let cleanedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedQuestion.isEmpty, cleanedQuestion.count <= 1200 else {
+            throw NextError.invalid("问题不能为空且不能超过 1200 字")
+        }
+        // 每轮提问都刷新手机行情/日K/新闻和已配置的 NAS 研究；网络失败时保留时间戳明确的本机缓存。
+        await refreshGuidance()
+        let context = makeDecisionContext()
+        let prompt = """
+        以下是应用根据真实持仓、手机最新行情、离线规则、NAS长期研究、相关新闻与投资者画像生成的当前统一决策上下文。请先回答用户的问题，若涉及交易，只能解释上下文中已有的候选计划；没有合格计划时明确说数据不足或今天不建议交易。不得自行生成价格、份额、收益、交易规则或成交事实。
+
+        \(context.promptBlock)
+
+        最近对话（仅用于理解追问，不作为账户事实）：
+        \(recentConversation.suffix(5000))
+
+        用户问题：
+        \(cleanedQuestion)
+        """
+        let response = try await DeepSeekMobile.analyze(prompt: prompt, key: key, profile: modelProfile)
+        return response.content
+    }
+
     // MARK: - 动态投资者画像
 
     /// 从「真实持仓 + 真实成交 + 真实反馈」重新学习。绝不使用虚拟交易，也不因一次异常成交改写长期结论。

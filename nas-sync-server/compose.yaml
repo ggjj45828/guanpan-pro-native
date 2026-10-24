@@ -30,20 +30,6 @@ services:
       start_period: 5s
       retries: 3
 
-  guanpan-lab-worker:
-    image: guanpan-lab-worker-v2:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    restart: unless-stopped
-    depends_on:
-      - guanpan-nas-sync
-    environment:
-      SYNC_URL: "http://guanpan-nas-sync:8787"
-      SYNC_TOKEN: "${SYNC_TOKEN:-}"
-      LAB_CORE_DIR: "/core"
-      LAB_POLL_MS: "2000"
-
 volumes:
   v2-data:
     name: guanpan-nas-v2-update-data

@@ -36,10 +36,6 @@ if [ "$use_src" = "yes" ]; then
   for f in "$SRC"/*.py "$SRC"/VERSION; do
     [ -f "$f" ] && cp -f "$f" "$APP"/ 2>/dev/null || true
   done
-  if [ -d "$SRC/web" ]; then
-    mkdir -p "$APP/web"
-    cp -Rf "$SRC/web/." "$APP/web/" 2>/dev/null || true
-  fi
   printf 'host %s (版本 %s)\n' "$SRC" "$src_ver" > "$APP/.code-source" 2>/dev/null || true
   echo "[start] 使用宿主机代码 $SRC -> 版本 $(cat "$APP/VERSION" 2>/dev/null || echo 未知)"
 else

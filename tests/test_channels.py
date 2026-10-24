@@ -33,7 +33,7 @@ class StoreTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_initial_separate_channels(self):
-        for c in ('assets', 'market', 'quant'):
+        for c in ('assets', 'market'):
             self.assertEqual(self.store.get(c)['revision'], 0)
         self.assertFalse((self.root / 'sync.sqlite3').exists())
 
@@ -68,24 +68,20 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.put('assets', body)['revision'], 2)
 
     def test_cross_channel_fields_rejected(self):
-        for channel in ('market','quant'):
+        for channel in ('market',):
             with self.assertRaises(ChannelError):self.store.put(channel, request())
         body = request();body['data'] = {'orders': []}
         with self.assertRaises(ChannelError):self.store.put('assets', body)
 
-    def test_automatic_market_quant_do_not_require_manual(self):
-        for channel, data in [('market',{'quotes':[]}),('quant',{'strategies':[]})]:
+    def test_automatic_market_channel_does_not_require_manual(self):
+        for channel, data in [('market',{'quotes':[]})]:
             body=request();body['intent']='automatic';body['data']=data
             self.assertEqual(self.store.put(channel,body)['revision'],1)
 
-    def test_quant_accepts_research_only_opportunity_scan(self):
-        body=request();body['intent']='automatic';body['data']={'opportunityScan':{
-            'action':'screen-only','automatesRealTrades':False,'opportunities':[]}}
-        saved=self.store.put('quant',body)
-        self.assertEqual(saved['revision'],1)
-        stored=self.store.get('quant')['data']['opportunityScan']
-        self.assertEqual(stored['action'],'screen-only')
-        self.assertFalse(stored['automatesRealTrades'])
+    def test_legacy_quant_channel_is_disabled(self):
+        with self.assertRaises(ChannelError) as result:
+            self.store.get('quant')
+        self.assertEqual(result.exception.status, 404)
 
     def test_revision_boolean_and_float_rejected(self):
         for rev in (True, 1.5, -1, None):
@@ -174,7 +170,10 @@ class HTTPTests(unittest.TestCase):
 
     def test_unknown_channel_and_bad_json_schema(self):
         self.assertEqual(self.call('/api/v2/channels/funds')[0],404)
+        self.assertEqual(self.call('/api/v2/channels/quant')[0],404)
+        self.assertEqual(self.call('/api/v2/channels/quant/lease',{})[0],404)
         self.assertEqual(self.call('/api/v2/channels/assets',{'schemaVersion':2})[0],422)
+        self.assertEqual(self.call('/')[0],410)
 
     def test_legacy_web_revision_conflict_and_nested_empty_protection(self):
         current=server.read_snapshot('legacy')['revision']

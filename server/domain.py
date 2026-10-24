@@ -785,31 +785,3 @@ class NextDatabase:
         with self.connect() as db:
             row = db.execute("SELECT body FROM experiments WHERE id=?", (experiment_id,)).fetchone()
         return json.loads(row[0]) if row else None
-
-    def get_twin_account(self, strategy):
-        if strategy not in tuple("ABCDEFGH"): raise InvalidData("strategy must be A–H")
-        with self.connect() as db:
-            row = db.execute("SELECT revision, body FROM twin_accounts WHERE id=?", (strategy,)).fetchone()
-        return {"revision": row[0], "account": json.loads(row[1])} if row else {"revision": 0, "account": None}
-
-    def put_twin_account(self, strategy, expected_revision, account):
-        if strategy not in tuple("ABCDEFGH"): raise InvalidData("strategy must be A–H")
-        if type(expected_revision) is not int or expected_revision < 0 or not isinstance(account, dict):
-            raise InvalidData("simulation revision/account is invalid")
-        encoded = json.dumps(account, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded.encode("utf-8")) > 16 * 1024 * 1024: raise InvalidData("simulation account exceeds 16 MiB")
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT revision FROM twin_accounts WHERE id=?", (strategy,)).fetchone()
-            revision = row[0] if row else 0
-            if revision != expected_revision: raise Conflict("simulation revision changed")
-            revision += 1
-            db.execute("INSERT OR REPLACE INTO twin_accounts VALUES (?, ?, ?)", (strategy, revision, encoded))
-            db.execute("INSERT INTO twin_account_history VALUES (?, ?, ?)", (strategy, revision, encoded))
-        return revision
-
-    def twin_account_history(self, strategy):
-        if strategy not in tuple("ABCDEFGH"): raise InvalidData("strategy must be A–H")
-        with self.connect() as db:
-            rows = db.execute("SELECT revision, body FROM twin_account_history WHERE id=? ORDER BY revision", (strategy,)).fetchall()
-        return [{"revision": row[0], "account": json.loads(row[1])} for row in rows]

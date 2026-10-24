@@ -10,7 +10,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
-from ai import provider_status, verify_provider, AIProviderError
 from domain import Conflict, InvalidData, NextDatabase, convert_legacy_web_book
 from market import (fetch_indices, fetch_dividend_events, fetch_kline,
                     fetch_quotes, fetch_daily,
@@ -72,7 +71,7 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                 return self.reply(410, {"error": "旧版网页入口已停用；NAS 只提供后台研究与同步 API，请使用手机 App"})
             if path == "/v1/mobile/research":
                 try:
-                    return self.reply(200, mobile_research.snapshot(database, market_fetcher))
+                    return self.reply(200, mobile_research.snapshot(database))
                 except Exception:
                     return self.reply(503, {"error": "NAS 历史档案暂不可用；未生成交易证据"})
             if path in ("/", "/index.html"):
@@ -82,15 +81,9 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
             if path == "/health":
                 return self.reply(200, {"service": "guanpan-advisor", "schemaVersion": 1, "authentication": "none", "web": False,
                                         "codeVersion": code_version(), "codeSource": code_source(),
-                                        "workers": database.worker_health(), "aiProvider": provider_status()})
+                                        "workers": database.worker_health()})
             if path == "/v1/ai/verify":
-                # 真实连通性探针：只发一句 "Reply with OK only."，不携带任何持仓数据。
-                try:
-                    return self.reply(200, verify_provider())
-                except AIProviderError as error:
-                    return self.reply(503, {"state": "unavailable", "error": str(error), "message": str(error)})
-                except Exception:
-                    return self.reply(502, {"state": "unavailable", "error": "DeepSeek 连通性验证失败", "message": "DeepSeek 连通性验证失败"})
+                return self.reply(410, {"state": "retired", "error": "大模型由手机端调用；NAS只提供行情、归档和长期研究"})
             if path == "/api/data":
                 try: return self.reply(200, {"ok": True, **database.get_legacy_inbox("main")})
                 except InvalidData as error: return self.reply(400, {"error": str(error)})
@@ -106,9 +99,11 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                 try:
                     code = path.rsplit("/", 1)[-1]; symbol_for(code)
                     return self.reply(200, {"factors": database.get_research("factors-" + code),
-                                            "ai": database.get_research("deepseek-" + code),
-                                            "providerConfigured": provider_status()["configured"],
-                                            "providerStatus": provider_status(),
+                                            "ai": None,
+                                            "providerConfigured": False,
+                                            "providerStatus": {"state": "phone-only", "configured": False,
+                                                               "profile": "phone-only", "model": None,
+                                                               "message": "NAS只提供可追溯研究；大模型最终分析在手机端调用"},
                                             "minuteStats": mobile_research.minute_stats(database, code)})
                 except (InvalidData, ValueError) as error: return self.reply(400, {"error": str(error)})
             if path == "/v1/market/indices":

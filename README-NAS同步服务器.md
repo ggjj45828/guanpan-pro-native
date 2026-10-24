@@ -1,6 +1,6 @@
 # 观盘 Pro NAS 同步服务器
 
-此目录提供可自行部署的 Docker Compose 服务。它兼容旧网页的 `/api/ping`、`/api/data`，并为原生 iOS 版提供独立的 `/api/native/ping`、`/api/native/data`。两个账本空间分开存储，不会相互转换或覆盖。原生同步包含账本、分时历史和日线缓存；服务器另保留最近 10 个账本快照。可通过带口令的历史接口查看版本并把某一历史版本恢复为新的当前版本。新增受口令保护的腾讯行情代理，供原生 App 在 NAS 可访问行情源时中转实时报价和日线请求。
+此文件描述的是已停用的旧 NAS 网页/同步服务，不再作为推荐部署包。旧网页入口已返回 410，NAS 不再运行虚拟策略或第二套 AI 顾问。当前请使用 `nas-advisor-compat/README-NAS.md` 及其 Compose 更新包；它保留 8789 端口、`guanpan-advisor` 项目名和 `guanpan_advisor_data` 数据卷，只提供长期行情研究，供手机端唯一 AI 指导读取。
 
 ## 部署
 
