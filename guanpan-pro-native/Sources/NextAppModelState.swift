@@ -538,6 +538,10 @@ import Combine
     /// 从今日指导里保存一条候选计划（只是建议，不占资金、不生成虚拟持仓）。
     func saveCandidatePlan(from item: NextGuidanceItem) throws {
         let now = Date()
+        if let block = NextPortfolioRiskGuard.candidateSaveBlock(for: item,
+            guidanceGeneratedAt: dailyGuidance?.generatedAt, quote: quotes[item.code]?.quote, now: now) {
+            throw NextError.invalid(block)
+        }
         var plan: NextCandidatePlan
         if let result = item.tPlan, case let .ready(value) = result {
             let isSell = value.kind == .reverse

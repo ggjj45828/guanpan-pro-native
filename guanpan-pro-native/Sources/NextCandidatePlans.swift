@@ -277,6 +277,41 @@ enum NextPortfolioRiskGuard {
         return .notRecommended([overweightNote, "组合上限优先于单只ETF的网格机会；先降低集中度或调整目标，再重新评估"])
     }
 
+    static func candidateSaveBlock(for item: NextGuidanceItem, guidanceGeneratedAt: Date?,
+                                   quote: NextQuote?, now: Date) -> String? {
+        guard item.isActionable else {
+            let reason = ([item.portfolioNote].compactMap { $0 } + item.riskNotes).first
+            return reason.map { "最终指导已拦截该候选计划：\($0)" } ?? "最终指导当前不允许保存交易候选计划"
+        }
+        guard let guidanceGeneratedAt, guidanceGeneratedAt <= now,
+              now.timeIntervalSince(guidanceGeneratedAt) <= 120 else {
+            return "今日指导已过期或缺少生成时间，请刷新整个持仓决策后再保存"
+        }
+
+        let expiry: Date
+        let hasEnoughData: Bool
+        if let result = item.tPlan, case let .ready(plan) = result {
+            guard plan.code == item.code else { return "指导证券与做T计划证券不一致，已拒绝保存" }
+            expiry = plan.validUntil
+            hasEnoughData = plan.confidence.canPriceTPlan
+        } else if let result = item.gridPlan, case let .ready(plan) = result {
+            guard plan.code == item.code else { return "指导证券与网格计划证券不一致，已拒绝保存" }
+            expiry = plan.validUntil
+            hasEnoughData = plan.confidence.canPriceGridPlan
+        } else {
+            return "最终指导没有可保存的具体价格计划"
+        }
+        guard hasEnoughData else { return "生成计划时的数据置信度已不足，不能保存具体挂单建议" }
+        guard expiry > now else { return "候选计划已过有效期，请刷新行情并重新分析" }
+        guard NextMarketClock.canGenerateActionablePlan(now) else {
+            return "当前不在已核验的A股交易时段，不能保存为当日可执行候选计划"
+        }
+        guard let quote, quote.code == item.code, quote.isFreshForPricePlan(at: now) else {
+            return "当前行情缺失、过期或来源时间不可核验，请刷新行情后重新分析"
+        }
+        return nil
+    }
+
     static func allocationAssessment(currentPercent: Double, concentrationLimit: Double,
                                      targetPercent: Double?) -> (blockingNote: String?, context: String?, priorityBoost: Double) {
         guard currentPercent.isFinite, concentrationLimit.isFinite,
@@ -439,7 +474,7 @@ enum NextOpportunityScanner {
             if let gridPlan, case .ready = gridPlan { actionable = true }
 
             var score = 0.0
-            if let tPlan, case let .ready(plan) = tPlan {
+            if portfolioNote == nil, let tPlan, case let .ready(plan) = tPlan {
                 score += 2.5 + min(3.0, NextNum.double(plan.netGain / Decimal(100)))
             }
             if let gridPlan, case .ready = gridPlan { score += 2.5 }

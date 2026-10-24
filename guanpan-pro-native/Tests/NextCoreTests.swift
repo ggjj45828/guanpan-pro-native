@@ -83,6 +83,41 @@ final class NextCoreTests: XCTestCase {
                                                                    concentrationLimit: 40,
                                                                    targetPercent: nil).blockingNote?.contains("无法可靠计算") == true)
     }
+    func testWithdrawnGuidanceCannotBeSavedAsCandidatePlan() {
+        let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
+        let blocked = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,
+            strategy: .grid, headline: "组合风险暂停", whyToday: [], tPlan: nil, gridPlan: nil,
+            recovery: nil, confidence: confidence, portfolioNote: "已超过目标权重", riskNotes: [],
+            score: 0, rank: 1, isActionable: false)
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: blocked, guidanceGeneratedAt: now,
+            quote: nil, now: now)?
+            .contains("已超过目标权重") == true)
+        let quote = quote(time: now)
+        let readyConfidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 60,
+            minuteSampleCount: 60, intradayLatestAt: now, dailyLatestAt: now)
+        let plan = NextTPlan(kind: .reverse, code: "159941", name: "纳指ETF",
+            sellPrice: Decimal(string: "1.500")!, buyPrice: Decimal(string: "1.490")!, units: 100,
+            grossSpread: 1, feeTotal: Decimal(string: "0.20")!, netGain: Decimal(string: "0.80")!,
+            costReductionPerUnit: Decimal(string: "0.008")!, estimatedMissedUpside: 1,
+            estimatedContinuedDropLoss: 1, trampleRisk: "踏空风险", continuedDropRisk: "继续下跌风险",
+            volumeSupport: "成交量支持", validUntil: now.addingTimeInterval(8 * 3600), cancelConditions: [],
+            evidence: ["分钟价量统计"], confidence: readyConfidence, historyMissRate: nil)
+        let actionable = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,
+            strategy: .tTrade, headline: "规则计划可执行", whyToday: [], tPlan: .ready(plan), gridPlan: nil,
+            recovery: nil, confidence: readyConfidence, portfolioNote: nil, riskNotes: [],
+            score: 1, rank: 1, isActionable: true)
+        XCTAssertNil(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            quote: quote, now: now))
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            quote: self.quote(time: now.addingTimeInterval(-121)), now: now)?
+            .contains("过期") == true, "保存时必须复核当前行情，而不是只信任生成时的数据")
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            quote: self.quote(time: now.addingTimeInterval(6 * 3600)), now: now.addingTimeInterval(6 * 3600))?
+            .contains("交易时段") == true, "收盘后不得保存为当日可执行计划")
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable,
+            guidanceGeneratedAt: now.addingTimeInterval(-121), quote: quote, now: now)?
+            .contains("今日指导已过期") == true, "过期的持仓/新闻/风险决策不得重新包装成新计划")
+    }
     func testHomeNASStatusRequiresRecentHealthProbe() {
         let now = Date(timeIntervalSince1970: 1_797_375_200)
         XCTAssertFalse(NextServiceConnectionStatus.isOnline(configured: true, reachable: nil, probedAt: nil, now: now))
