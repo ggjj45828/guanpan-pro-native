@@ -2111,7 +2111,7 @@ private struct SettingsScreen: View {
                     Text(model.preferences.marketSourceMode.detail)
                         .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     GPDataRow(title: "当前行情状态", value: model.status,
-                              note: "报价、日K和分时遵循上方选择；每次更新会显示实际数据源和时间")
+                              note: "报价、日K、分时和新闻遵循上方来源偏好；NAS长期分钟研究独立运行")
                     TextField("NAS 地址，例如 http://192.168.1.10:8789", text: $nasURL).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).textFieldStyle(.roundedBorder).accessibilityIdentifier("settings.nas.address")
                     HStack { Button("保存并测试") { do { try model.configureNAS(baseURL: nasURL); Task { await model.probeNAS() } } catch { model.errorMessage = error.localizedDescription } }.font(.caption.weight(.semibold)).accessibilityIdentifier("settings.nas.save-test"); Spacer(); Button("重新检查") { Task { await model.probeNAS() } }.font(.caption).accessibilityIdentifier("settings.nas.recheck") }.tint(p.forest)
                     GPActionButton(title: "从 NAS 下载账本", secondary: true, systemImage: "arrow.down.doc") { confirmDownload = true }
