@@ -34,8 +34,8 @@
     },
     {
       "path": "CONTINUATION.md",
-      "size": 17811,
-      "sha256": "5af5eebd934dfb341c9714ce43c87921eab7d7931b6be3eb4b8a5801afca38ef"
+      "size": 18207,
+      "sha256": "c082709814afaa1c038f83c135dd44adc11d3e856d420dc1c9917536405e8f98"
     },
     {
       "path": "CURRENT-HANDOFF-r2.md",
@@ -49,8 +49,8 @@
     },
     {
       "path": "Master Acceptance Matrix.md",
-      "size": 45877,
-      "sha256": "87fa3e5a411a81a408ca91af7bf54313bf66a334fcc2d0aad4ea06b6ed391429"
+      "size": 45997,
+      "sha256": "ed410d90a5622c31cf25a7eae237f0e68141abb6ac291aa971c606aa14b740ca"
     },
     {
       "path": "README-GitHub构建.md",
@@ -274,8 +274,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/NASService.swift",
-      "size": 28916,
-      "sha256": "1bb50f0768a98d149bc0de6b151795a399329c08b260053d7198a402150a8783"
+      "size": 28919,
+      "sha256": "de2bf26562b8a3d4fa5850abc2004ffc316e007b433c1186ccb839b107318758"
     },
     {
       "path": "guanpan-pro-native/Sources/NextAIGuide.swift",

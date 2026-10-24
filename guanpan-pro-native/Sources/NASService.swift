@@ -371,5 +371,6 @@ enum NextNASService {
     private static func endpoint(_ baseURL: String) throws -> URL {
         try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("real").appendingPathComponent("books").appendingPathComponent("main")
     }
+}
 
 private extension NextBook { func validated() throws -> NextBook { try validate(); return self } }

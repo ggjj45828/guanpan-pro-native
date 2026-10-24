@@ -110,3 +110,5 @@
 - 继续审计后，发现 NAS compat 服务仍带有独立 DeepSeek Key、每日模型研究和验证入口，与“手机唯一最终AI、NAS仅提供证据”冲突。已从当前部署包移除模型模块和 Compose 密钥注入，关闭 `/v1/ai/verify`（410），研究端点仅返回本地因子与分钟统计；旧数据库中的历史 AI 研究不删除但不再暴露给手机。iOS 研究页只展示 NAS统计证据，不再显示旧 NAS 模型文字。NAS版本升至 `3.6.0-r16-phone-only-ai-research`。
 - 新增回归验证：NAS研究12/12；legacy server 84/84；NAS同步58/58；IPA校验4/4；Python语法与四套Compose配置解析通过；`git diff --check`通过。合计158项测试通过。
 - 已生成 r16 NAS 包并通过 ZIP CRC、13个文件路径、SHA256清单和无 `.env`/模型模块/数据库检查；包 SHA256 为 `b1b77546c683cff9e1b7bd3e82e81cab2f3a108c397057fd704cd7e3d1e7e108`。iOS构建、模拟器截图、真实NAS部署仍需对应环境。
+
+- 用户授权后成功推送 `266089f` 到 `validation/acceptance-20261024`。GitHub foundation 回归通过；macOS iOS 编译和 IPA 构建都发现既有 `NASService.swift` 在 `NextNASService` enum 末尾缺少 `}`，首轮 UI 测试未能开始。已在当前源码补闭合并更新矩阵；需推送修复并重跑两条云工作流，直到编译/测试实际通过或继续迭代。
