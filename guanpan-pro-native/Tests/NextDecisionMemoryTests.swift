@@ -265,9 +265,7 @@ final class NextDecisionMemoryTests: XCTestCase {
                                   reasons: ["区间震荡"], warnings: [])
         let result = NextGridPlanner.plan(book: book, quote: quote, daily: dailyBars(), gridCheck: check,
                                           rules: rules(),
-                                          nasRange: NextNasRange(low: Decimal(string: "1.30")!,
-                                                                 high: Decimal(string: "1.50")!,
-                                                                 days: 60, source: "测试NAS 60日档案"),
+                                          nasRange: NextNasRange(stats: nasRangeStats()),
                                           orderBook: orderBook(),
                                           caps: NextPlanCaps(maxGridTiers: 2, maxGridCash: Decimal(string: "15000"),
                                                              gridNotes: ["资金封顶 15%"]),
@@ -281,6 +279,20 @@ final class NextDecisionMemoryTests: XCTestCase {
     }
 
     // MARK: - 夹具构造
+
+    private func nasRangeStats() -> NextNASMinuteStats {
+        let window = NextNASMinuteStats.Window(window: 60, daysUsed: 60, dayCoverage: 1,
+            minuteCoverage: 0.95, vwap: "1.4000", closeVsVwapPercent: 0,
+            amplitudeMedianPercent: 1.6, roundTripsMedian: 3,
+            support: "1.3000", resistance: "1.5000", supportP10: "1.3000",
+            resistanceP90: "1.5000", volatilityPercent: 20, volumeCoverage: 0.95)
+        return NextNASMinuteStats(days: 60, minutes: 14_400, lastDay: "2026-10-23",
+            quality: .init(days: 60, minuteCoverage: 0.95, hasVolume: true,
+                           enoughForLongTerm: true, volumeCoverage: 0.95),
+            freshness: .init(lastDay: "2026-10-23", ageMinutes: 60,
+                             isToday: true, stale: false, reason: nil),
+            windows: ["60": window])
+    }
 
     private func orderBook() -> NextOrderBookSnapshot {
         NextOrderBookSnapshot(code: "159941", observedAt: now, source: "synthetic test fixture",

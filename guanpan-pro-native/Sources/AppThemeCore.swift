@@ -1,5 +1,25 @@
 import Foundation
 
+enum NextServiceConnectionStatus {
+    static func isOnline(configured: Bool, reachable: Bool?, probedAt: Date?,
+                         now: Date = Date(), maximumAge: TimeInterval = 360) -> Bool {
+        guard configured, reachable == true, let probedAt else { return false }
+        let age = now.timeIntervalSince(probedAt)
+        return age >= 0 && age <= maximumAge
+    }
+
+    static func text(configured: Bool, reachable: Bool?, probedAt: Date?,
+                     now: Date = Date(), maximumAge: TimeInterval = 360) -> String {
+        guard configured else { return "未配置" }
+        guard let reachable, let probedAt else { return "待检测" }
+        let age = now.timeIntervalSince(probedAt)
+        guard age >= 0, age <= maximumAge else { return "状态待检测" }
+        let minutes = Int(age / 60)
+        if reachable { return minutes < 1 ? "刚刚检测在线" : "\(minutes) 分钟前在线" }
+        return minutes < 1 ? "刚刚检测离线" : "\(minutes) 分钟前离线"
+    }
+}
+
 // 主题的「身份与选择」这部分必须放在 Core 目标里：账本存档（NextAppArchive）要记录用户选了哪套主题，
 // 而 Core 不能依赖 SwiftUI。颜色与令牌在 app 目标的 ThemeKit.swift 里扩展。
 

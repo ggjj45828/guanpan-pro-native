@@ -71,17 +71,13 @@ struct HomeSnapshot {
     }
 
     var nasText: String {
-        guard nasConfigured else { return "未配置" }
-        guard let nasReachable, let nasProbedAt else { return "待检测" }
-        let age = max(0, Date().timeIntervalSince(nasProbedAt))
-        guard age <= 360 else { return "状态待检测" }
-        let minutes = Int(age / 60)
-        if nasReachable { return minutes < 1 ? "刚刚检测在线" : "\(minutes) 分钟前在线" }
-        return minutes < 1 ? "刚刚检测离线" : "\(minutes) 分钟前离线"
+        NextServiceConnectionStatus.text(configured: nasConfigured, reachable: nasReachable,
+                                         probedAt: nasProbedAt)
     }
 
     var nasOnline: Bool {
-        nasConfigured && nasReachable == true && nasProbedAt.map { Date().timeIntervalSince($0) <= 360 } == true
+        NextServiceConnectionStatus.isOnline(configured: nasConfigured, reachable: nasReachable,
+                                             probedAt: nasProbedAt)
     }
 
     @MainActor
@@ -105,9 +101,17 @@ struct HomeSnapshot {
         let items = guidance?.items ?? []
         let lead = items.first(where: { $0.isActionable }) ?? items.first
         let research = positions.compactMap { model.nasResearch[$0.code]?.crossMarket }
-        let freshRiskCount = research.flatMap { $0.liveDivergences ?? [] }.filter {
-            $0.eligibleForTradingSignal == true && $0.state == "observed_divergence" && $0.isFresh(at: Date())
-        }.count
+        var freshRiskCount = 0
+        for evidence in research {
+            guard let divergences = evidence.liveDivergences else { continue }
+            for divergence in divergences {
+                if divergence.eligibleForTradingSignal == true,
+                   divergence.state == "observed_divergence",
+                   divergence.isFresh(at: Date()) {
+                    freshRiskCount += 1
+                }
+            }
+        }
         let negativeCount = research.filter { $0.state == "no_stable_relationship" }.count
         let crossMarketSummary: String
         if research.isEmpty {

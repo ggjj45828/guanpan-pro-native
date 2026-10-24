@@ -209,3 +209,4 @@
 - 根因：NextAIGuide.swift:576 的 IOPV文案把 direction 和格式化百分比当作普通文本；NextAppModelState.swift:651、660 两段跨市场摘要内嵌的三元表达式字符串未闭合，造成Swift语法错误；NextCandidatePlans.swift:608 使用的日期格式API与Package声明的macOS 10.15目标不兼容。
 - 已修正以上三处，并保留前一轮待提交的五主题首页跨市场脉搏卡、持仓详情证据卡、风险理由插值修复和对应测试/矩阵更新。NAS研究测试58/58、Python compileall、git diff --check 通过；本机没有Swift/Xcode，需重新触发macOS Actions做真实编译与模拟器验收。
 - 当前下一步：提交并推送修复后的完整工作树至 validation/acceptance-20261024；读取新Actions日志，若还有编译/测试失败继续修复并重跑。仅在iOS构建和模拟器测试实际通过后，才更新矩阵对应Test/Result；外部NAS、真机和真实历史数据验证仍须标为未验证。
+- 提交 1630497 的第二轮 Actions 已发现：ThemeHome.swift 的复杂过滤表达式触发Swift类型检查超时；核心包测试错误引用仅在iOS应用目标中的 HomeSnapshot；旧网格测试仍直接构造已改为“必须由NAS统计构造”的NextNasRange。已将连接状态逻辑下沉至跨平台核心并让首页调用、拆分风险计数循环、将NAS状态测试改为纯核心测试，网格测试改用60日有效NAS统计夹具。NAS套件重跑58/58通过；待提交和下一轮云端验证。
