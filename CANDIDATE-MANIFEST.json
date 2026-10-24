@@ -34,8 +34,8 @@
     },
     {
       "path": "CONTINUATION.md",
-      "size": 18207,
-      "sha256": "c082709814afaa1c038f83c135dd44adc11d3e856d420dc1c9917536405e8f98"
+      "size": 18965,
+      "sha256": "aa3fe696a0c5da94703f16100f8f890d0bc1caf3efcd7dadf58b50d7a4fa38b5"
     },
     {
       "path": "CURRENT-HANDOFF-r2.md",
@@ -49,8 +49,8 @@
     },
     {
       "path": "Master Acceptance Matrix.md",
-      "size": 45997,
-      "sha256": "ed410d90a5622c31cf25a7eae237f0e68141abb6ac291aa971c606aa14b740ca"
+      "size": 46168,
+      "sha256": "035bfafe0715f590a56bde202eed1b21a20926b3fc620e469d7345d3997e78bd"
     },
     {
       "path": "README-GitHub构建.md",
@@ -164,8 +164,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/AIGuidanceViews.swift",
-      "size": 47987,
-      "sha256": "cae3ef2b5b9bba44a2bec95a5141e6e5facd05a0853528ed9a43ad4ea8b0e46a"
+      "size": 48139,
+      "sha256": "9bf8c2a6533e5960cd153fe2c040df72818e742d3a9ef189f2cbcf87a7d9be62"
     },
     {
       "path": "guanpan-pro-native/Sources/AppThemeCore.swift",
@@ -209,8 +209,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/GPAssetCards.swift",
-      "size": 22041,
-      "sha256": "8c081e6ed83b7b57ea8d220e842375f08d58c2e8e87172e242be634f12d95924"
+      "size": 22049,
+      "sha256": "ace389f7f97a3434a3664e9c71456b2a760b39c840e4d2ed6cec2d2baf6cc1c2"
     },
     {
       "path": "guanpan-pro-native/Sources/GPDividendScore.swift",

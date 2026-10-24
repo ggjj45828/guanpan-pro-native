@@ -202,8 +202,7 @@ struct AIChatScreen: View {
                 Image(systemName: "sparkles").font(.system(size: 17, weight: .semibold)).foregroundStyle(p.chartViolet)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("手机 AI · 统一顾问").font(.subheadline.weight(.semibold)).foregroundStyle(p.ink)
-                    Text("真实持仓 " + String(model.book.positions.filter { $0.units > 0 }.count) + " 只 · NAS长期研究 " +
-                         (model.nasResearch.isEmpty ? "尚无已同步数据" : "已加载 " + String(model.nasResearch.count) + " 只研究"))
+                    Text(contextSummary)
                         .font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -222,6 +221,13 @@ struct AIChatScreen: View {
                 }.scrollIndicators(.hidden)
             }
         }
+    }
+
+    private var contextSummary: String {
+        let holdingCount = model.book.positions.filter { $0.units > 0 }.count
+        let researchCount = model.nasResearch.count
+        let researchSummary = researchCount == 0 ? "尚无已同步数据" : "已加载 \(researchCount) 只研究"
+        return "真实持仓 \(holdingCount) 只 · NAS长期研究 \(researchSummary)"
     }
 
     private func messageBubble(_ message: AdvisorChatMessage) -> some View {

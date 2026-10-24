@@ -163,7 +163,7 @@ struct GPHeroAssetCard: View {
             p.heroGradient,
             in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(p.heroInk.opacity(0.14), lineWidth: 0.8))
-        .shadow(color: p.primaryDeep.opacity(p.shadowOpacity * 2), radius: p.shadowRadius + 4, x: 0, y: 8)
+        .shadow(color: p.primaryDeep.opacity(p.cardShadowOpacity * 2), radius: p.cardShadowRadius + 4, x: 0, y: 8)
     }
     private func axisLabel(_ date: Date?) -> String {
         guard let date else { return "" }
