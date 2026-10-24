@@ -498,6 +498,63 @@ struct NextDecisionContext: Equatable {
     let promptBlock: String
 }
 
+/// Online models are explanatory only. Reject actionable price text unless the exact
+/// decimal is present in the deterministic rule-engine plan supplied to this call.
+enum NextAIOutputGuard {
+    private static let actionPricePatterns = [
+        #"(?:卖出|买回|买入|卖|买|挂单|限价|建议卖价|建议买价)\s*(?:价)?[^\n。；;]{0,40}?(?:¥|￥)?\s*(\d+\.\d{1,4})"#,
+        #"(\d+\.\d{1,4})\s*(?:元)?\s*(?:卖出|买回|买入|挂单|限价)"#
+    ]
+    private static let actionUnitPatterns = [
+        #"(?:卖出|买回|买入|卖|买|挂单|限价)[^\n。；;]{0,28}?(\d+)\s*(?:份|股)"#,
+        #"(\d+)\s*(?:份|股)[^\n。；;]{0,16}?(?:卖出|买回|买入|挂单|限价)"#
+    ]
+
+    static func containsUnverifiedActionPrice(_ text: String, guidance: NextDailyGuidance) -> Bool {
+        var approvedPrices = Set<Decimal>()
+        var approvedUnits = Set<Int>()
+        for item in guidance.items {
+            if case .ready(let plan) = item.tPlan {
+                approvedPrices.insert(plan.sellPrice)
+                approvedPrices.insert(plan.buyPrice)
+                approvedUnits.insert(plan.units)
+            }
+            if case .ready(let plan) = item.gridPlan {
+                approvedPrices.insert(plan.upper)
+                approvedPrices.insert(plan.lower)
+                for tier in plan.tiers {
+                    approvedPrices.insert(tier.price)
+                    approvedUnits.insert(tier.units)
+                }
+            }
+        }
+        return containsUnverifiedAction(text, approvedPrices: approvedPrices, approvedUnits: approvedUnits)
+    }
+
+    static func containsUnverifiedAction(_ text: String, approvedPrices: Set<Decimal>, approvedUnits: Set<Int>) -> Bool {
+        for pattern in actionPricePatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: range) {
+                guard match.numberOfRanges > 1,
+                      let valueRange = Range(match.range(at: 1), in: text) else { continue }
+                guard let decimal = Decimal(string: String(text[valueRange])),
+                      approvedPrices.contains(where: { abs($0 - decimal) < Decimal(string: "0.000001")! }) else { return true }
+            }
+        }
+        for pattern in actionUnitPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: range) {
+                guard match.numberOfRanges > 1,
+                      let valueRange = Range(match.range(at: 1), in: text),
+                      let units = Int(text[valueRange]), approvedUnits.contains(units) else { return true }
+            }
+        }
+        return false
+    }
+}
+
 enum NextDecisionContextBuilder {
     static func build(guidance: NextDailyGuidance, book: NextBook, quotes: [String: NextQuote],
                       nasResearchLines: [String], crossMarketLines: [String] = [],

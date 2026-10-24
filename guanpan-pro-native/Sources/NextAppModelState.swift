@@ -672,6 +672,18 @@ import Combine
         let context = makeDecisionContext()
         do {
             let response = try await DeepSeekMobile.analyze(prompt: context.promptBlock, key: key, profile: modelProfile)
+            guard !NextAIOutputGuard.containsUnverifiedActionPrice(response.content, guidance: context.guidance) else {
+                unifiedAIAdvice = "在线 AI 输出了规则引擎未提供的交易价格，已拦截该段内容。请只查看下方手机规则引擎生成的候选计划。\n\n\(context.guidance.summary)"
+                unifiedAIStatus = "模型输出包含未经验证的交易价格，已拦截；候选计划仍以手机规则引擎为准。"
+                let stamp = Date()
+                let evidence = [
+                    NextEvidence(id: "unified-guidance-context", title: "统一决策上下文", detail: context.promptBlock, level: "真实持仓 + 手机规则 + NAS + 新闻 + 画像", observedAt: stamp),
+                    NextEvidence(id: "unified-guidance-ai-guard", title: "在线 AI 输出安全拦截", detail: "模型生成了未被规则引擎候选计划授权的交易价格或份额；该正文未作为指导保存。已回退到手机规则结论。", level: response.model, observedAt: stamp)
+                ]
+                recordDecision(NextDecision(createdAt: stamp, title: "AI 今日统一指导（模型输出已拦截）", evidence: evidence,
+                                            options: [], status: "规则引擎回退 · 不会自动下单", origin: "手机规则优先；在线模型价格校验未通过"))
+                return
+            }
             unifiedAIAdvice = response.content
             unifiedAIStatus = "手机端统一指导已生成 · \(response.model) · \(context.generatedAt.formatted(date: .numeric, time: .shortened))"
             let stamp = Date()
@@ -711,6 +723,9 @@ import Combine
         \(cleanedQuestion)
         """
         let response = try await DeepSeekMobile.analyze(prompt: prompt, key: key, profile: modelProfile)
+        guard !NextAIOutputGuard.containsUnverifiedActionPrice(response.content, guidance: context.guidance) else {
+            return "模型回答包含规则引擎未提供的交易价格，已拦截。请查看 AI 今日指导中的候选计划；没有合格计划时不要按模型生成的价格交易。"
+        }
         return response.content
     }
 

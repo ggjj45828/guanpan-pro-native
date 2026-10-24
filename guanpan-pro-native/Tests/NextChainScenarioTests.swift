@@ -84,6 +84,19 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(evidenced.promptBlock.contains("预注册的未来未见样本复现"))
     }
 
+    func testOnlineAIOutputGuardBlocksUnplannedActionPrices() {
+        let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "今天不建议交易",
+                                         noActionSummary: "继续持有", dataState: "无合格计划")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice("建议卖出 500 份 @ 0.850 元，再在 0.830 买回。", guidance: guidance))
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedActionPrice("今天不建议交易，继续持有并等待数据更新。", guidance: guidance))
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedActionPrice("预计净收益约 ¥96.5，置信度中。", guidance: guidance))
+        let planPrices: Set<Decimal> = [Decimal(string: "0.850")!, Decimal(string: "0.830")!]
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedAction("建议卖出 500 份 @ 0.850 元，再在 0.830 买回 500 份。",
+                                                                    approvedPrices: planPrices, approvedUnits: [500]))
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出 900 份 @ 0.850 元。",
+                                                                   approvedPrices: planPrices, approvedUnits: [500]))
+    }
+
     func testHistoricalCrossMarketCandidateDecodesAsNonTradingEvidence() throws {
         let payload = """
         {"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{
