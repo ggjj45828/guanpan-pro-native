@@ -161,7 +161,7 @@ struct LabResearchView: View {
             heroSection {
                 ZStack(alignment: .trailing) {
                     LandscapeDecoration(color: Color(red: 0.76, green: 0.48, blue: 0.14))
-                        .frame(height: 160).opacity(0.24)
+                        .frame(height: 160).opacity(0.10)
                     VStack(alignment: .leading, spacing: 9) {
                         Label("观盘手册 · 今日批注", systemImage: "sun.max.fill")
                             .font(.headline).foregroundStyle(Color(red: 0.55, green: 0.32, blue: 0.09))
@@ -212,7 +212,7 @@ struct LabResearchView: View {
             heroSection {
                 ZStack(alignment: .trailing) {
                     LandscapeDecoration(color: Color(red: 0.73, green: 0.33, blue: 0.38))
-                        .frame(height: 168).opacity(0.24)
+                        .frame(height: 168).opacity(0.10)
                     VStack(alignment: .leading, spacing: 7) {
                         Text(Date.now.formatted(.dateTime.month(.wide).day().weekday(.wide)))
                             .font(.caption.weight(.semibold)).foregroundStyle(Color(red: 0.59, green: 0.29, blue: 0.30))

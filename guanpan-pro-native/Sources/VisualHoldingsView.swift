@@ -66,7 +66,9 @@ struct VisualHoldingsView: View {
     private var title: some View {
         ZStack(alignment: .leading) {
             if theme == .eastern || theme == .magazine {
-                LandscapeDecoration(color: tokens.accent).frame(height: 83)
+                LandscapeDecoration(color: tokens.accent)
+                    .frame(width: 180, height: 83)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(theme == .magazine ? "我的投资组合" : "持仓")

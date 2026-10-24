@@ -19,7 +19,8 @@ struct ProPage<Content: View>: View {
                 ZStack(alignment: .leading) {
                     if visualTheme == .eastern || visualTheme == .magazine {
                         LandscapeDecoration(color: tokens.accent)
-                            .frame(height: visualTheme == .magazine ? 88 : 70)
+                            .frame(width: 185, height: visualTheme == .magazine ? 88 : 70)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text(title)

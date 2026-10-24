@@ -123,7 +123,9 @@ struct VisualHomeView: View {
     private var easternHome: some View {
         Group {
             ZStack(alignment: .leading) {
-                LandscapeDecoration(color: tokens.accent).frame(height: 125)
+                LandscapeDecoration(color: tokens.accent)
+                    .frame(width: 172, height: 125)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 VStack(alignment: .leading, spacing: 5) {
                     Text("早上好！").font(.system(size: 29, weight: .bold, design: .serif))
                     Text(Date.now.formatted(date: .long, time: .omitted))
@@ -204,7 +206,9 @@ struct VisualHomeView: View {
     private var magazineHome: some View {
         Group {
             ZStack(alignment: .trailing) {
-                LandscapeDecoration(color: tokens.accent).frame(height: 115)
+                LandscapeDecoration(color: tokens.accent)
+                    .frame(width: 188, height: 115)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("观盘投资手册")
                         .font(.system(size: 30, weight: .bold, design: .serif))
