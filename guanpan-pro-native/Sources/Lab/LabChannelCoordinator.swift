@@ -1,6 +1,10 @@
 import Foundation
 import Combine
 
+enum NASResearchSettings {
+    static let urlKey = "guanpan.native.researchNASURL"
+}
+
 /// v2 channel client. No writes or downloads are applied to the real PortfolioStore.
 @MainActor
 final class LabChannelCoordinator: ObservableObject {
@@ -22,20 +26,37 @@ final class LabChannelCoordinator: ObservableObject {
     @Published private(set) var quant = Status(text: "自动 · 未连接")
     private var busy = false
     @Published private(set) var marketDocument: [String: Any]?
+    private var activeResearchBase = ""
     /// Last persisted NAS worker diagnostics, kept separate from the local experiment state.
     @Published private(set) var executorInfo: [String: Any] = [:]
     @Published private(set) var opportunityScan: [String: Any] = [:]
     private var marketCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("guanpan-v2-market-cache.json")
     }
+    private var researchBase: String {
+        let dedicated = UserDefaults.standard.string(forKey: NASResearchSettings.urlKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return dedicated.isEmpty ? (UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? "") : dedicated
+    }
+    private var researchToken: String? {
+        let syncBase = (UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let research = researchBase.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return syncBase == research ? NASCredentialStore.load() : nil
+    }
     init() {
-        if let bytes = try? Data(contentsOf: marketCacheURL) {
-            marketDocument = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+        activeResearchBase = researchBase
+        if let bytes = try? Data(contentsOf: marketCacheURL),
+           let cached = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+           cached["sourceBase"] as? String == activeResearchBase {
+            marketDocument = cached["data"] as? [String: Any]
         }
     }
 
     private func url(_ channel: String) throws -> URL {
-        let base = UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? ""
+        let base = channel == "assets" ? (UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? "") : researchBase
         guard var components = URLComponents(url: try NASSyncService.normalizedBaseURL(base), resolvingAgainstBaseURL: false) else {
             throw SyncError.message("请先在原设置中配置 NAS 地址")
         }
@@ -47,7 +68,8 @@ final class LabChannelCoordinator: ObservableObject {
     }
     private func request(_ channel: String, body: [String: Any]? = nil) async throws -> [String: Any] {
         var req = URLRequest(url: try url(channel)); req.timeoutInterval = 15
-        if let token = NASCredentialStore.load(), !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let token = channel == "assets" ? NASCredentialStore.load() : researchToken
+        if let token, !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body {
             req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -67,20 +89,65 @@ final class LabChannelCoordinator: ObservableObject {
         }
         return result
     }
+    private func legacyResearch() async throws -> [String: Any] {
+        let base = researchBase
+        let root = try NASSyncService.normalizedBaseURL(base)
+        let endpoint = root.appendingPathComponent("v1/mobile/research")
+        var req = URLRequest(url: endpoint); req.timeoutInterval = 30
+        if let token = researchToken, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (bytes, response) = try await URLSession.shared.data(for: req)
+        guard base == researchBase else { throw SyncError.message("NAS 研究地址已变化，本次结果未应用") }
+        guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count <= 16 * 1024 * 1024,
+              let result = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              result["ok"] as? Bool == true,
+              let data = result["data"] as? [String: Any],
+              let quality = data["quality"] as? [String: Any],
+              quality["researchSnapshot"] is [String: Any] else {
+            throw SyncError.message("旧 NAS 未提供有效的只读研究档案")
+        }
+        return data
+    }
     func refresh() async {
         guard !busy else { return }; busy = true; defer { busy = false }
+        if activeResearchBase != researchBase {
+            activeResearchBase = researchBase
+            marketDocument = nil; executorInfo = [:]; opportunityScan = [:]
+        }
         // Independent failures: a failed market request never blocks the quant channel.
         market.text = "检查行情通道…"; market.progress = 0.1
+        var usedLegacyResearch = false
         do {
             let remote = try await request("market")
             marketDocument = remote["data"] as? [String: Any]
-            if let marketDocument, let bytes = try? JSONSerialization.data(withJSONObject: marketDocument) {
+            if let marketDocument, let bytes = try? JSONSerialization.data(withJSONObject: ["sourceBase": activeResearchBase, "data": marketDocument]) {
                 try? FileManager.default.createDirectory(at: marketCacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? bytes.write(to: marketCacheURL, options: [.atomic])
             }
             market.revision = remote["revision"] as? Int ?? 0; market.progress = 1
             market.text = marketDocument == nil ? "已连接 · NAS 行情通道尚无数据" : "已读取独立行情通道"
-        } catch { market.text = "离线/失败 · \(error.localizedDescription)"; market.progress = 0 }
+        } catch {
+            if let syncError = error as? SyncError,
+               case .message(let detail) = syncError,
+               detail.contains("(404)") {
+                do {
+                    marketDocument = try await legacyResearch()
+                    if let marketDocument, let bytes = try? JSONSerialization.data(withJSONObject: ["sourceBase": activeResearchBase, "data": marketDocument]) {
+                        try? FileManager.default.createDirectory(at: marketCacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try? bytes.write(to: marketCacheURL, options: [.atomic])
+                    }
+                    market.progress = 1
+                    market.text = "已读取旧 NAS 的只读历史档案；成交量单位待核验"
+                    usedLegacyResearch = true
+                } catch { market.text = "离线/失败 · \(error.localizedDescription)"; market.progress = 0 }
+            } else { market.text = "离线/失败 · \(error.localizedDescription)"; market.progress = 0 }
+        }
+        if usedLegacyResearch {
+            executorInfo = [:]; opportunityScan = [:]
+            quant.progress = 0; quant.text = "旧 NAS 无独立机会筛查；手机规则继续判断"
+            return
+        }
         quant.text = "检查量化通道…"; quant.progress = 0.1
         do {
             let endpointBefore = try url("quant").absoluteString
@@ -96,15 +163,15 @@ final class LabChannelCoordinator: ObservableObject {
     }
     func assetEndpoint() throws -> String { try url("assets").absoluteString }
     func researchPage(offset: Int, at: Int64) async throws -> [String: Any] {
-        let base = UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? ""
+        let base = researchBase
         let root = try NASSyncService.normalizedBaseURL(base)
         var components = URLComponents(url: root.appendingPathComponent("api/v2/market/research-page"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "50"), URLQueryItem(name: "at", value: String(at))]
         guard let endpoint = components.url else { throw SyncError.message("NAS 地址无效") }
         var req = URLRequest(url: endpoint); req.timeoutInterval = 30
-        if let token = NASCredentialStore.load(), !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let token = researchToken, !token.isEmpty { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (bytes, response) = try await URLSession.shared.data(for: req)
-        guard root == (try NASSyncService.normalizedBaseURL(UserDefaults.standard.string(forKey: NASSyncService.urlKey) ?? "")) else { throw SyncError.message("NAS 地址已变化，扫描已停止") }
+        guard root == (try NASSyncService.normalizedBaseURL(researchBase)) else { throw SyncError.message("NAS 地址已变化，扫描已停止") }
         guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count <= 16 * 1024 * 1024,
               let page = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any], page["ok"] as? Bool == true else {
             throw SyncError.message("NAS 未提供证券池研究接口或响应无效；可先导入离线研究文件")

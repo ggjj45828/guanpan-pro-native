@@ -7020,6 +7020,7 @@ struct SettingsView: View {
     @State private var themePickerExpanded = false
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
+    @AppStorage(NASResearchSettings.urlKey) private var researchNASURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     /// 「自动上传本机改动」：关掉后同步只做下行 —— NAS 采集到的数据照常自动下来，
     /// 本机的改动不再往上推，NAS 上的版本号也不再滚动。
@@ -7308,6 +7309,10 @@ struct SettingsView: View {
                 .accessibilityLabel("从剪贴板粘贴 NAS 地址")
             }
             Text("当前配套 NAS 服务支持免口令同步，填写地址后即可测试、下载和上传。")
+                .font(.footnote).foregroundStyle(.secondary)
+            TextField("只读研究 NAS 地址，例如 http://192.168.1.20:8789", text: $researchNASURL)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+            Text("选填。你的 guanpan2 服务可填在这里，只读取历史行情证据；真实账本仍使用上方同步地址。留空则研究也使用同步地址。")
                 .font(.footnote).foregroundStyle(.secondary)
             DisclosureGroup("兼容旧服务器（可选口令）") {
                 HStack {

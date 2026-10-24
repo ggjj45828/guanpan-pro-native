@@ -103,7 +103,9 @@ enum ResearchInputBuilder {
         return data
     }
     static func merge(remote: [String: Any]?, local: [[String: Any]], at: Int64) -> [String: Any] {
-        let rows = remote?["instruments"] as? [[String: Any]] ?? []
+        let heldSymbols = Set(local.compactMap { $0["symbol"] as? String })
+        let rows = (remote?["instruments"] as? [[String: Any]] ?? [])
+            .filter { heldSymbols.contains($0["symbol"] as? String ?? "") }
         var merged = rows.map { old -> [String: Any] in
             guard let symbol = old["symbol"] as? String, let current = local.first(where: { $0["symbol"] as? String == symbol }) else { return old }
             var item = old
@@ -112,7 +114,7 @@ enum ResearchInputBuilder {
             let localAt = (quote?["at"] as? NSNumber)?.int64Value ?? 0
             if localAt > oldAt && localAt <= at {
                 item["quote"] = quote
-                item["source"] = "NAS 历史与基本面 + iOS 最新报价"
+                item["source"] = "NAS 历史 + iOS 最新报价"
                 item["evidenceIDs"] = Array(Set((old["evidenceIDs"] as? [String] ?? []) + (current["evidenceIDs"] as? [String] ?? []))).sorted()
             }
             let history = old["bars"] as? [[String: Any]] ?? []
