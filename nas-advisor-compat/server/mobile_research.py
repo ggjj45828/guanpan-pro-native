@@ -58,7 +58,10 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             market_status="open" if market_open else "closed", max_age_seconds=600,
             multiple_comparison_count=len(CROSS_MARKET_SERIES) * len(cross_market.LAG_MINUTES) * 4)
         reports.append({"market": market_id, "currentMarketStatus": "open" if market_open else "closed",
-                        **report})
+                        "liveDivergence": cross_market.detect_live_divergence(
+                            leader_rows, follower_rows, as_of=now, window_minutes=15,
+                            minimum_move_percent=0.25, tolerance_seconds=90,
+                            maximum_age_seconds=600), **report})
     def newest_timestamp(rows):
         stamps = [row["leaderLatestAt"] for row in rows if row.get("leaderLatestAt")]
         return max(stamps, key=lambda value: datetime.fromisoformat(value).astimezone(timezone.utc)) if stamps else None
@@ -127,6 +130,7 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             "bestMarket": best_market, "currentMarketStatus": current_status,
             "ageSeconds": age_seconds, "researchWindow": {"start": start, "end": end_text},
             "leadSources": lead_sources, "rankedHistoricalCandidates": ranked_sources,
+            "liveDivergences": [{"market": row["market"], **row["liveDivergence"]} for row in reports],
             "eligibleForTradingSignal": False,
             "validationState": "requires_pre_registered_future_replication" if ranked_sources else "no_validated_candidate"}
 

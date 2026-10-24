@@ -422,12 +422,14 @@ final class NextCoreTests: XCTestCase {
         try dataset.validate()
     }
     func testCrossMarketResearchDecodesStatusFreshnessAndOlderServerPayloads() throws {
-        let current = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"no_stable_relationship","reason":"没有稳定领先关系","source":"Eastmoney trends","asOf":"2026-10-23T09:30:00+09:00","sampleCount":120,"bestLagMinutes":null,"conditionalWinRate":null,"bestMarket":"KR_KOSPI","currentMarketStatus":"closed","ageSeconds":7200}}"#.utf8)
+        let current = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"no_stable_relationship","reason":"没有稳定领先关系","source":"Eastmoney trends","asOf":"2026-10-23T09:30:00+09:00","sampleCount":120,"bestLagMinutes":null,"conditionalWinRate":null,"bestMarket":"KR_KOSPI","currentMarketStatus":"closed","ageSeconds":7200,"liveDivergences":[{"market":"JP_N225","state":"observed_divergence","reason":null,"windowMinutes":15,"leaderReturnPercent":-0.6,"assetReturnPercent":0.4,"leaderAgeSeconds":0,"assetAgeSeconds":0,"eligibleForTradingSignal":false}]}}"#.utf8)
         let decoded = try JSONDecoder().decode(NextNASResearch.self, from: current)
         XCTAssertEqual(decoded.crossMarket?.state, "no_stable_relationship")
         XCTAssertEqual(decoded.crossMarket?.bestMarket, "KR_KOSPI")
         XCTAssertEqual(decoded.crossMarket?.currentMarketStatus, "closed")
         XCTAssertEqual(decoded.crossMarket?.ageSeconds, 7200)
+        XCTAssertEqual(decoded.crossMarket?.liveDivergences?.first?.state, "observed_divergence")
+        XCTAssertEqual(decoded.crossMarket?.liveDivergences?.first?.eligibleForTradingSignal, false)
 
         let older = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"insufficient_real_archive","reason":null,"source":null,"asOf":null,"sampleCount":0,"bestLagMinutes":null,"conditionalWinRate":null}}"#.utf8)
         XCTAssertNil(try JSONDecoder().decode(NextNASResearch.self, from: older).crossMarket?.currentMarketStatus)

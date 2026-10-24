@@ -18,6 +18,62 @@ import cross_market
 from domain import InvalidData, NextDatabase
 
 
+class LiveDivergenceTests(unittest.TestCase):
+    def test_divergence_is_time_aligned_fresh_and_observation_only(self):
+        as_of = datetime.fromisoformat("2026-10-23T09:45:00+08:00")
+        leader = [
+            {"timestamp": "2026-10-23T10:30:00+09:00", "price": "100"},
+            {"timestamp": "2026-10-23T10:45:00+09:00", "price": "99.4"},
+        ]
+        asset = [
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": "1.000"},
+            {"timestamp": "2026-10-23T09:45:00+08:00", "price": "1.004"},
+        ]
+        result = cross_market.detect_live_divergence(leader, asset, as_of=as_of)
+        self.assertEqual(result["state"], "observed_divergence")
+        self.assertAlmostEqual(result["leaderReturnPercent"], -0.6, places=4)
+        self.assertAlmostEqual(result["assetReturnPercent"], 0.4, places=4)
+        self.assertFalse(result["eligibleForTradingSignal"])
+        self.assertNotIn("price", result)
+
+    def test_divergence_rejects_future_points_and_stale_sources(self):
+        as_of = datetime.fromisoformat("2026-10-23T09:45:00+08:00")
+        leader = [
+            {"timestamp": "2026-10-23T10:30:00+09:00", "price": "100"},
+            {"timestamp": "2026-10-23T10:45:00+09:00", "price": "99.4"},
+            {"timestamp": "2026-10-23T10:50:00+09:00", "price": "1"},
+        ]
+        asset = [
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": "1.000"},
+            {"timestamp": "2026-10-23T09:45:00+08:00", "price": "1.004"},
+            {"timestamp": "2026-10-23T09:50:00+08:00", "price": "9"},
+        ]
+        result = cross_market.detect_live_divergence(leader, asset, as_of=as_of)
+        self.assertEqual(result["state"], "observed_divergence")
+        self.assertLessEqual(datetime.fromisoformat(result["asOf"]).astimezone(timezone.utc),
+                             as_of.astimezone(timezone.utc))
+        stale = cross_market.detect_live_divergence(leader, asset,
+            as_of=datetime.fromisoformat("2026-10-23T10:30:00+08:00"))
+        self.assertEqual(stale["state"], "stale")
+        self.assertFalse(stale["eligibleForTradingSignal"])
+
+    def test_divergence_requires_nearby_window_endpoints(self):
+        as_of = datetime.fromisoformat("2026-10-23T09:45:00+08:00")
+        leader = [{"timestamp": "2026-10-23T10:30:00+09:00", "price": "100"},
+                  {"timestamp": "2026-10-23T10:45:00+09:00", "price": "99"}]
+        asset = [{"timestamp": "2026-10-23T09:30:00+08:00", "price": "1.0"},
+                 {"timestamp": "2026-10-23T09:43:00+08:00", "price": "1.1"}]
+        result = cross_market.detect_live_divergence(leader, asset, as_of=as_of)
+        self.assertEqual(result["state"], "insufficient_data")
+
+    def test_divergence_rejects_nonfinite_or_boolean_threshold(self):
+        as_of = datetime.fromisoformat("2026-10-23T09:45:00+08:00")
+        for threshold in (float("nan"), float("inf"), True):
+            with self.subTest(threshold=threshold), self.assertRaises(ValueError):
+                cross_market.detect_live_divergence([], [], as_of=as_of,
+                                                    minimum_move_percent=threshold)
+
+
 class CrossMarketEvidenceTests(unittest.TestCase):
     def test_older_fetch_cannot_replace_newer_daily_or_minute_evidence(self):
         import shutil
@@ -784,6 +840,9 @@ class RetiredRoutesTests(unittest.TestCase):
             self.assertFalse(response[0][1]["minuteStats"]["quality"]["enoughForLongTerm"])
             self.assertEqual(response[0][1]["crossMarket"]["state"], "insufficient_real_archive")
             self.assertIsNone(response[0][1]["crossMarket"]["conditionalWinRate"])
+            divergences = response[0][1]["crossMarket"]["liveDivergences"]
+            self.assertEqual(len(divergences), len(workers.CROSS_MARKET_SERIES))
+            self.assertTrue(all(item["eligibleForTradingSignal"] is False for item in divergences))
             self.assertIsNone(response[0][1]["ai"])
             self.assertFalse(response[0][1]["providerConfigured"])
             self.assertEqual(response[0][1]["providerStatus"]["state"], "phone-only")

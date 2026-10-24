@@ -75,9 +75,10 @@ final class NextChainScenarioTests: XCTestCase {
 
         let evidenced = NextDecisionContextBuilder.build(guidance: guidance, book: NextBook(), quotes: [:],
                                                           nasResearchLines: [],
-                                                          crossMarketLines: ["半导体：no_stable_relationship；暂无稳定领先关系"],
+                                                          crossMarketLines: ["半导体：no_stable_relationship；15分钟观察：方向背离 1 个来源；仅为同窗价格观察，不是预测或交易信号"],
                                                           newsLines: [], now: now)
-        XCTAssertTrue(evidenced.promptBlock.contains("暂无稳定领先关系"))
+        XCTAssertTrue(evidenced.promptBlock.contains("方向背离 1 个来源"))
+        XCTAssertTrue(evidenced.promptBlock.contains("仅为同窗价格观察，不是预测或交易信号"))
         XCTAssertTrue(evidenced.promptBlock.contains("缺失/过期/样本不足"))
         XCTAssertTrue(evidenced.promptBlock.contains("不能描述成今天的海外实时方向信号"))
         XCTAssertTrue(evidenced.promptBlock.contains("预注册的未来未见样本复现"))

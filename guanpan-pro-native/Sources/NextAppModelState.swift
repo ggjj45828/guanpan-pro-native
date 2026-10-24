@@ -624,7 +624,20 @@ import Combine
                 let useState = evidence.eligibleForTradingSignal == true
                     ? "已获准进入风险判断，仍需核对当时行情与A股确认"
                     : "仅历史研究候选，尚无预注册未来样本复现；不得作为做T/网格或加仓信号"
-                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(evidence.reason ?? "")")
+                let observations = evidence.liveDivergences ?? []
+                let observed = observations.filter { $0.state == "observed_divergence" }
+                let staleCount = observations.filter { $0.state == "stale" }.count
+                let insufficientCount = observations.filter { $0.state == "insufficient_data" }.count
+                let divergenceSummary: String
+                if observations.isEmpty {
+                    divergenceSummary = "实时跨市场背离未提供"
+                } else {
+                    let examples = observed.prefix(3).map { item in
+                        "\(item.market)先行指数 \(item.leaderReturnPercent.map { String(format: "%+.2f%%", $0) } ?? "无") / 持仓 \(item.assetReturnPercent.map { String(format: "%+.2f%%", $0) } ?? "无")"
+                    }.joined(separator: "；")
+                    divergenceSummary = "15分钟观察：方向背离 \(observed.count) 个来源，过期 \(staleCount)，数据不足 \(insufficientCount)\(examples.isEmpty ? "" : "；" + examples)；仅为同窗价格观察，不是预测或交易信号"
+                }
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(divergenceSummary)；\(evidence.reason ?? "")")
             } else {
                 crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：NAS未提供跨市场验证结果；不可推断领先关系")
             }

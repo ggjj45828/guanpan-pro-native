@@ -1187,6 +1187,19 @@ struct NextNASResearch: Codable, Equatable {
         /// Historical discovery is not a live trading signal until prospectively replicated.
         var eligibleForTradingSignal: Bool? = nil
         var validationState: String? = nil
+        /// Timestamp-aligned current move comparison. Observation only; never a trade trigger.
+        struct LiveDivergence: Codable, Equatable {
+            let market: String
+            let state: String
+            let reason: String?
+            let windowMinutes: Int?
+            let leaderReturnPercent: Double?
+            let assetReturnPercent: Double?
+            let leaderAgeSeconds: Double?
+            let assetAgeSeconds: Double?
+            let eligibleForTradingSignal: Bool?
+        }
+        var liveDivergences: [LiveDivergence]? = nil
     }
     var crossMarket: CrossMarketEvidence? = nil
 }

@@ -9,7 +9,7 @@ from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
-from math import atanh, erfc, sqrt, tanh
+from math import atanh, erfc, isfinite, sqrt, tanh
 from statistics import mean, median
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -247,6 +247,73 @@ def analyze_pair(leader_rows, follower_rows, *, as_of, source, market_status="un
     else:
         state, reason = "insufficient", "独立交易日样本不足，无法判断是否存在稳定领先关系"
     return {**base, "state": state, "reason": reason, "windows": windows}
+
+
+def detect_live_divergence(leader_rows, asset_rows, *, as_of, window_minutes=15,
+                           minimum_move_percent=0.25, tolerance_seconds=90,
+                           maximum_age_seconds=600):
+    """Describe a fresh, timestamp-aligned move mismatch; this is not a forecast.
+
+    Returns an observation only. It deliberately has no strategy, price, or
+    order fields and is never eligible to authorize a trade by itself.
+    """
+    as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
+    if as_of is None or as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    if type(window_minutes) is not int or not 5 <= window_minutes <= 120:
+        raise ValueError("window_minutes must be between 5 and 120")
+    if (isinstance(minimum_move_percent, bool) or
+            not isinstance(minimum_move_percent, (int, float)) or
+            not isfinite(minimum_move_percent) or not 0.05 <= minimum_move_percent <= 5):
+        raise ValueError("minimum_move_percent must be between 0.05 and 5")
+    if type(tolerance_seconds) is not int or not 0 <= tolerance_seconds <= 180:
+        raise ValueError("tolerance_seconds must be between 0 and 180")
+    if type(maximum_age_seconds) is not int or not 60 <= maximum_age_seconds <= 1800:
+        raise ValueError("maximum_age_seconds must be between 60 and 1800")
+
+    as_of = as_of.astimezone(timezone.utc)
+    leader = _series(leader_rows, as_of)
+    asset = _series(asset_rows, as_of)
+    if not leader or not asset:
+        return {"state": "insufficient_data", "reason": "缺少真实分钟样本",
+                "eligibleForTradingSignal": False, "windowMinutes": window_minutes}
+
+    leader_latest, asset_latest = max(leader), max(asset)
+    leader_age = (as_of - leader_latest).total_seconds()
+    asset_age = (as_of - asset_latest).total_seconds()
+    common_at = min(leader_latest, asset_latest)
+    target = common_at - timedelta(minutes=window_minutes)
+    leader_stamps, asset_stamps = list(leader), list(asset)
+    leader_now = _nearest(leader, common_at, tolerance_seconds, leader_stamps)
+    asset_now = _nearest(asset, common_at, tolerance_seconds, asset_stamps)
+    leader_then = _nearest(leader, target, tolerance_seconds, leader_stamps)
+    asset_then = _nearest(asset, target, tolerance_seconds, asset_stamps)
+    result = {"windowMinutes": window_minutes, "asOf": common_at.isoformat(),
+              "leaderLatestAt": leader_latest.isoformat(), "assetLatestAt": asset_latest.isoformat(),
+              "leaderAgeSeconds": max(0, leader_age), "assetAgeSeconds": max(0, asset_age),
+              "eligibleForTradingSignal": False,
+              "note": "仅描述同一时段的已观察价格差异，不代表领先预测，也不能单独触发交易"}
+    if leader_age > maximum_age_seconds or asset_age > maximum_age_seconds:
+        return {**result, "state": "stale", "reason": "跨市场或持仓行情超过新鲜度门槛"}
+    if any(value is None for value in (leader_now, asset_now, leader_then, asset_then)):
+        return {**result, "state": "insufficient_data", "reason": "窗口端点缺少足够接近的真实分钟点"}
+
+    leader_return = leader_now / leader_then - 1
+    asset_return = asset_now / asset_then - 1
+    threshold = minimum_move_percent / 100
+    leader_direction = 1 if leader_return >= threshold else -1 if leader_return <= -threshold else 0
+    asset_direction = 1 if asset_return >= threshold else -1 if asset_return <= -threshold else 0
+    if leader_direction == 0 and asset_direction == 0:
+        state = "no_material_move"
+    elif leader_direction and asset_direction and leader_direction != asset_direction:
+        state = "observed_divergence"
+    else:
+        state = "aligned_or_one_side_flat"
+    return {**result, "state": state, "reason": None,
+            "leaderReturnPercent": round(leader_return * 100, 4),
+            "assetReturnPercent": round(asset_return * 100, 4),
+            "minimumMovePercent": minimum_move_percent,
+            "leaderDirection": leader_direction, "assetDirection": asset_direction}
 
 
 def lunch_shock(rows, *, day, as_of):
