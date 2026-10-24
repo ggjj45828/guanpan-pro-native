@@ -32,7 +32,15 @@ struct LabResearchView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }.toneCard(CardTone.warn, isLight: isLight)
             }
-            Section {
+            Group {
+                Text("真实持仓 · 统一指导")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tokens.secondary)
+                    .padding(.vertical, 4)
+                    .listRowInsets(EdgeInsets(top: 5, leading: tokens.pageInset,
+                                              bottom: 5, trailing: tokens.pageInset))
+                    .listRowBackground(tokens.background)
+                    .listRowSeparator(.hidden)
                 NavigationLink("逐只核对 ETF 交易规则与可卖份额") { ETFTradingRuleView() }
                     .listRowBackground(tokens.surface)
                 if decisionRows.isEmpty {
@@ -50,14 +58,6 @@ struct LabResearchView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
-            } header: {
-                Text("真实持仓 · 统一指导")
-                    .foregroundStyle(tokens.secondary)
-                    .textCase(nil)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(tokens.background)
             }
             Section("手机 AI · 补充解释") {
                 Text("本机规则先形成唯一判断。在线模型只解释同一份真实持仓和行情快照，不能自行编造限价或相反指令。")
