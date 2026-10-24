@@ -697,6 +697,22 @@ class NextDatabase:
         return {"market": market, "day": day, "source": sources[0] if len(sources) == 1 else sources,
                 "rows": [json.loads(row[0]) for row in rows]}
 
+    def get_cross_market_range(self, market, start, end):
+        """Read a bounded source archive range for research without per-day DB opens."""
+        self.validate_id(market)
+        try:
+            first, last = date.fromisoformat(start), date.fromisoformat(end)
+        except (TypeError, ValueError): raise InvalidData("invalid cross-market date range")
+        if first > last or (last - first).days > 400:
+            raise InvalidData("cross-market research range must be within 400 days")
+        with self.connect() as db:
+            rows = db.execute("SELECT body, source FROM cross_market_minute WHERE market=? "
+                              "AND substr(stamp,1,10)>=? AND substr(stamp,1,10)<=? ORDER BY stamp",
+                              (market, start, end)).fetchall()
+        sources = sorted({row[1] for row in rows})
+        return {"market": market, "source": sources[0] if len(sources) == 1 else sources,
+                "rows": [json.loads(row[0]) for row in rows]}
+
     def cross_market_days(self, market, start, end):
         self.validate_id(market)
         try:

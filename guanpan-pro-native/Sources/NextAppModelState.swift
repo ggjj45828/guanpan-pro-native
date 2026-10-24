@@ -618,7 +618,10 @@ import Combine
             if let evidence = report.crossMarket {
                 let count = evidence.sampleCount.map(String.init) ?? "未知"
                 let lag = evidence.bestLagMinutes.map { "，最佳领先 \($0) 分钟" } ?? ""
-                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；\(evidence.reason ?? "")")
+                let market = evidence.bestMarket.map { "，市场 \($0)" } ?? ""
+                let marketState = evidence.currentMarketStatus.map { "，市场状态 \($0)" } ?? ""
+                let freshness = evidence.ageSeconds.map { "，最新点距今 \(Int($0))秒" } ?? ""
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；\(evidence.reason ?? "")")
             } else {
                 crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：NAS未提供跨市场验证结果；不可推断领先关系")
             }

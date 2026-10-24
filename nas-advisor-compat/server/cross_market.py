@@ -5,15 +5,75 @@ calendar, fills missing minutes, or treats correlation as a forecast. Synthetic
 fixtures belong in tests only. Until a provider's historical minute series is
 available, callers receive an explicit insufficient-evidence result.
 """
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
-from math import sqrt
+from math import atanh, erfc, sqrt, tanh
 from statistics import mean, median
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LAG_MINUTES = (0, 5, 10, 15, 30, 45, 60, 90)
-MIN_SAMPLES = 40
+MIN_SAMPLES = 100  # Independent trading sessions, not correlated minute observations.
+MIN_HOLDOUT_TRIGGERS = 30
+PRACTICAL_EDGE = 0.05
+
+
+def _wilson(successes, total, z=1.959963984540054):
+    """Two-sided 95% Wilson interval for a binomial rate."""
+    if total <= 0:
+        return None
+    rate = successes / total
+    denominator = 1 + z * z / total
+    center = (rate + z * z / (2 * total)) / denominator
+    radius = z * sqrt((rate * (1 - rate) + z * z / (4 * total)) / total) / denominator
+    return [max(0.0, center - radius), min(1.0, center + radius)]
+
+
+def _replay_assessment(results, minimum_samples):
+    """Assess a frozen rule on a chronological holdout against non-trigger days.
+
+    A positive result remains a candidate requiring a later replication. A
+    sufficiently powered result can reject a practically useful edge; lack of
+    significance alone is never presented as proof of no relationship.
+    """
+    eligible = [row for row in results if row.get("dataComplete", True)
+                and row.get("confirmed") is not None]
+    if all(isinstance(row.get("day"), str) for row in eligible):
+        eligible.sort(key=lambda row: row["day"])
+    split = int(len(eligible) * 0.7)
+    holdout = eligible[split:]
+    triggered = [row for row in holdout if row.get("triggered") and row.get("confirmed") is not None]
+    controls = [row for row in holdout if not row.get("triggered") and row.get("confirmed") is not None]
+    trigger_hits = sum(row["confirmed"] is True for row in triggered)
+    control_hits = sum(row["confirmed"] is True for row in controls)
+    trigger_interval = _wilson(trigger_hits, len(triggered))
+    control_interval = _wilson(control_hits, len(controls))
+    edge_interval = ([max(-1.0, trigger_interval[0] - control_interval[1]),
+                      min(1.0, trigger_interval[1] - control_interval[0])]
+                     if trigger_interval and control_interval else None)
+    if (len(eligible) < minimum_samples or len(triggered) < MIN_HOLDOUT_TRIGGERS or
+            len(controls) < MIN_HOLDOUT_TRIGGERS):
+        state = "insufficient_samples"
+    elif edge_interval[1] <= PRACTICAL_EDGE:
+        state = "no_stable_relationship"
+    elif edge_interval[0] > 0:
+        state = "candidate_requires_replication"
+    else:
+        state = "inconclusive"
+    return {"state": state, "chronologicalSplitIndex": split,
+            "minimumHoldoutTriggers": MIN_HOLDOUT_TRIGGERS,
+            "holdoutSessions": len(holdout), "triggerCount": len(triggered),
+            "triggerConfirmationRate": trigger_hits / len(triggered) if triggered else None,
+            "triggerRate95CI": trigger_interval,
+            "controlCount": len(controls),
+            "controlConfirmationRate": control_hits / len(controls) if controls else None,
+            "controlRate95CI": control_interval, "edge95CI": edge_interval,
+            "practicalEdgeThreshold": PRACTICAL_EDGE,
+            "note": ("样本不足，不能判断" if state == "insufficient_samples" else
+                     "留出样本未支持至少5个百分点的稳定增量优势；没有稳定领先关系" if state == "no_stable_relationship" else
+                     "留出样本出现候选增量关系，需用后续未见数据复现" if state == "candidate_requires_replication" else
+                     "当前留出样本无法区分有用增量与随机波动")}
 
 
 def _timestamp(value):
@@ -57,6 +117,16 @@ def _nearest(points, target, tolerance_seconds=90, stamps=None):
     return points[stamp] if (target - stamp).total_seconds() <= tolerance_seconds else None
 
 
+def _following(points, target, tolerance_seconds=90, stamps=None):
+    """Match an outcome only to a real observation at/after its requested time."""
+    stamps = stamps if stamps is not None else list(points)
+    index = bisect_left(stamps, target)
+    if index < 0 or index >= len(stamps):
+        return None
+    stamp = stamps[index]
+    return points[stamp] if (stamp - target).total_seconds() <= tolerance_seconds else None
+
+
 def _correlation(xs, ys):
     if len(xs) < 2:
         return None
@@ -68,25 +138,37 @@ def _correlation(xs, ys):
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sqrt(vx * vy)
 
 
-def _metrics(leader, follower, lag_minutes, horizon_minutes):
-    lead_changes, future_returns = [], []
+def _metrics(leader, follower, lag_minutes, horizon_minutes, session_timezone="Asia/Shanghai",
+             comparison_count=None):
+    comparison_count = comparison_count or len(LAG_MINUTES) * 4
+    intraday_pairs = {}
     tolerance = 90
     leader_stamps, follower_stamps = list(leader), list(follower)
+    zone = ZoneInfo(session_timezone)
     for target, target_price in follower.items():
         lead_now = _nearest(leader, target - timedelta(minutes=lag_minutes), tolerance, leader_stamps)
         lead_before = _nearest(leader, target - timedelta(minutes=lag_minutes + 5), tolerance, leader_stamps)
         future_price = _nearest(follower, target + timedelta(minutes=horizon_minutes), tolerance, follower_stamps)
         if lead_now is None or lead_before is None or future_price is None or target_price <= 0:
             continue
-        lead_changes.append(lead_now / lead_before - 1.0)
-        future_returns.append(future_price / target_price - 1.0)
+        day = target.astimezone(zone).date().isoformat()
+        intraday_pairs.setdefault(day, []).append((lead_now / lead_before - 1.0,
+                                                    future_price / target_price - 1.0))
+    daily_pairs = [(mean(x for x, _ in samples), mean(y for _, y in samples))
+                   for samples in intraday_pairs.values() if samples]
+    lead_changes = [x for x, _ in daily_pairs]
+    future_returns = [y for _, y in daily_pairs]
     n = len(lead_changes)
     if n < MIN_SAMPLES:
         return {"sampleCount": n, "state": "insufficient", "correlation": None,
                 "conditionalWinRate": None, "positiveLeadSampleCount": 0,
                 "positiveLeadWinRate": None, "negativeLeadSampleCount": 0,
                 "negativeLeadWinRate": None, "meanForwardReturn": None,
-                "medianForwardReturn": None, "maxAdverseMove": None, "stability": None}
+                "medianForwardReturn": None, "maxAdverseMove": None, "stability": None,
+                "correlationCI95": None, "bonferroniAdjustedPValue": None,
+                "testedWindowCount": comparison_count,
+                "observationCount": sum(len(samples) for samples in intraday_pairs.values()),
+                "sampleUnit": "independent trading sessions"}
     corr = _correlation(lead_changes, future_returns)
     positive_pairs = [(x, r) for x, r in zip(lead_changes, future_returns) if x > 0]
     negative_pairs = [(x, r) for x, r in zip(lead_changes, future_returns) if x < 0]
@@ -97,10 +179,27 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes):
     second_corr = _correlation(lead_changes[half:], future_returns[half:])
     stability = (1.0 - min(1.0, abs(first_corr - second_corr) / 2.0)
                  if first_corr is not None and second_corr is not None else None)
-    # Require non-trivial evidence and split-period agreement before labeling stable.
-    stable = n >= MIN_SAMPLES and corr is not None and stability is not None and stability >= 0.65
+    # Fisher-z correlation test with a caller-specified Bonferroni family size.
+    # Direct pair analysis covers 8x4 windows; per-holding scans cover all
+    # markets and windows. This is a screening guard, not causality.
+    confidence = None
+    adjusted_p = None
+    if corr is not None and n > 3:
+        bounded_corr = min(0.999999, max(-0.999999, corr))
+        z_score = atanh(bounded_corr) * sqrt(n - 3)
+        margin = 1.96 / sqrt(n - 3)
+        center = atanh(bounded_corr)
+        confidence = [tanh(center - margin), tanh(center + margin)]
+        adjusted_p = min(1.0, erfc(abs(z_score) / sqrt(2.0)) * comparison_count)
+    stable = (n >= MIN_SAMPLES and corr is not None and stability is not None
+              and stability >= 0.65 and adjusted_p is not None and adjusted_p <= 0.05)
     return {"sampleCount": n, "state": "stable_candidate" if stable else "unstable",
+            "sampleUnit": "independent trading sessions",
+            "observationCount": sum(len(samples) for samples in intraday_pairs.values()),
             "correlation": corr,
+            "correlationCI95": confidence,
+            "bonferroniAdjustedPValue": adjusted_p,
+            "testedWindowCount": comparison_count,
             "conditionalWinRate": directional_wins / len(directional_pairs) if directional_pairs else None,
             "positiveLeadSampleCount": len(positive_pairs),
             "positiveLeadWinRate": (sum(r > 0 for _, r in positive_pairs) / len(positive_pairs)
@@ -113,12 +212,16 @@ def _metrics(leader, follower, lag_minutes, horizon_minutes):
 
 
 def analyze_pair(leader_rows, follower_rows, *, as_of, source, market_status="unknown",
-                 max_age_seconds=300):
+                 max_age_seconds=300, follower_timezone="Asia/Shanghai",
+                 multiple_comparison_count=None):
     """Return non-predictive evidence metrics for one leader/follower pair."""
     as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
     if as_of is None or as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
     as_of = as_of.astimezone(timezone.utc)
+    comparison_count = multiple_comparison_count or len(LAG_MINUTES) * 4
+    if not isinstance(comparison_count, int) or comparison_count < len(LAG_MINUTES) * 4:
+        raise ValueError("multiple comparison count must cover all tested windows")
     leader, follower = _series(leader_rows, as_of), _series(follower_rows, as_of)
     latest = max(leader.keys(), default=None)
     age = (as_of - latest).total_seconds() if latest else None
@@ -133,10 +236,17 @@ def analyze_pair(leader_rows, follower_rows, *, as_of, source, market_status="un
     for lag in LAG_MINUTES:
         for horizon in (5, 15, 30, 60):
             windows.append({"lagMinutes": lag, "horizonMinutes": horizon,
-                            **_metrics(leader, follower, lag, horizon)})
+                            **_metrics(leader, follower, lag, horizon, follower_timezone,
+                                       comparison_count)})
     stable = [w for w in windows if w["state"] == "stable_candidate"]
-    return {**base, "state": "stable_candidate" if stable else "no_stable_relationship",
-            "reason": None if stable else "暂无达到样本量与滚动稳定性门槛的领先关系", "windows": windows}
+    tested = [w for w in windows if w["sampleCount"] >= MIN_SAMPLES]
+    if stable:
+        state, reason = "stable_candidate", None
+    elif tested:
+        state, reason = "no_stable_relationship", "历史样本未通过分段稳定性和32窗口多重比较校正；没有稳定领先关系"
+    else:
+        state, reason = "insufficient", "独立交易日样本不足，无法判断是否存在稳定领先关系"
+    return {**base, "state": state, "reason": reason, "windows": windows}
 
 
 def lunch_shock(rows, *, day, as_of):
@@ -153,6 +263,151 @@ def lunch_shock(rows, *, day, as_of):
     return {"state": "observed", "return": p1 / p0 - 1.0, "from": start.isoformat(), "to": end.isoformat()}
 
 
+def _session_time(day, clock, zone):
+    try:
+        parsed_day = datetime.strptime(day, "%Y-%m-%d").date()
+        parsed_clock = datetime.strptime(clock, "%H:%M").time()
+        return datetime.combine(parsed_day, parsed_clock, ZoneInfo(zone)).astimezone(timezone.utc)
+    except (ValueError, TypeError, ZoneInfoNotFoundError):
+        raise ValueError("invalid replay session time or timezone")
+
+
+def _validate_replay_day(day):
+    try:
+        parsed_day = datetime.strptime(day, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        raise ValueError("invalid replay day")
+    if parsed_day.weekday() >= 5:
+        raise ValueError("weekend replay is not a trading session")
+
+
+def replay_hypothesis_day(leader_rows, asset_rows, *, day, source, hypothesis,
+                          minimum_samples=100):
+    """Evaluate a user-supplied bounded hypothesis spec without executable rules.
+
+    Conditions use observed return between two exchange-local HH:MM times. The
+    frozen hypothesis only reads points available by `cutoff`; post-cutoff rows
+    are accessed in a separate outcome pass.
+    """
+    if not isinstance(hypothesis, dict) or not isinstance(source, str) or not source.strip():
+        raise ValueError("named data source and hypothesis object are required")
+    _validate_replay_day(day)
+    cutoff_time = hypothesis.get("cutoff")
+    leader_zone = hypothesis.get("leaderTimezone", "Asia/Shanghai")
+    asset_zone = hypothesis.get("assetTimezone", "Asia/Shanghai")
+    cutoff_zone = hypothesis.get("cutoffTimezone", asset_zone)
+    cutoff = _session_time(day, cutoff_time, cutoff_zone)
+    if cutoff > datetime.now(timezone.utc):
+        raise ValueError("replay date is not historical")
+    conditions = hypothesis.get("conditions")
+    direction = hypothesis.get("expectedDirection")
+    baseline_clock = hypothesis.get("outcomeBaseline")
+    confirmation_clock = hypothesis.get("confirmAt")
+    horizon_clocks = hypothesis.get("horizons", [])
+    if (not isinstance(conditions, list) or not 1 <= len(conditions) <= 8 or
+            direction not in (-1, 1) or not isinstance(horizon_clocks, list) or len(horizon_clocks) > 8):
+        raise ValueError("invalid hypothesis specification")
+    baseline = _session_time(day, baseline_clock, asset_zone)
+    confirmation = _session_time(day, confirmation_clock, asset_zone)
+    if baseline <= cutoff or confirmation < baseline:
+        raise ValueError("outcome times must follow the frozen cutoff")
+    horizons = [_session_time(day, clock, asset_zone) for clock in horizon_clocks]
+    if any(item <= baseline for item in horizons):
+        raise ValueError("outcome horizons must follow the baseline")
+    leader = _series(leader_rows, cutoff)
+    asset_pre = _series(asset_rows, cutoff)
+    evaluated, complete = [], True
+    for condition in conditions:
+        if not isinstance(condition, dict) or condition.get("series") not in ("leader", "asset"):
+            raise ValueError("invalid hypothesis condition")
+        zone = leader_zone if condition["series"] == "leader" else asset_zone
+        start = _session_time(day, condition.get("from"), zone)
+        end = _session_time(day, condition.get("to"), zone)
+        if start >= end or end > cutoff:
+            raise ValueError("hypothesis condition must end by the freeze time")
+        series = leader if condition["series"] == "leader" else asset_pre
+        stamps = list(series)
+        start_price = _nearest(series, start, stamps=stamps)
+        end_price = _nearest(series, end, stamps=stamps)
+        observed = (end_price / start_price - 1.0) if start_price and end_price else None
+        try:
+            threshold = float(condition["threshold"])
+            operator = condition["operator"]
+            upper = float(condition["upperThreshold"]) if operator == "between" else None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError("invalid hypothesis threshold")
+        if not (-1 <= threshold <= 1 and (upper is None or threshold <= upper <= 1) or
+                upper is not None and -1 <= threshold <= upper <= 1):
+            raise ValueError("hypothesis threshold is outside the supported return range")
+        if operator not in ("gte", "lte", "between"):
+            raise ValueError("unsupported hypothesis operator")
+        passed = (observed is not None and
+                  (observed >= threshold if operator == "gte" else
+                   observed <= threshold if operator == "lte" else threshold <= observed <= upper))
+        complete = complete and observed is not None
+        evaluated.append({"series": condition["series"], "from": condition["from"], "to": condition["to"],
+                          "operator": operator, "threshold": threshold, "upperThreshold": upper,
+                          "observedReturn": observed, "passed": bool(passed)})
+    trigger = complete and all(item["passed"] for item in evaluated)
+    frozen = {"cutoff": cutoff.isoformat(), "hypothesisId": hypothesis.get("id"),
+              "conditions": evaluated, "dataComplete": complete,
+              "state": "hypothesis" if trigger else "no_hypothesis",
+              "reason": None if trigger else "冻结时点条件不成立或输入分钟数据不完整"}
+    max_outcome = max([baseline, confirmation] + horizons)
+    asset_all = _series(asset_rows, max_outcome)
+    outcome_stamps = list(asset_all)
+    base_value = _following(asset_all, baseline, stamps=outcome_stamps)
+    confirm_value = _following(asset_all, confirmation, stamps=outcome_stamps)
+    confirm_return = confirm_value / base_value - 1 if base_value and confirm_value else None
+    outcomes = {}
+    for clock, stamp in zip(horizon_clocks, horizons):
+        price = _following(asset_all, stamp, stamps=outcome_stamps)
+        outcomes[clock] = price / base_value - 1 if base_value and price else None
+    confirmed = None
+    if confirm_return is not None:
+        confirmed = confirm_return > 0 if direction > 0 else confirm_return < 0
+    fingerprint = sha256(json.dumps({"leader": leader_rows, "asset": asset_rows,
+                                     "hypothesis": hypothesis, "day": day}, sort_keys=True,
+                                    ensure_ascii=False, default=str).encode()).hexdigest()
+    return {"day": day, "source": source, "fingerprint": fingerprint,
+            "frozenAt": cutoff.isoformat(), "frozenHypothesis": frozen,
+            "confirmationReturn": confirm_return, "confirmed": confirmed,
+            "postOpenReturns": outcomes,
+            "outcomeState": ("evaluated" if base_value is not None and confirm_value is not None
+                             and all(value is not None for value in outcomes.values())
+                             else "awaiting_post_cutoff_data")}
+
+
+def replay_hypothesis_days(days, *, source, hypothesis, minimum_samples=100):
+    if not isinstance(minimum_samples, int) or minimum_samples < 1 or minimum_samples > 1000:
+        raise ValueError("minimum replay sample count must be from 1 to 1000")
+    results, seen = [], set()
+    for row in days:
+        if not isinstance(row, dict) or not isinstance(row.get("day"), str) or row["day"] in seen:
+            continue
+        seen.add(row["day"])
+        results.append(replay_hypothesis_day(row.get("leader", []), row.get("asset", []),
+                                             day=row["day"], source=source, hypothesis=hypothesis,
+                                             minimum_samples=minimum_samples))
+    triggers = [row for row in results if row["frozenHypothesis"]["state"] == "hypothesis"
+                and row["confirmed"] is not None]
+    hits = sum(row["confirmed"] is True for row in triggers)
+    assessment_rows = [{"day": row["day"],
+                        "dataComplete": row["frozenHypothesis"].get("dataComplete", False),
+                        "triggered": row["frozenHypothesis"]["state"] == "hypothesis",
+                        "confirmed": row["confirmed"]} for row in results]
+    assessment = _replay_assessment(assessment_rows, minimum_samples)
+    return {"hypothesis": dict(hypothesis), "sessionCount": len(results),
+            "triggerCount": len(triggers), "confirmationCount": hits,
+            "confirmationRate": (assessment["triggerConfirmationRate"]
+                                 if assessment["state"] != "insufficient_samples" else None),
+            "inSampleConfirmationRate": hits / len(triggers) if len(triggers) >= minimum_samples else None,
+            "state": assessment["state"],
+            "replayState": "evaluated" if len(triggers) >= minimum_samples else "insufficient_samples",
+            "assessment": assessment,
+            "results": results}
+
+
 def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
                      minimum_samples=100):
     """Point-in-time lunch replay; cutoff evidence is frozen before outcomes are read.
@@ -166,6 +421,7 @@ def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
         raise ValueError("replay date is not historical")
     if not isinstance(rule, dict) or not isinstance(source, str) or not source.strip():
         raise ValueError("a named source and explicit research rule are required")
+    _validate_replay_day(day)
     try:
         required_shock = float(rule.get("leaderShockAtLeast", 0.0))
         max_morning = float(rule.get("assetMorningAtMost", 1.0))
@@ -188,21 +444,23 @@ def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
     triggered = bool(enough and direction * leader_shock["return"] >= required_shock
                      and morning_return <= max_morning)
     frozen = {"cutoff": cutoff.isoformat(), "day": day, "source": source,
-              "rule": dict(rule), "leaderLunchReturn": leader_shock["return"],
+              "rule": dict(rule), "dataComplete": enough,
+              "leaderLunchReturn": leader_shock["return"],
               "assetMorningReturn": morning_return,
               "state": "hypothesis" if triggered else "no_hypothesis",
               "reason": None if triggered else "截止时点不满足假设条件或数据不足"}
     # Outcome rows are deliberately isolated from the 12:50 frozen block.
     post = _series(asset_rows, datetime.max.replace(tzinfo=timezone.utc))
-    open_1300 = _nearest(post, _timestamp(day + "T13:00:00+08:00"))
+    post_stamps = list(post)
+    open_1300 = _following(post, _timestamp(day + "T13:00:00+08:00"), stamps=post_stamps)
     outcomes = {}
     for minutes in (5, 15, 30, 60):
         stamp = _timestamp(day + f"T13:{minutes:02d}:00+08:00") if minutes < 60 else _timestamp(day + "T14:00:00+08:00")
-        value = _nearest(post, stamp)
+        value = _following(post, stamp, stamps=post_stamps)
         outcomes[str(minutes)] = (value / open_1300 - 1.0) if open_1300 and value else None
     confirmed = None
-    if triggered and outcomes["5"] is not None:
-        confirmed = (outcomes["5"] > 0) == (direction > 0)
+    if outcomes["5"] is not None:
+        confirmed = outcomes["5"] > 0 if direction > 0 else outcomes["5"] < 0
     fingerprint = sha256(json.dumps({"leader": leader_rows, "asset": asset_rows,
                                      "rule": rule, "day": day}, sort_keys=True,
                                     ensure_ascii=False, default=str).encode()).hexdigest()
@@ -228,8 +486,17 @@ def replay_lunch_days(days, *, source, rule, minimum_samples=100):
     triggered = [r for r in results if r["frozenHypothesis"]["state"] == "hypothesis"
                  and r["confirmedAt5m"] is not None]
     confirmed = sum(r["confirmedAt5m"] is True for r in triggered)
+    assessment_rows = [{"day": row["day"],
+                        "dataComplete": row["frozenHypothesis"].get("dataComplete", False),
+                        "triggered": row["frozenHypothesis"]["state"] == "hypothesis",
+                        "confirmed": row["confirmedAt5m"]} for row in results]
+    assessment = _replay_assessment(assessment_rows, minimum_samples)
     return {"source": source, "rule": dict(rule), "sessionCount": len(results),
             "hypothesisCount": len(triggered), "confirmationCount": confirmed,
-            "confirmationRate": confirmed / len(triggered) if len(triggered) >= minimum_samples else None,
-            "state": "evaluated" if len(triggered) >= minimum_samples else "insufficient_samples",
+            "confirmationRate": (assessment["triggerConfirmationRate"]
+                                 if assessment["state"] != "insufficient_samples" else None),
+            "inSampleConfirmationRate": confirmed / len(triggered) if len(triggered) >= minimum_samples else None,
+            "state": assessment["state"],
+            "replayState": "evaluated" if len(triggered) >= minimum_samples else "insufficient_samples",
+            "assessment": assessment,
             "results": results}

@@ -4,7 +4,7 @@
 
 状态：✅ 当前环境已实测通过；🟡 已编码但目标平台未验证；🟠 部分链路；❌ 未实现；⚠️ 只能在外部环境验证。代码存在不等于功能可用。
 
-本次复核统计：✅ 1项、🟡 16项（其中14项未在目标平台验证、2项未完全验证）、🟠 124项、⚠️ 4项，共145项。当前没有单独标成❌的行；🟠“部分链路”并不代表缺失部分已完成，新增跨市场模块也尚未接通真实历史外部市场数据。
+本次复核统计：✅ 1项、🟡 16项（其中14项未在目标平台验证、2项未完全验证）、🟠 124项、⚠️ 4项，共145项。当前没有单独标成❌的行；🟠“部分链路”并不代表缺失部分已完成。跨市场分钟采集与持仓研究接口已接入源码，真实NAS持续档案和100–200日实证仍缺失。
 
 | Requirement | Status | Files | Implementation | Test | Result | Remaining |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -123,33 +123,33 @@
 | 113. 工作方式要求 | 🟠 Partial | Master Acceptance Matrix.md; CONTINUATION.md; guanpan-pro-native/Tests/NextCoreTests.swift | 验收仍在进行，未满足最终交付条件 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 持续更新矩阵、执行构建和外部验证 |
 | 114. 如果单次工作时间不足 | 🟡 Implemented / Not Verified | Master Acceptance Matrix.md; CONTINUATION.md; guanpan-pro-native/Tests/NextCoreTests.swift | 验收仍在进行，未满足最终交付条件 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 持续更新矩阵、执行构建和外部验证 |
 | 115. CONTINUATION.md必须明确记录的产品红线 | 🟡 Implemented / Not Verified | Master Acceptance Matrix.md; CONTINUATION.md; guanpan-pro-native/Tests/NextCoreTests.swift | 验收仍在进行，未满足最终交付条件 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 持续更新矩阵、执行构建和外部验证 |
-| 116. 跨市场先行信号引擎 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/domain.py; nas-advisor-compat/tests/test_research_only.py | 新增时间戳分钟点分析、外部市场分钟档案存储；不足样本不报稳定关系 | 21项NAS unittest通过；包括档案本地交易日、拒绝未来点 | 外部市场分钟采集worker与真实持仓映射未接通 | 接入经验证的跨市场历史分钟源，逐只真实持仓研究 |
-| 117. Lead-Lag窗口与证据 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 实现0/5/10/15/30/45/60/90分钟窗口、样本/相关/条件胜率/收益/不利波动/分段稳定性 | NAS单测通过未来点剔除；真实数据未验收 | 仅对传入序列计算，未由线上历史数据驱动 | 真实历史回放核对窗口对齐、假信号与统计稳健性 |
+| 116. 跨市场先行信号引擎 | 🟠 Partial | nas-advisor-compat/server/market.py; nas-advisor-compat/server/workers.py; nas-advisor-compat/server/domain.py; nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/mobile_research.py; nas-advisor-compat/server/app.py | 已接入腾讯中国指数与东财香港/日本/韩国/美国指数分钟源白名单；NAS按本地市场时段每5分钟归档上游完整分钟序列；连续3次陈旧会暂停该市场当前盘段；`/v1/research/{code}`对持仓档案计算逐市场证据 | NAS 32项测试含来源解析、新鲜度、市场时段、归档、真实档案表到持仓统计及陈旧源盘段暂停通过；无真实NAS长期档案 | 需在真实NAS持续采集后逐持仓研究并和手机实机联调 |
+| 117. Lead-Lag窗口与证据 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/mobile_research.py | 实现8个领先窗口、4个前向窗口、独立交易日聚合、相关/条件胜率/收益/不利波动/分段稳定性；单只持仓的13市场×32窗口使用416组Fisher-z与Bonferroni筛选 | 100日稳定关系夹具、单日不计独立样本、平坦100日明确报“没有稳定领先关系”测试通过 | 需真实市场样本外校验，统计筛选不是因果证明 |
 | 118. 每只持仓先行指标篮子 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; guanpan-pro-native/Sources/NextCandidatePlans.swift | 不硬编码永久规律；研究函数可按输入序列和假设评估 | 静态审计与跨市场单测通过 | 指标篮子学习与NAS报告未实现 | 按真实持仓积累结果并滚动排序 |
-| 119. A股午休快照与信息差 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 新增11:30至12:50真实点位变化计算，缺任一点返回insufficient | lunch shock有效/缺样本测试通过 | NAS未按市场日历采集并持久化多市场快照 | 接入午间采集、时区和市场状态 |
-| 120. 午后反应统计 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 研究窗口支持5/15/30/60分钟前向收益；样本不足不输出胜率 | 合成回放用例通过 | 未按真实交易日与13:00复市数据跑统计 | 对100–200个有效交易日进行可复现数据回放 |
-| 121. 条件化领先关系 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 回放接口接受显式条件规则 | 合成规则回放测试通过 | A股早盘/海外状态分组与样本外验证未实现 | 接真实行情后执行分状态回放并报告样本数 |
+| 119. A股午休快照与信息差 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/workers.py | 海外分钟源归档及11:30至12:50的真实点变化计算已具备；IOPV/成交量因源字段不可靠而留空 | 午休真实点、缺样本、未来数据隔离测试通过 | NAS部署后才能形成持续午休历史快照；补齐可靠成交量/IOPV源 |
+| 120. 午后反应统计 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 支持13:00→5/15/30/60分钟等用户配置结果窗口；结果匹配只允许目标时刻之后的点；新增时间顺序留出段与触发/对照率区间 | 冻结/后验隔离、目标时点之前报价不得代替13:00基准、100日合成回放、留出区间状态测试 | 尚未用真实100–200交易日档案验证 |
+| 121. 条件化领先关系 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/app.py | 受限JSON条件DSL可配置市场、区间、阈值和方向，冻结输入与结果指纹可复现；新增后30%时间留出评估；候选需后续复现，不把不显著当成无关系 | 跨时区用户假设、未来数据篡改隔离、低样本/无稳定关系/候选关系留出评估测试通过 | 真实档案和预注册假设的样本外结果未验证 |
 | 122. 跨市场背离检测 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 分钟序列可作为比较输入，尚未形成背离检测器 | 当前无专项测试 | 无实时跨市场与持仓同时间数据 | 加入时间对齐、持仓确认和背离测试 |
 | 123. 隔夜信息消化模型 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 研究架构可按日期回放历史序列 | 当前无专项测试 | 隔夜指数与跨境ETF开盘/上午路径未联结 | 实现开盘缺口、盘中吸收比例及验证 |
 | 124. ETF溢折价执行过滤 | 🟠 Partial | guanpan-pro-native/Sources/NextCore.swift; guanpan-pro-native/Sources/NextAIGuide.swift | 既有行情模型含可选IOPV；跨市场信号未进执行Risk Guard | 既有iOS测试待CI | 溢折价、盘口价差、信号方向未统一过滤 | 联合过滤方向信号、流动性与溢折价并测试 |
 | 125. 汇率信号上下文 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 未硬编码汇率方向判断 | 暂无实现测试 | FX分钟源及跨境ETF上下文未接通 | 接可信汇率源并验证时效和作用边界 |
 | 126. 开盘信息消化模型 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 历史回放已有时间冻结基础 | 午休回放通过；开盘研究未验证 | 隔夜信息与9:30–10:00真实路径未统计 | 增加开盘缺口类别与样本外指标 |
 | 127. 尾盘至次日观察 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 数据结构可按交易日回放 | 暂无专项测试 | 尾盘至次日行情的日历/事件连接未实现 | 实现跨日窗口及隔夜边界测试 |
-| 128. 假设—确认—执行验证 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/mobile_research.py; nas-advisor-compat/server/app.py; nas-advisor-compat/server/domain.py | replay_lunch_day冻结12:50；新增只读 `/v1/research/cross-market/replay`，从NAS分钟归档取数，之后13:00行情只用于结果评估并输出数据指纹 | 只读接口无归档时返回insufficient；未来点隔离与32场合成回放测试通过 | 当前NAS没有跨市场历史分钟采集，真实档案回放尚不能运行 | 接入经验证源，读取真实归档连续回放100–200个有效交易日 |
+| 128. 假设—确认—执行验证 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/mobile_research.py; nas-advisor-compat/server/app.py; nas-advisor-compat/server/domain.py | 只读GET/POST假设回放、12:50冻结、13:00后确认、真实来源时间戳；无档案拒绝结论；不建立账户/成交；新增时间留出、触发/对照基线和实际效果区间；不让全样本命中率冒充验证成功率 | NAS 33项测试含冻结/后验隔离、100日流程、低样本保护及三类留出结论通过 | 当前未部署NAS/无真实归档，需真实100–200日可复现报告 |
 | 129. 信号与策略选择 | 🟠 Partial | guanpan-pro-native/Sources/NextCandidatePlans.swift; nas-advisor-compat/server/cross_market.py | 既有策略扫描存在，尚未消费跨市场证据 | 未执行端到端测试 | 信号未影响做T/网格/暂停及Risk Guard | 先统计验证，再作为证据，不允许单信号直接交易 |
 | 130. 唯一DecisionContext | 🟠 Partial | guanpan-pro-native/Sources/NextCore.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift; guanpan-pro-native/Sources/NextAppModelState.swift; guanpan-pro-native/Tests/NextChainScenarioTests.swift | 增加可选跨市场证据DTO；手机AI上下文逐持仓写入证据，缺失时明确要求不推断，并限制在线AI仅引用新鲜稳定研究 | 新增Swift回归测试覆盖缺失证据与无稳定关系文案；待Actions XCTest | NAS当前未下发实际跨市场分析结果，端到端证据链仍缺 | 接入NAS真实报告和DecisionMemory，运行CI测试 |
 | 131. 每只ETF学习先行源排名 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 可对输入历史窗口计算候选统计 | 基础算法单测通过 | 真实源排名、回撤权重、发布条件未实现 | 基于真实持仓历史滚动排序并设最低样本门槛 |
 | 132. 时段画像 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 保留观测时间戳，可切片分析 | 当前无时段分组测试 | 六个交易时段及午休画像未实现 | 按交易所时区/市场日历分组并回放 |
 | 133. 20/60/120日滚动有效性 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 有全样本分段稳定性，非正式交易日滚动统计 | 分段稳定性路径可运行 | 20/60/120交易日、失效降权及状态保存未实现 | 建立真实交易日滚动引擎和关系衰减测试 |
 | 134. 防伪相关与多重比较 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 有样本量与分段稳定门槛 | 低样本不报稳定关系的测试通过 | 异常值、共同新闻冲击、多重检验校正未实现 | 增加校正、对照与样本外评估 |
-| 135. 防未来数据泄漏 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 过滤asOf后的点；回放冻结12:50决策证据 | 篡改未来点不影响假设测试通过 | 未从真实归档跑全量point-in-time回测 | 核查数据可用时间并执行真实历史回放 |
-| 136. 多市场UTC与时区统一 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 拒绝无时区数据并统一内部UTC | 基础时区/未来点用例通过 | DST、节假日、午休、停牌矩阵未覆盖 | 增跨市场夏令时、假日和停牌测试 |
-| 137. 市场日历 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 缺少观测不会被填成有效点 | 暂无节假日专项测试 | 交易所开闭市、午休、提前收盘日历未实现 | 建可维护日历并测休市信号禁用 |
-| 138. 数据源与新鲜度 | 🟠 Partial | nas-advisor-compat/server/cross_market.py | 输出来源、最新时间、age和marketStatus；过期返回stale | 陈旧数据测试通过 | 真实供应商时间戳及市场状态未接通 | 加入各市场源健康/时间错误回归 |
-| 139. AI人话解释 | 🟠 Partial | guanpan-pro-native/Sources/NextCandidatePlans.swift; guanpan-pro-native/Sources/NextAppModelState.swift | 加入跨市场验证上下文段；缺失时明确无证据，提示只引用稳定且新鲜结果 | Swift回归测试新增，待Actions XCTest | 实际跨市场样本和假设确认仍未下发 | 用真实研究报告解释样本、时效、确认/拒绝，不输出系数堆砌 |
+| 135. 防未来数据泄漏 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/domain.py | 只读取冻结时点之前的输入；验证报价限定到结果目标时刻及之后；周末回放拒绝 | 修改13:00后数据不改变冻结假设；13:00前点不能当13:00结果；未来点过滤均通过 | 真实历史档案采集可用时间与全量回放尚未核验 |
+| 136. 多市场UTC与时区统一 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/workers.py; nas-advisor-compat/server/market.py | 内部按UTC比较并保留来源时区；市场时段显式配置东京、首尔、香港、上海和纽约，含美股DST | 东京午休、香港午休、周末及美股冬夏令时测试通过 | 节假日、提前收盘和停牌日历未集成 |
+| 137. 市场日历 | 🟠 Partial | nas-advisor-compat/server/workers.py; nas-advisor-compat/server/cross_market.py | 周末和名义交易时段识别已实现；源数据须在10分钟内，节假日旧行情无法通过新鲜度门槛；不填补停牌数据 | 市场时段/周末及stale源测试通过 | 尚无官方节假日、提前收盘及临时休市日历 |
+| 138. 数据源与新鲜度 | 🟠 Partial | nas-advisor-compat/server/market.py; nas-advisor-compat/server/workers.py; nas-advisor-compat/server/domain.py | 记录来源/交易所时间戳，拒绝未来点和超过10分钟数据；连续3次陈旧源会暂停当前盘段采集，其他故障标记degraded并保留旧档案 | 腾讯/东财解析、未来/陈旧数据、三次失败后暂停和下一盘段恢复测试通过 | 用户NAS网络连通、持续源健康和真实市场日历未验证 |
+| 139. AI人话解释 | 🟠 Partial | guanpan-pro-native/Sources/NextCandidatePlans.swift; guanpan-pro-native/Sources/NextAppModelState.swift | 加入逐持仓市场、样本、数据年龄与来源；closed/stale/unknown只允许解释历史研究，禁止冒充今日海外实时方向 | Swift回归测试新增，待Actions XCTest | 实际跨市场样本和假设确认仍未下发 | 用真实研究报告解释样本、时效、确认/拒绝，不输出系数堆砌 |
 | 140. 简洁跨市场脉搏UI | 🟠 Partial | guanpan-pro-native/Sources/GuanpanAdvisorApp.swift | 未新增实验室入口 | 模拟器未验收 | 主页脉搏卡与主题适配未实现 | 仅在既有首页/指导卡展示真实信号或无信号 |
 | 141. 持仓详情外部市场影响 | 🟠 Partial | guanpan-pro-native/Sources/GuanpanAdvisorApp.swift | 暂无跨市场证据字段 | UI测试未运行 | 每持仓市场篮子、窗口、样本和时效未显示 | 接研究结果后增加详情证据卡并测小屏 |
 | 142. 用户画像影响提醒门槛 | 🟠 Partial | guanpan-pro-native/Sources/InvestorProfile.swift; nas-advisor-compat/server/cross_market.py | 既有画像参与机会排序；跨市场证据未接入 | 未做联动测试 | 弱信号与低频偏好联动未验证 | 只让统计通过的信号参与画像排序回放 |
 | 143. 跨市场判断进入决策记忆 | 🟠 Partial | guanpan-pro-native/Sources/NextDecisionMemory.swift; nas-advisor-compat/server/cross_market.py | 既有记忆保存指导证据 | 未接跨市场假设指纹/版本 | 海外状态、窗口、确认/拒绝未保存 | 扩展记忆Schema并验证迁移及复盘 |
-| 144. 信号结果复盘 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/mobile_research.py | replay_lunch_days去重逐日计数，样本不足时成功率为null；NAS只读接口按归档可复现回放 | 100个合成交易日回放、重复日去重、低样本null、无真实档案不报成功率测试通过 | 真实100–200交易日与拒绝原因未验证 | 接真实分钟档案并生成可复现回放报告 |
-| 145. 研究证据到唯一指导完整链 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/app.py; guanpan-pro-native/Sources/NextAppModelState.swift | 已有可证伪算法、只读回放API和分钟档案存储；当前明确无已验证先行关系 | NAS 21项测试通过；无真实市场端到端测试 | 多市场采集、DecisionContext、Risk Guard、决策记忆复盘未闭环 | 接真实源与手机统一指导，保持手动交易；实证不成立时显示无稳定关系 |
+| 144. 信号结果复盘 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/mobile_research.py | 逐交易日可重放、去重、保存输入指纹；完整样本命中率和留出验证率分开；末30%按时间留出并与数据完整未触发对照比较；至少100总样本、留出触发/对照各30才评估 | NAS 33项测试含低样本、无实际优势和候选增量三种留出状态 | 真实100–200交易日与预先冻结假设的后续复现尚未归档 |
+| 145. 研究证据到唯一指导完整链 | 🟠 Partial | nas-advisor-compat/server/cross_market.py; nas-advisor-compat/server/app.py; nas-advisor-compat/server/mobile_research.py; guanpan-pro-native/Sources/NextCore.swift; guanpan-pro-native/Sources/NextAppModelState.swift | `/v1/research/{code}` 已将NAS真实分钟档案统计映射到手机可解码的逐持仓跨市场证据；上下文携带市场、时效、样本与无稳定关系结论，缺数据时拒绝推断 | NAS 33项测试含归档→分析→API结构和休市陈旧采集保护；Swift/macOS构建和NAS实机链路未验证 | Risk Guard、DecisionMemory、真实长期市场数据与iOS端到端联调仍未闭环 |

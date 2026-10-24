@@ -79,6 +79,7 @@ final class NextChainScenarioTests: XCTestCase {
                                                           newsLines: [], now: now)
         XCTAssertTrue(evidenced.promptBlock.contains("暂无稳定领先关系"))
         XCTAssertTrue(evidenced.promptBlock.contains("缺失/过期/样本不足"))
+        XCTAssertTrue(evidenced.promptBlock.contains("不能描述成今天的海外实时方向信号"))
     }
 
     private func scan(_ scanBook: NextBook, quote q: NextQuote, daily: [NextChartSample],

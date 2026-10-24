@@ -15,8 +15,105 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from statistics import median, pstdev
 import cross_market
+from workers import CROSS_MARKET_SERIES, market_session_open
 
 CN = ZoneInfo("Asia/Shanghai")
+
+
+def cross_market_evidence(database, code, now=None, lookback_days=240):
+    """Compute one holding's historical lead/lag evidence from NAS minute archives."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or not isinstance(lookback_days, int) or not 60 <= lookback_days <= 400:
+        raise ValueError("timezone-aware now and a 60–400 day research window are required")
+    end = now.astimezone(CN).date()
+    start = (end - timedelta(days=lookback_days)).isoformat()
+    end_text = end.isoformat()
+    follower_rows = []
+    with database.connect() as db:
+        rows = db.execute("SELECT body FROM minute_archive WHERE code=? AND stamp>=? ORDER BY stamp",
+                          (code, start)).fetchall()
+    for row in rows:
+        try:
+            value = json.loads(row[0])
+            stamp = datetime.fromisoformat(value["timestamp"])
+            if stamp.tzinfo is not None and stamp.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+                follower_rows.append(value)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    reports, sources = [], set()
+    for market_id in CROSS_MARKET_SERIES:
+        archive = database.get_cross_market_range(market_id, start, end_text)
+        leader_rows = archive["rows"]
+        source = archive.get("source")
+        source_names = ({source} if isinstance(source, str) else
+                        {item for item in source if isinstance(item, str)} if isinstance(source, list) else set())
+        market_open = market_session_open(market_id, now)
+        report = cross_market.analyze_pair(leader_rows, follower_rows, as_of=now,
+            source=", ".join(sorted(source_names)) or "未验证来源",
+            market_status="open" if market_open else "closed", max_age_seconds=600,
+            multiple_comparison_count=len(CROSS_MARKET_SERIES) * len(cross_market.LAG_MINUTES) * 4)
+        reports.append({"market": market_id, "currentMarketStatus": "open" if market_open else "closed",
+                        **report})
+    def newest_timestamp(rows):
+        stamps = [row["leaderLatestAt"] for row in rows if row.get("leaderLatestAt")]
+        return max(stamps, key=lambda value: datetime.fromisoformat(value).astimezone(timezone.utc)) if stamps else None
+
+    stable = [row for row in reports if row["state"] == "stable_candidate"]
+    sufficiently_tested = [window for row in reports for window in row.get("windows", [])
+                           if window.get("sampleCount", 0) >= cross_market.MIN_SAMPLES]
+    lead_sources = []
+    for row in reports:
+        candidates = [window for window in row.get("windows", [])
+                      if window.get("sampleCount", 0) >= cross_market.MIN_SAMPLES]
+        metrics = [window for window in candidates if window.get("correlation") is not None]
+        best_for_market = min(metrics, key=lambda window: window.get("bonferroniAdjustedPValue", 1.0)) if metrics else None
+        lead_sources.append({"market": row["market"], "state": row["state"],
+            "currentMarketStatus": row["currentMarketStatus"], "source": row["source"],
+            "latestAt": row["leaderLatestAt"], "ageSeconds": row["leaderAgeSeconds"],
+            "sampleCount": max((window["sampleCount"] for window in row.get("windows", [])), default=0),
+            "bestLagMinutes": best_for_market["lagMinutes"] if best_for_market else None,
+            "bestHorizonMinutes": best_for_market["horizonMinutes"] if best_for_market else None,
+            "correlation": best_for_market["correlation"] if best_for_market else None,
+            "adjustedPValue": best_for_market["bonferroniAdjustedPValue"] if best_for_market else None,
+            "conditionalWinRate": best_for_market["conditionalWinRate"] if best_for_market else None})
+    best = min(stable, key=lambda row: min(
+        (window["bonferroniAdjustedPValue"] for window in row["windows"]
+         if window["state"] == "stable_candidate" and window["bonferroniAdjustedPValue"] is not None),
+        default=1.0)) if stable else None
+    if best:
+        candidates = [window for window in best["windows"] if window["state"] == "stable_candidate"]
+        best_window = min(candidates, key=lambda window: window["bonferroniAdjustedPValue"])
+        state, reason = "stable_candidate", None
+        best_lag = best_window["lagMinutes"]
+        win_rate = best_window["conditionalWinRate"]
+        source = best["source"]
+        sample_count = best_window["sampleCount"]
+        best_market = best["market"]
+        latest_at = best["leaderLatestAt"]
+        current_status = best["currentMarketStatus"]
+        age_seconds = best["leaderAgeSeconds"]
+    elif sufficiently_tested:
+        state, reason = "no_stable_relationship", "历史样本未通过分段稳定性与多重比较校正；没有稳定领先关系"
+        best_lag, win_rate, source, sample_count, best_market = None, None, None, max(
+            row["sampleCount"] for row in reports), None
+        sample_count = max(window["sampleCount"] for window in sufficiently_tested)
+        latest_at = newest_timestamp(reports)
+        source = ", ".join(sorted({row["source"] for row in reports if row["source"] != "未验证来源"})) or None
+        most_supported = max(reports, key=lambda row: max(
+            (window["sampleCount"] for window in row.get("windows", [])), default=0))
+        current_status, age_seconds = most_supported["currentMarketStatus"], most_supported["leaderAgeSeconds"]
+    else:
+        state, reason = "insufficient_real_archive", "跨市场或持仓分钟档案不足100个独立交易日，无法判断领先关系"
+        best_lag, win_rate, source, sample_count, best_market = None, None, None, 0, None
+        latest_at = newest_timestamp(reports)
+        source = ", ".join(sorted({row["source"] for row in reports if row["source"] != "未验证来源"})) or None
+        current_status, age_seconds = "unknown", None
+    return {"state": state, "reason": reason, "source": source, "asOf": latest_at,
+            "sampleCount": sample_count,
+            "bestLagMinutes": best_lag, "conditionalWinRate": win_rate,
+            "bestMarket": best_market, "currentMarketStatus": current_status,
+            "ageSeconds": age_seconds, "researchWindow": {"start": start, "end": end_text},
+            "leadSources": lead_sources}
 
 
 def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samples=30):
@@ -39,6 +136,34 @@ def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samp
         sessions.append({"day": day, "leader": lead["rows"], "asset": held["rows"]})
     report = cross_market.replay_lunch_days(sessions, source=", ".join(sorted(sources)) or "未验证来源",
                                             rule=rule, minimum_samples=minimum_samples)
+    report.update({"leader": leader, "asset": asset, "range": {"start": start, "end": end},
+                   "archivedLeaderSessions": len(session_days), "replayedSessions": len(sessions),
+                   "missingAssetSessions": missing_asset,
+                   "evidenceState": "available" if sessions else "insufficient_real_archive",
+                   "warning": None if sessions else "NAS没有可用于回放的跨市场与持仓分钟档案；没有生成预测结论"})
+    return report
+
+
+def replay_hypothesis_archive(database, leader, asset, start, end, hypothesis, minimum_samples=100):
+    """Run a bounded, read-only user hypothesis against NAS minute archives."""
+    if not isinstance(leader, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,80}", leader) is None:
+        raise ValueError("invalid leader id")
+    if not isinstance(asset, str) or len(asset) != 6 or not asset.isdigit():
+        raise ValueError("invalid asset code")
+    session_days = database.cross_market_days(leader, start, end)
+    sessions, missing_asset = [], 0
+    sources = set()
+    for day in session_days:
+        lead = database.get_cross_market_minute(leader, day)
+        held = database.get_minute(asset, day)
+        if not lead["rows"] or not held["rows"]:
+            missing_asset += 1
+            continue
+        if isinstance(lead["source"], str): sources.add(lead["source"])
+        sessions.append({"day": day, "leader": lead["rows"], "asset": held["rows"]})
+    report = cross_market.replay_hypothesis_days(
+        sessions, source=", ".join(sorted(sources)) or "未验证来源",
+        hypothesis=hypothesis, minimum_samples=minimum_samples)
     report.update({"leader": leader, "asset": asset, "range": {"start": start, "end": end},
                    "archivedLeaderSessions": len(session_days), "replayedSessions": len(sessions),
                    "missingAssetSessions": missing_asset,

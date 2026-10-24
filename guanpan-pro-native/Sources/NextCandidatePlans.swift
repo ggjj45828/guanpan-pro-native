@@ -550,6 +550,7 @@ enum NextDecisionContextBuilder {
         5. 投资画像只决定「推荐优先级」和「表达方式」，绝不能修改行情事实、不能降低数据质量与风险门槛、不能为了迎合偏好制造交易机会；当机会低于画像门槛时，如实说「有机会但低于你的执行门槛，因此不主动推荐」；
         6. 不要输出画像里的原始成交明细，只引用上面的结论。
         7. 跨市场关系只有在NAS证据明确标为稳定、样本充足且数据新鲜时才可作为指导依据；缺失/过期/样本不足必须说「暂无可靠证据/没有稳定领先关系」，不得编造市场关系或概率。
+        8. 跨市场市场状态为 closed、stale 或 unknown 时，只能将其解释为历史关系研究，不能描述成今天的海外实时方向信号；开放市场的最新点超过数据新鲜度门槛也必须忽略。
         """
         return NextDecisionContext(generatedAt: now, guidance: guidance, holdingsLines: holdings,
                                    nasResearchLines: nasResearchLines, crossMarketLines: crossMarketLines,
