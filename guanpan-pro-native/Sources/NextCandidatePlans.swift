@@ -227,7 +227,8 @@ enum NextOpportunityScanner {
             }
             var confidence = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: bars.count,
                                                        minuteSampleCount: minutes.filter { $0.close > 0 }.count,
-                                                       intradayLatestAt: minutes.filter { $0.close > 0 }.map(\.timestamp).max())
+                                                       intradayLatestAt: minutes.filter { $0.close > 0 }.map(\.timestamp).max(),
+                                                       dailyLatestAt: bars.map(\.timestamp).max())
             if let stats = nasStats, stats.freshness.stale {
                 confidence = confidence.downgraded("NAS 长期分时已过期：\(stats.freshness.reason ?? "最后一天 \(stats.lastDay ?? "未知")")")
             }

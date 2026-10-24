@@ -25,7 +25,7 @@
 | 17. 做T计划必须输出 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |
 | 18. 做T收益计算 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |
 | 19. 做T风险 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |
-| 20. 网格引擎 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |
+| 20. 网格引擎 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 网格沿用动态区间与档数算法；指导时刷新日K，要求最新日K不超15天（容纳长假），缺日期/异常未来/过期则拒绝出价 | NAS 11/11通过；新增Swift边界测试未运行 | 策略已增加数据新鲜度门槛，iOS未编译、真实NAS数据未回放 | macOS测试通过并用真实NAS分钟档案验证 |
 | 21. 网格输出 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |
 | 22. 网格自动暂停 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |
 | 23. 回本路径分析 | 🟠 Partial | guanpan-pro-native/Sources/NextAIGuide.swift; guanpan-pro-native/Sources/NextCandidatePlans.swift | 分类、做T、网格、回本和机会扫描代码存在；iOS测试未运行 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 用真实NAS分钟档案跑价格和份额回放 |

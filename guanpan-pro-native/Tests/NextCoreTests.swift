@@ -516,18 +516,31 @@ final class NextCoreTests: XCTestCase {
         let quote = NextQuote(code: "159941", name: "纳指ETF", price: 1.2, previousClose: 1.2,
                               time: now, source: "test")
         let prior = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
-                                              minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-86_400))
+                                              minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-86_400),
+                                              dailyLatestAt: now)
         XCTAssertEqual(prior.level, .blocked)
         XCTAssertTrue(prior.missing.contains { $0.contains("上个交易日缓存") })
 
         let stale = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
-                                              minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-301))
+                                              minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-301),
+                                              dailyLatestAt: now)
         XCTAssertEqual(stale.level, .blocked)
         XCTAssertTrue(stale.missing.contains { $0.contains("超过5分钟") })
 
         let current = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
-                                                minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-60))
+                                                minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-60),
+                                                dailyLatestAt: now)
         XCTAssertFalse(current.missing.contains { $0.contains("分时样本") })
+
+        let staleDaily = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
+                                                  minuteSampleCount: 0, intradayRequired: false,
+                                                  dailyLatestAt: now.addingTimeInterval(-16 * 86_400))
+        XCTAssertEqual(staleDaily.level, .blocked)
+        XCTAssertTrue(staleDaily.missing.contains { $0.contains("日K最新记录超过15天") })
+        let longHoliday = NextDataConfidence.assess(quote: quote, now: now, dailyBarCount: 120,
+                                                   minuteSampleCount: 0, intradayRequired: false,
+                                                   dailyLatestAt: now.addingTimeInterval(-10 * 86_400))
+        XCTAssertFalse(longHoliday.missing.contains { $0.contains("日K最新记录超过15天") })
     }
 
     func testMACDSeriesWarmsUpBeforeReturningValues() {
