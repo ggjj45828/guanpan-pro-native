@@ -8,9 +8,7 @@ extension PortfolioStore {
     }
 
     private static func gridTradeFee(code: String, side: String, amount: Double) -> Double {
-        if isGridETF(code) { return 0.10 }
-        let commission = max(5, amount * 0.000086)
-        return commission + (side == "sell" ? amount * 0.0005 : 0)
+        SimulationCostPolicy.fee(isETF: isGridETF(code), side: side, amount: amount)
     }
 
     var gridTradingDays: [String] {
@@ -32,10 +30,10 @@ extension PortfolioStore {
             data.dayGridPlans[index].anchor = anchor
             data.dayGridPlans[index].stepPercent = stepPercent / 100
             data.dayGridPlans[index].levelsEachSide = levels
-            data.dayGridPlans[index].feePerOrder = feePerOrder
+            data.dayGridPlans[index].feePerOrder = Self.isGridETF(code) ? 0.10 : feePerOrder
         } else {
             data.dayGridPlans.append(DayGridPlan(code: code, name: name, capital: capital, anchor: anchor,
-                stepPercent: stepPercent / 100, levelsEachSide: levels, feePerOrder: feePerOrder, enabled: true))
+                stepPercent: stepPercent / 100, levelsEachSide: levels, feePerOrder: Self.isGridETF(code) ? 0.10 : feePerOrder, enabled: true))
         }
         save(label: "修改网格计划")
     }
@@ -104,10 +102,10 @@ extension PortfolioStore {
             return nil
         }
 
-        let feeFloor = 2 * feePerOrder / (anchor * 100) + 0.001 // fees plus a modest friction buffer
+        let feeFloor = 2 * (Self.isGridETF(code) ? 0.10 : feePerOrder) / (anchor * 100) + 2 * SimulationCostPolicy.extraSlippageTicks * (Self.isGridETF(code) ? 0.001 : 0.01) / anchor
         let stepFraction = max(0.0005, min(0.01, max(medianRange * 0.25, feeFloor)))
         guard stepFraction <= medianRange * 0.8 else { return nil }
-        let lotCost = anchor * 100 + feePerOrder
+        let lotCost = anchor * 100 + (Self.isGridETF(code) ? 0.10 : feePerOrder)
         guard lotCost.isFinite, lotCost > 0 else { return nil }
         let rawMaximumLevels = floor((capital / lotCost - 2) / 2)
         guard rawMaximumLevels.isFinite else { return nil }
@@ -166,7 +164,7 @@ extension PortfolioStore {
         let anchor = reliableDays.last?.last?.price ?? bars.last?.close ?? fallbackAnchor
         if let anchor, anchor.isFinite, anchor > 0,
            capital.isFinite, capital > 0, feePerOrder.isFinite, feePerOrder >= 0 {
-            let lotCost = anchor * 100 + feePerOrder
+            let lotCost = anchor * 100 + (Self.isGridETF(code) ? 0.10 : feePerOrder)
             let minimumCapital = lotCost * 4
             if capital < minimumCapital {
                 blockers.append("计划资金不足：按中枢价约 \(anchor.num(3)) 元估算，支撑 1 档网格至少需要约 \(minimumCapital.cny())"
@@ -330,12 +328,12 @@ extension PortfolioStore {
             let current = bar.price
             for level in 1...levels {
                 let buyLevel = plan.anchor * pow(1 - plan.stepPercent, Double(level))
-                if previous > buyLevel && current <= buyLevel && cash >= sharesPerRung * current + plan.feePerOrder {
-                    cash -= sharesPerRung * current + plan.feePerOrder; shares += sharesPerRung; fees += plan.feePerOrder; buys += 1
+                if previous > buyLevel && current <= buyLevel && cash >= sharesPerRung * current + Self.gridTradeFee(code: plan.code, side: "buy", amount: sharesPerRung * current) {
+                    cash -= sharesPerRung * current + Self.gridTradeFee(code: plan.code, side: "buy", amount: sharesPerRung * current); shares += sharesPerRung; fees += Self.gridTradeFee(code: plan.code, side: "buy", amount: sharesPerRung * current); buys += 1
                 }
                 let sellLevel = plan.anchor * pow(1 + plan.stepPercent, Double(level))
                 if previous < sellLevel && current >= sellLevel && shares >= sharesPerRung {
-                    cash += sharesPerRung * current - plan.feePerOrder; shares -= sharesPerRung; fees += plan.feePerOrder; sells += 1
+                    cash += sharesPerRung * current - Self.gridTradeFee(code: plan.code, side: "sell", amount: sharesPerRung * current); shares -= sharesPerRung; fees += Self.gridTradeFee(code: plan.code, side: "sell", amount: sharesPerRung * current); sells += 1
                 }
             }
             previous = current
@@ -391,12 +389,12 @@ extension PortfolioStore {
             if seenAnchors.insert(value).inserted { anchors.append(value) }
         }
 
-        // 步长的第二条下界：一格涨跌必须能覆盖「买+卖两次费用 + 两次一跳滑点」，
+        // 步长的第二条下界：一格涨跌必须能覆盖「买+卖两次费用 + 配置的两次额外滑点」，
         // 否则来回一趟净亏，格距再密也是白忙。1.15 是留出的安全边际。
         let sampleQuantity = max(100, quantity)
         let roundTripCost = (Self.gridTradeFee(code: code, side: "buy", amount: first * sampleQuantity)
             + Self.gridTradeFee(code: code, side: "sell", amount: first * sampleQuantity)
-            + 2 * tick * sampleQuantity) / sampleQuantity
+            + 2 * SimulationCostPolicy.extraSlippageTicks * tick * sampleQuantity) / sampleQuantity
         let minGridStep = max(minStep, roundTripCost * 1.15)
         let stepMultipliers: [Double] = [1, 1.25, 1.5, 2, 2.5, 3, 4]
         let steps = stepMultipliers.map { multiplier in
@@ -422,10 +420,10 @@ extension PortfolioStore {
 
                 for price in prices {
                     if price <= anchor - step - tick / 2, anchor - step >= dayLow - tick / 2 {
-                        // 向下穿越一档且该档没跌出当天低点 → 买一手（含费用 + 一跳不利滑点）。
+                        // 向下穿越一档且该档没跌出当天低点 → 买一手（含费用 + 配置的额外滑点）。
                         let target = gridRound(anchor - step, decimals: decimals)
                         let fee = Self.gridTradeFee(code: code, side: "buy", amount: target * quantity)
-                        let slippage = tick * quantity
+                        let slippage = SimulationCostPolicy.extraSlippageTicks * tick * quantity
                         if cash >= target * quantity + fee + slippage {
                             cost = (shares * cost + target * quantity + fee + slippage) / (shares + quantity)
                             shares += quantity
@@ -442,7 +440,7 @@ extension PortfolioStore {
                         // 向上穿越一档且没涨出当天高点、且有可卖份额 → 卖一手。
                         let target = gridRound(anchor + step, decimals: decimals)
                         let fee = Self.gridTradeFee(code: code, side: "sell", amount: target * quantity)
-                        let slippage = tick * quantity
+                        let slippage = SimulationCostPolicy.extraSlippageTicks * tick * quantity
                         shares -= quantity
                         eligible -= quantity
                         cash += target * quantity - fee - slippage
@@ -513,8 +511,8 @@ extension PortfolioStore {
             points: prices.count,
             best: winner,
             candidates: candidates.sorted { $0.alpha > $1.alpha },
-            note: "ETF 佣金按每笔 0.10 元估算；个股按 max(5, 金额×0.0086%) + 卖出印花税 0.05%。"
-                + "总交易成本另含每次一跳不利滑点（滑点不是券商佣金）。"
+            note: "ETF 每笔成交 0.10 元；股票暂按最低佣金估算，费率和税费待确认。"
+                + "额外滑点默认 0，按统一模拟费用设置；历史触价回放不是盘口实盘成交。"
         )
         return .success(report)
     }
@@ -683,8 +681,8 @@ extension PortfolioStore {
             candidates: candidates.sorted(by: rangeCandidateOrder),
             details: detailsByPercent[winner.stepPercent] ?? [],
             note: "每天按当日首价重新铺一次网格（长期网格的真实做法），格距按下单当日价格换算成绝对价。"
-                + "ETF 佣金按每笔 0.10 元估算；个股按 max(5, 金额×0.0086%) + 卖出印花税 0.05%。"
-                + "费用含每次一跳不利滑点。格距有一道硬下界：一格涨跌必须覆盖买卖两笔费用加两次滑点，"
+                + "ETF 每笔成交 0.10 元；股票暂按最低佣金估算，费率和税费待确认。"
+                + "费用按统一模拟设置，额外滑点默认 0。格距下界覆盖买卖两笔费用及配置滑点，"
                 + "所以低价品种实际格距可能比所选百分比更宽。"
         )
         return .success(report)
@@ -744,7 +742,7 @@ extension PortfolioStore {
         let sampleQuantity = max(100, setup.quantity)
         let roundTripCost = (Self.gridTradeFee(code: code, side: "buy", amount: setup.first * sampleQuantity)
             + Self.gridTradeFee(code: code, side: "sell", amount: setup.first * sampleQuantity)
-            + 2 * tick * sampleQuantity) / sampleQuantity
+            + 2 * SimulationCostPolicy.extraSlippageTicks * tick * sampleQuantity) / sampleQuantity
         let floorStep = roundTripCost * 1.15
         let chosen = max(raw, floorStep)
         return max(tick, (chosen / tick).rounded(.up) * tick)
@@ -771,7 +769,7 @@ extension PortfolioStore {
             if price <= anchor - step - tick / 2, anchor - step >= setup.low - tick / 2 {
                 let target = gridRound(anchor - step, decimals: decimals)
                 let fee = Self.gridTradeFee(code: code, side: "buy", amount: target * quantity)
-                let slippage = tick * quantity
+                let slippage = SimulationCostPolicy.extraSlippageTicks * tick * quantity
                 if cash >= target * quantity + fee + slippage {
                     cost = (shares * cost + target * quantity + fee + slippage) / (shares + quantity)
                     shares += quantity
@@ -788,7 +786,7 @@ extension PortfolioStore {
                       eligible >= quantity {
                 let target = gridRound(anchor + step, decimals: decimals)
                 let fee = Self.gridTradeFee(code: code, side: "sell", amount: target * quantity)
-                let slippage = tick * quantity
+                let slippage = SimulationCostPolicy.extraSlippageTicks * tick * quantity
                 shares -= quantity
                 eligible -= quantity
                 cash += target * quantity - fee - slippage

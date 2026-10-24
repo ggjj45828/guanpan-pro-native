@@ -1,0 +1,28 @@
+{
+  "timestampUTC": "2026-10-23T09:22:03.535834+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.14",
+  "node": "v24.22.1",
+  "results": [
+    {
+      "name": "simulation-core",
+      "exitCode": 0,
+      "log": "simulation-core.log"
+    },
+    {
+      "name": "nas-channels",
+      "exitCode": 1,
+      "log": "nas-channels.log"
+    },
+    {
+      "name": "synthetic-demo",
+      "exitCode": 0,
+      "log": "synthetic-demo.json"
+    }
+  ],
+  "iOSBuild": "NOT_RUN: Xcode and Swift unavailable in current Windows environment",
+  "originalSwiftPrototypeTests": "NOT_RUN: Swift unavailable",
+  "dockerBuild": "NOT_RUN: engine not running",
+  "liveMarketAndDeployedNAS": "NOT_RUN",
+  "realDataUsed": false
+}

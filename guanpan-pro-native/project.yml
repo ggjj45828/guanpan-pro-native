@@ -13,6 +13,16 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+        excludes:
+          - Lab/LabCore.js
+          - Lab/LabResearch.js
+          - Lab/AssetChannel.js
+      - path: Sources/Lab/LabCore.js
+        buildPhase: resources
+      - path: Sources/Lab/LabResearch.js
+        buildPhase: resources
+      - path: Sources/Lab/AssetChannel.js
+        buildPhase: resources
     # 说明：XcodeGen 的 info 块语义是「按 properties 生成 plist 文件」。
     # 必须同时给出 path（否则报 Decoding failed at "path": Nothing found），
     # 也必须给出 properties（否则生成空白 plist，导致 UILaunchScreen / ATS /
@@ -24,7 +34,7 @@ targets:
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
         CFBundleShortVersionString: "2.13.55"
-        CFBundleVersion: "59"
+        CFBundleVersion: "60"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。
@@ -54,8 +64,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native
+        PRODUCT_MODULE_NAME: GuanpanProNative
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        PRODUCT_NAME: 观盘 Pro
+        # Keep bundle and executable filenames ASCII for Windows re-signing
+        # tools. CFBundleDisplayName above remains the user-facing Chinese name.
+        PRODUCT_NAME: GuanpanPro
         GENERATE_INFOPLIST_FILE: "NO"
         # 1 = iPhone，2 = iPad。改成 "1,2" 后 App 才能在 iPad 上以全屏（而非放大 2 倍的兼容模式）运行，
         # 配合 ContentView 里 horizontalSizeClass == .regular 的分栏分支才真正有意义。
@@ -63,3 +76,51 @@ targets:
         SUPPORTS_MACCATALYST: "NO"
     scheme:
       gatherCoverageData: false
+  GuanpanProNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: GuanpanProNative
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.validation
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/GuanpanPro.app/GuanpanPro"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  GuanpanProExperienceTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: GuanpanProNative
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.experience
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: GuanpanProNative
+schemes:
+  GuanpanProValidation:
+    build:
+      targets:
+        GuanpanProNative: all
+        GuanpanProNativeTests: [test]
+        GuanpanProExperienceTests: [test]
+    test:
+      config: Debug
+      targets:
+        - GuanpanProNativeTests
+        - GuanpanProExperienceTests
+      environmentVariables:
+        GUANPAN_TESTING: "1"
+  GuanpanProExperience:
+    build:
+      targets:
+        GuanpanProNative: all
+        GuanpanProExperienceTests: [test]
+    test:
+      config: Debug
+      targets:
+        - GuanpanProExperienceTests
