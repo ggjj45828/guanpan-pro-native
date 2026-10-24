@@ -639,9 +639,13 @@ class NextDatabase:
         try: date.fromisoformat(day)
         except ValueError: raise InvalidData("invalid minute query")
         with self.connect() as db:
-            rows = db.execute("SELECT body FROM minute_archive WHERE code=? AND stamp LIKE ? ORDER BY stamp",
+            rows = db.execute("SELECT body, fetched_at FROM minute_archive WHERE code=? AND stamp LIKE ? ORDER BY stamp",
                               (code, day + "%")).fetchall()
-        return {"code": code, "day": day, "source": "Tencent minute query", "rows": [json.loads(row[0]) for row in rows]}
+        fetched = sorted({row[1] for row in rows})
+        return {"code": code, "day": day, "source": "minute archive (provider recorded at collection)",
+                "fetchedAt": fetched[-1] if fetched else None,
+                "fetchedAtRange": {"first": fetched[0], "last": fetched[-1]} if fetched else None,
+                "rows": [json.loads(row[0]) for row in rows]}
 
     def put_cross_market_minute(self, market, rows, source, fetched_at):
         """Persist provider-observed external minute points for research/replay only."""
@@ -691,10 +695,13 @@ class NextDatabase:
         try: date.fromisoformat(day)
         except (ValueError, TypeError): raise InvalidData("invalid cross-market date")
         with self.connect() as db:
-            rows = db.execute("SELECT body, source FROM cross_market_minute WHERE market=? "
+            rows = db.execute("SELECT body, source, fetched_at FROM cross_market_minute WHERE market=? "
                               "AND stamp LIKE ? ORDER BY stamp", (market, day + "%")).fetchall()
         sources = sorted({row[1] for row in rows})
+        fetched = sorted({row[2] for row in rows})
         return {"market": market, "day": day, "source": sources[0] if len(sources) == 1 else sources,
+                "fetchedAt": fetched[-1] if fetched else None,
+                "fetchedAtRange": {"first": fetched[0], "last": fetched[-1]} if fetched else None,
                 "rows": [json.loads(row[0]) for row in rows]}
 
     def get_cross_market_range(self, market, start, end):

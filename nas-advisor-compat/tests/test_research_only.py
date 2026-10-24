@@ -187,6 +187,54 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(responses[0][1]["evidenceState"], "insufficient_real_archive")
         self.assertIsNone(responses[0][1]["confirmationRate"])
 
+    def test_replay_api_persists_exact_research_evidence_without_touching_real_book(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        fetched = "2026-10-23T07:00:00+00:00"
+        database.put_cross_market_minute("KR_KOSPI", [
+            {"timestamp": "2026-10-23T11:30:00+09:00", "price": "100", "volume": "1000"},
+            {"timestamp": "2026-10-23T12:50:00+09:00", "price": "101", "volume": "1200"}],
+            "verified fixture", fetched)
+        database.put_minute("512480", [
+            {"timestamp": "2026-10-23T13:00:00+08:00", "price": "1", "volume": "1000", "iopv": None}], fetched)
+        book_before = database.get_real("main")
+        handler = object.__new__(app.make_handler(database))
+        handler.path = ("/v1/research/cross-market/replay?leader=KR_KOSPI&asset=512480&"
+                        "start=2026-10-23&end=2026-10-23&minimumSamples=1")
+        responses = []
+        handler.reply = lambda status, body: responses.append((status, body))
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 200)
+        summary = responses[0][1]
+        self.assertEqual(summary["evidenceSessionCount"], 1)
+        self.assertEqual(len(summary["inputFingerprint"]), 64)
+        record = database.get_research(summary["replayId"])
+        self.assertEqual(record["kind"], "cross_market_point_in_time_replay")
+        self.assertEqual(record["snapshotEncoding"], "gzip+base64")
+        self.assertNotIn("evidenceSessions", record)
+        self.assertEqual(database.get_real("main"), book_before)
+
+        handler.path = "/v1/research/cross-market/runs/" + summary["replayId"]
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["inputFingerprint"], summary["inputFingerprint"])
+        evidence = responses[0][1]["evidenceSessions"][0]
+        self.assertEqual(evidence["leader"]["source"], "verified fixture")
+        self.assertEqual(evidence["leader"]["fetchedAtRange"]["last"], fetched)
+        self.assertEqual(evidence["asset"]["rows"][0]["price"], "1")
+
+        encoded = record["evidenceSnapshot"]
+        record["evidenceSnapshot"] = ("B" if encoded[0] == "A" else "A") + encoded[1:]
+        database.put_research(summary["replayId"], record)
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 400)
+        self.assertIn("snapshot", responses[0][1]["error"])
+
     def test_user_hypothesis_post_is_readonly_and_fails_closed_without_archive(self):
         import shutil
         root = tempfile.mkdtemp(dir=Path(__file__).parent)

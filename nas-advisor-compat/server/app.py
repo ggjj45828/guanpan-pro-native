@@ -91,12 +91,23 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                         raise ValueError("invalid replay limits")
                     rule = {"leaderShockAtLeast": shock, "assetMorningAtMost": morning,
                             "expectedDirection": direction}
-                    return self.reply(200, mobile_research.replay_lunch_archive(
-                        database, leader, asset, start, end, rule, minimum))
+                    report = mobile_research.replay_lunch_archive(
+                        database, leader, asset, start, end, rule, minimum)
+                    return self.reply(200, mobile_research.persist_replay(
+                        database, report, {"type": "lunch_replay", **rule, "minimumSamples": minimum}))
                 except (ValueError, InvalidData) as error:
                     return self.reply(400, {"error": str(error)})
                 except Exception:
                     return self.reply(503, {"error": "历史跨市场档案暂不可用；没有生成预测结论"})
+            if path.startswith("/v1/research/cross-market/runs/"):
+                run_id = path.rsplit("/", 1)[-1]
+                try:
+                    result = mobile_research.restore_replay(database, run_id)
+                    if not result:
+                        return self.reply(404, {"error": "replay record not found"})
+                    return self.reply(200, result)
+                except (InvalidData, ValueError) as error:
+                    return self.reply(400, {"error": str(error)})
             if path in ("/", "/index.html"):
                 return self.reply(200, {"service": "guanpan-advisor", "role": "NAS 后台研究与数据服务",
                                         "client": "请使用观盘 iOS App 查看真实持仓与唯一 AI 指导",
@@ -262,7 +273,9 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     result = mobile_research.replay_hypothesis_archive(
                         database, value.get("leader"), value.get("asset"),
                         value.get("start"), value.get("end"), hypothesis, minimum)
-                    return self.reply(200, result)
+                    return self.reply(200, mobile_research.persist_replay(database, result,
+                        {"type": "user_hypothesis", "definition": hypothesis,
+                         "minimumSamples": minimum}))
                 if path == "/api/data":
                     if value.get("mode") != "legacy-stage-confirmed":
                         raise InvalidData("legacy staging requires explicit migration action")

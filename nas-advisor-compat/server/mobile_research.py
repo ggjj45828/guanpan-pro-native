@@ -9,6 +9,11 @@ from __future__ import annotations
 import json
 import math
 import re
+import base64
+import gzip
+import hashlib
+import uuid
+import zlib
 from collections import defaultdict
 from datetime import datetime, time, timezone, timedelta
 from decimal import Decimal, InvalidOperation
@@ -125,6 +130,7 @@ def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samp
     session_days = database.cross_market_days(leader, start, end)
     sessions, missing_asset = [], 0
     sources = set()
+    evidence_sessions = []
     for day in session_days:
         lead = database.get_cross_market_minute(leader, day)
         held = database.get_minute(asset, day)
@@ -134,6 +140,9 @@ def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samp
         if isinstance(lead["source"], str):
             sources.add(lead["source"])
         sessions.append({"day": day, "leader": lead["rows"], "asset": held["rows"]})
+        evidence_sessions.append({"day": day,
+            "leader": {"source": lead["source"], "fetchedAtRange": lead.get("fetchedAtRange"), "rows": lead["rows"]},
+            "asset": {"source": held["source"], "fetchedAtRange": held.get("fetchedAtRange"), "rows": held["rows"]}})
     report = cross_market.replay_lunch_days(sessions, source=", ".join(sorted(sources)) or "未验证来源",
                                             rule=rule, minimum_samples=minimum_samples)
     report.update({"leader": leader, "asset": asset, "range": {"start": start, "end": end},
@@ -141,6 +150,7 @@ def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samp
                    "missingAssetSessions": missing_asset,
                    "evidenceState": "available" if sessions else "insufficient_real_archive",
                    "warning": None if sessions else "NAS没有可用于回放的跨市场与持仓分钟档案；没有生成预测结论"})
+    report["evidenceSessions"] = evidence_sessions
     return report
 
 
@@ -153,6 +163,7 @@ def replay_hypothesis_archive(database, leader, asset, start, end, hypothesis, m
     session_days = database.cross_market_days(leader, start, end)
     sessions, missing_asset = [], 0
     sources = set()
+    evidence_sessions = []
     for day in session_days:
         lead = database.get_cross_market_minute(leader, day)
         held = database.get_minute(asset, day)
@@ -161,6 +172,9 @@ def replay_hypothesis_archive(database, leader, asset, start, end, hypothesis, m
             continue
         if isinstance(lead["source"], str): sources.add(lead["source"])
         sessions.append({"day": day, "leader": lead["rows"], "asset": held["rows"]})
+        evidence_sessions.append({"day": day,
+            "leader": {"source": lead["source"], "fetchedAtRange": lead.get("fetchedAtRange"), "rows": lead["rows"]},
+            "asset": {"source": held["source"], "fetchedAtRange": held.get("fetchedAtRange"), "rows": held["rows"]}})
     report = cross_market.replay_hypothesis_days(
         sessions, source=", ".join(sorted(sources)) or "未验证来源",
         hypothesis=hypothesis, minimum_samples=minimum_samples)
@@ -169,7 +183,57 @@ def replay_hypothesis_archive(database, leader, asset, start, end, hypothesis, m
                    "missingAssetSessions": missing_asset,
                    "evidenceState": "available" if sessions else "insufficient_real_archive",
                    "warning": None if sessions else "NAS没有可用于回放的跨市场与持仓分钟档案；没有生成预测结论"})
+    report["evidenceSessions"] = evidence_sessions
     return report
+
+
+def persist_replay(database, report, hypothesis):
+    """Keep an immutable, research-only point-in-time replay snapshot.
+
+    This table is separate from real_books and never represents orders, fills,
+    cash, positions, or simulated account state.
+    """
+    sessions = report.pop("evidenceSessions", [])
+    evidence = {"leader": report.get("leader"), "asset": report.get("asset"),
+                "range": report.get("range"), "hypothesis": hypothesis,
+                "sessions": sessions}
+    canonical = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    run_id = "replay-" + uuid.uuid4().hex
+    generated_at = datetime.now(timezone.utc).isoformat()
+    report.update({"replayId": run_id, "generatedAt": generated_at,
+                   "inputFingerprint": fingerprint,
+                   "evidenceSessionCount": len(sessions)})
+    database.put_research(run_id, {"kind": "cross_market_point_in_time_replay",
+        "generatedAt": generated_at, "inputFingerprint": fingerprint,
+        "request": {"leader": report.get("leader"), "asset": report.get("asset"),
+                    "range": report.get("range"), "hypothesis": hypothesis},
+        "report": report, "snapshotEncoding": "gzip+base64",
+        "evidenceSnapshot": base64.b64encode(gzip.compress(canonical.encode("utf-8"), mtime=0)).decode("ascii")})
+    return report
+
+
+def restore_replay(database, run_id):
+    """Retrieve and integrity-check a previously saved replay evidence bundle."""
+    record = database.get_research(run_id)
+    if not record or record.get("kind") != "cross_market_point_in_time_replay":
+        return None
+    if record.get("snapshotEncoding") != "gzip+base64":
+        raise ValueError("unsupported replay evidence encoding")
+    try:
+        raw = gzip.decompress(base64.b64decode(record["evidenceSnapshot"], validate=True))
+        evidence = json.loads(raw)
+    except (KeyError, ValueError, OSError, EOFError, json.JSONDecodeError, zlib.error) as error:
+        raise ValueError("replay evidence snapshot is unreadable") from error
+    if not isinstance(evidence, dict) or not isinstance(evidence.get("sessions"), list):
+        raise ValueError("replay evidence snapshot has invalid structure")
+    fingerprint = hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+    if fingerprint != record.get("inputFingerprint"):
+        raise ValueError("replay evidence fingerprint mismatch")
+    return {**record, "request": {"leader": evidence.get("leader"), "asset": evidence.get("asset"),
+                                  "range": evidence.get("range"), "hypothesis": evidence.get("hypothesis")},
+            "evidenceSessions": evidence.get("sessions", [])}
 
 
 def minute_stats(database, code, now=None):
