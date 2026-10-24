@@ -112,3 +112,7 @@
 - 已生成 r16 NAS 包并通过 ZIP CRC、13个文件路径、SHA256清单和无 `.env`/模型模块/数据库检查；包 SHA256 为 `b1b77546c683cff9e1b7bd3e82e81cab2f3a108c397057fd704cd7e3d1e7e108`。iOS构建、模拟器截图、真实NAS部署仍需对应环境。
 
 - 用户授权后成功推送 `266089f` 到 `validation/acceptance-20261024`。GitHub foundation 回归通过；macOS iOS 编译和 IPA 构建都发现既有 `NASService.swift` 在 `NextNASService` enum 末尾缺少 `}`，首轮 UI 测试未能开始。已在当前源码补闭合并更新矩阵；需推送修复并重跑两条云工作流，直到编译/测试实际通过或继续迭代。
+
+- 修复 `be2e8b2` 已推送，触发 IPA 构建和 iOS 验证。首轮新构建进一步发现 `AIChatScreen` 状态摘要的 SwiftUI 类型检查复杂、`GPPalette` 阴影属性名引用错误；已在本地拆分字符串计算并改用 `cardShadowOpacity/cardShadowRadius`。需要提交并推送后重跑两条工作流。
+- 本轮本地回归复核：NAS research 12/12、旧服务 84/84、NAS同步 58/58、IPA校验 4/4；总计158项通过。旧服务和NAS同步回环HTTP测试需在放行本机随机端口后才可运行，已通过。
+- 当前 Actions 状态：`Validate iOS candidate`（run 40080847268）运行中；`Build iOS IPA`（run 40080847316）因上述两处Swift错误失败，尚未生成IPA。修复后继续推送和重跑。
