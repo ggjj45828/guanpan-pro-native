@@ -36,8 +36,8 @@
   },
   {
     "path": "CONTINUATION.md",
-    "bytes": 21139,
-    "sha256": "46fa6064fac851ddf2b4ebcc6b044764969002f6790c905726516ec23cd9cfe2"
+    "bytes": 30257,
+    "sha256": "93219b969efbffd4caf9c8c828ffa831ee90f1c2cd437073efdf89798362571b"
   },
   {
     "path": "CURRENT-HANDOFF-r2.md",
@@ -51,8 +51,8 @@
   },
   {
     "path": "Master Acceptance Matrix.md",
-    "bytes": 46496,
-    "sha256": "37d61dea0b3af8b05ca7fa9c111127a292531f4758f43dfd902245592e6de9fb"
+    "bytes": 59291,
+    "sha256": "77e15870d4c1d995e5b35f5e8e005f5ab9cc896d8caddef974dfd6131c5e6444"
   },
   {
     "path": "README-GitHub构建.md",
@@ -161,8 +161,8 @@
   },
   {
     "path": "guanpan-pro-native/Sources/AIGuidanceViews.swift",
-    "bytes": 48139,
-    "sha256": "9bf8c2a6533e5960cd153fe2c040df72818e742d3a9ef189f2cbcf87a7d9be62"
+    "bytes": 47677,
+    "sha256": "dee4ba6a3fe49401d240fc99abc07f067bae7a8870e41eaf2dcbdb619ab4e48c"
   },
   {
     "path": "guanpan-pro-native/Sources/AppThemeCore.swift",
@@ -276,8 +276,8 @@
   },
   {
     "path": "guanpan-pro-native/Sources/NextAIGuide.swift",
-    "bytes": 59223,
-    "sha256": "5e39d5aae0f6272ddc331554ac9d116c4c78b02ab1a1f5bfab6f87ca57e1789e"
+    "bytes": 59721,
+    "sha256": "6d91c067eb789833487369abaa0a2d9edc2e1c7deb1a972a0124c285eb1dd347"
   },
   {
     "path": "guanpan-pro-native/Sources/NextAppModel.swift",
@@ -286,18 +286,18 @@
   },
   {
     "path": "guanpan-pro-native/Sources/NextAppModelState.swift",
-    "bytes": 104176,
-    "sha256": "2260a45c309e20242e08587fcb3725f9ad15f6c39a72f697c9ed2aa4d5d92d24"
+    "bytes": 106234,
+    "sha256": "06d1e1d01c565fbaaab4ae761f5bd57b0311b312ed2a881fbd11b815edf9c2f2"
   },
   {
     "path": "guanpan-pro-native/Sources/NextCandidatePlans.swift",
-    "bytes": 27409,
-    "sha256": "ea97be72ee024da0762e49061545769f64ca4797edc40cf20831379a1aad29f5"
+    "bytes": 33019,
+    "sha256": "1a83cd624d083865fc78a4e27287b3123bafb16c13d4b115542aff262f0a4af2"
   },
   {
     "path": "guanpan-pro-native/Sources/NextCore.swift",
-    "bytes": 75767,
-    "sha256": "1215fe250ef898409165a5c9b8401c3c706ed1506d6454baaaa3ecb995c39a92"
+    "bytes": 76296,
+    "sha256": "97769928c0211793c010da816c2317e86d3121027c5795a53e2b8253707be19c"
   },
   {
     "path": "guanpan-pro-native/Sources/NextDecisionMemory.swift",
@@ -341,13 +341,13 @@
   },
   {
     "path": "guanpan-pro-native/Tests/NextChainScenarioTests.swift",
-    "bytes": 15831,
-    "sha256": "f24d54c29d394c118ab409af206df5ff9d993b2a10659f81d809ccd1fb34657c"
+    "bytes": 22302,
+    "sha256": "2690779417b5fdf6c10bb83488ac8621f1922c42e32d556c021a1d297f45301d"
   },
   {
     "path": "guanpan-pro-native/Tests/NextCoreTests.swift",
-    "bytes": 63084,
-    "sha256": "d46c591d624f1069555bbaf0a9bb159ba392735b38d149ac0a55ce09982e0e9a"
+    "bytes": 68250,
+    "sha256": "88fe72324bf6eee8e8f62499bf7ae2d5047cfa9fbc5ff3f9045801b9f45ad59c"
   },
   {
     "path": "guanpan-pro-native/Tests/NextDecisionMemoryTests.swift",
@@ -396,8 +396,8 @@
   },
   {
     "path": "nas-advisor-compat/README-NAS.md",
-    "bytes": 5297,
-    "sha256": "80d16be7af51d6e5fa7fa85b9c02e3be6097e427ed93a6064d2785fe79dcfed3"
+    "bytes": 9028,
+    "sha256": "8e4abe3e571c52561793489147dc0da6aaccb75345153870ded1701db898affa"
   },
   {
     "path": "nas-advisor-compat/compose.yml",
@@ -411,28 +411,28 @@
   },
   {
     "path": "nas-advisor-compat/server/VERSION",
-    "bytes": 35,
-    "sha256": "ac7ffb6fc4ec533044548080884560f098764281598cdc884acb5b03157fbaf1"
+    "bytes": 40,
+    "sha256": "29487be4657b3f335576859edfb6849d6132d420fc78df73b27342811a103e3a"
   },
   {
     "path": "nas-advisor-compat/server/app.py",
-    "bytes": 17318,
-    "sha256": "97eba7b6f7e0c9fa9aa3926e6bd3dd1fedb8009446f7067012487699a4b87c9f"
+    "bytes": 19839,
+    "sha256": "20f47c6cd850712b4b7ca357293cd5dac78da7c759b32e5b9eb6b775ed426813"
   },
   {
     "path": "nas-advisor-compat/server/domain.py",
-    "bytes": 40094,
-    "sha256": "bb4fdfcd4c31f18609c547acdd7450c6c3e03325bd750a3c61286090abd713d9"
+    "bytes": 45537,
+    "sha256": "36942bc08a61ca27670020ad5fbe9ef5f7f55c29249abe905e9a88338618eea3"
   },
   {
     "path": "nas-advisor-compat/server/market.py",
-    "bytes": 31158,
-    "sha256": "a607aeb4b89f732b7252954853394578d566b07b2199ffb195caec92f01884a8"
+    "bytes": 35389,
+    "sha256": "2a58196b81d89e93a93e5ae9dbe959d47d40069c6a7dec7607a7c99067a86898"
   },
   {
     "path": "nas-advisor-compat/server/mobile_research.py",
-    "bytes": 13131,
-    "sha256": "f379fa47c1a485171a967ffa6d5cf874ced8b7a1b9b6adfa44b4e53d850dbdbf"
+    "bytes": 22909,
+    "sha256": "a686c4f24f0e9f40b83ff8ec4751ce0b67c69c541c8460e25e4b1d9a01cc1b33"
   },
   {
     "path": "nas-advisor-compat/server/start.sh",
@@ -441,13 +441,13 @@
   },
   {
     "path": "nas-advisor-compat/server/workers.py",
-    "bytes": 9630,
-    "sha256": "086be41b2622679dea1f1c72ab8baa9f6d19ad7a257dece74f9d8ac5c3343398"
+    "bytes": 18794,
+    "sha256": "41fd2d4f478d82bfd5a83223b5f520ffb620d652fd62185ff260b03f2129885b"
   },
   {
     "path": "nas-advisor-compat/tests/test_research_only.py",
-    "bytes": 12945,
-    "sha256": "0dba9a7a0b76944e2c08e4d57bbf5491e663d4ec24029934e745c5e55e0d8558"
+    "bytes": 37778,
+    "sha256": "2dd8a4eb8d03a9ddebb1693f63b059beda8e6fdfe6424b66dc2f940053147d78"
   },
   {
     "path": "nas-advisor-compat/update.sh",
