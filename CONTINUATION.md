@@ -193,3 +193,12 @@
 - 手机DTO解码该资格和验证状态，唯一DecisionContext明确提醒历史候选需预注册未来未见样本复现，未复现不得改变做T/网格/加仓结论；新增Swift解码和上下文断言，但本Windows环境仍无Swift/Xcode，尚未运行。
 - NAS版本升至 `3.6.0-r23-archive-freshness-and-candidate-gate`。NAS 36/36测试、Python compileall、NAS Compose静态解析、git差异格式检查通过；未在真实NAS/iPhone验证。矩阵8、116、118、129–131、145项已更新，并补齐116–145中12行缺少的Result列；状态仍为✅1、🟡16、🟠124、⚠️4。
 - 下一项当前环境可做：用明确版本的假设建立未来样本预注册/持续验证状态，先完成NAS研究链的可证伪闭环；再做A股实时确认与Risk Guard接线。不能把现有合成夹具或历史全样本筛选当作未来复现。已授权的GitHub验证分支推送因当前网络无法连通且上一轮推送被用户中止，本轮未再次发起；本地提交和云构建待继续。
+
+## 2026-10-24 预注册研究与跨市场风险保护续记
+
+- 已实现 `POST /v1/research/cross-market/registrations` 与只读注册列表/详情：研究定义必须指定未来、带时区的 `notBefore`，保存不可变定义指纹，状态固定为 `awaiting_future_observations`，且 `eligibleForTradingSignal=false`。注册绝不创建候选订单、成交、现金、持仓或模拟账户。
+- 已实现 `POST /v1/research/cross-market/registrations/{registrationId}/evaluate`：只接受 `notBefore` 之后、且早于当前UTC日期的完整历史区间；复用冻结证据回放与完整性校验。无归档只返回证据不足，不创建空回放记录；评估结果仍永久标为研究用途。
+- iOS 新增 `NextCrossMarketRiskGuard`：只有 NAS 将证据同时明确标成 `prospectively_replicated`、实时市场开放、背离数据新鲜、并且该背离允许进入风险判断时，才撤回既有做T/网格候选并要求重新评估。该保护永远不生成价格、数量、方向或真实订单。Swift测试已添加但必须由macOS Actions运行。
+- 本地 NAS 研究套件 **54/54**、Python `compileall` 和 `git diff --check` 通过。当前Windows仍无Swift/Xcode；真实NAS、真实100–200日预注册档案、iPhone与Actions实际结果均未验证，不能称为功能完成。
+- 本地提交 `52b7780 Add pre-registered cross-market research guards` 已按授权推送到 `validation/acceptance-20261024`，应触发 IPA 构建和iOS验证；网页/API状态读取暂不可用，需后续确认实际Actions结果后才可提供IPA。
+- 下一项：检查Actions的Swift编译/模拟器结果并修复；继续完成可信FX数据采集与传输、预注册研究的真实持续观察/多阶段复现，以及以真实档案验证跨市场Risk Guard。始终保持：真实账户唯一、NAS只研究、手机最终指导、用户手工成交；不得创建模拟账户、虚拟资金、数字孪生或自动下单。
