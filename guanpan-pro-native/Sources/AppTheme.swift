@@ -46,6 +46,8 @@ struct AppTheme {
             return AppTheme(top: c(250, 246, 236), bottom: c(238, 232, 218), surface: c(255, 252, 244), isLight: true)
         case .mint:      // 薄荷
             return AppTheme(top: c(228, 248, 242), bottom: c(206, 238, 228), surface: c(245, 255, 251), isLight: true)
+        case .eyeCare:   // 护眼：暖米色背景、柔和低饱和绿
+            return AppTheme(top: c(244, 240, 222), bottom: c(233, 229, 207), surface: c(250, 247, 232), isLight: true)
         }
     }
 
@@ -161,13 +163,14 @@ extension AppAppearance {
         case .light: return "明亮白"
         case .paper: return "纸白"
         case .mint: return "薄荷"
+        case .eyeCare: return "护眼暖绿"
         }
     }
 
     var colorScheme: ColorScheme? {
         switch self {
         case .system: return nil
-        case .light, .paper, .mint: return .light
+        case .light, .paper, .mint, .eyeCare: return .light
         default: return .dark
         }
     }
@@ -184,6 +187,7 @@ extension AppAppearance {
         case .amber: return Color(red: 1.0, green: 0.69, blue: 0.13)
         case .paper: return Color(red: 0.66, green: 0.44, blue: 0.10)
         case .mint: return Color(red: 0.07, green: 0.56, blue: 0.49)
+        case .eyeCare: return Color(red: 0.30, green: 0.43, blue: 0.29)
         case .coffee: return Color(red: 0.85, green: 0.60, blue: 0.31)
         case .system: return Color.accentColor
         }
