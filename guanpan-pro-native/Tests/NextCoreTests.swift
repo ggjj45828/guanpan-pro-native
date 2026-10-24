@@ -83,6 +83,46 @@ final class NextCoreTests: XCTestCase {
                                                                    concentrationLimit: 40,
                                                                    targetPercent: nil).blockingNote?.contains("无法可靠计算") == true)
     }
+    func testCashReserveIsHardLimitForPlannedBuys() {
+        let total = Decimal(10_000)
+        XCTAssertNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 3_000, totalAssets: total,
+            targetCashPercent: 20, requiredCash: 1_000), "储备目标是 2,000 元，剩余 1,000 元可用于买入")
+        let blocked = NextPortfolioRiskGuard.cashReserveBlock(availableCash: 3_000, totalAssets: total,
+            targetCashPercent: 20, requiredCash: 1_001)
+        XCTAssertTrue(blocked?.contains("超过现金扣除长期储备目标") == true)
+        XCTAssertTrue(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 0, totalAssets: total,
+            targetCashPercent: 20, requiredCash: 1)?.contains("暂停新增买入") == true)
+        XCTAssertNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 100, totalAssets: nil,
+            targetCashPercent: nil, requiredCash: 100), "没有配置长期现金目标时不增加此限制")
+        XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 99, totalAssets: nil,
+            targetCashPercent: nil, requiredCash: 100), "无储备目标时也必须守住真实可用现金")
+        XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 100, totalAssets: nil,
+            targetCashPercent: 20, requiredCash: 0), "设置了现金目标但总资产不可核验时必须 fail-closed")
+
+        let confidence = NextDataConfidence.assess(quote: quote(time: now), now: now,
+            dailyBarCount: 60, minuteSampleCount: 120, intradayLatestAt: now, dailyLatestAt: now)
+        let forward = NextTPlan(kind: .forward, code: "159941", name: "纳指ETF",
+            sellPrice: Decimal(string: "1.520")!, buyPrice: Decimal(string: "1.500")!, units: 1_000,
+            grossSpread: 20, feeTotal: Decimal(string: "0.20")!, netGain: Decimal(string: "19.80")!,
+            costReductionPerUnit: Decimal(string: "0.0198")!, estimatedMissedUpside: 1,
+            estimatedContinuedDropLoss: 1, trampleRisk: "测试风险", continuedDropRisk: "测试下跌",
+            volumeSupport: "测试流动性", validUntil: now.addingTimeInterval(3600), cancelConditions: [],
+            evidence: [], confidence: confidence, historyMissRate: nil)
+        guard case .notWorthwhile = NextPortfolioRiskGuard.applyCashReserve(availableCash: 3_000,
+            totalAssets: total, targetCashPercent: 20, to: .ready(forward)) else {
+            return XCTFail("正T首笔买入会跌破现金储备时必须撤回")
+        }
+        let grid = NextGridPlan(code: "159941", name: "纳指ETF", upper: 1.6, lower: 1.2,
+            tiers: [NextGridTier(side: "buy", price: 1.5, units: 1_000, cashRequired: 1_500.1,
+                                 expectedNetGain: 19.8)], maxCashUsage: 1_500.1,
+            remainingUnitsAfterAllSells: 0, spacingPercent: 1,
+            validUntil: now.addingTimeInterval(3600), pauseConditions: [], reasons: [], warnings: [],
+            confidence: confidence)
+        guard case .notRecommended = NextPortfolioRiskGuard.applyCashReserve(availableCash: 3_000,
+            totalAssets: total, targetCashPercent: 20, to: .ready(grid)) else {
+            return XCTFail("最坏情形下网格买档会跌破现金储备时必须撤回")
+        }
+    }
     func testWithdrawnGuidanceCannotBeSavedAsCandidatePlan() {
         let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
         let blocked = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,

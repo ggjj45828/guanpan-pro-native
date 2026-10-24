@@ -277,6 +277,48 @@ enum NextPortfolioRiskGuard {
         return .notRecommended([overweightNote, "组合上限优先于单只ETF的网格机会；先降低集中度或调整目标，再重新评估"])
     }
 
+    /// Cash allocations are portfolio constraints, not explanatory AI prompt text.
+    /// Check the worst case where every planned buy tier fills and no sell tier fills.
+    static func cashReserveBlock(availableCash: Decimal, totalAssets: Decimal?,
+                                 targetCashPercent: Decimal?, requiredCash: Decimal) -> String? {
+        guard requiredCash >= 0, availableCash >= 0 else {
+            return "现金或买入资金需求无效；暂停新增买入计划"
+        }
+        guard requiredCash <= availableCash else {
+            return "该买入计划需要 ¥\(NextMoney.text(requiredCash))，超过当前真实可用现金 ¥\(NextMoney.text(availableCash))；暂停新增买入计划"
+        }
+        guard let targetCashPercent else { return nil }
+        guard targetCashPercent >= 0, targetCashPercent <= 100,
+              let totalAssets, totalAssets > 0 else {
+            return "现金储备目标或组合总资产无法核验；暂停新增买入计划"
+        }
+        let reserve = totalAssets * targetCashPercent / 100
+        let spendable = max(Decimal.zero, availableCash - reserve)
+        guard requiredCash <= spendable else {
+            return "该买入计划最坏占用 ¥\(NextMoney.text(requiredCash))，超过现金扣除长期储备目标后的可用额 ¥\(NextMoney.text(spendable))；保留至少 ¥\(NextMoney.text(reserve)) 现金，暂停新增买入计划"
+        }
+        return nil
+    }
+
+    static func applyCashReserve(availableCash: Decimal, totalAssets: Decimal?,
+                                 targetCashPercent: Decimal?, to result: NextGridPlannerResult) -> NextGridPlannerResult {
+        guard case let .ready(plan) = result,
+              let reason = cashReserveBlock(availableCash: availableCash, totalAssets: totalAssets,
+                                            targetCashPercent: targetCashPercent,
+                                            requiredCash: plan.maxCashUsage) else { return result }
+        return .notRecommended([reason])
+    }
+
+    static func applyCashReserve(availableCash: Decimal, totalAssets: Decimal?,
+                                 targetCashPercent: Decimal?, to result: NextTPlannerResult) -> NextTPlannerResult {
+        guard case let .ready(plan) = result, plan.kind == .forward else { return result }
+        let required = plan.buyPrice * Decimal(plan.units) + plan.feeTotal / 2
+        guard let reason = cashReserveBlock(availableCash: availableCash, totalAssets: totalAssets,
+                                            targetCashPercent: targetCashPercent,
+                                            requiredCash: required) else { return result }
+        return .notWorthwhile([reason])
+    }
+
     static func candidateSaveBlock(for item: NextGuidanceItem, guidanceGeneratedAt: Date?,
                                    quote: NextQuote?, now: Date) -> String? {
         guard item.isActionable else {
@@ -442,6 +484,13 @@ enum NextOpportunityScanner {
                         riskNotes.append(contentsOf: reasons)
                     }
                 }
+                let reserveChecked = NextPortfolioRiskGuard.applyCashReserve(availableCash: book.cash,
+                    totalAssets: total, targetCashPercent: goal.targetCashPercent, to: result)
+                if case let .notWorthwhile(reasons) = reserveChecked, case .ready = result {
+                    portfolioNote = reasons.first
+                    headline = "现金储备约束 · 暂停正T"
+                }
+                result = reserveChecked
                 tPlan = result
                 if case let .ready(plan) = result {
                     headline = plan.kind.rawValue
@@ -456,12 +505,20 @@ enum NextOpportunityScanner {
                                                       rules: rules[position.code], nasRange: nasRange,
                                                       orderBook: orderBooks[position.code],
                                                       caps: caps, now: now)
-                let result = NextPortfolioRiskGuard.apply(overweightNote: portfolioNote, to: calculated)
+                var result = NextPortfolioRiskGuard.apply(overweightNote: portfolioNote, to: calculated)
+                if portfolioNote == nil {
+                    let reserveChecked = NextPortfolioRiskGuard.applyCashReserve(availableCash: book.cash,
+                        totalAssets: total, targetCashPercent: goal.targetCashPercent, to: result)
+                    if case let .notRecommended(reasons) = reserveChecked, case .ready = result {
+                        portfolioNote = reasons.first
+                    }
+                    result = reserveChecked
+                }
                 gridPlan = result
                 if case let .ready(plan) = result {
                     headline = "网格 · \(plan.tiers.count) 档 / 间距 \(String(format: "%.2f", plan.spacingPercent))%"
                 } else if portfolioNote != nil {
-                    headline = "组合仓位超限 · 暂停网格"
+                    headline = "组合风险约束 · 暂停网格"
                 }
             case .hold, .waitBuy, .pauseAdd, .reduce, .noTrade:
                 break
@@ -616,6 +673,7 @@ struct NextDecisionContext: Equatable {
     let generatedAt: Date
     let guidance: NextDailyGuidance
     let holdingsLines: [String]
+    let portfolioLines: [String]
     let nasResearchLines: [String]
     let crossMarketLines: [String]
     let newsLines: [String]
@@ -687,6 +745,7 @@ enum NextDecisionContextBuilder {
     static func build(guidance: NextDailyGuidance, book: NextBook, quotes: [String: NextQuote],
                       nasResearchLines: [String], crossMarketLines: [String] = [],
                       newsLines: [String], profileLines: [String] = [], goal: NextGoal = NextGoal(),
+                      portfolioReview: NextAccountReview? = nil,
                       now: Date) -> NextDecisionContext {
         var holdings: [String] = []
         let timestampFormatter = DateFormatter()
@@ -736,10 +795,19 @@ enum NextDecisionContextBuilder {
         if let targetCash = goal.targetCashPercent {
             allocationLines.append("长期现金储备目标 \(NextNum.text(NextNum.double(targetCash), digits: 1))%（ETF目标未分配比例）；若没有通过价格、数据和组合风险检查的机会，应保留现金")
         }
+        var portfolioLines: [String] = []
+        if let portfolioReview {
+            portfolioLines.append(portfolioReview.headline)
+            portfolioLines += portfolioReview.findings.map { "\($0.title)：\($0.detail)" }
+            portfolioLines += portfolioReview.footnotes
+        } else {
+            portfolioLines.append("组合体检未提供；不得据此假设现金缓冲、集中度或目标偏差正常")
+        }
         let promptBlock = """
         你是观盘顾问，一位只基于用户真实持仓工作的投资顾问。以下是本次统一决策上下文，只能在此基础上给建议：
         【账户】现金 ¥\(NextMoney.text(book.cash))；持仓 \(book.positions.count) 只。
         【长期配置】\(allocationLines.isEmpty ? "未设置ETF目标权重；按组合风险和真实机会判断，不强行投入现金。" : allocationLines.joined(separator: "；"))
+        【组合级风险体检】\(portfolioLines.joined(separator: "；"))
         【持仓】\(holdings.joined(separator: "\n"))
         【A股交易日历】\(NextMarketClock.sessionDescription(now))。休市日、周末、盘前、午休和收盘后不得描述为“今天可挂”；只能引用规则引擎给出的有效候选计划，计划缺失就明确说没有当日可执行价格。
         【市场状态与候选计划】\(planLines.joined(separator: "\n"))
@@ -760,6 +828,7 @@ enum NextDecisionContextBuilder {
         8. 跨市场市场状态为 closed、stale 或 unknown 时，只能将其解释为历史关系研究，不能描述成今天的海外实时方向信号；开放市场的最新点超过数据新鲜度门槛也必须忽略。
         """
         return NextDecisionContext(generatedAt: now, guidance: guidance, holdingsLines: holdings,
+                                   portfolioLines: portfolioLines,
                                    nasResearchLines: nasResearchLines, crossMarketLines: crossMarketLines,
                                    newsLines: newsLines,
                                    profileLines: profileLines, promptBlock: promptBlock)

@@ -705,8 +705,12 @@ import Combine
             crossMarketLines.append("\(position.name)(\(position.code))：NAS未提供跨市场验证结果；不可推断领先关系")
         }
         let quoteMap = Dictionary(uniqueKeysWithValues: quotes.map { ($0.key, $0.value.quote) })
+        let decisionNow = Date()
+        let portfolioReview = NextAccountAdvisor.review(book: book, quotes: quoteMap,
+            concentrationLimitPercent: goal.concentrationLimit, targetWeights: goal.targetWeights,
+            realizedTotal: book.fills.reduce(Decimal.zero) { $0 + $1.realized }, now: decisionNow)
         let newsLines = book.positions.flatMap { position in
-            (nasNews[position.code] ?? []).filter { NextNewsImpactEngine.isFreshPublishedAt($0.publishedAt, now: Date()) }
+            (nasNews[position.code] ?? []).filter { NextNewsImpactEngine.isFreshPublishedAt($0.publishedAt, now: decisionNow) }
                 .map { "\(position.name)(\(position.code))｜\($0.title)｜来源 \($0.source ?? "未知")｜时间 \($0.publishedAt ?? "未知")｜\($0.url ?? "无链接")" }
         }
         return NextDecisionContextBuilder.build(guidance: guidance, book: book, quotes: quoteMap,
@@ -715,7 +719,8 @@ import Combine
                                                 newsLines: newsLines,
                                                 profileLines: NextProfileEngine.promptLines(profile: profile),
                                                 goal: goal,
-                                                now: Date())
+                                                portfolioReview: portfolioReview,
+                                                now: decisionNow)
     }
 
     /// 手机是唯一最终顾问：NAS只提供长期证据，在线模型不得另造价格或覆盖规则引擎门槛。
