@@ -37,6 +37,12 @@ final class NextDecisionMemoryTests: XCTestCase {
         NextDecisionRecord(code: "159941", name: "纳指ETF", createdAt: now, snapshot: snapshot)
     }
 
+    private func quote(_ price: String, time: Date? = nil, source: String = "Tencent") -> NextQuote {
+        NextQuote(code: "159941", name: "纳指ETF", price: Decimal(string: price)!,
+                  previousClose: Decimal(string: "1.400")!, time: time ?? now,
+                  source: source, timeQuality: "exchange_time")
+    }
+
     // MARK: - 变化解释
 
     func testDiffExplainsWhatChangedWithTraceableNumbers() {
@@ -149,7 +155,7 @@ final class NextDecisionMemoryTests: XCTestCase {
     func testExpireMarksExpiredWithoutProducingAnyFill() {
         let expiredAt = now.addingTimeInterval(-60)
         let open = record(snapshot(validUntil: expiredAt))
-        let result = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in Decimal(string: "1.400") })
+        let result = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in self.quote("1.400") })
         XCTAssertEqual(result[0].outcome, .expired)
         XCTAssertFalse(result[0].outcome.isFilled)
         XCTAssertNil(result[0].review.filledPrice)
@@ -158,9 +164,25 @@ final class NextDecisionMemoryTests: XCTestCase {
 
     func testExpireInvalidatesWhenPriceBreaksAwayFromPlan() {
         let open = record(snapshot(limitPrice: "1.420"))
-        let result = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in Decimal(string: "1.500") })
+        let result = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in self.quote("1.500") })
         XCTAssertEqual(result[0].outcome, .invalidated)
         XCTAssertTrue(result[0].review.note.contains("原计划失效"))
+    }
+
+    func testStaleOrUnreliableQuoteCannotInvalidateDecisionMemory() {
+        let open = record(snapshot(limitPrice: "1.420"))
+        let stale = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in
+            self.quote("1.500", time: now.addingTimeInterval(-180))
+        })
+        XCTAssertEqual(stale[0].outcome, .pending, "三分钟前的缓存行情不得作废当前计划")
+        let receiptOnly = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in
+            self.quote("1.500", source: "EastMoney", time: now)
+        })
+        XCTAssertEqual(receiptOnly[0].outcome, .pending, "仅接收时间、无法核验的行情不得作废计划")
+        let future = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in
+            self.quote("1.500", time: now.addingTimeInterval(120))
+        })
+        XCTAssertEqual(future[0].outcome, .pending, "未来时间戳不得作废计划")
     }
 
     func testReviewUsesRealFillAndNeverClaimsProfit() {

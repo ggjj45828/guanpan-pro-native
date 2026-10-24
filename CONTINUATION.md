@@ -1,6 +1,6 @@
 # CONTINUATION — Master Acceptance
 
-更新时间：2026-10-24（Asia/Shanghai）
+更新时间：2026-10-25（Asia/Shanghai）
 
 任务仍未完成。本说明用于下一轮无缝继续，必须先读取本文件与 `Master Acceptance Matrix.md`。用户要求以115项《完整开发、重构、测试与验收总要求》为最高标准；不要交付为最终版本，除非当前环境可完成的项目均已实现和验证。
 
@@ -139,7 +139,8 @@
 - 下一步必须先给NAS跨市场归档接入一个有验证证据和时间戳的分钟源/市场代码映射；再将NAS研究DTO、手机 `NextDecisionContext`、Risk Guard与DecisionMemory接上。没有找到可靠历史数据源前必须保留“暂无稳定领先关系/证据不足”。随后用真实归档滚动回放至少100–200个有效交易日；合成夹具不能代替该验收。
 - 目前新跨市场功能没有更改或启动任何模拟账户，也没有自动下单。真实外部市场行情源、NAS部署和iPhone实测仍未验证。
 
-- 当前本地提交 e73623，已通过Git Database API以远端最新 729abd8 为父提交追加到 alidation/acceptance-20261024，远端提交 39d2eb1287ad64e2d8c2e4bee25ec0a70cea981a；远端矩阵/延续记录与其他模型的先前修改已保留。Actions：Build iOS IPA run 40087046731、Validate isolated foundation run 40087046734 正在运行，Validate iOS candidate run 40087046787 排队。18-cross-market-replay-foundation仍无真实外部分钟采集worker，不能发布为功能完成。
+- 当前本地提交 e73623，已通过Git Database API以远端最新 729abd8 为父提交追加到 alidation/acceptance-20261024，远端提交 39d2eb1287ad64e2d8c2e4bee25ec0a70cea981a；远端矩阵/延续记录与其他模型的先前修改已保留。Actions：Build iOS IPA run 40087046731、Validate isolated foundation run 40087046734 正在运行，Validate iOS candidate run 40087046787 排队。
+18-cross-market-replay-foundation仍无真实外部分钟采集worker，不能发布为功能完成。
 
 ## 2026-10-24 跨市场研究接入与回放防泄漏修复
 
@@ -210,3 +211,15 @@
 - 已修正以上三处，并保留前一轮待提交的五主题首页跨市场脉搏卡、持仓详情证据卡、风险理由插值修复和对应测试/矩阵更新。NAS研究测试58/58、Python compileall、git diff --check 通过；本机没有Swift/Xcode，需重新触发macOS Actions做真实编译与模拟器验收。
 - 当前下一步：提交并推送修复后的完整工作树至 validation/acceptance-20261024；读取新Actions日志，若还有编译/测试失败继续修复并重跑。仅在iOS构建和模拟器测试实际通过后，才更新矩阵对应Test/Result；外部NAS、真机和真实历史数据验证仍须标为未验证。
 - 提交 1630497 的第二轮 Actions 已发现：ThemeHome.swift 的复杂过滤表达式触发Swift类型检查超时；核心包测试错误引用仅在iOS应用目标中的 HomeSnapshot；旧网格测试仍直接构造已改为“必须由NAS统计构造”的NextNasRange。已将连接状态逻辑下沉至跨平台核心并让首页调用、拆分风险计数循环、将NAS状态测试改为纯核心测试，网格测试改用60日有效NAS统计夹具。NAS套件重跑58/58通过；待提交和下一轮云端验证。
+
+
+## 2026-10-25 断点更新
+
+- 当前分支：`validation/acceptance-20261024`。提交 `33a2046` 已本地提交；后续报价时效修正和本次矩阵/续接记录尚待提交。对 GitHub 的 `git push` 因连接重置失败，未触发本轮 Actions。用户此前已授权验证分支上传与云端编译；网络恢复后继续推送，不要强推远端分支。
+- 本轮完成：决策记忆快照新增跨市场研究证据（验证状态、资格、来源/时间、市场/滞后/样本、实时背离、汇率、隔夜、尾盘、滚动证据），被 Risk Guard 撤回的候选也进入记忆；详情页显示当时快照；建议改判会说明跨市场证据新增/撤回。新增字段可选，旧快照可解码。
+- 修复决策记忆失效判断的陈旧行情风险：仅报价120秒内、时间戳不超前且来源时间可信时，才允许依据偏离计划价作废记录；过期、未来或仅接收时间报价不触发。
+- 新增Swift XCTest 4项：跨市场记忆变化解释、旧记忆字段迁移、Risk Guard撤回建议留档、陈旧/不可靠/未来报价不作废。当前机器无Swift/Xcode，尚未执行；GitHub push失败，需等可达后由macOS Actions运行。
+- 后端回归实测：`nas-advisor-compat/tests` 58/58；`server/tests` 84/84；根 `tests` 58/58；`docker compose config -q`通过；`git diff --check`通过。两组需本地环回网络权限的测试在获准执行后通过。
+- 外部验证仍需：NAS真实部署和长期档案（100–200交易日）、iPhone实机/模拟器体验、在线AI真实Key与网络、跨市场实盘时段联调。不要将其误报为当前已完成，也不要因这些项目停做其他本地可完成的Partial。
+- 下一步第一件事：检查本次更改和矩阵/续接文件，推送验证分支触发 `validate-ios.yml` 与 `build-ios.yml`；若Swift测试失败，修复后重跑。随后继续真实成交→决策记忆→画像学习闭环及组合风险相关Partial。
+- 产品红线继续有效：单一真实账户；没有模拟资金/虚拟持仓/虚拟成交；不自动下单；未由用户确认的真实成交不写账本；历史相关不得伪装实时信号，跨市场Risk Guard只撤回已有候选，不能新造价格与份额。

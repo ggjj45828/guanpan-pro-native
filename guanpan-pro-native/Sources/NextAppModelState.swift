@@ -464,7 +464,7 @@ import Combine
         let incoming = NextDecisionMemory.records(from: guidance, quotes: quoteMap, book: book,
                                                   research: nasResearch, news: nasNews, profile: profile)
         var merged = NextDecisionMemory.merge(existing: decisionMemory, incoming: incoming)
-        merged = NextDecisionMemory.expire(merged, at: now, quoteFor: { quoteMap[$0]?.price })
+        merged = NextDecisionMemory.expire(merged, at: now, quoteFor: { quoteMap[$0] })
         merged = merged.map { record in
             guard record.outcome == .filled, record.review.reviewedAt == nil else { return record }
             var copy = record

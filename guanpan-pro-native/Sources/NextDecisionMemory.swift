@@ -386,7 +386,7 @@ enum NextDecisionMemory {
 
     /// 计划到期/条件失效的自动迁移。只改状态，不改快照，不产生任何成交。
     static func expire(_ records: [NextDecisionRecord], at now: Date,
-                       quoteFor: (String) -> Decimal?) -> [NextDecisionRecord] {
+                       quoteFor: (String) -> NextQuote?) -> [NextDecisionRecord] {
         records.map { record in
             var copy = record
             guard copy.outcome == .pending else { return copy }
@@ -397,14 +397,16 @@ enum NextDecisionMemory {
                 return copy
             }
             // 失效条件里写明「突破区间」的，用当时给的限价做一次事实核对。
-            if let price = quoteFor(copy.code), let limitText = copy.snapshot.limitPrice,
+            // A stale/cache-only quote cannot invalidate a plan: do not turn old data into a new event.
+            if let quote = quoteFor(copy.code), quote.isFreshForPricePlan(at: now),
+               let limitText = copy.snapshot.limitPrice,
                let limit = Decimal(string: limitText), limit > 0,
                copy.snapshot.strategy.contains("做T") {
-                let gap = NextNum.double((price - limit) / limit * 100)
+                let gap = NextNum.double((quote.price - limit) / limit * 100)
                 if abs(gap) > 5 {
                     copy.outcome = .invalidated
                     copy.outcomeAt = now
-                    copy.review.note = "现价 ¥\(price) 已偏离计划价 ¥\(limit) 达 \(String(format: "%+.2f", gap))%，原计划失效"
+                    copy.review.note = "现价 ¥\(quote.price) 已偏离计划价 ¥\(limit) 达 \(String(format: "%+.2f", gap))%，原计划失效"
                 }
             }
             return copy
