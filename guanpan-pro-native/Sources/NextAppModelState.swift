@@ -678,7 +678,18 @@ import Combine
                 } else {
                     profileSummary = "跨市场分时段画像未提供"
                 }
-                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(divergenceSummary)；\(overnightSummary)；\(tailSummary)；\(rollingSummary)；\(profileSummary)；\(evidence.reason ?? "")")
+                let fxSummary: String
+                if let fx = evidence.currencyContext {
+                    if fx.state == "observed_context" {
+                        let move = fx.fxReturnPercent.map { String(format: "%+.4f%%", $0) } ?? "不可用"
+                        fxSummary = "汇率上下文：\(fx.pair ?? "未知") \(move)，来源 \(fx.source ?? "未知")，时间 \(fx.asOf ?? "未知")；仅要求风险复核，绝不单独改变策略或候选限价"
+                    } else {
+                        fxSummary = "汇率上下文：\(fx.state)，\(fx.reason ?? "数据不足")；不得推断方向或交易"
+                    }
+                } else {
+                    fxSummary = "汇率上下文未提供；不得推断方向或交易"
+                }
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(divergenceSummary)；\(overnightSummary)；\(tailSummary)；\(rollingSummary)；\(profileSummary)；\(fxSummary)；\(evidence.reason ?? "")")
             } else {
                 crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：NAS未提供跨市场验证结果；不可推断领先关系")
             }

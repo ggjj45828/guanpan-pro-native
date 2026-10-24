@@ -9,7 +9,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 from market import (symbol_for, fetch_daily, fetch_quotes, fetch_dividend_events,
-                    fetch_eastmoney_cross_market_minute, CROSS_MARKET_EASTMONEY_SECIDS)
+                    fetch_eastmoney_cross_market_minute, fetch_sina_fx_usdcny,
+                    CROSS_MARKET_EASTMONEY_SECIDS, FX_USDCNY_SERIES)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Collection follows explicitly tracked symbols and the real book.  The old
@@ -123,6 +124,30 @@ def collect_cross_market_once(database, *, now=None, series_ids=None, fetcher=No
     return {"state": state, "active": nominal, "collected": collected, "failures": failures,
             "paused": paused,
             "detail": detail}
+
+
+def collect_fx_once(database, *, now=None, fetcher=None):
+    """Persist one timestamp-validated USD/CNY context observation.
+
+    FX is deliberately outside the cross-market leader basket. It can describe
+    risk context, but never create a strategy, price, quantity, fill or order.
+    The synchronous operation makes stale-source behavior testable.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("collection time must be timezone-aware")
+    if now.astimezone(SHANGHAI).weekday() >= 5:
+        return {"state": "idle", "collected": 0,
+                "detail": "weekend; no new FX context is promoted"}
+    try:
+        rows, source = (fetcher or fetch_sina_fx_usdcny)(now=now)
+        database.put_cross_market_minute(FX_USDCNY_SERIES, rows, source,
+                                          now.astimezone(timezone.utc).isoformat())
+    except Exception as error:
+        return {"state": "degraded", "collected": 0,
+                "detail": f"USD/CNY context unavailable: {type(error).__name__}; no FX inference emitted"}
+    return {"state": "ok", "collected": len(rows),
+            "detail": "USD/CNY timestamped context archived; it remains non-executable context"}
 
 
 def parse_minute(body, code):
@@ -256,7 +281,8 @@ def tracked_codes(database):
 
 
 def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minute,
-                  quote_fetcher=fetch_quotes, cross_market_fetcher=fetch_cross_market_minute):
+                  quote_fetcher=fetch_quotes, cross_market_fetcher=fetch_cross_market_minute,
+                  fx_fetcher=fetch_sina_fx_usdcny):
     """Each loop owns its own timer and failure handling; sync APIs never stop them."""
     def tracked():
         return tracked_codes(database)
@@ -352,7 +378,16 @@ def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minu
             else:
                 time.sleep(60)
 
+    def fx_loop():
+        update("fx-context", "starting", "USD/CNY context collector starting")
+        while True:
+            now = datetime.now(timezone.utc)
+            # This direct NAS request does not consume phone/NAS tunnel traffic.
+            result = collect_fx_once(database, now=now, fetcher=fx_fetcher)
+            update("fx-context", result["state"], result["detail"])
+            time.sleep(300 if result["state"] != "idle" else 900)
+
     for name, target in (("daily-archive", daily_loop), ("minute-archive", minute_loop),
                          ("dividend-research", dividend_loop), ("factor-research", research_loop),
-                         ("cross-market-minute", cross_market_loop)):
+                         ("cross-market-minute", cross_market_loop), ("fx-context", fx_loop)):
         threading.Thread(target=target, name=name, daemon=True).start()

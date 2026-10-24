@@ -383,6 +383,9 @@ def currency_context(fx_rows, asset_rows, *, as_of, source, pair, window_minutes
         raise ValueError("maximum_age_seconds must be between 60 and 3600")
     as_of = as_of.astimezone(timezone.utc)
     fx, asset = _series(fx_rows, as_of), _series(asset_rows, as_of)
+    if source.strip().casefold() in {"未验证来源", "unknown", "unknown source", "unverified"}:
+        return {"pair": pair, "source": None, "state": "insufficient_data",
+                "reason": "汇率来源未验证，不进入决策上下文", "eligibleForTradingSignal": False}
     if not fx:
         return {"pair": pair, "source": source, "state": "insufficient_data",
                 "reason": "没有带来源和时间戳的汇率样本", "eligibleForTradingSignal": False}

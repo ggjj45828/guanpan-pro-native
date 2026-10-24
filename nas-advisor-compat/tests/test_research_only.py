@@ -217,6 +217,34 @@ class RollingCrossMarketResearchTests(unittest.TestCase):
 
 
 class CurrencyContextTests(unittest.TestCase):
+    def test_sina_fx_parser_requires_fresh_timestamped_bid_ask(self):
+        now = datetime.fromisoformat("2026-10-23T10:05:00+08:00")
+        body = 'var hq_str_fx_susdcny="10:04:30,7.1000,7.1020,x,x,2026-10-23";'
+        rows = market.parse_sina_fx_usdcny(body, now=now)
+        self.assertEqual(rows[0]["timestamp"], "2026-10-23T10:04:30+08:00")
+        self.assertEqual(rows[0]["price"], "7.1010")
+        self.assertIsNone(rows[0]["volume"])
+        with self.assertRaisesRegex(ValueError, "stale"):
+            market.parse_sina_fx_usdcny(body, now=datetime.fromisoformat("2026-10-23T10:30:00+08:00"))
+        with self.assertRaisesRegex(ValueError, "invalid bid/ask"):
+            market.parse_sina_fx_usdcny('var hq_str_fx_susdcny="10:04:30,0,7.1020,x,2026-10-23";', now=now)
+
+    def test_fx_collector_archives_context_or_reports_failure_without_promoting_it(self):
+        class Database:
+            def __init__(self): self.saved = []
+            def put_cross_market_minute(self, *args): self.saved.append(args)
+        now = datetime.fromisoformat("2026-10-23T10:05:00+08:00")
+        database = Database()
+        def fresh(*, now):
+            return ([{"timestamp": now.isoformat(), "price": "7.101", "volume": None, "iopv": None}], "FX fixture")
+        result = workers.collect_fx_once(database, now=now, fetcher=fresh)
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual(database.saved[0][0], "FX_USDCNY")
+        self.assertIn("non-executable", result["detail"])
+        failed = workers.collect_fx_once(database, now=now, fetcher=lambda **_: (_ for _ in ()).throw(ValueError("stale")))
+        self.assertEqual(failed["state"], "degraded")
+        self.assertEqual(len(database.saved), 1)
+
     def test_currency_context_requires_named_fresh_series_and_never_authorizes_trade(self):
         as_of = datetime.fromisoformat("2026-10-23T10:00:00+08:00")
         fx = [
@@ -233,6 +261,10 @@ class CurrencyContextTests(unittest.TestCase):
         self.assertAlmostEqual(report["fxReturnPercent"], (7.12 / 7.10 - 1) * 100, places=4)
         self.assertFalse(report["eligibleForTradingSignal"])
         self.assertNotIn("price", report)
+        unverified = cross_market.currency_context(fx, asset, as_of=as_of,
+            source="未验证来源", pair="USD/CNY")
+        self.assertEqual(unverified["state"], "insufficient_data")
+        self.assertIsNone(unverified["source"])
         stale = cross_market.currency_context(fx, asset,
             as_of=datetime.fromisoformat("2026-10-23T11:00:00+08:00"),
             source="verified FX fixture", pair="USD/CNY")
@@ -441,6 +473,34 @@ class PointInTimeArchiveTests(unittest.TestCase):
 
 
 class CrossMarketEvidenceTests(unittest.TestCase):
+    def test_research_response_exposes_only_timestamped_non_executable_fx_context(self):
+        import shutil
+        from zoneinfo import ZoneInfo
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        cn = ZoneInfo("Asia/Shanghai")
+        prior = now - timedelta(minutes=60)
+        fx_rows = [
+            {"timestamp": prior.astimezone(cn).isoformat(), "price": "7.10"},
+            {"timestamp": now.astimezone(cn).isoformat(), "price": "7.12"},
+        ]
+        asset_rows = [
+            {"timestamp": prior.astimezone(cn).isoformat(), "price": "1.00", "volume": None, "iopv": None},
+            {"timestamp": now.astimezone(cn).isoformat(), "price": "1.01", "volume": None, "iopv": None},
+        ]
+        database.put_cross_market_minute("FX_USDCNY", fx_rows, "Sina FX fixture", now.isoformat())
+        database.put_minute("512480", asset_rows, now.isoformat())
+        report = mobile_research.cross_market_evidence(database, "512480", now=now)
+        fx = report["currencyContext"]
+        self.assertEqual(fx["state"], "observed_context")
+        self.assertEqual(fx["source"], "Sina FX fixture")
+        self.assertAlmostEqual(fx["fxReturnPercent"], (7.12 / 7.10 - 1) * 100, places=4)
+        self.assertFalse(fx["eligibleForTradingSignal"])
+        self.assertNotIn("price", fx)
+
     def test_older_fetch_cannot_replace_newer_daily_or_minute_evidence(self):
         import shutil
         root = tempfile.mkdtemp(dir=Path(__file__).parent)
@@ -888,6 +948,8 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         other_sources = [row for row in report["leadSources"] if row["market"] != "KR_KOSPI"]
         self.assertTrue(all(row["bestLagMinutes"] is None for row in other_sources))
         self.assertEqual(report["source"], "verified fixture")
+        self.assertEqual(report["currencyContext"]["state"], "insufficient_data")
+        self.assertFalse(report["currencyContext"]["eligibleForTradingSignal"])
 
     def test_insufficient_or_stale_evidence_never_claims_stable_lead(self):
         from datetime import datetime, timedelta, timezone
@@ -1120,7 +1182,7 @@ class RetiredRoutesTests(unittest.TestCase):
         with patch.object(workers.threading, "Thread", Thread):
             workers.start_workers(Database())
         self.assertEqual(started, ["daily-archive", "minute-archive", "dividend-research",
-                                   "factor-research", "cross-market-minute"])
+                                   "factor-research", "cross-market-minute", "fx-context"])
         self.assertFalse(any("simulation" in name or "grid" in name for name, _, _ in statuses))
         self.assertEqual(workers.DEFAULT_CODES, ())
 

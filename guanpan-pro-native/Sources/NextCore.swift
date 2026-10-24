@@ -1306,11 +1306,27 @@ struct NextNASResearch: Codable, Equatable {
             let eligibleForTradingSignal: Bool?
             let note: String?
         }
+        /// NAS-archived FX is a dated risk context, never a price or strategy input.
+        struct CurrencyContext: Codable, Equatable {
+            let pair: String?
+            let source: String?
+            let state: String
+            let reason: String?
+            let asOf: String?
+            let ageSeconds: Double?
+            let windowMinutes: Int?
+            let fxReturnPercent: Double?
+            let assetReturnPercent: Double?
+            let assetLatestAt: String?
+            let eligibleForTradingSignal: Bool?
+            let note: String?
+        }
         var liveDivergences: [LiveDivergence]? = nil
         var overnightAbsorption: [OvernightAbsorption]? = nil
         var tailToNextDay: TailToNextDay? = nil
         var rollingValidity: [RollingValidity]? = nil
         var timeProfiles: [TimeProfiles]? = nil
+        var currencyContext: CurrencyContext? = nil
     }
     var crossMarket: CrossMarketEvidence? = nil
 }

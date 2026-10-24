@@ -164,6 +164,17 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
     tail_to_next_day = cross_market.tail_to_next_day(follower_rows, as_of=now)
     # The app needs the auditable summary, not an entire minute archive payload.
     tail_to_next_day.pop("sessions", None)
+    # USD/CNY is collected independently of the leading-market basket.  It is
+    # a timestamped contextual observation only: the phone may explain it and
+    # request a risk re-check, but it cannot turn it into an entry/exit price.
+    fx_archive = database.get_cross_market_range("FX_USDCNY", start, end_text)
+    fx_source = fx_archive.get("source")
+    fx_names = ({fx_source} if isinstance(fx_source, str) else
+                {item for item in fx_source if isinstance(item, str)} if isinstance(fx_source, list) else set())
+    currency = cross_market.currency_context(
+        fx_archive.get("rows", []), follower_rows, as_of=now,
+        source=", ".join(sorted(fx_names)) or "未验证来源",
+        pair="USD/CNY")
     return {"state": state, "reason": reason, "source": source, "asOf": latest_at,
             "sampleCount": sample_count,
             "bestLagMinutes": best_lag, "conditionalWinRate": win_rate,
@@ -175,6 +186,7 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             "rollingValidity": [{"market": row["market"], **row["rollingValidity"]} for row in reports],
             "timeProfiles": [{"market": row["market"], **row["timeProfiles"]} for row in reports],
             "tailToNextDay": tail_to_next_day,
+            "currencyContext": currency,
             "preRegisteredValidations": validations,
             "eligibleForTradingSignal": eligible,
             "validationState": ("prospectively_replicated" if eligible else

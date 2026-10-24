@@ -2,10 +2,55 @@
 import json
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from re import finditer
+from re import finditer, search
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
+
+FX_USDCNY_SERIES = "FX_USDCNY"
+
+
+def parse_sina_fx_usdcny(body, now=None, maximum_age_seconds=900):
+    """Parse Sina's timestamped USD/CNY quote as an observable FX context.
+
+    The feed gives bid and ask but no executable price for this app.  We archive
+    their midpoint with its provider timestamp, solely for context; this value
+    is never used to make an order, calculate a fill, or relax a risk guard.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or not isinstance(body, str):
+        raise ValueError("timezone-aware now and FX response are required")
+    matched = search(r'hq_str_fx_susdcny="([^"]*)"', body)
+    if not matched:
+        raise ValueError("FX response has no USD/CNY field")
+    fields = matched.group(1).split(",")
+    if len(fields) < 2 or not fields[0] or not fields[-1]:
+        raise ValueError("FX response is incomplete")
+    try:
+        clock = datetime.strptime(fields[0], "%H:%M:%S").time()
+        session_day = date.fromisoformat(fields[-1].strip())
+        bid, ask = Decimal(fields[1]), Decimal(fields[2])
+    except (ValueError, InvalidOperation, IndexError):
+        raise ValueError("FX response has invalid timestamp or bid/ask")
+    if not (bid.is_finite() and ask.is_finite() and bid > 0 and ask > 0 and ask >= bid):
+        raise ValueError("FX response has invalid bid/ask")
+    stamp = datetime.combine(session_day, clock, ZoneInfo("Asia/Shanghai"))
+    age = (now.astimezone(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds()
+    if age < -120 or age > maximum_age_seconds:
+        raise ValueError("FX source is stale")
+    midpoint = (bid + ask) / Decimal(2)
+    return [{"timestamp": stamp.isoformat(), "price": str(midpoint), "volume": None, "iopv": None}]
+
+
+def fetch_sina_fx_usdcny(now=None):
+    request = Request("https://hq.sinajs.cn/list=fx_susdcny",
+                      headers={"Referer": "https://finance.sina.com.cn/",
+                               "User-Agent": "GuanpanAdvisor/3"})
+    with urlopen(request, timeout=10) as response:
+        if response.status != 200:
+            raise OSError("FX source unavailable")
+        body = response.read(100_000).decode("utf-8", "replace")
+    return parse_sina_fx_usdcny(body, now=now), "Sina FX fx_susdcny bid/ask midpoint"
 
 
 def symbol_for(code):
