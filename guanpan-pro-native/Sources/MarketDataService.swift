@@ -1,0 +1,191 @@
+import Foundation
+
+/// 直连行情源（不经过 NAS）的多源 fallback。
+///
+/// 每个 fetcher 按优先级顺序尝试，第一个成功的源立即返回并带上实际生效的源名，
+/// 界面上「数据来自哪里」由此标注；只有全部失败才抛错，且错误列出每个源的失败原因。
+/// 源链与 NAS 服务端 server/market.py 完全一致，两端行为不分叉：
+/// - 报价：腾讯 qt → 东财 ulist → 新浪 hq
+/// - 分时：腾讯 minute → 东财 1 分钟 K 线
+/// - 日 K：腾讯 newfqkline → 东财 kline → 新浪 getKLineData
+enum NextMarketDataService {
+    static func fetchQuotes(codes: [String], session: URLSession = .shared) async throws -> (value: [NextQuote], source: String) {
+        let attempts: [(source: String, run: () async throws -> [NextQuote])] = [
+            ("腾讯行情", { try await tencentQuotes(codes: codes, session: session) }),
+            ("东财行情", { try await eastMoneyQuotes(codes: codes, session: session) }),
+            ("新浪行情", { try await sinaQuotes(codes: codes, session: session) })
+        ]
+        return try await NextMarketChain.first(attempts)
+    }
+
+    static func fetchIntraday(code: String, session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
+        let attempts: [(source: String, run: () async throws -> NextChartDataset)] = [
+            ("腾讯分时", { try await tencentMinute(code: code, session: session) }),
+            ("东财分时", { try await eastMoneyMinute(code: code, session: session) })
+        ]
+        return try await NextMarketChain.first(attempts)
+    }
+
+    static func fetchDaily(code: String, session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
+        let attempts: [(source: String, run: () async throws -> NextChartDataset)] = [
+            ("腾讯日K", { try await tencentDaily(code: code, session: session) }),
+            ("东财日K", { try await eastMoneyDaily(code: code, session: session) }),
+            ("新浪日K", { try await sinaDaily(code: code, session: session) })
+        ]
+        return try await NextMarketChain.first(attempts)
+    }
+
+    // MARK: - 报价
+
+    private static func tencentQuotes(codes: [String], session: URLSession) async throws -> [NextQuote] {
+        let symbols = codes.compactMap(NextTencentQuoteParser.symbol(for:))
+        guard !symbols.isEmpty, symbols.count == codes.count else { throw NextError.invalid("证券代码无效或交易所来源尚未支持") }
+        let url = URL(string: "https://qt.gtimg.cn/q=\(symbols.joined(separator: ","))&_t=\(Int(Date().timeIntervalSince1970))")!
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NextError.invalid("腾讯行情服务暂不可用") }
+        let receivedAt = Date()
+        let quotes = codes.compactMap { NextTencentQuoteParser.parse(data, code: $0, receivedAt: receivedAt) }
+        guard !quotes.isEmpty else { throw NextError.invalid("腾讯行情响应未通过代码、价格或时间校验") }
+        return quotes
+    }
+
+    private static func eastMoneyQuotes(codes: [String], session: URLSession) async throws -> [NextQuote] {
+        let secids = codes.compactMap(NextEastMoneySymbol.secid(for:))
+        guard secids.count == codes.count, !secids.isEmpty else { throw NextError.invalid("证券代码无效或交易所来源尚未支持") }
+        var components = URLComponents(string: "https://push2.eastmoney.com/api/qt/ulist.np/get")!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "f12,f13,f14,f2,f3,f4,f6,f60"),
+            URLQueryItem(name: "secids", value: secids.joined(separator: ",")),
+            URLQueryItem(name: "fltt", value: "2"),
+            URLQueryItem(name: "np", value: "1")
+        ]
+        var request = URLRequest(url: components.url!, timeoutInterval: 8)
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NextError.invalid("东财行情服务暂不可用") }
+        let receivedAt = Date()
+        let quotes = NextEastMoneyQuoteParser.parse(data, codes: codes, receivedAt: receivedAt)
+        guard !quotes.isEmpty else { throw NextError.invalid("东财行情响应未通过代码、价格或时间校验") }
+        return quotes
+    }
+
+    private static func sinaQuotes(codes: [String], session: URLSession) async throws -> [NextQuote] {
+        let symbols = codes.compactMap(NextTencentQuoteParser.symbol(for:))
+        guard symbols.count == codes.count, !symbols.isEmpty else { throw NextError.invalid("证券代码无效或交易所来源尚未支持") }
+        var components = URLComponents(string: "https://hq.sinajs.cn/list/\(symbols.joined(separator: ","))")!
+        components.queryItems = [URLQueryItem(name: "_t", value: "\(Int(Date().timeIntervalSince1970))")]
+        var request = URLRequest(url: components.url!, timeoutInterval: 8)
+        request.setValue("https://finance.sina.com.cn/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NextError.invalid("新浪行情服务暂不可用") }
+        let quotes = NextSinaQuoteParser.parse(data, codes: codes)
+        guard !quotes.isEmpty else { throw NextError.invalid("新浪行情响应未通过代码、价格或时间校验") }
+        return quotes
+    }
+
+    // MARK: - 分时
+
+    private static func tencentMinute(code: String, session: URLSession) async throws -> NextChartDataset {
+        guard let symbol = NextTencentQuoteParser.symbol(for: code),
+              var components = URLComponents(string: "https://web.ifzq.gtimg.cn/appstock/app/minute/query") else {
+            throw NextError.invalid("证券代码无效")
+        }
+        components.queryItems = [URLQueryItem(name: "code", value: symbol), URLQueryItem(name: "_var", value: "min_data_\(symbol)")]
+        var request = URLRequest(url: components.url!, timeoutInterval: 10)
+        request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+        request.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        let receivedAt = Date()
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let chart = NextTencentMinuteParser.parse(data, code: code, receivedAt: receivedAt) else {
+            throw NextError.invalid("腾讯分时数据没有通过响应、时间或价格校验")
+        }
+        return chart
+    }
+
+    private static func eastMoneyMinute(code: String, session: URLSession) async throws -> NextChartDataset {
+        guard let secid = NextEastMoneySymbol.secid(for: code) else { throw NextError.invalid("证券代码无效") }
+        var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
+        components.queryItems = [
+            URLQueryItem(name: "secid", value: secid),
+            URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6"),
+            URLQueryItem(name: "fields2", value: "f51,f52,f53,f54,f55,f56,f57,f58"),
+            URLQueryItem(name: "klt", value: "1"),
+            URLQueryItem(name: "fqt", value: "0"),
+            URLQueryItem(name: "end", value: "20500101"),
+            URLQueryItem(name: "lmt", value: "240")
+        ]
+        var request = URLRequest(url: components.url!, timeoutInterval: 10)
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: request)
+        let receivedAt = Date()
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let chart = NextEastMoneyKlineParser.parse(data, code: code, mode: .minute, priceSource: "EastMoney 分时 · 1分钟粒度", receivedAt: receivedAt) else {
+            throw NextError.invalid("东财分时数据没有通过响应、时间或价格校验")
+        }
+        return chart
+    }
+
+    // MARK: - 日 K
+
+    private static func tencentDaily(code: String, session: URLSession) async throws -> NextChartDataset {
+        guard let symbol = NextTencentQuoteParser.symbol(for: code) else { throw NextError.invalid("证券代码无效") }
+        var components = URLComponents(string: "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get")!
+        components.queryItems = [URLQueryItem(name: "param", value: "\(symbol),day,,,640,qfq")]
+        var request = URLRequest(url: components.url!, timeoutInterval: 12)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: request)
+        let receivedAt = Date()
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let dataset = NextTencentDailyParser.parse(data, code: code, receivedAt: receivedAt) else {
+            throw NextError.invalid("腾讯日 K 数据没有通过响应、代码、价格或时间校验")
+        }
+        return dataset
+    }
+
+    private static func eastMoneyDaily(code: String, session: URLSession) async throws -> NextChartDataset {
+        guard let secid = NextEastMoneySymbol.secid(for: code) else { throw NextError.invalid("证券代码无效") }
+        var components = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
+        components.queryItems = [
+            URLQueryItem(name: "secid", value: secid),
+            URLQueryItem(name: "fields1", value: "f1,f2,f3,f4,f5,f6"),
+            URLQueryItem(name: "fields2", value: "f51,f52,f53,f54,f55,f56,f57,f58"),
+            URLQueryItem(name: "klt", value: "101"),
+            URLQueryItem(name: "fqt", value: "1"),
+            URLQueryItem(name: "end", value: "20500101"),
+            URLQueryItem(name: "lmt", value: "640")
+        ]
+        var request = URLRequest(url: components.url!, timeoutInterval: 12)
+        request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: request)
+        let receivedAt = Date()
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let dataset = NextEastMoneyKlineParser.parse(data, code: code, mode: .daily, priceSource: "EastMoney 日K · 前复权", receivedAt: receivedAt) else {
+            throw NextError.invalid("东财日 K 数据没有通过响应、代码、价格或时间校验")
+        }
+        return dataset
+    }
+
+    private static func sinaDaily(code: String, session: URLSession) async throws -> NextChartDataset {
+        guard let symbol = NextTencentQuoteParser.symbol(for: code) else { throw NextError.invalid("证券代码无效") }
+        var components = URLComponents(string: "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketDataService.getKLineData")!
+        components.queryItems = [
+            URLQueryItem(name: "symbol", value: symbol),
+            URLQueryItem(name: "scale", value: "240"),
+            URLQueryItem(name: "ma", value: "no"),
+            URLQueryItem(name: "datalen", value: "320")
+        ]
+        var request = URLRequest(url: components.url!, timeoutInterval: 10)
+        request.setValue("https://finance.sina.com.cn/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: request)
+        let receivedAt = Date()
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let dataset = NextSinaDailyParser.parse(data, code: code, receivedAt: receivedAt) else {
+            throw NextError.invalid("新浪日 K 数据没有通过响应、代码、价格或时间校验")
+        }
+        return dataset
+    }
+}
