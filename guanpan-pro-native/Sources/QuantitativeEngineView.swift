@@ -111,6 +111,16 @@ struct QuantitativeEngineView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("真实持仓 AI 指导") {
+                    NavigationLink {
+                        LabResearchView()
+                    } label: {
+                        Label("查看今天的统一指导", systemImage: "sparkles")
+                    }
+                    Text("这里只提供行情和技术研究；最终判断由手机根据真实持仓统一给出。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .plainCard(isLight: isLight)
                 Section {
                     Button {
                         Task { await manuallyScan() }
