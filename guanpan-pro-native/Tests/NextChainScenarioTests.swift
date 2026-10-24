@@ -80,6 +80,23 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(evidenced.promptBlock.contains("暂无稳定领先关系"))
         XCTAssertTrue(evidenced.promptBlock.contains("缺失/过期/样本不足"))
         XCTAssertTrue(evidenced.promptBlock.contains("不能描述成今天的海外实时方向信号"))
+        XCTAssertTrue(evidenced.promptBlock.contains("预注册的未来未见样本复现"))
+    }
+
+    func testHistoricalCrossMarketCandidateDecodesAsNonTradingEvidence() throws {
+        let payload = """
+        {"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{
+          "state":"stable_candidate","reason":null,"source":"verified archive",
+          "asOf":"2026-10-23T03:00:00+00:00","sampleCount":120,
+          "bestLagMinutes":15,"conditionalWinRate":0.62,"bestMarket":"KR_KOSPI",
+          "currentMarketStatus":"closed","ageSeconds":300,
+          "eligibleForTradingSignal":false,
+          "validationState":"requires_pre_registered_future_replication"}}
+        """
+        let report = try JSONDecoder().decode(NextNASResearch.self, from: Data(payload.utf8))
+        XCTAssertEqual(report.crossMarket?.bestMarket, "KR_KOSPI")
+        XCTAssertEqual(report.crossMarket?.eligibleForTradingSignal, false)
+        XCTAssertEqual(report.crossMarket?.validationState, "requires_pre_registered_future_replication")
     }
 
     private func scan(_ scanBook: NextBook, quote q: NextQuote, daily: [NextChartSample],

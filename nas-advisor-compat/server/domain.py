@@ -25,6 +25,28 @@ def strict_iso_date(value):
     return parsed
 
 
+def observed_at(value):
+    """Compare provider fetch times by instant, not their textual UTC offsets."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone required")
+        return parsed.astimezone(timezone.utc)
+    except (AttributeError, TypeError, ValueError):
+        raise InvalidData("archive fetch timestamp must include a timezone")
+
+
+def ordered_fetch_times(values):
+    """Return usable archive times in chronological order across UTC offsets."""
+    usable = []
+    for value in set(values):
+        try:
+            usable.append((observed_at(value), value))
+        except InvalidData:
+            continue  # Legacy bad metadata must not break read-only research.
+    return [value for _, value in sorted(usable)]
+
+
 def validate_book_json(text):
     if not isinstance(text, str):
         raise InvalidData("bookJSON must be a JSON string")
@@ -519,6 +541,7 @@ class NextDatabase:
         self.validate_id(code)
         if len(code) != 6 or not code.isdigit() or not isinstance(rows, list) or not rows or not isinstance(stamp, str):
             raise InvalidData("invalid daily bars")
+        incoming_at = observed_at(stamp)
         incoming = {}
         for row in rows:
             if not isinstance(row, dict) or set(row) != {"date", "open", "close", "high", "low", "volume"}:
@@ -536,23 +559,30 @@ class NextDatabase:
             normalized = {"date": day, **{key: str(prices[key]) for key in ("open", "close", "high", "low", "volume")}}
             incoming[day] = normalized
         with self.connect() as db:
-            previous = db.execute("SELECT body FROM daily_bars WHERE code=?", (code,)).fetchone()
+            previous = db.execute("SELECT fetched_at, body FROM daily_bars WHERE code=?", (code,)).fetchone()
             merged = {}
             if previous:
                 try:
-                    for row in json.loads(previous[0]):
+                    for row in json.loads(previous[1]):
                         if isinstance(row, dict) and isinstance(row.get("date"), str): merged[row["date"]] = row
                 except (ValueError, TypeError): pass
-            # Keep every archived day. A newly validated source row may update
-            # that day's OHLCV, but a shorter upstream window never prunes history.
-            merged.update(incoming)
+            # An older fetch can fill a missing historical day, but cannot
+            # replace a newer observation for a day already in the archive.
+            newer = not previous or incoming_at >= observed_at(previous[0])
+            if newer:
+                merged.update(incoming)
+            else:
+                for day, row in incoming.items():
+                    merged.setdefault(day, row)
             body = json.dumps([merged[key] for key in sorted(merged)], ensure_ascii=False)
-            db.execute("INSERT OR REPLACE INTO daily_bars VALUES (?, ?, ?)", (code, stamp, body))
+            db.execute("INSERT OR REPLACE INTO daily_bars VALUES (?, ?, ?)",
+                       (code, stamp if newer else previous[0], body))
 
     def put_minute(self, code, rows, fetched_at):
         self.validate_id(code)
         if len(code) != 6 or not code.isdigit() or not isinstance(rows, list) or not rows:
             raise InvalidData("invalid minute archive")
+        incoming_at = observed_at(fetched_at)
         validated = []
         for row in rows:
             if not isinstance(row, dict) or set(row) != {"timestamp", "price", "volume", "iopv"}:
@@ -574,8 +604,10 @@ class NextDatabase:
             validated.append((code, stamp, json.dumps(row, ensure_ascii=False), fetched_at))
         with self.connect() as db:
             for code, stamp, body, fetched_at in validated:
-                existing = db.execute("SELECT body FROM minute_archive WHERE code=? AND stamp=?", (code, stamp)).fetchone()
+                existing = db.execute("SELECT body, fetched_at FROM minute_archive WHERE code=? AND stamp=?", (code, stamp)).fetchone()
                 if existing:
+                    if incoming_at < observed_at(existing[1]):
+                        continue
                     prior = json.loads(existing[0])
                     incoming = json.loads(body)
                     if incoming.get("iopv") is None and prior.get("iopv") is not None:
@@ -641,7 +673,7 @@ class NextDatabase:
         with self.connect() as db:
             rows = db.execute("SELECT body, fetched_at FROM minute_archive WHERE code=? AND stamp LIKE ? ORDER BY stamp",
                               (code, day + "%")).fetchall()
-        fetched = sorted({row[1] for row in rows})
+        fetched = ordered_fetch_times(row[1] for row in rows)
         return {"code": code, "day": day, "source": "minute archive (provider recorded at collection)",
                 "fetchedAt": fetched[-1] if fetched else None,
                 "fetchedAtRange": {"first": fetched[0], "last": fetched[-1]} if fetched else None,
@@ -652,11 +684,7 @@ class NextDatabase:
         self.validate_id(market)
         if not isinstance(source, str) or not source.strip() or not isinstance(rows, list) or not rows:
             raise InvalidData("invalid cross-market archive")
-        try:
-            fetched = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
-            if fetched.tzinfo is None: raise ValueError("timezone required")
-        except (AttributeError, TypeError, ValueError):
-            raise InvalidData("invalid cross-market fetch timestamp")
+        fetched = observed_at(fetched_at)
         if fetched.astimezone(timezone.utc) > datetime.now(timezone.utc) + timedelta(seconds=120):
             raise InvalidData("future cross-market fetch timestamp")
         validated = []
@@ -686,9 +714,13 @@ class NextDatabase:
             validated.append((stamp.isoformat(),
                               json.dumps(canonical, separators=(",", ":"))))
         with self.connect() as db:
-            db.executemany("INSERT OR REPLACE INTO cross_market_minute VALUES (?, ?, ?, ?, ?)",
-                           [(market, stamp, body, source[:120], fetched.isoformat())
-                            for stamp, body in validated])
+            for stamp, body in validated:
+                existing = db.execute("SELECT fetched_at FROM cross_market_minute WHERE market=? AND stamp=?",
+                                      (market, stamp)).fetchone()
+                if existing and fetched < observed_at(existing[0]):
+                    continue
+                db.execute("INSERT OR REPLACE INTO cross_market_minute VALUES (?, ?, ?, ?, ?)",
+                           (market, stamp, body, source[:120], fetched.isoformat()))
 
     def get_cross_market_minute(self, market, day):
         self.validate_id(market)
@@ -698,7 +730,7 @@ class NextDatabase:
             rows = db.execute("SELECT body, source, fetched_at FROM cross_market_minute WHERE market=? "
                               "AND stamp LIKE ? ORDER BY stamp", (market, day + "%")).fetchall()
         sources = sorted({row[1] for row in rows})
-        fetched = sorted({row[2] for row in rows})
+        fetched = ordered_fetch_times(row[2] for row in rows)
         return {"market": market, "day": day, "source": sources[0] if len(sources) == 1 else sources,
                 "fetchedAt": fetched[-1] if fetched else None,
                 "fetchedAtRange": {"first": fetched[0], "last": fetched[-1]} if fetched else None,

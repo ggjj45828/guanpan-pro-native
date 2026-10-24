@@ -1,6 +1,6 @@
 # 观盘 NAS：基于你提供的 guanpan2 改造
 
-版本：3.6.0-r22-replay-history-index。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
+版本：3.6.0-r23-archive-freshness-and-candidate-gate。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
 
 ## 这次改了什么
 
@@ -22,7 +22,7 @@
 
 1. 备份 NAS 上的 `guanpan_advisor_data` 卷及当前 `.env`。不要将备份或密钥放入本包。此包复用原项目、端口和卷，不要与原容器同时启动。
 2. 将本包完整解压到新目录；将自己现有的 `.env` 安全地复制到新目录，核对变量后运行 `docker compose -p guanpan-advisor up -d --build`。不要把 `.env.example` 当成真实密钥。
-3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r22-replay-history-index`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
+3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r23-archive-freshness-and-candidate-gate`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
 4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`；在 App 内执行“测试连接”，并检查 `/v1/research/512480` 是否包含 `minuteStats`。空档案、旧行情或缺量时手机应显示数据不足。
 5. 如需回滚，先停止新容器，再以备份的旧代码和原数据卷启动；不要使用 `docker compose down -v`。
 
@@ -39,3 +39,5 @@ NAS Compose 使用 Docker 默认网络，没有设置 `network_mode: none`、自
 可变条件研究接口为只读 `POST /v1/research/cross-market/hypothesis`。请求传入 `leader`、真实ETF `asset`、`start`/`end` 和一个受限 `hypothesis` JSON：定义冻结时间、各序列时区、1–8个按分钟窗口计算的 `gte`/`lte`/`between` 条件、预期方向、13:00后验证时点及结果窗口。改变市场经验假设只需换请求里的条件参数，无需新增账户或交易代码；系统不会执行任意脚本。它与午休回放共用不可变证据留档和 `GET /v1/research/cross-market/runs/{replayId}` 检索接口。此接口只读历史分钟档案，没有数据就返回 `insufficient_real_archive`，不会回测虚拟资金或模拟成交。
 
 Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。
+
+r23 归档写入会按带时区的抓取时间择新：延迟抵达的旧日K、ETF分钟和外部市场分钟响应不能覆盖较新记录；旧日K仅可补缺失的历史交易日。逐只ETF研究报告新增 `rankedHistoricalCandidates`，只列统计门槛通过的历史候选；未通过来源不显示最佳领先窗口。该排名仍是发现性研究，`eligibleForTradingSignal` 固定为 `false`，验证状态为 `requires_pre_registered_future_replication`。在真实NAS长期归档和预注册未来样本复现完成前，手机不得据此修改做T、网格或加仓建议。

@@ -68,9 +68,11 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
                            if window.get("sampleCount", 0) >= cross_market.MIN_SAMPLES]
     lead_sources = []
     for row in reports:
-        candidates = [window for window in row.get("windows", [])
-                      if window.get("sampleCount", 0) >= cross_market.MIN_SAMPLES]
-        metrics = [window for window in candidates if window.get("correlation") is not None]
+        # A window that merely has enough days is not a leading relationship.
+        # Exposing its lag as "best" would make an unsupported source look usable.
+        metrics = [window for window in row.get("windows", [])
+                   if window.get("state") == "stable_candidate"
+                   and window.get("bonferroniAdjustedPValue") is not None]
         best_for_market = min(metrics, key=lambda window: window.get("bonferroniAdjustedPValue", 1.0)) if metrics else None
         lead_sources.append({"market": row["market"], "state": row["state"],
             "currentMarketStatus": row["currentMarketStatus"], "source": row["source"],
@@ -80,7 +82,13 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             "bestHorizonMinutes": best_for_market["horizonMinutes"] if best_for_market else None,
             "correlation": best_for_market["correlation"] if best_for_market else None,
             "adjustedPValue": best_for_market["bonferroniAdjustedPValue"] if best_for_market else None,
-            "conditionalWinRate": best_for_market["conditionalWinRate"] if best_for_market else None})
+            "conditionalWinRate": best_for_market["conditionalWinRate"] if best_for_market else None,
+            "stability": best_for_market["stability"] if best_for_market else None,
+            "historicalCandidateOnly": best_for_market is not None})
+    ranked_sources = sorted((item for item in lead_sources if item["state"] == "stable_candidate"),
+                            key=lambda item: (item["adjustedPValue"],
+                                              -(item["sampleCount"] or 0), item["market"]))
+    ranked_sources = [{**item, "rank": index + 1} for index, item in enumerate(ranked_sources)]
     best = min(stable, key=lambda row: min(
         (window["bonferroniAdjustedPValue"] for window in row["windows"]
          if window["state"] == "stable_candidate" and window["bonferroniAdjustedPValue"] is not None),
@@ -118,7 +126,9 @@ def cross_market_evidence(database, code, now=None, lookback_days=240):
             "bestLagMinutes": best_lag, "conditionalWinRate": win_rate,
             "bestMarket": best_market, "currentMarketStatus": current_status,
             "ageSeconds": age_seconds, "researchWindow": {"start": start, "end": end_text},
-            "leadSources": lead_sources}
+            "leadSources": lead_sources, "rankedHistoricalCandidates": ranked_sources,
+            "eligibleForTradingSignal": False,
+            "validationState": "requires_pre_registered_future_replication" if ranked_sources else "no_validated_candidate"}
 
 
 def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samples=30):

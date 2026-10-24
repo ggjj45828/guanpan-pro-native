@@ -1184,6 +1184,9 @@ struct NextNASResearch: Codable, Equatable {
         let bestMarket: String?
         let currentMarketStatus: String?
         let ageSeconds: Double?
+        /// Historical discovery is not a live trading signal until prospectively replicated.
+        var eligibleForTradingSignal: Bool? = nil
+        var validationState: String? = nil
     }
     var crossMarket: CrossMarketEvidence? = nil
 }

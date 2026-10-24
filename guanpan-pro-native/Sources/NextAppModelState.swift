@@ -621,7 +621,10 @@ import Combine
                 let market = evidence.bestMarket.map { "，市场 \($0)" } ?? ""
                 let marketState = evidence.currentMarketStatus.map { "，市场状态 \($0)" } ?? ""
                 let freshness = evidence.ageSeconds.map { "，最新点距今 \(Int($0))秒" } ?? ""
-                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；\(evidence.reason ?? "")")
+                let useState = evidence.eligibleForTradingSignal == true
+                    ? "已获准进入风险判断，仍需核对当时行情与A股确认"
+                    : "仅历史研究候选，尚无预注册未来样本复现；不得作为做T/网格或加仓信号"
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)\(market)\(marketState)\(freshness)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；验证 \(evidence.validationState ?? "未知")；\(useState)；\(evidence.reason ?? "")")
             } else {
                 crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：NAS未提供跨市场验证结果；不可推断领先关系")
             }

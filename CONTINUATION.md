@@ -170,8 +170,17 @@
 - `get_minute` / `get_cross_market_minute` 现在连同归档观察返回采集时间元数据，使回放快照可以保留证据来源与时间。新增测试验证回放留档、按ID取回、输入指纹稳定和真实账本不变。
 - NAS版本提升为 `3.6.0-r21-replay-evidence-archive`。NAS研究测试34/34通过；Python `compileall`、Compose静态配置和 `git diff --check` 均通过。完整145项矩阵中第144项已更新，仍为🟠，因为没有真实100–200日样本和后续未见数据复现。
 - 本地提交为 `7dd9a17`。按既有授权尝试普通及提升权限的 GitHub 推送，均因当前执行环境无法解析/连接 `github.com:443` 失败；远端 Actions 因此没有由本提交触发。本机没有 `swift`/`xcodebuild`，IPA只能待云端构建恢复后确认。
-- 后续继续完善回放可发现性：新增只读最近回放摘要列表 `/v1/research/cross-market/runs?limit=20`，最大100条；没有真实分钟档案的请求不写入空研究记录。更新后 NAS 版本为 `3.6.0-r22-replay-history-index`，研究套件仍为34/34通过；尚未提交/推送这批变更。
+- 后续继续完善回放可发现性：新增只读最近回放摘要列表 `/v1/research/cross-market/runs?limit=20`，最大100条；没有真实分钟档案的请求不写入空研究记录。更新后 NAS 版本为 `3.6.0-r22-replay-history-index`，研究套件34/34通过；相关变更已提交本地 `0afda64`，但尚未推送。
 - 扩大回归时，之前未提权运行的 HTTP 测试因 Windows 沙箱禁止本机回环端口失败；改为只在 `127.0.0.1` 进行的本地测试后，根目录 58/58、旧服务 84/84、NAS兼容服务 34/34、IPA校验脚本 4/4 均通过。`compileall`、NAS Compose解析、差异检查也通过。此验证没有访问外网行情或真实账户。
 - 回放归档现在同时校验输入快照和最终报告各自的SHA-256；新增测试证明篡改快照或报告都会被拒绝。无数据请求只回显 `insufficient_real_archive`，不占用研究历史。NAS版本仍为 `3.6.0-r22-replay-history-index`，上述NAS 34项已重新全通过。
 - 当前构建情况：Windows环境没有Xcode/Swift编译器，需使用已授权GitHub Actions检查iOS构建/模拟器验证；本地NAS源码可用Python/Compose进行验证，但Docker Desktop未运行，仍不能声称NAS部署或iPhone联调完成。
 - 下一步从本记录继续：完成NAS静态/回归验证，逐项核查提交差异和文档版本；随后在授权验证分支安全推送源码以触发iOS Actions，检查并修复失败；准备NAS兼容格式包与完整源码包，逐一验证包内文件/密钥排除和哈希。只在可完成事项均完成后提供文件及逐项状态清单，外部NAS/iPhone/真实历史依赖项明确保留⚠️。
+
+## 2026-10-24 145项主链继续：归档择新与逐ETF历史候选
+
+- 用户重申不增加146/147项，优先贯通“采数据→逐ETF找领先关系→午休/背离→提出假设→A股确认→Risk Guard→统一策略→AI解释→复盘→NAS重新学习”；未达到真实证据门槛不得强行产生信号。
+- 修复NAS归档旧抓取覆盖：日K只允许较新的抓取更新已有交易日；旧抓取可补缺失历史日，不能改已有日；持仓1分钟和跨市场1分钟按UTC瞬时抓取时间择新，旧响应不能污染当前价格、IOPV、来源和回放证据。新增回归覆盖三类档案，含不同时区偏移比较。
+- `/v1/research/{code}` 对每只ETF独立输出 `rankedHistoricalCandidates`；只有100独立交易日、分段稳定且多重比较校正通过的市场才有历史候选名次/最佳窗口。其余来源不再显示“最佳领先分钟数”，避免将不合格窗口包装成规律。历史候选统一标记 `eligibleForTradingSignal=false`、`requires_pre_registered_future_replication`，尚不能直接影响交易。
+- 手机DTO解码该资格和验证状态，唯一DecisionContext明确提醒历史候选需预注册未来未见样本复现，未复现不得改变做T/网格/加仓结论；新增Swift解码和上下文断言，但本Windows环境仍无Swift/Xcode，尚未运行。
+- NAS版本升至 `3.6.0-r23-archive-freshness-and-candidate-gate`。NAS 36/36测试、Python compileall、NAS Compose静态解析、git差异格式检查通过；未在真实NAS/iPhone验证。矩阵8、116、118、129–131、145项已更新，并补齐116–145中12行缺少的Result列；状态仍为✅1、🟡16、🟠124、⚠️4。
+- 下一项当前环境可做：用明确版本的假设建立未来样本预注册/持续验证状态，先完成NAS研究链的可证伪闭环；再做A股实时确认与Risk Guard接线。不能把现有合成夹具或历史全样本筛选当作未来复现。已授权的GitHub验证分支推送因当前网络无法连通且上一轮推送被用户中止，本轮未再次发起；本地提交和云构建待继续。

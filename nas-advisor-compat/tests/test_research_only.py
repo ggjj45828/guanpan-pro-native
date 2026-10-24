@@ -19,6 +19,56 @@ from domain import InvalidData, NextDatabase
 
 
 class CrossMarketEvidenceTests(unittest.TestCase):
+    def test_older_fetch_cannot_replace_newer_daily_or_minute_evidence(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        def bar(day, close):
+            return {"date": day, "open": close, "close": close,
+                    "high": close, "low": close, "volume": "1000"}
+        newer = "2026-10-23T08:00:00+00:00"
+        older = "2026-10-23T07:00:00+00:00"
+        database.put_daily("512480", [bar("2026-10-23", "1.20")], newer)
+        database.put_daily("512480", [bar("2026-10-23", "9.99"),
+                                       bar("2026-10-22", "1.10")], older)
+        daily = database.get_daily("512480")
+        self.assertEqual(daily["fetchedAt"], newer)
+        self.assertEqual([row["close"] for row in daily["bars"]], ["1.10", "1.20"])
+
+        stamp = "2026-10-23T09:31:00+08:00"
+        def minute(price, iopv):
+            return {"timestamp": stamp, "price": price, "volume": "100", "iopv": iopv}
+        database.put_minute("512480", [minute("1.20", "1.21")], newer)
+        database.put_minute("512480", [minute("9.99", None)], older)
+        database.put_minute("512480", [{"timestamp": "2026-10-23T09:32:00+08:00",
+                                        "price": "1.21", "volume": "100", "iopv": None}],
+                            "2026-10-23T15:30:00+09:00")
+        archived = database.get_minute("512480", "2026-10-23")
+        self.assertEqual(archived["rows"][0]["price"], "1.20")
+        self.assertEqual(archived["rows"][0]["iopv"], "1.21")
+        self.assertEqual(archived["fetchedAt"], newer)
+
+    def test_older_cross_market_fetch_cannot_change_replay_price_or_source(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        row = {"timestamp": "2026-10-23T11:30:00+09:00", "price": "100"}
+        database.put_cross_market_minute("KR_KOSPI", [row], "new source", "2026-10-23T08:00:00Z")
+        database.put_cross_market_minute("KR_KOSPI", [dict(row, price="999")],
+                                         "old source", "2026-10-23T16:00:00+09:00")
+        database.put_cross_market_minute("KR_KOSPI", [
+            {"timestamp": "2026-10-23T11:31:00+09:00", "price": "101"}],
+            "older source", "2026-10-23T15:30:00+09:00")
+        archived = database.get_cross_market_minute("KR_KOSPI", "2026-10-23")
+        self.assertEqual(archived["rows"][0]["price"], "100")
+        self.assertIn("new source", archived["source"])
+        self.assertNotIn("old source", archived["source"])
+        self.assertEqual(archived["fetchedAt"], "2026-10-23T08:00:00+00:00")
+
     def test_replay_assessment_requires_holdout_controls_and_does_not_overclaim(self):
         few = [{"triggered": index < 20, "confirmed": index % 2 == 0}
                for index in range(100)]
@@ -380,6 +430,13 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(report["state"], "stable_candidate")
         self.assertEqual(report["bestMarket"], "KR_KOSPI")
         self.assertEqual(report["sampleCount"], 100)
+        self.assertEqual(report["rankedHistoricalCandidates"][0]["rank"], 1)
+        self.assertEqual(report["rankedHistoricalCandidates"][0]["market"], "KR_KOSPI")
+        self.assertFalse(report["eligibleForTradingSignal"],
+                         "历史发现不能在缺少预注册未来复现时直接触发交易")
+        self.assertEqual(report["validationState"], "requires_pre_registered_future_replication")
+        other_sources = [row for row in report["leadSources"] if row["market"] != "KR_KOSPI"]
+        self.assertTrue(all(row["bestLagMinutes"] is None for row in other_sources))
         self.assertEqual(report["source"], "verified fixture")
 
     def test_insufficient_or_stale_evidence_never_claims_stable_lead(self):
