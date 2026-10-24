@@ -70,6 +70,9 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
     var confirmedPrice: Decimal? = nil
     var confirmedUnits: Int? = nil
     var confirmedFee: Decimal? = nil
+    /// Links this hand-traded candidate to the immutable evidence snapshot that produced it.
+    /// Optional so older locally saved candidate plans remain decodable.
+    var decisionMemoryID: UUID? = nil
     var remainingUnits: Int { max(0, units - (confirmedUnits ?? 0)) }
     /// Actual fills must remain recordable after a plan expires or is withdrawn:
     /// the plan is advisory, while the broker-confirmed trade is an account fact.

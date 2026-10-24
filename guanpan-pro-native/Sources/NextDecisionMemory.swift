@@ -247,6 +247,38 @@ enum NextDecisionDiff {
 // MARK: - 决策记忆仓库（只做内存整理，持久化由 App 层负责）
 
 enum NextDecisionMemory {
+    /// Resolve a saved manual-trade candidate to today's pending evidence record.
+    /// Revisions preserve the original immutable snapshot, so matching by the latest price
+    /// would incorrectly fail after an intraday repricing; code/day/strategy is the stable key.
+    static func matchingRecordID(for plan: NextCandidatePlan, records: [NextDecisionRecord]) -> UUID? {
+        let isGrid = plan.kind == .gridBuy || plan.kind == .gridSell
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return records
+            .filter { record in
+                guard record.code == plan.code, record.outcome == .pending,
+                      calendar.isDate(record.createdAt, inSameDayAs: plan.createdAt) else { return false }
+                if isGrid { return record.snapshot.strategy.contains("网格") }
+                return record.snapshot.strategy.localizedCaseInsensitiveContains("t") || record.snapshot.strategy.contains("做T")
+            }
+            .max(by: { $0.createdAt < $1.createdAt })?.id
+    }
+
+    /// Store a user-confirmed broker fill; price-touch events never call this.
+    @discardableResult
+    static func confirmFill(_ record: inout NextDecisionRecord, price: Decimal, units: Int,
+                            at time: Date) -> Bool {
+        guard price > 0, !price.isNaN, units > 0,
+              time.timeIntervalSince1970.isFinite, time >= record.createdAt else { return false }
+        record.outcome = .filled
+        record.outcomeAt = time
+        record.review.filledPrice = NextMoney.text(price, digits: 4)
+        record.review.filledUnits = units
+        record.review.reviewedAt = nil
+        record.review.note = "券商真实成交已由用户确认；后续行情到达后再复盘"
+        return true
+    }
+
     /// 将 NAS 跨市场 DTO 压成有界、可追溯的快照；仅记事实和验证状态，不把相关性包装成交易信号。
     private static func crossMarketSnapshot(_ evidence: NextNASResearch.CrossMarketEvidence?) -> [String]? {
         guard let evidence else { return nil }

@@ -150,6 +150,44 @@ final class NextCoreTests: XCTestCase {
         XCTAssertEqual(noReserve?.addOption?.newAverageCost, Decimal(string: "1.70005"),
             "新成本应含真实买入手续费，并按持仓账面成本和实际新增份额重算")
     }
+    func testCandidatePlanLinksToSameDayDecisionMemoryAcrossRevision() throws {
+        let expires = now.addingTimeInterval(3600)
+        let plan = NextCandidatePlan(kind: .gridBuy, code: "159941", name: "纳指ETF",
+            limitPrice: Decimal(string: "1.380")!, units: 200, createdAt: now, expiresAt: expires,
+            triggerNote: "回落触发", cancelNote: "突破区间", quoteSource: "test", quoteTime: now,
+            dailyBarCount: 120, minuteSampleCount: 0, confidenceLevel: "high",
+            rationale: "manual candidate", expectedNetGain: nil, expectedCostReduction: nil,
+            riskNote: "波动风险", marketState: "震荡", cancelAbove: nil, cancelBelow: nil)
+        let original = NextDecisionSnapshot(state: "宽幅震荡", strategy: "网格", headline: "网格计划",
+            validUntil: now.addingTimeInterval(1800), limitPrice: "1.400", limitUnits: 100,
+            confidenceLevel: "high")
+        let record = NextDecisionRecord(code: plan.code, name: plan.name,
+            createdAt: now.addingTimeInterval(-3_600), snapshot: original)
+        XCTAssertEqual(NextDecisionMemory.matchingRecordID(for: plan, records: [record]), record.id,
+            "同日已改判时仍需链接到保留初始快照、记录 revisions 的那条决策记忆")
+        let otherDay = NextDecisionRecord(code: plan.code, name: plan.name,
+            createdAt: now.addingTimeInterval(-86_400), snapshot: original)
+        XCTAssertNil(NextDecisionMemory.matchingRecordID(for: plan, records: [otherDay]))
+        let otherStrategy = NextDecisionRecord(code: plan.code, name: plan.name,
+            createdAt: now, snapshot: NextDecisionSnapshot(state: "震荡", strategy: "持有",
+                headline: "继续持有", confidenceLevel: "high"))
+        XCTAssertNil(NextDecisionMemory.matchingRecordID(for: plan, records: [otherStrategy]))
+
+        var filled = record
+        XCTAssertTrue(NextDecisionMemory.confirmFill(&filled, price: Decimal(string: "1.379")!, units: 100, at: now))
+        XCTAssertEqual(filled.outcome, .filled)
+        XCTAssertEqual(filled.review.filledUnits, 100)
+        XCTAssertEqual(filled.review.filledPrice, NextMoney.text(Decimal(string: "1.379")!, digits: 4))
+        var invalid = record
+        XCTAssertFalse(NextDecisionMemory.confirmFill(&invalid, price: 0, units: 100, at: now))
+        XCTAssertEqual(invalid.outcome, .pending, "无效回填不能把建议误记为成交")
+        let encoded = try JSONEncoder().encode(plan)
+        var legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacyObject.removeValue(forKey: "decisionMemoryID")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let decodedLegacyPlan = try JSONDecoder().decode(NextCandidatePlan.self, from: legacyData)
+        XCTAssertNil(decodedLegacyPlan.decisionMemoryID, "旧版候选计划缺少关联字段时仍应可读取")
+    }
     func testWithdrawnGuidanceCannotBeSavedAsCandidatePlan() {
         let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
         let blocked = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,

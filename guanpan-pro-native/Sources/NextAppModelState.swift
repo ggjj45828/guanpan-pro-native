@@ -478,12 +478,9 @@ import Combine
     /// 账本更新仍然由真实流水入口负责，这里不改持仓、不改现金。
     func confirmDecisionFilled(id: UUID, price: Decimal, units: Int, at now: Date = Date()) {
         guard let index = decisionMemory.firstIndex(where: { $0.id == id }) else { return }
-        guard units > 0, price > 0 else { notice = "成交价与份额必须为正值"; return }
-        decisionMemory[index].outcome = .filled
-        decisionMemory[index].outcomeAt = now
-        decisionMemory[index].review.filledPrice = "\(price)"
-        decisionMemory[index].review.filledUnits = units
-        decisionMemory[index].review.reviewedAt = nil
+        guard NextDecisionMemory.confirmFill(&decisionMemory[index], price: price, units: units, at: now) else {
+            notice = "成交价与份额必须为正值，且决策仍可确认真实成交"; return
+        }
         notice = "已记录真实成交 \(units) 份 @ ¥\(price)。持仓与现金请在「录入真实成交」里更新。"
     }
 
@@ -579,6 +576,7 @@ import Combine
         } else {
             throw NextError.invalid("这只标的当前没有可保存的具体计划；数据不足时只能观察")
         }
+        plan.decisionMemoryID = NextDecisionMemory.matchingRecordID(for: plan, records: decisionMemory)
         try plan.validate()
         candidatePlans.insert(plan, at: 0)
         linkSuggestionToPlan(plan)
@@ -598,6 +596,7 @@ import Combine
         try recordTrade(code: plan.code, name: plan.name, side: plan.kind.side, units: units, price: price, fee: fee, at: tradedAt)
         candidatePlans[index] = revised
         markSuggestionExecuted(for: revised, price: revised.confirmedPrice ?? price, units: revised.confirmedUnits ?? units)
+        markDecisionMemoryFilled(for: revised, at: tradedAt)
         notice = "已记录真实成交 \(units) 份；计划剩余 \(candidatePlans[index].remainingUnits) 份。真实持仓、现金与收益已重算。"
         learnProfile()
         Task { await refreshGuidance() }
@@ -898,6 +897,16 @@ import Combine
         suggestions[index].savedPlanID = plan.id
         suggestions[index].priceEdited = plan.priceWasEdited
         suggestions[index].unitsEdited = plan.unitsWereEdited
+    }
+
+    /// A broker-confirmed fill updates the originating decision memory as well as the ledger.
+    /// It never infers a fill from a touched price or an unconfirmed candidate.
+    private func markDecisionMemoryFilled(for plan: NextCandidatePlan, at time: Date) {
+        guard let price = plan.confirmedPrice, let units = plan.confirmedUnits, units > 0,
+              let recordID = plan.decisionMemoryID
+                ?? NextDecisionMemory.matchingRecordID(for: plan, records: decisionMemory),
+              let index = decisionMemory.firstIndex(where: { $0.id == recordID }) else { return }
+        _ = NextDecisionMemory.confirmFill(&decisionMemory[index], price: price, units: units, at: time)
     }
 
     // MARK: 画像的「用户最终控制权」
