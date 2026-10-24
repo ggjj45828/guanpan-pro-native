@@ -113,6 +113,7 @@ struct DividendBuyScoreRow: View {
         case .batch: return p.chartGold
         case .observe: return p.chartBlue
         case .wait: return p.muted
+        case .insufficient: return p.muted
         }
     }
     private var isETF: Bool { NextDividendRules.isOnExchangeETF(score.code) }
