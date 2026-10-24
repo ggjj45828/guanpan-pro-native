@@ -90,6 +90,22 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(evidenced.promptBlock.contains("预注册的未来未见样本复现"))
     }
 
+    func testUnifiedAIContextIncludesPortfolioTargetAndRuleRiskEvidence() {
+        let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
+        let item = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,
+            strategy: .noTrade, headline: "组合仓位超限", whyToday: ["低于目标权重，仅作排序参考"],
+            tPlan: nil, gridPlan: nil, recovery: nil, confidence: confidence,
+            portfolioNote: "组合行情不完整，暂停加仓", riskNotes: ["没有可靠来源报价"],
+            score: 0, rank: 1, isActionable: false)
+        let guidance = NextDailyGuidance(generatedAt: now, items: [item], summary: "今天不建议交易",
+                                         noActionSummary: "继续持有", dataState: "持仓数据不足")
+        let context = NextDecisionContextBuilder.build(guidance: guidance, book: NextBook(), quotes: [:],
+                                                       nasResearchLines: [], newsLines: [], now: now)
+        XCTAssertTrue(context.promptBlock.contains("低于目标权重，仅作排序参考"))
+        XCTAssertTrue(context.promptBlock.contains("组合行情不完整，暂停加仓"))
+        XCTAssertTrue(context.promptBlock.contains("没有可靠来源报价"))
+    }
+
     func testOnlineAIOutputGuardBlocksUnplannedActionPrices() {
         let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "今天不建议交易",
                                          noActionSummary: "继续持有", dataState: "无合格计划")

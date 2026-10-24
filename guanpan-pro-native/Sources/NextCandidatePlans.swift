@@ -269,6 +269,37 @@ struct NextDailyGuidance: Equatable {
     var actionableItems: [NextGuidanceItem] { items.filter(\.isActionable) }
 }
 
+enum NextPortfolioRiskGuard {
+    /// A grid contains buy tiers; it cannot remain actionable after the account
+    /// concentration cap has been breached.
+    static func apply(overweightNote: String?, to result: NextGridPlannerResult) -> NextGridPlannerResult {
+        guard let overweightNote, case .ready = result else { return result }
+        return .notRecommended([overweightNote, "组合上限优先于单只ETF的网格机会；先降低集中度或调整目标，再重新评估"])
+    }
+
+    static func allocationAssessment(currentPercent: Double, concentrationLimit: Double,
+                                     targetPercent: Double?) -> (blockingNote: String?, context: String?, priorityBoost: Double) {
+        guard currentPercent.isFinite, concentrationLimit.isFinite,
+              currentPercent >= 0, concentrationLimit > 0 else {
+            return ("组合风险比例无法可靠计算；暂停新增买入计划", nil, 0)
+        }
+        if currentPercent > concentrationLimit {
+            return ("该只占比 \(String(format: "%.1f", currentPercent))%，超过你设置的 \(String(format: "%.1f", concentrationLimit))% 组合上限", nil, 0)
+        }
+        guard let targetPercent, targetPercent.isFinite, targetPercent >= 0, targetPercent <= 100 else {
+            return (nil, nil)
+        }
+        let gap = targetPercent - currentPercent
+        if gap >= 0.5 {
+            return (nil, "当前占比 \(String(format: "%.1f", currentPercent))%，低于你设定的目标 \(String(format: "%.1f", targetPercent))%（差 \(String(format: "%.1f", gap)) 个百分点）；仅作长期配置排序参考，仍须通过行情、资金和交易风险检查", min(1.5, gap * 0.05))
+        }
+        if gap <= -0.5 {
+            return ("当前占比 \(String(format: "%.1f", currentPercent))%，已高于你设定的目标权重 \(String(format: "%.1f", targetPercent))%；暂停新增买入计划", nil, 0)
+        }
+        return (nil, "当前占比接近你设定的目标权重 \(String(format: "%.1f", targetPercent))%", 0)
+    }
+}
+
 enum NextOpportunityScanner {
     /// 扫描全部真实持仓，按「成功概率 × 风险 × 流动性 × 成本 × 数据可信度」排序。
     /// 不预测涨跌；不交易是正常结论。
@@ -281,6 +312,11 @@ enum NextOpportunityScanner {
                      news: [String: [NextNewsInput]] = [:],
                      now: Date) -> NextDailyGuidance {
         let total = book.total(using: quotes)
+        let heldPositions = book.positions.filter { $0.units > 0 }
+        let portfolioValuationReliable = !heldPositions.isEmpty && heldPositions.allSatisfy { position in
+            guard let quote = quotes[position.code] else { return false }
+            return quote.isFreshForPricePlan(at: now)
+        }
         var items: [NextGuidanceItem] = []
 
         for position in book.positions where position.units > 0 {
@@ -325,11 +361,19 @@ enum NextOpportunityScanner {
 
             // 组合级判断：单只超配时，价格再好也只能观察。
             var portfolioNote: String?
-            if let quote, let total, total > 0 {
+            var allocationContext: String?
+            var allocationPriority = 0.0
+            if !portfolioValuationReliable {
+                portfolioNote = "组合内并非所有真实持仓都有新鲜且带来源时间的行情；组合权重无法核验，暂停新增买入计划"
+            } else if let quote, let total, total > 0 {
                 let weight = NextNum.double(quote.price * Decimal(position.units) / total * 100)
-                if weight > NextNum.double(goal.concentrationLimit) {
-                    portfolioNote = "该只占比 \(String(format: "%.1f", weight))%，已超过你设置的 \(NextNum.text(NextNum.double(goal.concentrationLimit)))% 组合上限：价格再有吸引力也不建议继续增加"
-                }
+                let assessment = NextPortfolioRiskGuard.allocationAssessment(
+                    currentPercent: weight,
+                    concentrationLimit: NextNum.double(goal.concentrationLimit),
+                    targetPercent: goal.targetWeights[position.code].map { NextNum.double($0) })
+                portfolioNote = assessment.blockingNote
+                allocationContext = assessment.context
+                allocationPriority = assessment.priorityBoost
             }
 
             var tPlan: NextTPlannerResult?
@@ -370,13 +414,16 @@ enum NextOpportunityScanner {
                     }
                 }
             case .grid:
-                let result = NextGridPlanner.plan(book: book, quote: quote, daily: bars, gridCheck: gridCheck,
-                                                  rules: rules[position.code], nasRange: nasRange,
-                                                  orderBook: orderBooks[position.code],
-                                                  caps: caps, now: now)
+                let calculated = NextGridPlanner.plan(book: book, quote: quote, daily: bars, gridCheck: gridCheck,
+                                                      rules: rules[position.code], nasRange: nasRange,
+                                                      orderBook: orderBooks[position.code],
+                                                      caps: caps, now: now)
+                let result = NextPortfolioRiskGuard.apply(overweightNote: portfolioNote, to: calculated)
                 gridPlan = result
                 if case let .ready(plan) = result {
                     headline = "网格 · \(plan.tiers.count) 档 / 间距 \(String(format: "%.2f", plan.spacingPercent))%"
+                } else if portfolioNote != nil {
+                    headline = "组合仓位超限 · 暂停网格"
                 }
             case .hold, .waitBuy, .pauseAdd, .reduce, .noTrade:
                 break
@@ -396,6 +443,7 @@ enum NextOpportunityScanner {
                 score += 2.5 + min(3.0, NextNum.double(plan.netGain / Decimal(100)))
             }
             if let gridPlan, case .ready = gridPlan { score += 2.5 }
+            score += allocationPriority
             if reading.state == .trendingUp { score += 1.5 }
             if reading.state == .anomalous { score -= 3 }
             if let turnover = gridCheck.avgTurnoverYi, turnover < 0.3 { score -= 2 }
@@ -408,6 +456,7 @@ enum NextOpportunityScanner {
             if !actionable { score -= 1 }
 
             var whyToday = reading.reasons + nasNotes
+            if let allocationContext { whyToday.append(allocationContext) }
             if let rsi = reading.signal?.rsi { whyToday.append("RSI14 \(String(format: "%.1f", rsi))") }
             if oscillating { whyToday.append("今日价格穿越 VWAP \(stats.vwapCrossings) 次，日内反复震荡") }
             if let amplitude = stats.amplitudePercent, amplitude > 0 {
@@ -624,12 +673,22 @@ enum NextDecisionContextBuilder {
                 line += "；候选：\(plan.kind.rawValue) 卖出 ¥\(NextMoney.text(plan.sellPrice, digits: 3)) / 买回 ¥\(NextMoney.text(plan.buyPrice, digits: 3)) × \(plan.units) 份，净收益约 ¥\(NextMoney.text(plan.netGain))，等效降本 ¥\(NextMoney.text(plan.costReductionPerUnit, digits: 3))/份，置信度 \(plan.confidence.level.rawValue)"
             }
             if case .ready(let plan) = item.gridPlan {
-                line += "；网格 \(plan.tiers.count) 档，间距 \(String(format: "%.2f", plan.spacingPercent))%，最大占用 ¥\(NextMoney.text(plan.maxCashUsage))"
+                let tiers = plan.tiers.map { tier in
+                    let gain = tier.expectedNetGain.map { "，往返净收益约 ¥\(NextMoney.text($0))（已扣双边手续费）" } ?? "，无可配对对侧档，不估收益"
+                    return "\(tier.side == "buy" ? "买" : "卖") ¥\(NextMoney.text(tier.price, digits: 3)) × \(tier.units) 份\(gain)"
+                }.joined(separator: "；")
+                line += "；网格 \(plan.tiers.count) 档，间距 \(String(format: "%.2f", plan.spacingPercent))%，最大占用 ¥\(NextMoney.text(plan.maxCashUsage))；档位：\(tiers)"
             }
             if case .insufficientData(_, let reasons) = item.tPlan {
                 line += "；数据不足不出价（\(reasons.first ?? "")）"
             }
             if let note = item.portfolioNote { line += "；组合：\(note)" }
+            if !item.whyToday.isEmpty { line += "；规则依据：\(item.whyToday.joined(separator: "；"))" }
+            if !item.riskNotes.isEmpty { line += "；风险：\(item.riskNotes.joined(separator: "；"))" }
+            if let profileNote = item.profileNote { line += "；画像门槛：\(profileNote)" }
+            if let impact = item.newsImpact, !impact.reasons.isEmpty {
+                line += "；新闻影响：\(impact.reasons.joined(separator: "；"))"
+            }
             planLines.append(line)
         }
         let promptBlock = """

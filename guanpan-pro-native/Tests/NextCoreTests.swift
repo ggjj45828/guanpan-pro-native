@@ -45,6 +45,44 @@ final class NextCoreTests: XCTestCase {
             price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.010")!,
             units: 0, feePerTrade: Decimal(string: "0.10")!))
     }
+    func testPortfolioCapWithdrawsActionableGridPlan() {
+        let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
+        let plan = NextGridPlan(code: "159941", name: "纳指ETF", upper: 1.2, lower: 1.0,
+            tiers: [NextGridTier(side: "buy", price: 1.1, units: 100, cashRequired: 110,
+                                 expectedNetGain: 0.8)], maxCashUsage: 110,
+            remainingUnitsAfterAllSells: 100, spacingPercent: 0.5,
+            validUntil: now.addingTimeInterval(3600), pauseConditions: [], reasons: [],
+            warnings: [], confidence: confidence)
+        guard case let .notRecommended(reasons) = NextPortfolioRiskGuard.apply(
+            overweightNote: "单只资产超组合上限", to: .ready(plan)) else {
+            return XCTFail("组合超限时网格计划不应继续保持可执行")
+        }
+        XCTAssertTrue(reasons.joined(separator: " ").contains("组合上限"))
+        guard case .ready = NextPortfolioRiskGuard.apply(overweightNote: nil, to: .ready(plan)) else {
+            return XCTFail("没有超限时不应更改网格结果")
+        }
+    }
+    func testPortfolioAllocationTargetInformsOrBlocksWithoutCreatingAnOrder() {
+        let under = NextPortfolioRiskGuard.allocationAssessment(currentPercent: 12, concentrationLimit: 40,
+                                                                targetPercent: 20)
+        XCTAssertNil(under.blockingNote)
+        XCTAssertTrue(under.context?.contains("长期配置排序参考") == true)
+        XCTAssertGreaterThan(under.priorityBoost, 0)
+
+        let overTarget = NextPortfolioRiskGuard.allocationAssessment(currentPercent: 21, concentrationLimit: 40,
+                                                                     targetPercent: 20)
+        XCTAssertTrue(overTarget.blockingNote?.contains("目标权重") == true)
+        XCTAssertNil(overTarget.context)
+        XCTAssertEqual(overTarget.priorityBoost, 0)
+
+        let overLimit = NextPortfolioRiskGuard.allocationAssessment(currentPercent: 41, concentrationLimit: 40,
+                                                                    targetPercent: 60)
+        XCTAssertTrue(overLimit.blockingNote?.contains("组合上限") == true)
+        XCTAssertEqual(overLimit.priorityBoost, 0)
+        XCTAssertTrue(NextPortfolioRiskGuard.allocationAssessment(currentPercent: .infinity,
+                                                                   concentrationLimit: 40,
+                                                                   targetPercent: nil).blockingNote?.contains("无法可靠计算") == true)
+    }
     func testHomeNASStatusRequiresRecentHealthProbe() {
         let now = Date(timeIntervalSince1970: 1_797_375_200)
         XCTAssertFalse(NextServiceConnectionStatus.isOnline(configured: true, reachable: nil, probedAt: nil, now: now))
