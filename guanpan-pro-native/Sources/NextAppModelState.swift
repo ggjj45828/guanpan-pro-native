@@ -2,8 +2,8 @@ import Foundation
 import SwiftUI
 import Combine
 
-final class NextAppModel {
-    var ledger: NextAuditedBook
+@MainActor final class NextAppModel {
+    @Published var ledger: NextAuditedBook = NextAuditedBook(current: NextBook()) { didSet { reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
     @Published var preferences = LocalPreferences() { didSet { reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
     @Published var quotes: [String: NextCachedQuote] = [:] { didSet { reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
     @Published var chartData: [String: NextChartDataset] = [:] { didSet { reportSave(repository.save(chartData, filename: "chart-history-v1.json")) } }
@@ -1484,3 +1484,5 @@ final class NextAppModel {
     }
 }
 
+
+extension NextAppModel: ObservableObject {}
