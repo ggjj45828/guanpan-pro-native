@@ -951,7 +951,16 @@ private struct FullscreenChartScreen: View {
     var body: some View {
         GeometryReader { geo in
             VStack(alignment: .leading, spacing: 14) {
-                HStack { VStack(alignment: .leading) { Text(knownName(code)).font(.headline).accessibilityIdentifier("chart.fullscreen.security-name"); Text("\(code) · \(model.quotes[code]?.stamp.label(now: Date()) ?? "暂无行情")").font(.caption).foregroundStyle(p.muted) }; Spacer(); NavigationLink(value: GPRoute.decision(code)) { Label("分析", systemImage: "sparkles").font(.caption.weight(.semibold)) } }
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(knownName(code)).font(.headline)
+                        Text("\(code) · \(model.quotes[code]?.stamp.label(now: Date()) ?? "暂无行情")").font(.caption).foregroundStyle(p.muted)
+                    }
+                    Spacer()
+                    NavigationLink(value: GPRoute.decision(code)) { Label("分析", systemImage: "sparkles").font(.caption.weight(.semibold)) }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chart.fullscreen.header")
                 DataPanel(title: "价格与 IOPV", accent: p.chartViolet, caption: geo.size.width > geo.size.height ? "横屏 · 拖动/双指缩放" : "竖屏") {
                     UnifiedChartView(dataset: interval == .intraday ? model.chartData[code] : model.chartData["\(code):day"], interval: $interval, costPerUnit: model.book.positions.first(where: { $0.code == code })?.costPerUnit, selectedTime: $crosshair, securityCode: code, expanded: true)
                     if interval != .intraday, let dailyError = model.dailyErrors[code] {
