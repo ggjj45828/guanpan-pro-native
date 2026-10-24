@@ -118,7 +118,26 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
             state = .expired; stateChangedAt = now
             return "\(name) 的计划已过有效期，建议作废，重新分析后再决定"
         }
-        guard let quote, quote.code == code else { return nil }
+        guard let quote else {
+            state = .invalidated; stateChangedAt = now
+            return "\(name) 当前没有可核验行情，原计划自动作废；行情恢复后请重新分析"
+        }
+        guard quote.code == code else {
+            state = .invalidated; stateChangedAt = now
+            return "\(name) 收到的行情证券代码不匹配，原计划自动作废，避免误按其他证券价格操作"
+        }
+        guard quote.price > 0, !quote.price.isNaN else {
+            state = .invalidated; stateChangedAt = now
+            return "\(name) 的行情价格无效，原计划自动作废；请刷新行情后重新分析"
+        }
+        guard quote.hasReliableMarketTime else {
+            state = .invalidated; stateChangedAt = now
+            return "\(name) 的行情没有可核验的供应商时间，原计划自动作废；请使用带来源时间的行情重新分析"
+        }
+        if quote.time > now {
+            state = .invalidated; stateChangedAt = now
+            return "\(name) 的行情时间戳晚于当前时间，数据时钟异常，原计划自动作废"
+        }
         if let age = quoteAge(quote, now), age > 120 {
             state = .invalidated; stateChangedAt = now
             return "\(name) 的行情已 \(age / 60) 分钟未更新，原计划自动作废，避免按旧价格挂单"

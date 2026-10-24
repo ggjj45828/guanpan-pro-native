@@ -236,6 +236,44 @@ final class NextCoreTests: XCTestCase {
         XCTAssertThrowsError(try plan.confirmRealFill(price: 0.86, units: 1, fee: 0.1,
             at: now.addingTimeInterval(30), now: now.addingTimeInterval(30)))
     }
+    func testCandidatePlanInvalidatesWhenQuoteCannotSafelyValidateIt() throws {
+        func plan() -> NextCandidatePlan {
+            NextCandidatePlan(kind: .reverseT, code: "159941", name: "纳指ETF",
+                limitPrice: Decimal(string: "1.450")!, units: 100,
+                createdAt: now, expiresAt: now.addingTimeInterval(3600),
+                triggerNote: "触及计划价", cancelNote: "行情或区间失效",
+                quoteSource: "test", quoteTime: now, dailyBarCount: 120, minuteSampleCount: 200,
+                confidenceLevel: "high", rationale: "仅用于状态迁移回归测试", expectedNetGain: nil,
+                expectedCostReduction: nil, riskNote: "行情风险", marketState: "震荡",
+                cancelAbove: nil, cancelBelow: nil)
+        }
+        func quote(code: String = "159941", time: Date? = nil,
+                   timeQuality: String? = "exchange_time", price: Decimal = 1.4) -> NextQuote {
+            NextQuote(code: code, name: "纳指ETF", price: price, previousClose: 1.4,
+                      time: time ?? now, source: "test", timeQuality: timeQuality)
+        }
+
+        let invalidCases: [(String, NextQuote?)] = [
+            ("缺失行情", nil),
+            ("证券代码不符", quote(code: "510300")),
+            ("供应商时间超前", quote(time: now.addingTimeInterval(61))),
+            ("仅有接收时间", quote(timeQuality: "receipt_only")),
+            ("报价过期", quote(time: now.addingTimeInterval(-121))),
+            ("无效价格", quote(price: 0))
+        ]
+        for (label, incoming) in invalidCases {
+            var candidate = plan()
+            let message = candidate.refresh(quote: incoming, now: now)
+            XCTAssertEqual(candidate.state, .invalidated, label)
+            XCTAssertNotNil(message, label)
+            XCTAssertNil(candidate.triggeredAt, label)
+        }
+
+        var valid = plan()
+        let triggered = valid.refresh(quote: quote(price: Decimal(string: "1.451")!), now: now)
+        XCTAssertEqual(valid.state, .triggered)
+        XCTAssertNotNil(triggered)
+    }
     // IOPV 图层是可选的：关掉时纵轴只按成交价，不被 IOPV 撑开；
     // 打开时才把 IOPV 纳入同一根价格轴（UnifiedChartView 也按 visibleLayers 处理）。
     func testChartPriceDomainFollowsIOPVLayerVisibility() throws {
