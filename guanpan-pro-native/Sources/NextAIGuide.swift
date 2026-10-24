@@ -584,10 +584,10 @@ enum NextTradeTPlanner {
         }
         // 画像上限：这是硬约束，不是提示。低于一手时不压缩（否则等于禁止交易，应走「不做」结论）。
         var capNotes: [String] = []
-        if let cap = caps?.maxTUnits, cap >= lotSize, units > cap {
+        if let cap = caps.maxTUnits, cap >= lotSize, units > cap {
             let capped = (cap / lotSize) * lotSize
             if capped >= lotSize {
-                capNotes.append("份额从 \(units) 份压到 \(capped) 份：" + (caps?.tUnitsNote ?? "按你的画像上限"))
+                capNotes.append("份额从 \(units) 份压到 \(capped) 份：" + (caps.tUnitsNote ?? "按你的画像上限"))
                 units = capped
             }
         }
@@ -633,12 +633,12 @@ enum NextTradeTPlanner {
         var trample = "若卖出后价格继续上涨超过 \(String(format: "%.2f", amplitude))%（约 ¥\(NextMoney.text(sellPrice + referenceRise, digits: 3))）且当日不回落至买回价，本次做T踏空，约少赚 ¥\(NextMoney.text(max(0, missCost)))"
         if let historyMissRate {
             trample += "；长期分时统计中卖出后未回落比例约 \(Int((historyMissRate * 100).rounded()))%"
-        } else if let medianAmplitude = caps?.nasAmplitude60 {
+        } else if let medianAmplitude = caps.nasAmplitude60 {
             // 用 NAS 60 日振幅中位数与本次所需价差做比值：只是「历史上这种波动够不够」，
             // 不是预测，也不能反过来证明今天一定会回落。
             let needed = NextNum.double(grossSpread / buyPrice * 100)
             let reach = needed > 0 ? min(1.0, medianAmplitude / needed) : 0
-            let trips = caps?.nasRoundTrips60
+            let trips = caps.nasRoundTrips60
             trample += "；NAS 60 日日内振幅中位数 \(String(format: "%.2f", medianAmplitude))%，本次所需价差 \(String(format: "%.2f", needed))%，历史覆盖度约 \(Int((reach * 100).rounded()))%"
             if let trips { trample += "（同期日均往返 \(String(format: "%.1f", trips)) 次）" }
         } else {
@@ -659,15 +659,15 @@ enum NextTradeTPlanner {
         evidence.append("VWAP ¥\(NextMoney.text(vwap, digits: 3))（今日 \(stats.sampleCount) 点\(stats.vwapIsWeighted ? "，成交量加权" : "，简单均值——缺成交量数据")）")
         evidence.append("今日高低 ¥\(NextMoney.text(dayLow, digits: 3))–¥\(NextMoney.text(dayHigh, digits: 3))，振幅 \(String(format: "%.2f", amplitude))%")
         evidence.append("价格穿越 VWAP \(stats.vwapCrossings) 次（日内往返，做T空间来源）")
-        evidence.append("NAS 60 日成交量覆盖 \(Int(((caps?.nasVolumeCoverage60 ?? 0) * 100).rounded()))%；VWAP 上/下偏离中位数 \(String(format: "%.2f", historicalHighDeviation * 100))% / \(String(format: "%.2f", historicalLowDeviation * 100))%")
+        evidence.append("NAS 60 日成交量覆盖 \(Int(((caps.nasVolumeCoverage60 ?? 0) * 100).rounded()))%；VWAP 上/下偏离中位数 \(String(format: "%.2f", historicalHighDeviation * 100))% / \(String(format: "%.2f", historicalLowDeviation * 100))%")
         evidence.append("实时盘口价差 \(String(format: "%.3f", liquidity.spreadPercent))%；五档深度买 \(String(format: "%.0f", liquidity.bidDepthLots)) 手 / 卖 \(String(format: "%.0f", liquidity.askDepthLots)) 手（\(orderBook.source)）")
         if let rsi = NextSignalEngine.evaluate(bars)?.rsi {
             evidence.append("RSI14 \(String(format: "%.1f", rsi))")
         }
         evidence.append("现价 ¥\(NextMoney.text(quote.price, digits: 3))（\(quote.source)，\(confidence.quoteAgeSeconds ?? 0) 秒前）")
         evidence.append(contentsOf: capNotes)
-        if let medianAmplitude = caps?.nasAmplitude60, let days = caps?.nasDays {
-            evidence.append("NAS \(days) 天分时：60 日振幅中位数 \(String(format: "%.2f", medianAmplitude))%，日均往返 \(String(format: "%.1f", caps?.nasRoundTrips60 ?? 0)) 次")
+        if let medianAmplitude = caps.nasAmplitude60, let days = caps.nasDays {
+            evidence.append("NAS \(days) 天分时：60 日振幅中位数 \(String(format: "%.2f", medianAmplitude))%，日均往返 \(String(format: "%.1f", caps.nasRoundTrips60 ?? 0)) 次")
         }
 
         let plan = NextTPlan(kind: kind, code: quote.code, name: quote.name, sellPrice: sellPrice, buyPrice: buyPrice,
