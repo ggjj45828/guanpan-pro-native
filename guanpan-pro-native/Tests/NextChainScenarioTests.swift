@@ -103,6 +103,25 @@ final class NextChainScenarioTests: XCTestCase {
                       "整数价位同样不能绕过价格授权检查")
     }
 
+    func testPhoneQuoteChainFillsOnlyMissingCodesFromFallbackSources() async throws {
+        struct QuoteStub { let code: String }
+        let result = try await NextMarketChain.fillMissing(
+            requested: ["A", "B", "B"],
+            attempts: [
+                ("主源", { codes -> [QuoteStub] in
+                    codes.filter { $0 == "A" }.map { QuoteStub(code: $0) }
+                }),
+                ("备用源", { codes -> [QuoteStub] in
+                    XCTAssertEqual(codes, ["B"], "备用源只应收到主源缺失的证券")
+                    return [QuoteStub(code: "B")]
+                })
+            ],
+            key: { $0.code })
+        XCTAssertEqual(result.value.map(\.code), ["A", "B"])
+        XCTAssertTrue(result.missing.isEmpty)
+        XCTAssertEqual(result.source, "主源 1只 + 备用源 1只")
+    }
+
     func testHistoricalCrossMarketCandidateDecodesAsNonTradingEvidence() throws {
         let payload = """
         {"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{

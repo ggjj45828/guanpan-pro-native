@@ -12,6 +12,48 @@ enum NextMarketChain {
         let trail = failures.map { "\($0.source)（\($0.reason)）" }.joined(separator: " → ")
         throw NextError.invalid("行情源全部不可用：\(trail)")
     }
+
+    /// Query later providers only for codes missing from earlier responses.
+    /// A partial but non-empty response must not silently suppress fallback sources.
+    static func fillMissing<T, Key: Hashable>(requested: [Key],
+                                               attempts: [(source: String, run: ([Key]) async throws -> [T])],
+                                               key: (T) -> Key?) async throws
+        -> (value: [T], source: String, missing: [Key]) {
+        var ordered: [Key] = []
+        var seen = Set<Key>()
+        for code in requested where seen.insert(code).inserted { ordered.append(code) }
+        let requestedSet = Set(ordered)
+        var found: [Key: T] = [:]
+        var usedSources: [(String, Int)] = []
+        var failures: [(String, String)] = []
+
+        for attempt in attempts {
+            let missing = ordered.filter { found[$0] == nil }
+            guard !missing.isEmpty else { break }
+            do {
+                let rows = try await attempt.run(missing)
+                var added = 0
+                for row in rows {
+                    guard let code = key(row), requestedSet.contains(code), found[code] == nil else { continue }
+                    found[code] = row
+                    added += 1
+                }
+                if added > 0 { usedSources.append((attempt.source, added)) }
+                if added == 0 { failures.append((attempt.source, "未返回缺失代码的有效报价")) }
+            } catch {
+                failures.append((attempt.source, error.localizedDescription))
+            }
+        }
+
+        guard !found.isEmpty else {
+            let trail = failures.map { "\($0.0)（\($0.1)）" }.joined(separator: " → ")
+            throw NextError.invalid("行情源未返回有效报价：\(trail)")
+        }
+        let missing = ordered.filter { found[$0] == nil }
+        let source = usedSources.map { "\($0.0) \($0.1)只" }.joined(separator: " + ")
+        return (ordered.compactMap { found[$0] },
+                source + (missing.isEmpty ? "" : " · 仍缺 \(missing.count) 只"), missing)
+    }
 }
 
 /// 东财证券代码（secid）：沪市(5/6/9)→1.xxxxxx；深市与北交所(0/1/2/3/4/8)→0.xxxxxx。

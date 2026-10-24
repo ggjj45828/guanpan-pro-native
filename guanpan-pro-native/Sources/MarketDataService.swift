@@ -2,8 +2,8 @@ import Foundation
 
 /// 直连行情源（不经过 NAS）的多源 fallback。
 ///
-/// 每个 fetcher 按优先级顺序尝试，第一个成功的源立即返回并带上实际生效的源名，
-/// 界面上「数据来自哪里」由此标注；只有全部失败才抛错，且错误列出每个源的失败原因。
+/// 报价按代码逐源补齐缺口；分时与日 K 按优先级尝试首个完整有效来源。
+/// 返回来源名供界面追溯；报价部分缺失会在结果中标出，不把缺少报价的证券伪装成已更新。
 /// 源链与 NAS 服务端 server/market.py 完全一致，两端行为不分叉：
 /// - 报价：腾讯 qt → 东财 ulist → 新浪 hq
 /// - 分时：腾讯 minute → 东财 1 分钟 K 线
@@ -45,12 +45,12 @@ enum NextMarketDataService {
     }
 
     static func fetchQuotes(codes: [String], session: URLSession = .shared) async throws -> (value: [NextQuote], source: String) {
-        let attempts: [(source: String, run: () async throws -> [NextQuote])] = [
-            ("腾讯行情", { try await tencentQuotes(codes: codes, session: session) }),
-            ("东财行情", { try await eastMoneyQuotes(codes: codes, session: session) }),
-            ("新浪行情", { try await sinaQuotes(codes: codes, session: session) })
-        ]
-        return try await NextMarketChain.first(attempts)
+        let result = try await NextMarketChain.fillMissing(requested: codes, attempts: [
+            ("腾讯行情", { missing in try await tencentQuotes(codes: missing, session: session) }),
+            ("东财行情", { missing in try await eastMoneyQuotes(codes: missing, session: session) }),
+            ("新浪行情", { missing in try await sinaQuotes(codes: missing, session: session) })
+        ], key: { $0.code })
+        return (result.value, result.source)
     }
 
     static func fetchIntraday(code: String, session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
