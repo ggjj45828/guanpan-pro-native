@@ -2441,6 +2441,25 @@ private struct DividendAdviceCard: View {
         guard targetYield > 0, perShare > 0 else { return nil }
         return perShare / (targetYield / 100)
     }
+    private var dividendScore: DividendBuyScore? {
+        guard let code else { return nil }
+        return DividendBuyScoreEngine.evaluate(
+            code: code,
+            perShare: perShare,
+            price: quote?.price,
+            iopv: quote?.iopv,
+            samples: model.chartData["\(code):day"]?.orderedSamples ?? [],
+            dividendEvents: events,
+            today: dividendTodayString(),
+            targetYieldPercent: targetYield
+        )
+    }
+    private var dividendScoreSummary: String? {
+        guard let score = dividendScore else { return nil }
+        let base = "股息 \(score.yieldPoints)/40 · 价格位置 \(score.positionPoints)/35 · 回撤 \(score.drawdownPoints)/15 · 分红稳定 \(score.stabilityPoints)/10"
+        guard !score.missing.isEmpty else { return base }
+        return "\(base)；缺少 \(score.missing.joined(separator: "、"))"
+    }
     private var nextDividendText: String? {
         let confirmed = events.filter { $0.isEstimated != true }.map(\.date).sorted()
         guard let last = confirmed.last else { return nil }
@@ -2459,20 +2478,26 @@ private struct DividendAdviceCard: View {
         guard let target = targetPrice, target > 0 else {
             return ("先填目标股息率", "目标买入价 = 近12个月每份 ¥\(NextMoney.text(perShare, digits: 3)) ÷ 目标股息率。", p.muted)
         }
-        let premium = (price / target - 1) * 100
         let current = NextMoney.text(perShare / price * 100, digits: 3)
+        guard let score = dividendScore else {
+            return ("综合数据不足，暂不判断", "当前股息率约 \(current)%，但缺少可用综合评分数据；目标股息率只是筛选门槛，不单独构成买入理由。", p.muted)
+        }
+        let factorSummary = "综合 \(score.total) 分（股息 \(score.yieldPoints)/40、价格位置 \(score.positionPoints)/35、回撤 \(score.drawdownPoints)/15、分红稳定 \(score.stabilityPoints)/10）"
+        if !score.missing.isEmpty {
+            return ("综合评分数据不完整", "\(factorSummary)。缺少：\(score.missing.joined(separator: "、"))。目标价 ¥\(NextMoney.text(target, digits: 3))只作参考，不据此提示买入。", p.muted)
+        }
+        if price <= target, score.total >= 60 {
+            return ("达到股息门槛，价格与分红条件值得关注", "当前股息率约 \(current)%，\(factorSummary)。仍需结合基金质量、组合仓位和风险判断；这不是买入指令。", p.jade)
+        }
         if price <= target {
-            return ("现价不高于目标买入价，值得关注", "当前股息率 \(current)%，已达到目标 \(NextMoney.text(targetYield, digits: 3))%。", p.jade)
+            return ("股息率达标，但综合条件尚不足", "当前股息率约 \(current)%，\(factorSummary)。高股息可能来自价格下跌，先核查原因，不因单一指标买入。", p.chartGold)
         }
-        if premium <= 15 {
-            return ("在目标价 +15% 以内，可分批", "当前股息率 \(current)%，比目标买入价 ¥\(NextMoney.text(target, digits: 3)) 高 \(NextMoney.text(premium, digits: 3))%。", p.chartGold)
-        }
-        return ("高于目标价，建议等回落", "当前股息率 \(current)%，比目标买入价 ¥\(NextMoney.text(target, digits: 3)) 高 \(NextMoney.text(premium, digits: 3))%；价越低股息率越高。", p.terracotta)
+        return ("尚未达到目标股息率门槛", "当前股息率约 \(current)%，\(factorSummary)；目标参考价 ¥\(NextMoney.text(target, digits: 3))。继续观察价格和分红变化，不把历史派息视为保证。", p.terracotta)
     }
 
     var body: some View {
-        EditorialSection(title: "股息买入参考", trailing: "推荐", accent: p.chartGold) {
-            Text("输入代码查一只标的的股息率、目标买入价与下次分红预估。口径是近 12 个月已核实派息 ÷ 现价；买入点参考「目标价 +15% 以内」，不是下单建议。")
+        EditorialSection(title: "股息综合参考", trailing: "非下单建议", accent: p.chartGold) {
+            Text("输入代码查看当前股息率、目标参考价，以及股息率、价格区间、回撤和分红稳定性的综合评分。只有股息率达到门槛且价格/分红条件也合适时才提示关注；仍需人工判断，不是下单建议。")
                 .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 TextField("输入 6 位代码，如 159941", text: $entry).keyboardType(.numberPad).textFieldStyle(.roundedBorder).submitLabel(.done)
@@ -2486,6 +2511,9 @@ private struct DividendAdviceCard: View {
                 GPDataRow(title: "当前股息率", value: yieldPercent.map { "\(NextMoney.text($0, digits: 3))%" } ?? "—", note: "每份派息 ÷ 现价")
                 GPDataRow(title: "目标买入价", value: targetPrice.map { "¥\(NextMoney.text($0, digits: 3))" } ?? "—", note: "按目标股息率 \(NextMoney.text(targetYield, digits: 3))% 反推")
                 GPDataRow(title: "下次分红", value: nextDividendText ?? "—", note: "按历史除息月份外推，以基金公告为准")
+                if let score = dividendScore {
+                    GPDataRow(title: "综合股息参考", value: "\(score.total) 分 · \(score.tier.rawValue)", note: dividendScoreSummary ?? "")
+                }
                 if let advice {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(advice.headline).font(.subheadline.weight(.semibold)).foregroundStyle(advice.tone)
