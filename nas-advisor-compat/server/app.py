@@ -123,11 +123,7 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     code = path.rsplit("/", 1)[-1]; symbol_for(code)
                     return self.reply(200, {"factors": database.get_research("factors-" + code),
                                             "ai": None,
-                                            "crossMarket": {"state": "insufficient_real_archive",
-                                                             "reason": "NAS尚未接入经过验证的外部市场分钟采集；当前没有可证实的领先关系",
-                                                             "source": None, "asOf": None,
-                                                             "sampleCount": 0, "bestLagMinutes": None,
-                                                             "conditionalWinRate": None},
+                                            "crossMarket": mobile_research.cross_market_evidence(database, code),
                                             "providerConfigured": False,
                                             "providerStatus": {"state": "phone-only", "configured": False,
                                                                "profile": "phone-only", "model": None,
@@ -254,8 +250,19 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 16 * 1024 * 1024:
                     return self.reply(413, {"error": "invalid body size"})
+                if path == "/v1/research/cross-market/hypothesis" and length > 256 * 1024:
+                    return self.reply(413, {"error": "hypothesis request is too large"})
                 value = json.loads(self.rfile.read(length))
                 if not isinstance(value, dict): raise InvalidData("JSON object required")
+                if path == "/v1/research/cross-market/hypothesis":
+                    hypothesis = value.get("hypothesis")
+                    minimum = value.get("minimumSamples", 100)
+                    if not isinstance(minimum, int) or isinstance(minimum, bool) or not 1 <= minimum <= 1000:
+                        raise InvalidData("minimumSamples must be from 1 to 1000")
+                    result = mobile_research.replay_hypothesis_archive(
+                        database, value.get("leader"), value.get("asset"),
+                        value.get("start"), value.get("end"), hypothesis, minimum)
+                    return self.reply(200, result)
                 if path == "/api/data":
                     if value.get("mode") != "legacy-stage-confirmed":
                         raise InvalidData("legacy staging requires explicit migration action")

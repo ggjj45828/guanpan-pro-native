@@ -2,6 +2,7 @@ import sys
 import unittest
 import inspect
 import json
+import io
 import tempfile
 import gc
 from datetime import datetime, timezone
@@ -18,6 +19,79 @@ from domain import InvalidData, NextDatabase
 
 
 class CrossMarketEvidenceTests(unittest.TestCase):
+    def test_verified_tencent_mainland_index_minute_parser_uses_only_current_session(self):
+        from datetime import datetime
+        now = datetime.fromisoformat("2026-10-23T09:32:00+08:00")
+        body = ('min_data_sh000001={"code":0,"msg":"","data":{"sh000001":{"data":'
+                '{"date":"20261023","data":["0930 3623.57 1000 1",'
+                '"0931 3622.80 2000 2","0933 3620.00 3000 3"]}}}}')
+        rows = workers.parse_cross_market_minute(body, "sh000001", now=now)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["timestamp"], "2026-10-23T09:30:00+08:00")
+        self.assertEqual(rows[0]["price"], "3623.57")
+        self.assertIsNone(rows[0]["volume"])
+        with self.assertRaises(ValueError):
+            workers.parse_cross_market_minute(body, "b_KOSPI", now=now)
+        stale = body.replace("20261023", "20261022")
+        with self.assertRaisesRegex(ValueError, "non-current session"):
+            workers.parse_cross_market_minute(stale, "sh000001", now=now)
+        delayed = body.replace("0930", "0800").replace("0931", "0801").replace("0933", "0803")
+        with self.assertRaisesRegex(ValueError, "stale"):
+            workers.parse_cross_market_minute(delayed, "sh000001", now=now)
+
+    def test_eastmoney_global_minute_parser_checks_whitelist_timestamp_and_freshness(self):
+        now = datetime.fromisoformat("2026-10-23T08:31:00+08:00")
+        payload = {"rc": 0, "data": {"code": "KS11", "trends": [
+            "2026-10-23 08:00,2600.10,0,0,0,0", "2026-10-23 08:30,2601.20,0,0,0,0",
+            "2026-10-23 15:02,9999,0,0,0,0"]}}
+        rows, source = market.parse_eastmoney_cross_market_minute(payload, "KR_KOSPI", now=now)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[-1]["timestamp"], "2026-10-23T09:30:00+09:00")
+        self.assertEqual(source, "Eastmoney trends 100.KS11")
+        self.assertIsNone(rows[-1]["volume"])
+        with self.assertRaisesRegex(ValueError, "stale"):
+            market.parse_eastmoney_cross_market_minute(payload, "KR_KOSPI",
+                now=datetime.fromisoformat("2026-10-23T08:43:00+08:00"))
+        with self.assertRaisesRegex(ValueError, "matching index"):
+            market.parse_eastmoney_cross_market_minute(payload, "JP_N225", now=now)
+
+    def test_cross_market_session_gate_handles_lunch_weekends_and_us_dst(self):
+        cases = [
+            ("JP_N225", "2026-10-23T10:00:00+09:00", True),
+            ("JP_N225", "2026-10-23T12:00:00+09:00", False),
+            ("KR_KOSPI", "2026-10-23T14:00:00+09:00", True),
+            ("HK_HSI", "2026-10-23T12:30:00+08:00", False),
+            ("US_NDX", "2026-07-06T09:30:00-04:00", True),
+            ("US_SPX", "2026-01-05T09:30:00-05:00", True),
+            ("US_SPX", "2026-01-03T10:00:00-05:00", False),
+        ]
+        for market_id, stamp, expected in cases:
+            with self.subTest(market_id=market_id, stamp=stamp):
+                self.assertEqual(workers.market_session_open(market_id,
+                    datetime.fromisoformat(stamp)), expected)
+
+    def test_collector_archives_only_open_markets_and_reports_source_failures(self):
+        class Database:
+            def __init__(self): self.saved = []
+            def put_cross_market_minute(self, market_id, rows, source, fetched_at):
+                self.saved.append((market_id, rows, source, fetched_at))
+
+        database = Database()
+        calls = []
+        def fetcher(market_id):
+            calls.append(market_id)
+            if market_id == "KR_KOSPI": raise OSError("provider unavailable")
+            return ([{"timestamp": "2026-10-23T09:00:00+09:00", "price": "100"}], "verified fixture")
+
+        now = datetime.fromisoformat("2026-10-23T00:00:00+00:00")
+        result = workers.collect_cross_market_once(database, now=now,
+            series_ids=("JP_N225", "KR_KOSPI", "US_NDX"), fetcher=fetcher)
+        self.assertEqual(calls, ["JP_N225", "KR_KOSPI"])
+        self.assertEqual(result["state"], "degraded")
+        self.assertEqual(result["failures"], ["KR_KOSPI:OSError"])
+        self.assertEqual([row[0] for row in database.saved], ["JP_N225"])
+        self.assertEqual(database.saved[0][3], "2026-10-23T00:00:00+00:00")
+
     def test_cross_market_archive_preserves_exchange_day_and_rejects_future_points(self):
         import shutil
         root = tempfile.mkdtemp(dir=Path(__file__).parent)
@@ -64,6 +138,30 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(responses[0][1]["evidenceState"], "insufficient_real_archive")
         self.assertIsNone(responses[0][1]["confirmationRate"])
 
+    def test_user_hypothesis_post_is_readonly_and_fails_closed_without_archive(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        body = {"leader": "KR_KOSPI", "asset": "512480", "start": "2026-10-01",
+                "end": "2026-10-23", "minimumSamples": 100,
+                "hypothesis": {"id": "generic", "cutoff": "12:50",
+                    "conditions": [{"series": "leader", "from": "11:30", "to": "12:50",
+                                     "operator": "gte", "threshold": 0.005}],
+                    "expectedDirection": 1, "outcomeBaseline": "13:00", "confirmAt": "13:05"}}
+        raw = json.dumps(body).encode()
+        handler = object.__new__(app.make_handler(database))
+        handler.path = "/v1/research/cross-market/hypothesis"
+        handler.headers = {"Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        responses = []
+        handler.reply = lambda status, value: responses.append((status, value))
+        handler.do_POST()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["evidenceState"], "insufficient_real_archive")
+        self.assertIsNone(responses[0][1]["confirmationRate"])
+
     def test_future_points_are_excluded_from_pair_and_lunch_calculations(self):
         from datetime import datetime, timedelta, timezone
         now = datetime(2026, 10, 23, 5, 0, tzinfo=timezone.utc)
@@ -84,6 +182,86 @@ class CrossMarketEvidenceTests(unittest.TestCase):
                                                 source="fixture", market_status="closed")
         self.assertEqual(baseline, with_future)
         self.assertEqual(with_future["leaderSamples"], 181)
+        self.assertEqual(with_future["state"], "insufficient",
+                         "minute points from one session are not independent evidence")
+
+    def test_lead_lag_stability_uses_independent_sessions_not_minute_count(self):
+        from datetime import date, datetime, time, timedelta
+        from zoneinfo import ZoneInfo
+        leader, follower = [], []
+        cursor = date(2026, 10, 23)
+        session = 0
+        while session < 100:
+            if cursor.weekday() < 5:
+                direction = 1 if session % 2 == 0 else -1
+                start = datetime.combine(cursor, time(9, 30), ZoneInfo("Asia/Shanghai"))
+                for minute in range(211):
+                    stamp = (start + timedelta(minutes=minute)).isoformat()
+                    leader.append({"timestamp": stamp, "price": 100 + direction * minute * 0.005})
+                    follower.append({"timestamp": stamp, "price": 50 + direction * minute * 0.002})
+                session += 1
+            cursor -= timedelta(days=1)
+        result = cross_market.analyze_pair(leader, follower,
+            as_of="2026-10-24T00:00:00+08:00", source="multi-session fixture", market_status="closed")
+        window = next(row for row in result["windows"] if row["lagMinutes"] == 0 and row["horizonMinutes"] == 5)
+        self.assertEqual(window["sampleCount"], 100)
+        self.assertEqual(window["sampleUnit"], "independent trading sessions")
+        self.assertGreater(window["observationCount"], window["sampleCount"])
+        self.assertEqual(window["state"], "stable_candidate")
+        self.assertEqual(window["conditionalWinRate"], 1.0)
+
+    def test_100_sessions_without_variation_explicitly_report_no_stable_relationship(self):
+        from datetime import date, time, timedelta
+        from zoneinfo import ZoneInfo
+        leader, follower = [], []
+        cursor = date(2026, 10, 23)
+        sessions = 0
+        while sessions < 100:
+            if cursor.weekday() < 5:
+                for clock, price in ((time(9, 25), 100), (time(9, 30), 100)):
+                    stamp = datetime.combine(cursor, clock, ZoneInfo("Asia/Shanghai")).isoformat()
+                    leader.append({"timestamp": stamp, "price": price})
+                for clock, price in ((time(9, 30), 50), (time(9, 35), 50)):
+                    stamp = datetime.combine(cursor, clock, ZoneInfo("Asia/Shanghai")).isoformat()
+                    follower.append({"timestamp": stamp, "price": price})
+                sessions += 1
+            cursor -= timedelta(days=1)
+        report = cross_market.analyze_pair(leader, follower,
+            as_of="2026-10-24T00:00:00+08:00", source="flat fixture", market_status="closed")
+        self.assertEqual(report["state"], "no_stable_relationship")
+        self.assertIn("没有稳定领先关系", report["reason"])
+
+    def test_holding_research_reads_archived_minute_rows_and_finds_only_supported_pair(self):
+        import shutil
+        from datetime import date, time, timedelta
+        from zoneinfo import ZoneInfo
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        now = datetime.now(timezone.utc)
+        cursor = now.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        session = 0
+        while session < 100:
+            if cursor.weekday() < 5:
+                direction = 1 if session % 2 == 0 else -1
+                leader = []
+                asset = []
+                for clock, price in ((time(9, 25), 100), (time(9, 30), 100 + direction)):
+                    stamp = datetime.combine(cursor, clock, ZoneInfo("Asia/Shanghai")).isoformat()
+                    leader.append({"timestamp": stamp, "price": str(price)})
+                for clock, price in ((time(9, 30), 50), (time(9, 35), 50 + direction / 2)):
+                    stamp = datetime.combine(cursor, clock, ZoneInfo("Asia/Shanghai")).isoformat()
+                    asset.append({"timestamp": stamp, "price": str(price), "volume": None, "iopv": None})
+                database.put_cross_market_minute("KR_KOSPI", leader, "verified fixture", now.isoformat())
+                database.put_minute("512480", asset, now.isoformat())
+                session += 1
+            cursor -= timedelta(days=1)
+        report = mobile_research.cross_market_evidence(database, "512480", now=now)
+        self.assertEqual(report["state"], "stable_candidate")
+        self.assertEqual(report["bestMarket"], "KR_KOSPI")
+        self.assertEqual(report["sampleCount"], 100)
+        self.assertEqual(report["source"], "verified fixture")
 
     def test_insufficient_or_stale_evidence_never_claims_stable_lead(self):
         from datetime import datetime, timedelta, timezone
@@ -91,7 +269,7 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         short = [{"timestamp": (now - timedelta(minutes=2)).isoformat(), "price": 10}]
         insufficient = cross_market.analyze_pair(short, short, as_of=now.isoformat(),
                                                  source="verified fixture", market_status="open")
-        self.assertEqual(insufficient["state"], "no_stable_relationship")
+        self.assertEqual(insufficient["state"], "insufficient")
         stale = cross_market.analyze_pair(short, short, as_of=now.isoformat(),
                                           source="verified fixture", market_status="open", max_age_seconds=30)
         self.assertEqual(stale["state"], "stale")
@@ -145,6 +323,61 @@ class CrossMarketEvidenceTests(unittest.TestCase):
                                                 minimum_samples=100)
         self.assertEqual(limited["state"], "insufficient_samples")
         self.assertIsNone(limited["confirmationRate"])
+
+    def test_user_defined_hypothesis_replays_without_changing_rule_code(self):
+        hypothesis = {
+            "id": "kospi-morning-strength-to-semiconductor-afternoon",
+            "cutoff": "12:50", "cutoffTimezone": "Asia/Shanghai",
+            "leaderTimezone": "Asia/Seoul", "assetTimezone": "Asia/Shanghai",
+            "conditions": [
+                {"series": "leader", "from": "09:00", "to": "11:30",
+                 "operator": "gte", "threshold": 0.005},
+                {"series": "asset", "from": "09:30", "to": "11:30",
+                 "operator": "lte", "threshold": 0.0},
+            ],
+            "expectedDirection": 1, "outcomeBaseline": "13:00", "confirmAt": "13:05",
+            "horizons": ["13:15", "13:30"],
+        }
+        leader = [
+            {"timestamp": "2026-10-23T09:00:00+09:00", "price": 100},
+            {"timestamp": "2026-10-23T11:30:00+09:00", "price": 101},
+        ]
+        asset = [
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": 50},
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": 49.7},
+            {"timestamp": "2026-10-23T12:50:00+08:00", "price": 49.8},
+            {"timestamp": "2026-10-23T13:00:00+08:00", "price": 49.8},
+            {"timestamp": "2026-10-23T13:05:00+08:00", "price": 49.9},
+            {"timestamp": "2026-10-23T13:15:00+08:00", "price": 50.0},
+            {"timestamp": "2026-10-23T13:30:00+08:00", "price": 50.1},
+        ]
+        report = cross_market.replay_hypothesis_day(leader, asset, day="2026-10-23",
+                                                    source="verified fixture", hypothesis=hypothesis)
+        self.assertEqual(report["frozenHypothesis"]["state"], "hypothesis")
+        self.assertTrue(report["confirmed"])
+        tampered = [dict(row, price=1) if row["timestamp"].startswith("2026-10-23T13:") else row
+                    for row in asset]
+        repeated = cross_market.replay_hypothesis_day(leader, tampered, day="2026-10-23",
+                                                     source="verified fixture", hypothesis=hypothesis)
+        self.assertEqual(report["frozenHypothesis"], repeated["frozenHypothesis"])
+
+    def test_replay_outcome_never_uses_a_pre_1300_price_for_a_1300_baseline(self):
+        hypothesis = {"id": "frozen-test", "cutoff": "12:50",
+            "conditions": [{"series": "leader", "from": "11:30", "to": "12:50",
+                            "operator": "gte", "threshold": 0.0}],
+            "expectedDirection": 1, "outcomeBaseline": "13:00", "confirmAt": "13:05"}
+        leader = [{"timestamp": "2026-10-23T11:30:00+08:00", "price": 100},
+                  {"timestamp": "2026-10-23T12:50:00+08:00", "price": 101}]
+        asset = [{"timestamp": "2026-10-23T11:30:00+08:00", "price": 50},
+                 {"timestamp": "2026-10-23T12:59:00+08:00", "price": 40}]
+        report = cross_market.replay_hypothesis_day(leader, asset, day="2026-10-23",
+                                                     source="fixture", hypothesis=hypothesis)
+        self.assertIsNone(report["confirmationReturn"])
+        self.assertIsNone(report["confirmed"])
+        self.assertEqual(report["outcomeState"], "awaiting_post_cutoff_data")
+        with self.assertRaisesRegex(ValueError, "weekend"):
+            cross_market.replay_hypothesis_day([], [], day="2026-10-24",
+                source="fixture", hypothesis=hypothesis)
 
 
 class RetiredRoutesTests(unittest.TestCase):
@@ -258,7 +491,8 @@ class RetiredRoutesTests(unittest.TestCase):
 
         with patch.object(workers.threading, "Thread", Thread):
             workers.start_workers(Database())
-        self.assertEqual(started, ["daily-archive", "minute-archive", "dividend-research", "factor-research"])
+        self.assertEqual(started, ["daily-archive", "minute-archive", "dividend-research",
+                                   "factor-research", "cross-market-minute"])
         self.assertFalse(any("simulation" in name or "grid" in name for name, _, _ in statuses))
         self.assertEqual(workers.DEFAULT_CODES, ())
 
@@ -292,6 +526,7 @@ class RetiredRoutesTests(unittest.TestCase):
         parameters = inspect.signature(workers.start_workers).parameters
         self.assertIs(parameters["daily_fetcher"].default, workers.fetch_daily)
         self.assertIs(parameters["quote_fetcher"].default, workers.fetch_quotes)
+        self.assertIs(parameters["cross_market_fetcher"].default, workers.fetch_cross_market_minute)
 
     def test_phone_archive_bridge_uses_real_rows_without_inventing_vwap(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as root:

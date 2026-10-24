@@ -421,6 +421,17 @@ final class NextCoreTests: XCTestCase {
         XCTAssertNil(dataset.iopvSource)
         try dataset.validate()
     }
+    func testCrossMarketResearchDecodesStatusFreshnessAndOlderServerPayloads() throws {
+        let current = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"no_stable_relationship","reason":"没有稳定领先关系","source":"Eastmoney trends","asOf":"2026-10-23T09:30:00+09:00","sampleCount":120,"bestLagMinutes":null,"conditionalWinRate":null,"bestMarket":"KR_KOSPI","currentMarketStatus":"closed","ageSeconds":7200}}"#.utf8)
+        let decoded = try JSONDecoder().decode(NextNASResearch.self, from: current)
+        XCTAssertEqual(decoded.crossMarket?.state, "no_stable_relationship")
+        XCTAssertEqual(decoded.crossMarket?.bestMarket, "KR_KOSPI")
+        XCTAssertEqual(decoded.crossMarket?.currentMarketStatus, "closed")
+        XCTAssertEqual(decoded.crossMarket?.ageSeconds, 7200)
+
+        let older = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"insufficient_real_archive","reason":null,"source":null,"asOf":null,"sampleCount":0,"bestLagMinutes":null,"conditionalWinRate":null}}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(NextNASResearch.self, from: older).crossMarket?.currentMarketStatus)
+    }
     func testFixedIntradayAxisCoversFullSessionAndCompressesLunch() throws {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"

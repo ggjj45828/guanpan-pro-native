@@ -1,5 +1,6 @@
 """Independent NAS workers. No worker reads the mobile sync preference."""
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -7,12 +8,77 @@ from decimal import Decimal
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
-from market import symbol_for, fetch_daily, fetch_quotes, fetch_dividend_events
+from market import (symbol_for, fetch_daily, fetch_quotes, fetch_dividend_events,
+                    fetch_eastmoney_cross_market_minute, CROSS_MARKET_EASTMONEY_SECIDS)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Collection follows explicitly tracked symbols and the real book.  The old
 # preview's hard-coded demo symbols must not start a parallel research account.
 DEFAULT_CODES = ()
+CROSS_MARKET_TENCENT_SYMBOLS = {
+    "CN_SSE": "sh000001", "CN_SZSE": "sz399001", "CN_CHINEXT": "sz399006",
+    "CN_STAR50": "sh000688", "CN_CSI300": "sh000300", "CN_CSI500": "sh000905",
+    "CN_A500": "sh000510", "CN_SEMICONDUCTOR": "sz399989",
+}
+CROSS_MARKET_SERIES = tuple(CROSS_MARKET_TENCENT_SYMBOLS) + tuple(CROSS_MARKET_EASTMONEY_SECIDS)
+EXTERNAL_MARKET_SESSIONS = {
+    "JP_N225": ("Asia/Tokyo", (("09:00", "11:30"), ("12:30", "15:30"))),
+    "KR_KOSPI": ("Asia/Seoul", (("09:00", "15:30"),)),
+    "HK_HSI": ("Asia/Hong_Kong", (("09:30", "12:00"), ("13:00", "16:00"))),
+    "US_NDX": ("America/New_York", (("09:30", "16:00"),)),
+    "US_SPX": ("America/New_York", (("09:30", "16:00"),)),
+}
+
+
+def market_session_open(market_id, now=None):
+    """Nominal weekday session gate; the provider timestamp still decides freshness."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("market session time must be timezone-aware")
+    if market_id in CROSS_MARKET_TENCENT_SYMBOLS:
+        local = now.astimezone(SHANGHAI)
+        minute = local.hour * 60 + local.minute
+        return local.weekday() < 5 and ((570 <= minute <= 690) or (780 <= minute <= 900))
+    timezone_name, sessions = EXTERNAL_MARKET_SESSIONS[market_id]
+    local = now.astimezone(ZoneInfo(timezone_name))
+    minute = local.hour * 60 + local.minute
+    return local.weekday() < 5 and any(
+        int(start[:2]) * 60 + int(start[3:]) <= minute <= int(end[:2]) * 60 + int(end[3:])
+        for start, end in sessions)
+
+
+def fetch_cross_market_series(market_id):
+    if market_id in CROSS_MARKET_TENCENT_SYMBOLS:
+        return fetch_cross_market_minute(market_id)
+    if market_id in CROSS_MARKET_EASTMONEY_SECIDS:
+        return fetch_eastmoney_cross_market_minute(market_id)
+    raise ValueError("unsupported cross-market series")
+
+
+def collect_cross_market_once(database, *, now=None, series_ids=None, fetcher=None):
+    """One testable collection cycle; persist only active-session, validated source rows."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("collection time must be timezone-aware")
+    series_ids = tuple(CROSS_MARKET_SERIES if series_ids is None else series_ids)
+    active = [market_id for market_id in series_ids if market_session_open(market_id, now)]
+    if not active:
+        return {"state": "idle", "active": [], "collected": 0, "failures": [],
+                "detail": "no configured market is in its nominal session; stale or holiday data is not promoted"}
+    fetcher = fetcher or fetch_cross_market_series
+    failures, collected = [], 0
+    for market_id in active:
+        try:
+            rows, source = fetcher(market_id)
+            database.put_cross_market_minute(market_id, rows, source,
+                                             now.astimezone(timezone.utc).isoformat())
+            collected += 1
+        except Exception as error:
+            failures.append(f"{market_id}:{type(error).__name__}")
+    state = "ok" if not failures else "degraded"
+    return {"state": state, "active": active, "collected": collected, "failures": failures,
+            "detail": f"{collected}/{len(active)} open-market minute series archived; provider timestamps checked; "
+                      f"next attempt in 5m" + ("; failed " + ", ".join(failures[:8]) if failures else "")}
 
 
 def parse_minute(body, code):
@@ -48,6 +114,55 @@ def fetch_minute(code):
     with urlopen(Request(url, headers={"Referer": "https://gu.qq.com/", "User-Agent": "GuanpanProNext/3"}), timeout=12) as response:
         if response.status != 200: raise OSError("minute source unavailable")
         return parse_minute(response.read(2_000_000).decode("utf-8"), code)
+
+
+def parse_cross_market_minute(body, symbol, now=None, max_age_seconds=600):
+    """Parse Tencent minute data for a whitelisted mainland benchmark index."""
+    if symbol not in CROSS_MARKET_TENCENT_SYMBOLS.values():
+        raise ValueError("unsupported cross-market benchmark")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    start, end = body.find("{"), body.rfind("}")
+    if start < 0 or end < start: raise ValueError("invalid benchmark minute response")
+    node = json.loads(body[start:end + 1]).get("data", {}).get(symbol, {}).get("data", {})
+    day, rows = node.get("date", ""), node.get("data") or node.get("items")
+    if not isinstance(rows, list) or len(day) != 8 or not day.isdigit():
+        raise ValueError("benchmark minute source missing")
+    if datetime.strptime(day, "%Y%m%d").date() != now.astimezone(SHANGHAI).date():
+        raise ValueError("benchmark minute source returned a non-current session")
+    found = {}
+    for row in rows:
+        parts = row.split() if isinstance(row, str) else []
+        if len(parts) < 2 or re.fullmatch(r"\d{4}", parts[0]) is None: continue
+        try:
+            stamp = datetime.strptime(day + parts[0], "%Y%m%d%H%M").replace(tzinfo=SHANGHAI)
+            price = Decimal(parts[1])
+            if stamp.astimezone(timezone.utc) > now.astimezone(timezone.utc): continue
+            if not price.is_finite() or price <= 0: continue
+        except (ValueError, InvalidOperation, TypeError, OverflowError): continue
+        found[stamp.isoformat()] = {"timestamp": stamp.isoformat(), "price": str(price),
+                                    "volume": None, "iopv": None}
+    if not found: raise ValueError("benchmark minute response has no current-session samples")
+    rows = [found[stamp] for stamp in sorted(found)]
+    latest = datetime.fromisoformat(rows[-1]["timestamp"])
+    age = (now.astimezone(timezone.utc) - latest.astimezone(timezone.utc)).total_seconds()
+    if age < 0 or age > max_age_seconds:
+        raise ValueError("benchmark minute source is stale")
+    return rows
+
+
+def fetch_cross_market_minute(market_id):
+    symbol = CROSS_MARKET_TENCENT_SYMBOLS.get(market_id)
+    if symbol is None: raise ValueError("unsupported cross-market benchmark")
+    url = "https://web.ifzq.gtimg.cn/appstock/app/minute/query?" + urlencode(
+        {"code": symbol, "_var": "min_data_" + symbol})
+    request = Request(url, headers={"Referer": "https://gu.qq.com/",
+                                    "User-Agent": "GuanpanProNext/3"})
+    with urlopen(request, timeout=12) as response:
+        if response.status != 200: raise OSError("benchmark minute source unavailable")
+        body = response.read(2_000_000).decode("utf-8", "strict")
+    return parse_cross_market_minute(body, symbol), "Tencent minute " + symbol
 
 
 def attach_quote_iopv(rows, quote):
@@ -96,7 +211,8 @@ def tracked_codes(database):
     return sorted(set(DEFAULT_CODES) | set(database.tracked_instruments()) | holdings)
 
 
-def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minute, quote_fetcher=fetch_quotes):
+def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minute,
+                  quote_fetcher=fetch_quotes, cross_market_fetcher=fetch_cross_market_minute):
     """Each loop owns its own timer and failure handling; sync APIs never stop them."""
     def tracked():
         return tracked_codes(database)
@@ -174,5 +290,22 @@ def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minu
                    f"{researched}/{len(codes)} codes have usable 250-day research; next run in 15m{missing_note(failures)}")
             time.sleep(900)
 
-    for name, target in (("daily-archive", daily_loop), ("minute-archive", minute_loop), ("dividend-research", dividend_loop), ("factor-research", research_loop)):
+    def cross_market_loop():
+        update("cross-market-minute", "starting", "verified mainland and global index minute collectors starting")
+        while True:
+            now = datetime.now(timezone.utc)
+            def current_cross_market_fetcher(market_id):
+                if market_id in CROSS_MARKET_TENCENT_SYMBOLS:
+                    return cross_market_fetcher(market_id)
+                return fetch_cross_market_series(market_id)
+            result = collect_cross_market_once(database, now=now, fetcher=current_cross_market_fetcher)
+            update("cross-market-minute", result["state"], result["detail"])
+            if result["active"]:
+                time.sleep(300)
+            else:
+                time.sleep(60)
+
+    for name, target in (("daily-archive", daily_loop), ("minute-archive", minute_loop),
+                         ("dividend-research", dividend_loop), ("factor-research", research_loop),
+                         ("cross-market-minute", cross_market_loop)):
         threading.Thread(target=target, name=name, daemon=True).start()

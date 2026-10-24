@@ -1181,6 +1181,9 @@ struct NextNASResearch: Codable, Equatable {
         let sampleCount: Int?
         let bestLagMinutes: Int?
         let conditionalWinRate: Double?
+        let bestMarket: String?
+        let currentMarketStatus: String?
+        let ageSeconds: Double?
     }
     var crossMarket: CrossMarketEvidence? = nil
 }

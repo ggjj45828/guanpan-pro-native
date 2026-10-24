@@ -439,6 +439,17 @@ INDEX_SOURCES = [
     ("标普500", "100.SPX"),
     ("道琼斯", "100.DJIA"),
 ]
+
+# Minute-history codes were individually checked against the Eastmoney trends
+# endpoint before enabling collection. Missing indices are intentionally absent.
+CROSS_MARKET_EASTMONEY_SECIDS = {
+    "US_NDX": "100.NDX", "US_SPX": "100.SPX", "JP_N225": "100.N225",
+    "KR_KOSPI": "100.KS11", "HK_HSI": "100.HSI",
+}
+CROSS_MARKET_TIMEZONES = {
+    "US_NDX": "America/New_York", "US_SPX": "America/New_York",
+    "JP_N225": "Asia/Tokyo", "KR_KOSPI": "Asia/Seoul", "HK_HSI": "Asia/Hong_Kong",
+}
 NAME_TO_SECID = {name: secid for name, secid in INDEX_SOURCES}
 # 兜底：新浪符号（接口形态见 _sina_parse_index_fields）。
 SINA_INDEX_SYMBOLS = [
@@ -549,6 +560,66 @@ def fetch_kline(symbol, datalen=320):
     if "." in symbol and symbol[0].isdigit():
         return _fetch_eastmoney_kline(symbol, datalen)
     return _fetch_sina_kline(symbol, datalen)
+
+
+def fetch_eastmoney_cross_market_minute(market_id, now=None, max_age_seconds=600):
+    """Fetch verified one-day index minute paths; require a fresh provider tick."""
+    secid = CROSS_MARKET_EASTMONEY_SECIDS.get(market_id)
+    if secid is None:
+        raise ValueError("unsupported cross-market minute index")
+    now = now or datetime.now(timezone.utc)
+    query = urlencode({"fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+                       "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                       "secid": secid, "ndays": "1", "iscr": "0", "iscca": "0"})
+    request = Request("https://push2his.eastmoney.com/api/qt/stock/trends2/get?" + query,
+                      headers={"Referer": "https://quote.eastmoney.com/",
+                               "User-Agent": "Mozilla/5.0 (compatible; GuanpanAdvisor/3)"})
+    with urlopen(request, timeout=10) as response:
+        if response.status != 200: raise OSError("cross-market minute source unavailable")
+        payload = json.loads(response.read(4_000_000).decode("utf-8", "replace"))
+    return parse_eastmoney_cross_market_minute(payload, market_id, now=now,
+                                                max_age_seconds=max_age_seconds)
+
+
+def parse_eastmoney_cross_market_minute(payload, market_id, now=None, max_age_seconds=600):
+    """Validate a captured Eastmoney index trend response with explicit Beijing timestamps."""
+    secid = CROSS_MARKET_EASTMONEY_SECIDS.get(market_id)
+    if secid is None:
+        raise ValueError("unsupported cross-market minute index")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or not isinstance(max_age_seconds, (int, float)) or max_age_seconds < 0:
+        raise ValueError("timezone-aware now and non-negative age limit are required")
+    exchange_timezone = ZoneInfo(CROSS_MARKET_TIMEZONES[market_id])
+    data = payload.get("data") or {}
+    if payload.get("rc") != 0 or data.get("code") != secid.split(".", 1)[1]:
+        raise ValueError("cross-market provider returned no matching index")
+    trends = data.get("trends")
+    if not isinstance(trends, list) or not trends:
+        raise ValueError("cross-market minute series missing")
+    found = {}
+    for row in trends:
+        parts = row.split(",") if isinstance(row, str) else []
+        if len(parts) < 2: continue
+        try:
+            # The verified endpoint serializes rows as Beijing wall time. Convert
+            # the instant to its exchange zone so the archive retains real local
+            # dates/offsets (including US DST) instead of treating provider time
+            # as the exchange's wall clock.
+            provider_stamp = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo("Asia/Shanghai"))
+            stamp = provider_stamp.astimezone(exchange_timezone)
+            price = Decimal(parts[1])
+        except (ValueError, InvalidOperation, TypeError): continue
+        if stamp.astimezone(timezone.utc) > now.astimezone(timezone.utc) or not price.is_finite() or price <= 0:
+            continue
+        found[stamp.isoformat()] = {"timestamp": stamp.isoformat(), "price": str(price),
+                                    "volume": None, "iopv": None}
+    if not found: raise ValueError("cross-market minute response has no timestamped prices")
+    latest = max(datetime.fromisoformat(stamp) for stamp in found)
+    age = (now.astimezone(timezone.utc) - latest.astimezone(timezone.utc)).total_seconds()
+    if age < 0 or age > max_age_seconds:
+        raise ValueError("cross-market provider minute data is stale")
+    return [found[stamp] for stamp in sorted(found)], "Eastmoney trends " + secid
 
 
 def _fetch_eastmoney_kline(secid, datalen=320):
