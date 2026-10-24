@@ -9,6 +9,42 @@ final class NextCoreTests: XCTestCase {
     func etfRules(_ code: String = "159941", settlement: NextSettlementRule = .t0, assetClass: NextAssetClass = .etf) -> NextInstrumentRules {
         NextInstrumentRules(code: code, market: "SZ", assetClass: assetClass, settlement: settlement, lotSize: 100, feePerTrade: Decimal(string: "0.10"), source: "verified test fixture", verifiedAt: now)
     }
+    func testProfileLearnsExpectedThresholdWithoutCallingItRealizedProfit() {
+        func suggestion(kind: NextPlanKind = .reverseT, gain: Decimal?, outcome: NextSuggestionOutcome = .executed) -> NextSuggestionRecord {
+            var value = NextSuggestionRecord(code: "159941", name: "纳指ETF", kind: kind,
+                expectedNetGain: gain, expectedSpreadPercent: 0.8,
+                expectedCostReduction: Decimal(string: "0.001"), confidenceLevel: "high",
+                marketState: "震荡", createdAt: now, expiresAt: now.addingTimeInterval(3600))
+            value.outcome = outcome
+            return value
+        }
+        var executed = suggestion(gain: Decimal(string: "8.50"))
+        executed.outcome = .executed
+        executed.executedNetGain = Decimal(string: "-2.00") // actual paired result differs; it must not be confused with plan estimate
+        XCTAssertEqual(NextProfileEngine.executedExpectedNetGain(executed), 8.5)
+
+        XCTAssertNil(NextProfileEngine.executedExpectedNetGain(suggestion(gain: Decimal(string: "8.50"), outcome: .pending)))
+        XCTAssertNil(NextProfileEngine.executedExpectedNetGain(suggestion(gain: Decimal(string: "-1.00"))))
+        XCTAssertNil(NextProfileEngine.executedExpectedNetGain(suggestion(kind: .gridBuy, gain: Decimal(string: "8.50"))))
+    }
+    func testProfileBehaviorWindowRejectsFutureAndOutOfWindowEvidence() {
+        XCTAssertTrue(NextProfileEngine.isInBehaviorWindow(now, now: now))
+        XCTAssertTrue(NextProfileEngine.isInBehaviorWindow(now.addingTimeInterval(-90 * 86_400), now: now))
+        XCTAssertFalse(NextProfileEngine.isInBehaviorWindow(now.addingTimeInterval(1), now: now))
+        XCTAssertFalse(NextProfileEngine.isInBehaviorWindow(now.addingTimeInterval(-90 * 86_400 - 1), now: now))
+        XCTAssertFalse(NextProfileEngine.isInBehaviorWindow(now, now: now, days: 0))
+    }
+    func testGridPairedNetGainDeductsBothConfiguredFeesAndRejectsLossMakingPair() {
+        XCTAssertEqual(NextGridPlanner.pairedExpectedNetGain(
+            price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.010")!,
+            units: 100, feePerTrade: Decimal(string: "0.10")!), Decimal(string: "0.80"))
+        XCTAssertNil(NextGridPlanner.pairedExpectedNetGain(
+            price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.001")!,
+            units: 100, feePerTrade: Decimal(string: "0.10")!))
+        XCTAssertNil(NextGridPlanner.pairedExpectedNetGain(
+            price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.010")!,
+            units: 0, feePerTrade: Decimal(string: "0.10")!))
+    }
     func testHomeNASStatusRequiresRecentHealthProbe() {
         let now = Date(timeIntervalSince1970: 1_797_375_200)
         XCTAssertFalse(NextServiceConnectionStatus.isOnline(configured: true, reachable: nil, probedAt: nil, now: now))

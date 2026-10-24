@@ -695,12 +695,21 @@ struct AIGuidanceDetailSheet: View {
                 GPDataRow(title: "全部卖档后剩余", value: "\(plan.remainingUnitsAfterAllSells) 份")
                 ForEach(plan.tiers.indices, id: \.self) { index in
                     let tier = plan.tiers[index]
-                    HStack(spacing: 6) {
-                        Text(tier.side == "buy" ? "买" : "卖").font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(tier.side == "buy" ? p.forest : p.risk)
-                        Text("¥\(NextMoney.text(tier.price, digits: 3))").font(.system(size: 11, design: .rounded)).monospacedDigit().foregroundStyle(p.ink)
-                        Spacer()
-                        Text("\(tier.units) 份").font(.system(size: 11, design: .rounded)).monospacedDigit().foregroundStyle(p.muted)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(tier.side == "buy" ? "买" : "卖").font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(tier.side == "buy" ? p.forest : p.risk)
+                            Text("¥\(NextMoney.text(tier.price, digits: 3))").font(.system(size: 11, design: .rounded)).monospacedDigit().foregroundStyle(p.ink)
+                            Spacer()
+                            Text("\(tier.units) 份").font(.system(size: 11, design: .rounded)).monospacedDigit().foregroundStyle(p.muted)
+                        }
+                        if let gain = tier.expectedNetGain {
+                            Text("与最近对侧档往返，预计净收益 ¥\(NextMoney.text(gain))（已扣双边手续费）")
+                                .font(.system(size: 9)).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("暂无可配对档位，净收益不估算")
+                                .font(.system(size: 9)).foregroundStyle(p.muted)
+                        }
                     }
                 }
                 VStack(alignment: .leading, spacing: 2) {

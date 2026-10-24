@@ -383,6 +383,20 @@ enum NextProfileEngine {
     static let minExecutedSamples = 3
     static let coreHoldingDays = 180
 
+    /// Plans the user chose to execute inform the minimum *expected* return
+    /// they tolerate. A confirmed single leg is not proof of realized P&L.
+    static func executedExpectedNetGain(_ suggestion: NextSuggestionRecord) -> Double? {
+        guard suggestion.outcome == .executed, suggestion.isTStyle,
+              let gain = suggestion.expectedNetGain, gain.isFinite, gain >= 0 else { return nil }
+        return NextNum.double(gain)
+    }
+
+    static func isInBehaviorWindow(_ createdAt: Date, now: Date, days: Int = behaviorWindowDays) -> Bool {
+        guard days > 0 else { return false }
+        let start = now.addingTimeInterval(-Double(days) * 86_400)
+        return createdAt >= start && createdAt <= now
+    }
+
     // MARK: 学习入口
 
     /// 全部结论都从「真实持仓 + 真实成交 + 真实反馈」推导；数据不够时保留上一次结论并标注置信度，
@@ -401,7 +415,7 @@ enum NextProfileEngine {
         let fills = book.fills.filter { $0.date >= windowStart && $0.date <= now }
         let allFills = book.fills.filter { $0.date <= now }
         summary.fillSampleCount = fills.count
-        summary.suggestionSampleCount = suggestions.filter { $0.createdAt >= windowStart }.count
+        summary.suggestionSampleCount = suggestions.filter { Self.isInBehaviorWindow($0.createdAt, now: now) }.count
 
         // 异常单过滤：单笔金额 ≥ 组合 35%，或份额 ≥ 该标的总份额 50%。
         // 这种「一次性行为」（急用钱、调仓）不能改写风格，只能进当前状态。
@@ -474,7 +488,7 @@ enum NextProfileEngine {
         profile.setTrait(respectExplicit(overseasTrait, previous: previous))
 
         // 4) 现金流压力：真实出入金而不是猜
-        let moves = book.cashMovements.filter { $0.date >= windowStart }
+        let moves = book.cashMovements.filter { $0.date >= windowStart && $0.date <= now }
         let outflow = moves.filter { $0.amount < 0 }
         let outflowRatio = equity.map { out -> Double in
             guard out > 0 else { return 0 }
@@ -503,10 +517,10 @@ enum NextProfileEngine {
         }
 
         // 6) 限价耐心：计划挂出到真实成交的等待时长 + 撤销/过期率
-        let resolved = plans.filter { $0.createdAt >= windowStart }
+        let resolved = plans.filter { Self.isInBehaviorWindow($0.createdAt, now: now) }
         let confirmed = resolved.filter { $0.state == .confirmed }
         let waits = confirmed.compactMap { plan -> Double? in
-            guard let at = plan.confirmedAt else { return nil }
+            guard let at = plan.confirmedAt, at <= now else { return nil }
             return at.timeIntervalSince(plan.createdAt) / 3600
         }
         let cancelRate = resolved.isEmpty ? 0 : Double(resolved.filter { $0.state == .expired || $0.state == .invalidated || $0.state == .withdrawn }.count) / Double(resolved.count)
@@ -515,7 +529,7 @@ enum NextProfileEngine {
         profile.setTrait(respectExplicit(patienceTrait, previous: previous))
 
         // 7) 建议轨迹：曝光 / 执行 / 忽略 / 反馈
-        let windowSuggestions = suggestions.filter { $0.createdAt >= windowStart }
+        let windowSuggestions = suggestions.filter { Self.isInBehaviorWindow($0.createdAt, now: now) }
         let tSuggestions = windowSuggestions.filter(\.isTStyle)
         let executed = tSuggestions.filter { $0.outcome == .executed }
         let ignored = tSuggestions.filter { $0.outcome == .ignored || $0.outcome == .rejected }
@@ -523,7 +537,7 @@ enum NextProfileEngine {
         summary.ignoredCount = ignored.count
 
         let executedSpreads = executed.compactMap(\.expectedSpreadPercent)
-        let executedGains = executed.compactMap { $0.expectedNetGain.map { NextNum.double($0) } }
+        let executedExpectedGains = executed.compactMap(Self.executedExpectedNetGain)
         let ignoredSpreads = ignored.compactMap(\.expectedSpreadPercent)
 
         let appetiteTrait = tAppetiteTrait(suggestions: tSuggestions, executed: executed, ignored: ignored, now: now)
@@ -553,21 +567,21 @@ enum NextProfileEngine {
 
         if let previousTrait = profile.trait(.minNetGain), previousTrait.locked || previousTrait.source == .explicit {
             // 锁定
-        } else if executedGains.count >= minExecutedSamples {
-            let learned = percentile(executedGains, 0.2)
+        } else if executedExpectedGains.count >= minExecutedSamples {
+            let learned = percentile(executedExpectedGains, 0.2)
             profile.thresholds.minTNetGain = max(1, min(500, learned))
             profile.setTrait(trait(.minNetGain, value: "learned",
                                    label: "≥ ¥\(String(format: "%.0f", profile.thresholds.minTNetGain))",
-                                   detail: "你成交过的做 T 净收益最低一批约 ¥\(String(format: "%.0f", learned))；净收益低于这个数不再打扰你",
-                                   confidence: confidence(samples: executedGains.count, minSamples: minExecutedSamples, consistency: 0.85),
-                                   samples: executedGains.count, window: behaviorWindowDays, source: .learned,
-                                   basis: ["已执行做 T 的净收益：\(executedGains.map { String(format: "¥%.0f", $0) }.joined(separator: "、"))"],
+                                   detail: "你确认执行的做 T 计划，其生成时预估净收益中较低的一批约 ¥\(String(format: "%.0f", learned))；这是推荐门槛偏好，不代表实际已实现收益",
+                                   confidence: confidence(samples: executedExpectedGains.count, minSamples: minExecutedSamples, consistency: 0.85),
+                                   samples: executedExpectedGains.count, window: behaviorWindowDays, source: .learned,
+                                   basis: ["已执行计划的生成时预估净收益：\(executedExpectedGains.map { String(format: "¥%.0f", $0) }.joined(separator: "、"))"],
                                    numeric: profile.thresholds.minTNetGain, now: now))
         } else if previous.trait(.minNetGain) == nil {
             profile.setTrait(trait(.minNetGain, value: "default",
                                    label: "≥ ¥\(String(format: "%.0f", profile.thresholds.minTNetGain))",
-                                   detail: "净收益样本不足（\(executedGains.count)/\(minExecutedSamples)），先按默认值 ¥\(String(format: "%.0f", profile.thresholds.minTNetGain))",
-                                   confidence: 0, samples: executedGains.count, window: behaviorWindowDays, source: .learned,
+                                   detail: "已执行计划的预估净收益样本不足（\(executedExpectedGains.count)/\(minExecutedSamples)），先按默认值 ¥\(String(format: "%.0f", profile.thresholds.minTNetGain))",
+                                   confidence: 0, samples: executedExpectedGains.count, window: behaviorWindowDays, source: .learned,
                                    basis: ["等待真实成交样本"], numeric: profile.thresholds.minTNetGain, now: now))
         }
 

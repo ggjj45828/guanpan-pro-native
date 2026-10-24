@@ -779,6 +779,8 @@ struct NextGridTier: Equatable {
     let price: Decimal
     let units: Int
     let cashRequired: Decimal
+    /// Estimated round-trip net only when an opposing tier exists; never a realized gain.
+    let expectedNetGain: Decimal?
 }
 
 struct NextGridPlan: Equatable {
@@ -806,6 +808,15 @@ enum NextGridPlannerResult: Equatable {
 /// 档数、间距、每档份额全部由波动率、历史区间、资金、持仓与手续费推导；
 /// 不适合就明说「不建议网格」，不强行生成买档。
 enum NextGridPlanner {
+    static func pairedExpectedNetGain(price: Decimal, oppositePrice: Decimal, units: Int,
+                                      feePerTrade: Decimal) -> Decimal? {
+        guard price > 0, oppositePrice > 0, units > 0, feePerTrade >= 0,
+              price != oppositePrice else { return nil }
+        let spread = oppositePrice >= price ? oppositePrice - price : price - oppositePrice
+        let gain = spread * Decimal(units) - feePerTrade * 2
+        return gain > 0 ? gain : nil
+    }
+
     static func plan(book: NextBook, quote: NextQuote?, daily: [NextChartSample], gridCheck: NextGridCheck?,
                      rules: NextInstrumentRules?, nasRange: NextNasRange? = nil,
                      orderBook: NextOrderBookSnapshot? = nil,
@@ -870,8 +881,11 @@ enum NextGridPlanner {
         upper = clampedHigh
         lower = clampedLow
         let amplitude = gridCheck.avgAmplitudePercent ?? 1.0
-        // 间距：不低于 0.4%，取「半倍日均振幅」；保证每档往返扣费后仍为正。
-        let spacingPercent = max(0.4, amplitude / 2)
+        // Spacing must cover both trade fees for at least one lot, plus a small
+        // rounding cushion. Volatility can widen it further; it cannot shrink it
+        // below the cost break-even threshold.
+        let feeBreakEvenPercent = NextNum.double((feePerTrade * 2) / (current * Decimal(lotSize)) * 100)
+        let spacingPercent = max(0.4, max(amplitude / 2, feeBreakEvenPercent + 0.05))
         let rangePercent = NextNum.double((upper - lower) / lower * 100)
         var tierCount = Int(max(2, min(6, (rangePercent / spacingPercent).rounded())))
         var capNotes: [String] = []
@@ -907,7 +921,8 @@ enum NextGridPlanner {
             if candidate >= lower, buyUnitsPerTier >= lotSize {
                 let price = NextPriceRounding.tick(candidate)
                 tiers.append(NextGridTier(side: "buy", price: price, units: buyUnitsPerTier,
-                                          cashRequired: price * Decimal(buyUnitsPerTier) + feePerTrade))
+                                          cashRequired: price * Decimal(buyUnitsPerTier) + feePerTrade,
+                                          expectedNetGain: nil))
             }
         }
         // 卖出档：现价上方，只在有可卖份额（T+1 后可用）时生成。
@@ -917,19 +932,42 @@ enum NextGridPlanner {
                 let candidate = current * Decimal(1 + offset)
                 if candidate <= upper {
                     let price = NextPriceRounding.tick(candidate)
-                    tiers.append(NextGridTier(side: "sell", price: price, units: sellUnitsPerTier, cashRequired: 0))
+                    tiers.append(NextGridTier(side: "sell", price: price, units: sellUnitsPerTier,
+                                              cashRequired: 0, expectedNetGain: nil))
                 }
             }
         }
         guard tiers.contains(where: { $0.side == "buy" }) else {
             return .insufficientData(confidence, ["按当前区间与资金算不出有效买入档，暂不生成网格"])
         }
-        let maxCashUsage = tiers.filter { $0.side == "buy" }.reduce(Decimal.zero) { $0 + $1.cashRequired }
-        let sellUnits = tiers.filter { $0.side == "sell" }.reduce(0) { $0 + $1.units }
+        let pricedTiers = tiers.map { tier -> NextGridTier in
+            let oppositeSide = tier.side == "buy" ? "sell" : "buy"
+            guard let opposite = tiers.filter({ $0.side == oppositeSide })
+                .min(by: {
+                    let left = $0.price >= tier.price ? $0.price - tier.price : tier.price - $0.price
+                    let right = $1.price >= tier.price ? $1.price - tier.price : tier.price - $1.price
+                    return left < right
+                }),
+                  let gain = pairedExpectedNetGain(price: tier.price, oppositePrice: opposite.price,
+                                                   units: min(tier.units, opposite.units),
+                                                   feePerTrade: feePerTrade) else {
+                return tier
+            }
+            return NextGridTier(side: tier.side, price: tier.price, units: tier.units,
+                                cashRequired: tier.cashRequired, expectedNetGain: gain)
+        }
+        if pricedTiers.contains(where: { tier in
+            let oppositeSide = tier.side == "buy" ? "sell" : "buy"
+            return pricedTiers.contains(where: { $0.side == oppositeSide }) && tier.expectedNetGain == nil
+        }) {
+            return .notRecommended(["部分档位与最近对侧档配对后不能覆盖双边手续费；已暂停该网格，不显示虚假净收益"])
+        }
+        let maxCashUsage = pricedTiers.filter { $0.side == "buy" }.reduce(Decimal.zero) { $0 + $1.cashRequired }
+        let sellUnits = pricedTiers.filter { $0.side == "sell" }.reduce(0) { $0 + $1.units }
         let positionUnits = book.positions.first(where: { $0.code == quote.code })?.units ?? 0
         let remaining = max(0, positionUnits - sellUnits)
 
-        let plan = NextGridPlan(code: quote.code, name: quote.name, upper: NextPriceRounding.tick(upper), lower: NextPriceRounding.tick(lower), tiers: tiers,
+        let plan = NextGridPlan(code: quote.code, name: quote.name, upper: NextPriceRounding.tick(upper), lower: NextPriceRounding.tick(lower), tiers: pricedTiers,
                                 maxCashUsage: maxCashUsage, remainingUnitsAfterAllSells: remaining, spacingPercent: spacingPercent,
                                 validUntil: NextPlanClock.sessionEnd(after: now),
                                 pauseConditions: [
