@@ -1172,6 +1172,17 @@ struct NextNASResearch: Codable, Equatable {
     var providerStatus: ProviderStatus? = nil
     /// 长期分时统计。没有就是没有（NAS 上还没攒够分钟归档），界面要如实说。
     var minuteStats: NextNASMinuteStats? = nil
+    /// Cross-market findings are optional until NAS has verified external minute archives.
+    struct CrossMarketEvidence: Codable, Equatable {
+        let state: String
+        let reason: String?
+        let source: String?
+        let asOf: String?
+        let sampleCount: Int?
+        let bestLagMinutes: Int?
+        let conditionalWinRate: Double?
+    }
+    var crossMarket: CrossMarketEvidence? = nil
 }
 
 struct NextAppArchive: Codable, Equatable {

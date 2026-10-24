@@ -274,6 +274,33 @@ final class NextCoreTests: XCTestCase {
         XCTAssertEqual(valid.state, .triggered)
         XCTAssertNotNil(triggered)
     }
+    func testExpiredCandidateStillRecordsBrokerConfirmedPartialFills() throws {
+        var plan = NextCandidatePlan(kind: .reverseT, code: "159941", name: "纳指ETF",
+            limitPrice: Decimal(string: "1.450")!, units: 500,
+            createdAt: now, expiresAt: now.addingTimeInterval(3600),
+            triggerNote: "券商手工挂单", cancelNote: "行情失效",
+            quoteSource: "test", quoteTime: now, dailyBarCount: 120, minuteSampleCount: 200,
+            confidenceLevel: "high", rationale: "真实成交回填测试", expectedNetGain: nil,
+            expectedCostReduction: nil, riskNote: "行情风险", marketState: "震荡",
+            cancelAbove: nil, cancelBelow: nil)
+        _ = plan.invalidate(reason: "重大新闻使原计划失效", at: now.addingTimeInterval(10))
+        XCTAssertEqual(plan.state, .invalidated)
+        XCTAssertTrue(plan.canConfirmRealFill)
+
+        try plan.confirmRealFill(price: Decimal(string: "1.450")!, units: 300,
+                                 fee: Decimal(string: "0.10")!, at: now.addingTimeInterval(20),
+                                 now: now.addingTimeInterval(30))
+        XCTAssertEqual(plan.confirmedUnits, 300)
+        XCTAssertEqual(plan.state, .invalidated, "部分真实成交不能把已失效的计划重新标成有效")
+        XCTAssertTrue(plan.canConfirmRealFill, "剩余真实成交仍应可补录")
+
+        try plan.confirmRealFill(price: Decimal(string: "1.451")!, units: 200,
+                                 fee: Decimal(string: "0.10")!, at: now.addingTimeInterval(3700),
+                                 now: now.addingTimeInterval(3800))
+        XCTAssertEqual(plan.confirmedUnits, 500)
+        XCTAssertEqual(plan.state, .confirmed)
+        XCTAssertFalse(plan.canConfirmRealFill)
+    }
     // IOPV 图层是可选的：关掉时纵轴只按成交价，不被 IOPV 撑开；
     // 打开时才把 IOPV 纳入同一根价格轴（UnifiedChartView 也按 visibleLayers 处理）。
     func testChartPriceDomainFollowsIOPVLayerVisibility() throws {

@@ -13,7 +13,138 @@ import app
 import workers
 import mobile_research
 import market
-from domain import NextDatabase
+import cross_market
+from domain import InvalidData, NextDatabase
+
+
+class CrossMarketEvidenceTests(unittest.TestCase):
+    def test_cross_market_archive_preserves_exchange_day_and_rejects_future_points(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        rows = [{"timestamp": "2026-10-23T11:30:00+09:00", "price": "100"}]
+        database.put_cross_market_minute("KR_KOSPI", rows, "verified fixture", "2026-10-23T03:00:00Z")
+        self.assertEqual(database.cross_market_days("KR_KOSPI", "2026-10-23", "2026-10-23"), ["2026-10-23"])
+        self.assertEqual(database.get_cross_market_minute("KR_KOSPI", "2026-10-23")["rows"], [
+            {"timestamp": rows[0]["timestamp"], "price": "100", "volume": None, "iopv": None}
+        ])
+        with self.assertRaises(InvalidData):
+            database.put_cross_market_minute("KR_KOSPI", [
+                {"timestamp": "2026-10-23T13:00:00+09:00", "price": "101"}
+            ], "verified fixture", "2026-10-23T03:00:00Z")
+
+    def test_replay_api_helper_reports_missing_real_archive_without_fabricating_result(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        result = mobile_research.replay_lunch_archive(
+            database, "KR_KOSPI", "512480", "2026-10-01", "2026-10-23",
+            {"leaderShockAtLeast": 0.005, "assetMorningAtMost": 0.0, "expectedDirection": 1})
+        self.assertEqual(result["state"], "insufficient_samples")
+        self.assertEqual(result["evidenceState"], "insufficient_real_archive")
+        self.assertIsNone(result["confirmationRate"])
+
+    def test_replay_readonly_api_returns_insufficient_without_real_archives(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        handler = object.__new__(app.make_handler(database))
+        handler.path = ("/v1/research/cross-market/replay?leader=KR_KOSPI&asset=512480&"
+                        "start=2026-10-01&end=2026-10-23")
+        responses = []
+        handler.reply = lambda status, body: responses.append((status, body))
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["evidenceState"], "insufficient_real_archive")
+        self.assertIsNone(responses[0][1]["confirmationRate"])
+
+    def test_future_points_are_excluded_from_pair_and_lunch_calculations(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime(2026, 10, 23, 5, 0, tzinfo=timezone.utc)
+        start = now - timedelta(minutes=180)
+        leader, follower = [], []
+        price = 100.0
+        for i in range(181):
+            stamp = start + timedelta(minutes=i)
+            price *= 1 + ((i % 7) - 3) * 0.0001
+            leader.append({"timestamp": stamp.isoformat(), "price": price})
+            follower.append({"timestamp": stamp.isoformat(), "price": 50 + i * 0.002})
+        future = (now + timedelta(minutes=1)).isoformat()
+        leader.append({"timestamp": future, "price": 1_000_000})
+        follower.append({"timestamp": future, "price": 0.00001})
+        baseline = cross_market.analyze_pair(leader[:-1], follower[:-1], as_of=now.isoformat(),
+                                             source="fixture", market_status="closed")
+        with_future = cross_market.analyze_pair(leader, follower, as_of=now.isoformat(),
+                                                source="fixture", market_status="closed")
+        self.assertEqual(baseline, with_future)
+        self.assertEqual(with_future["leaderSamples"], 181)
+
+    def test_insufficient_or_stale_evidence_never_claims_stable_lead(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime(2026, 10, 23, 5, 0, tzinfo=timezone.utc)
+        short = [{"timestamp": (now - timedelta(minutes=2)).isoformat(), "price": 10}]
+        insufficient = cross_market.analyze_pair(short, short, as_of=now.isoformat(),
+                                                 source="verified fixture", market_status="open")
+        self.assertEqual(insufficient["state"], "no_stable_relationship")
+        stale = cross_market.analyze_pair(short, short, as_of=now.isoformat(),
+                                          source="verified fixture", market_status="open", max_age_seconds=30)
+        self.assertEqual(stale["state"], "stale")
+        self.assertEqual(stale["windows"], [])
+
+    def test_lunch_shock_requires_real_1130_and_1250_observations(self):
+        rows = [
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": 100},
+            {"timestamp": "2026-10-23T12:50:00+08:00", "price": 101.3},
+        ]
+        result = cross_market.lunch_shock(rows, day="2026-10-23", as_of="2026-10-23T13:00:00+08:00")
+        self.assertEqual(result["state"], "observed")
+        self.assertAlmostEqual(result["return"], 0.013)
+        missing = cross_market.lunch_shock(rows[:1], day="2026-10-23", as_of="2026-10-23T13:00:00+08:00")
+        self.assertEqual(missing["state"], "insufficient")
+
+    def test_historical_replay_freezes_at_1250_and_aggregates_only_enough_signals(self):
+        from datetime import date, timedelta
+        rule = {"leaderShockAtLeast": 0.005, "assetMorningAtMost": 0.0, "expectedDirection": 1}
+        leader, asset = [], []
+        for hhmm, lp, ap in (("09:30", 100, 50), ("11:30", 100, 49),
+                             ("12:50", 101, 49), ("13:00", 101, 49),
+                             ("13:05", 101, 49.5), ("13:15", 101, 49.6),
+                             ("13:30", 101, 49.7), ("14:00", 101, 49.8)):
+            stamp = f"2026-10-23T{hhmm}:00+08:00"
+            leader.append({"timestamp": stamp, "price": lp})
+            asset.append({"timestamp": stamp, "price": ap})
+        one = cross_market.replay_lunch_day(leader, asset, day="2026-10-23", source="fixture", rule=rule)
+        changed_after_cutoff = [dict(r, price=999 if r["timestamp"].startswith("2026-10-23T13:") else r["price"])
+                                for r in asset]
+        two = cross_market.replay_lunch_day(leader, changed_after_cutoff, day="2026-10-23",
+                                            source="fixture", rule=rule)
+        self.assertEqual(one["frozenHypothesis"], two["frozenHypothesis"])
+        self.assertEqual(one["frozenHypothesis"]["state"], "hypothesis")
+        self.assertTrue(one["confirmedAt5m"])
+        days, cursor = [], date(2026, 10, 23)
+        while len(days) < 100:
+            if cursor.weekday() < 5:
+                day = cursor.isoformat()
+                def shift(rows):
+                    return [dict(row, timestamp=day + row["timestamp"][10:]) for row in rows]
+                days.append({"day": day, "leader": shift(leader), "asset": shift(asset)})
+            cursor -= timedelta(days=1)
+        days.append(days[0])  # Duplicate sessions must not inflate evidence.
+        summary = cross_market.replay_lunch_days(days, source="fixture", rule=rule, minimum_samples=100)
+        self.assertEqual(summary["state"], "evaluated")
+        self.assertEqual(summary["hypothesisCount"], 100)
+        self.assertEqual(summary["confirmationRate"], 1.0)
+        self.assertEqual(len(summary["results"]), 100)
+        limited = cross_market.replay_lunch_days(days[:32], source="fixture", rule=rule,
+                                                minimum_samples=100)
+        self.assertEqual(limited["state"], "insufficient_samples")
+        self.assertIsNone(limited["confirmationRate"])
 
 
 class RetiredRoutesTests(unittest.TestCase):
@@ -238,6 +369,8 @@ class RetiredRoutesTests(unittest.TestCase):
             self.assertIn("minuteStats", response[0][1])
             self.assertEqual(response[0][1]["minuteStats"]["days"], 0)
             self.assertFalse(response[0][1]["minuteStats"]["quality"]["enoughForLongTerm"])
+            self.assertEqual(response[0][1]["crossMarket"]["state"], "insufficient_real_archive")
+            self.assertIsNone(response[0][1]["crossMarket"]["conditionalWinRate"])
             self.assertIsNone(response[0][1]["ai"])
             self.assertFalse(response[0][1]["providerConfigured"])
             self.assertEqual(response[0][1]["providerStatus"]["state"], "phone-only")

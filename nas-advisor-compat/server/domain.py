@@ -2,7 +2,7 @@
 import json
 import re
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import uuid
 
@@ -339,6 +339,10 @@ class NextDatabase:
                 CREATE TABLE IF NOT EXISTS minute_archive (
                     code TEXT NOT NULL, stamp TEXT NOT NULL, body TEXT NOT NULL, fetched_at TEXT NOT NULL,
                     PRIMARY KEY(code, stamp));
+                CREATE TABLE IF NOT EXISTS cross_market_minute (
+                    market TEXT NOT NULL, stamp TEXT NOT NULL, body TEXT NOT NULL,
+                    source TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    PRIMARY KEY(market, stamp));
                 CREATE TABLE IF NOT EXISTS research_runs (
                     id TEXT PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS tracked_instruments (
@@ -638,6 +642,73 @@ class NextDatabase:
             rows = db.execute("SELECT body FROM minute_archive WHERE code=? AND stamp LIKE ? ORDER BY stamp",
                               (code, day + "%")).fetchall()
         return {"code": code, "day": day, "source": "Tencent minute query", "rows": [json.loads(row[0]) for row in rows]}
+
+    def put_cross_market_minute(self, market, rows, source, fetched_at):
+        """Persist provider-observed external minute points for research/replay only."""
+        self.validate_id(market)
+        if not isinstance(source, str) or not source.strip() or not isinstance(rows, list) or not rows:
+            raise InvalidData("invalid cross-market archive")
+        try:
+            fetched = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+            if fetched.tzinfo is None: raise ValueError("timezone required")
+        except (AttributeError, TypeError, ValueError):
+            raise InvalidData("invalid cross-market fetch timestamp")
+        if fetched.astimezone(timezone.utc) > datetime.now(timezone.utc) + timedelta(seconds=120):
+            raise InvalidData("future cross-market fetch timestamp")
+        validated = []
+        for row in rows:
+            if not isinstance(row, dict): raise InvalidData("invalid cross-market minute row")
+            try:
+                stamp = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00"))
+                price = Decimal(str(row["price"]))
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                raise InvalidData("invalid cross-market minute values")
+            if stamp.tzinfo is None or not price.is_finite() or price <= 0:
+                raise InvalidData("cross-market point needs a zoned timestamp and positive price")
+            if stamp.astimezone(timezone.utc) > fetched.astimezone(timezone.utc):
+                raise InvalidData("future cross-market point rejected")
+            canonical = {"timestamp": stamp.isoformat(), "price": str(price)}
+            for optional in ("volume", "iopv"):
+                value = row.get(optional)
+                if value is None:
+                    canonical[optional] = None
+                else:
+                    try: number = Decimal(str(value))
+                    except (InvalidOperation, ValueError): raise InvalidData("invalid optional market value")
+                    if not number.is_finite() or number < 0: raise InvalidData("invalid optional market value")
+                    canonical[optional] = str(number)
+            # Keep the provider's local offset in the archive key so session-day
+            # replay (especially lunch breaks and US DST) uses the exchange date.
+            validated.append((stamp.isoformat(),
+                              json.dumps(canonical, separators=(",", ":"))))
+        with self.connect() as db:
+            db.executemany("INSERT OR REPLACE INTO cross_market_minute VALUES (?, ?, ?, ?, ?)",
+                           [(market, stamp, body, source[:120], fetched.isoformat())
+                            for stamp, body in validated])
+
+    def get_cross_market_minute(self, market, day):
+        self.validate_id(market)
+        try: date.fromisoformat(day)
+        except (ValueError, TypeError): raise InvalidData("invalid cross-market date")
+        with self.connect() as db:
+            rows = db.execute("SELECT body, source FROM cross_market_minute WHERE market=? "
+                              "AND stamp LIKE ? ORDER BY stamp", (market, day + "%")).fetchall()
+        sources = sorted({row[1] for row in rows})
+        return {"market": market, "day": day, "source": sources[0] if len(sources) == 1 else sources,
+                "rows": [json.loads(row[0]) for row in rows]}
+
+    def cross_market_days(self, market, start, end):
+        self.validate_id(market)
+        try:
+            first, last = date.fromisoformat(start), date.fromisoformat(end)
+        except (TypeError, ValueError): raise InvalidData("invalid cross-market date range")
+        if first > last or (last - first).days > 400:
+            raise InvalidData("cross-market replay range must be within 400 days")
+        with self.connect() as db:
+            rows = db.execute("SELECT DISTINCT substr(stamp,1,10) FROM cross_market_minute "
+                              "WHERE market=? AND substr(stamp,1,10)>=? AND substr(stamp,1,10)<=? "
+                              "ORDER BY 1", (market, start, end)).fetchall()
+        return [row[0] for row in rows]
 
     def get_research(self, run_id):
         self.validate_id(run_id)

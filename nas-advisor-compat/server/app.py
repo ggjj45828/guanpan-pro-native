@@ -74,6 +74,29 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(200, mobile_research.snapshot(database))
                 except Exception:
                     return self.reply(503, {"error": "NAS 历史档案暂不可用；未生成交易证据"})
+            if path == "/v1/research/cross-market/replay":
+                query = parse_qs(parsed.query)
+                try:
+                    leader = query.get("leader", [""])[0]
+                    asset = query.get("asset", [""])[0]
+                    start = query.get("start", [""])[0]
+                    end = query.get("end", [""])[0]
+                    shock = float(query.get("leaderShockAtLeast", ["0.005"])[0])
+                    morning = float(query.get("assetMorningAtMost", ["0"])[0])
+                    direction = int(query.get("expectedDirection", ["1"])[0])
+                    minimum = int(query.get("minimumSamples", ["100"])[0])
+                    if not leader or not start or not end:
+                        raise ValueError("leader, start and end are required")
+                    if direction not in (-1, 1) or minimum < 1 or minimum > 1000:
+                        raise ValueError("invalid replay limits")
+                    rule = {"leaderShockAtLeast": shock, "assetMorningAtMost": morning,
+                            "expectedDirection": direction}
+                    return self.reply(200, mobile_research.replay_lunch_archive(
+                        database, leader, asset, start, end, rule, minimum))
+                except (ValueError, InvalidData) as error:
+                    return self.reply(400, {"error": str(error)})
+                except Exception:
+                    return self.reply(503, {"error": "历史跨市场档案暂不可用；没有生成预测结论"})
             if path in ("/", "/index.html"):
                 return self.reply(200, {"service": "guanpan-advisor", "role": "NAS 后台研究与数据服务",
                                         "client": "请使用观盘 iOS App 查看真实持仓与唯一 AI 指导",
@@ -100,6 +123,11 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     code = path.rsplit("/", 1)[-1]; symbol_for(code)
                     return self.reply(200, {"factors": database.get_research("factors-" + code),
                                             "ai": None,
+                                            "crossMarket": {"state": "insufficient_real_archive",
+                                                             "reason": "NAS尚未接入经过验证的外部市场分钟采集；当前没有可证实的领先关系",
+                                                             "source": None, "asOf": None,
+                                                             "sampleCount": 0, "bestLagMinutes": None,
+                                                             "conditionalWinRate": None},
                                             "providerConfigured": False,
                                             "providerStatus": {"state": "phone-only", "configured": False,
                                                                "profile": "phone-only", "model": None,

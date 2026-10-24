@@ -71,6 +71,9 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
     var confirmedUnits: Int? = nil
     var confirmedFee: Decimal? = nil
     var remainingUnits: Int { max(0, units - (confirmedUnits ?? 0)) }
+    /// Actual fills must remain recordable after a plan expires or is withdrawn:
+    /// the plan is advisory, while the broker-confirmed trade is an account fact.
+    var canConfirmRealFill: Bool { remainingUnits > 0 }
 
     var priceWasEdited: Bool {
         guard let confirmedPrice else { return false }
@@ -93,8 +96,10 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
     /// 只更新候选计划的真实成交反馈；账本写入由调用方在校验通过后单独提交。
     mutating func confirmRealFill(price: Decimal, units filledUnits: Int, fee: Decimal,
                                   at tradedAt: Date, now: Date) throws {
-        guard state.isOpen, now <= expiresAt, filledUnits > 0, filledUnits <= remainingUnits,
+        let wasOpen = state.isOpen
+        guard canConfirmRealFill, filledUnits > 0, filledUnits <= remainingUnits,
               price > 0, !price.isNaN, fee >= 0, !fee.isNaN,
+              tradedAt.timeIntervalSince1970.isFinite,
               tradedAt >= createdAt, tradedAt <= now.addingTimeInterval(60) else {
             throw NextError.invalid("候选计划已结束，或本次成交价、手续费、时间及剩余份额无效")
         }
@@ -105,8 +110,23 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
         confirmedUnits = totalUnits
         confirmedFee = (confirmedFee ?? 0) + fee
         confirmedAt = tradedAt
+        if totalUnits == units {
+            state = .confirmed
+            stateChangedAt = now
+        } else if wasOpen {
+            state = .partiallyConfirmed
+            stateChangedAt = now
+        }
+    }
+
+    mutating func invalidate(reason: String, at now: Date) -> String? {
+        guard state.isOpen else { return nil }
+        state = .invalidated
         stateChangedAt = now
-        state = totalUnits == units ? .confirmed : .partiallyConfirmed
+        let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty
+            ? "\(name) 的重大事件使原计划失效，请重新分析"
+            : "\(name) 的重大事件使原计划失效：\(detail)"
     }
 
     /// 状态迁移（只前进，不回退）：
@@ -162,6 +182,21 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
     private func quoteAge(_ quote: NextQuote, _ now: Date) -> Int? {
         guard quote.time <= now else { return nil }
         return Int(now.timeIntervalSince(quote.time))
+    }
+}
+
+enum NextCandidatePlanNewsGuard {
+    /// Fresh major events withdraw an existing advisory plan.
+    /// This rule never records a trade or changes the real ledger.
+    static func invalidationReason(for plan: NextCandidatePlan, headlines: [NextNewsInput],
+                                   now: Date) -> String? {
+        let impact = NextNewsImpactEngine.evaluate(
+            code: plan.code, name: plan.name, titles: headlines,
+            hasTPlan: plan.kind == .reverseT || plan.kind == .forwardT,
+            hasGridPlan: plan.kind == .gridBuy || plan.kind == .gridSell,
+            now: now)
+        guard impact.action.blocksPlan else { return nil }
+        return impact.reasons.joined(separator: "；")
     }
 }
 
@@ -456,6 +491,7 @@ struct NextDecisionContext: Equatable {
     let guidance: NextDailyGuidance
     let holdingsLines: [String]
     let nasResearchLines: [String]
+    let crossMarketLines: [String]
     let newsLines: [String]
     /// 本次在线 AI 实际收到的画像结论（可解释性：用户能查「AI 用了哪些画像信息」）。
     let profileLines: [String]
@@ -464,7 +500,8 @@ struct NextDecisionContext: Equatable {
 
 enum NextDecisionContextBuilder {
     static func build(guidance: NextDailyGuidance, book: NextBook, quotes: [String: NextQuote],
-                      nasResearchLines: [String], newsLines: [String], profileLines: [String] = [],
+                      nasResearchLines: [String], crossMarketLines: [String] = [],
+                      newsLines: [String], profileLines: [String] = [],
                       now: Date) -> NextDecisionContext {
         var holdings: [String] = []
         for position in book.positions where position.units > 0 {
@@ -500,6 +537,7 @@ enum NextDecisionContextBuilder {
         【A股交易日历】\(NextMarketClock.sessionDescription(now))。休市日、周末、盘前、午休和收盘后不得描述为“今天可挂”；只能引用规则引擎给出的有效候选计划，计划缺失就明确说没有当日可执行价格。
         【市场状态与候选计划】\(planLines.joined(separator: "\n"))
         【NAS 长期研究】\(nasResearchLines.isEmpty ? "暂无（NAS 离线或未返回）" : nasResearchLines.joined(separator: "\n"))
+        【跨市场验证】\(crossMarketLines.isEmpty ? "NAS尚无可引用的跨市场分钟研究；必须说明证据不足，不得凭经验推断某海外市场会领先持仓。" : crossMarketLines.joined(separator: "\n"))
         【新闻线索】\(newsLines.isEmpty ? "暂无（本次不含新闻判断）" : newsLines.joined(separator: "\n"))
         新闻输入是手机或NAS取得的搜索聚合标题，不含正文；来源与发布时间必须一并考虑。标题未经原文核实，不得仅凭标题断言事件已发生；重要线索应降低置信度、提示核实，并说明可能影响哪只持仓和哪项计划。
         【投资画像】\(profileLines.isEmpty ? "暂无足够行为样本，按默认门槛处理" : profileLines.joined(separator: "\n"))
@@ -511,9 +549,11 @@ enum NextDecisionContextBuilder {
         4. 如果本次判断与上次不同，必须指出是哪个数据变化导致（行情、状态、新闻或持仓）；
         5. 投资画像只决定「推荐优先级」和「表达方式」，绝不能修改行情事实、不能降低数据质量与风险门槛、不能为了迎合偏好制造交易机会；当机会低于画像门槛时，如实说「有机会但低于你的执行门槛，因此不主动推荐」；
         6. 不要输出画像里的原始成交明细，只引用上面的结论。
+        7. 跨市场关系只有在NAS证据明确标为稳定、样本充足且数据新鲜时才可作为指导依据；缺失/过期/样本不足必须说「暂无可靠证据/没有稳定领先关系」，不得编造市场关系或概率。
         """
         return NextDecisionContext(generatedAt: now, guidance: guidance, holdingsLines: holdings,
-                                   nasResearchLines: nasResearchLines, newsLines: newsLines,
+                                   nasResearchLines: nasResearchLines, crossMarketLines: crossMarketLines,
+                                   newsLines: newsLines,
                                    profileLines: profileLines, promptBlock: promptBlock)
     }
 }

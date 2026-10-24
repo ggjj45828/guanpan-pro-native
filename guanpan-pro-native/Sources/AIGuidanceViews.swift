@@ -524,28 +524,35 @@ struct CandidatePlanRow: View {
                 Text("券商已确认 \(filled) 份 · 剩余候选 \(plan.remainingUnits) 份 · 实际费用 ¥\(NextMoney.text(plan.confirmedFee ?? 0))")
                     .font(.caption2).foregroundStyle(p.jade).fixedSize(horizontal: false, vertical: true)
             }
-            if plan.state.isOpen {
+            if plan.canConfirmRealFill {
                 HStack(spacing: 8) {
-                    Button("我已成交") { showFill = true }
+                    Button(plan.state.isOpen ? "我已成交" : "补录实际成交") { showFill = true }
                         .font(.system(size: 11, weight: .semibold)).foregroundStyle(p.forest)
-                    Button("取消计划") { cancel() }
-                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(p.muted)
+                    if plan.state.isOpen {
+                        Button("取消计划") { cancel() }
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(p.muted)
+                    } else {
+                        Text("仅记录券商已真实成交的份额")
+                            .font(.system(size: 9)).foregroundStyle(p.muted)
+                    }
                     Spacer(minLength: 4)
                     // 一键反馈：不是问卷，只让 AI 知道「这类机会适不适合我」。
-                    Menu {
-                        ForEach(NextPlanFeedbackKind.allCases) { kind in
-                            Button {
-                                model.recordPlanFeedback(plan.id, kind: kind)
-                            } label: {
-                                Label(kind.rawValue, systemImage: kind.symbol)
+                    if plan.state.isOpen {
+                        Menu {
+                            ForEach(NextPlanFeedbackKind.allCases) { kind in
+                                Button {
+                                    model.recordPlanFeedback(plan.id, kind: kind)
+                                } label: {
+                                    Label(kind.rawValue, systemImage: kind.symbol)
+                                }
                             }
+                        } label: {
+                            Text(plan.feedback?.kind.rawValue ?? "反馈给 AI")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(plan.feedback == nil ? p.muted : p.chartViolet)
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background((plan.feedback == nil ? p.line : p.chartViolet.opacity(0.14)), in: Capsule())
                         }
-                    } label: {
-                        Text(plan.feedback?.kind.rawValue ?? "反馈给 AI")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(plan.feedback == nil ? p.muted : p.chartViolet)
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background((plan.feedback == nil ? p.line : p.chartViolet.opacity(0.14)), in: Capsule())
                     }
                 }
             }

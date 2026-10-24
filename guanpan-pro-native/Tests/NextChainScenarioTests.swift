@@ -65,6 +65,22 @@ final class NextChainScenarioTests: XCTestCase {
         (0..<120).map { [1.388, 1.412, 1.400][$0 % 3] }
     }
 
+    func testUnifiedAIContextCannotInventUnverifiedCrossMarketLeads() {
+        let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "暂无操作机会",
+                                         noActionSummary: "继续持有", dataState: "跨市场研究不可用")
+        let missing = NextDecisionContextBuilder.build(guidance: guidance, book: NextBook(), quotes: [:],
+                                                       nasResearchLines: [], newsLines: [], now: now)
+        XCTAssertTrue(missing.promptBlock.contains("NAS尚无可引用的跨市场分钟研究"))
+        XCTAssertTrue(missing.promptBlock.contains("不得凭经验推断某海外市场会领先持仓"))
+
+        let evidenced = NextDecisionContextBuilder.build(guidance: guidance, book: NextBook(), quotes: [:],
+                                                          nasResearchLines: [],
+                                                          crossMarketLines: ["半导体：no_stable_relationship；暂无稳定领先关系"],
+                                                          newsLines: [], now: now)
+        XCTAssertTrue(evidenced.promptBlock.contains("暂无稳定领先关系"))
+        XCTAssertTrue(evidenced.promptBlock.contains("缺失/过期/样本不足"))
+    }
+
     private func scan(_ scanBook: NextBook, quote q: NextQuote, daily: [NextChartSample],
                       intraday: [NextChartSample], research: [String: NextNASResearch] = [:],
                       news: [String: [NextNewsInput]] = [:],
@@ -187,6 +203,10 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(fresh.dataState.contains("NAS 在线"), fresh.dataState)
         XCTAssertTrue(fresh.dataState.contains("新鲜长期研究"), fresh.dataState)
 
+        let unprobed = scan(book(), quote: q, daily: bars(closes), intraday: intraday,
+                            research: [code: research()], nasConfigured: true)
+        XCTAssertTrue(unprobed.dataState.contains("NAS 连接待检测"), unprobed.dataState)
+
         let cached = scan(book(), quote: q, daily: bars(closes), intraday: intraday,
                           research: [code: research()], nasConfigured: true, nasReachable: false)
         XCTAssertTrue(cached.dataState.contains("NAS 当前不可达"), cached.dataState)
@@ -196,6 +216,29 @@ final class NextChainScenarioTests: XCTestCase {
                          research: [code: research(stale: true)], nasConfigured: true, nasReachable: true)
         XCTAssertTrue(stale.dataState.contains("NAS 在线"), stale.dataState)
         XCTAssertTrue(stale.dataState.contains("已过期或质量不足"), stale.dataState)
+    }
+
+    func testFreshMajorNewsInvalidatesSavedPlanButStaleNewsDoesNot() throws {
+        let plan = NextCandidatePlan(kind: .gridBuy, code: code, name: "纳指ETF",
+            limitPrice: Decimal(string: "1.380")!, units: 100,
+            createdAt: now.addingTimeInterval(-600), expiresAt: now.addingTimeInterval(3600),
+            triggerNote: "回落触发", cancelNote: "突破区间",
+            quoteSource: "fixture", quoteTime: now, dailyBarCount: 120, minuteSampleCount: 0,
+            confidenceLevel: "high", rationale: "新闻失效闭环测试", expectedNetGain: nil,
+            expectedCostReduction: nil, riskNote: "事件风险", marketState: "震荡",
+            cancelAbove: nil, cancelBelow: nil)
+        let formatter = ISO8601DateFormatter()
+        let freshAt = formatter.string(from: now.addingTimeInterval(-60))
+        let staleAt = formatter.string(from: now.addingTimeInterval(-31 * 86_400))
+        let fresh = [NextNewsInput(title: "\(code) 纳指ETF 停牌公告",
+                                   source: "交易所公告", publishedAt: freshAt, url: "https://example.test/notice")]
+        let stale = [NextNewsInput(title: "\(code) 纳指ETF 停牌公告",
+                                   source: "交易所公告", publishedAt: staleAt, url: "https://example.test/notice")]
+
+        XCTAssertNotNil(NextCandidatePlanNewsGuard.invalidationReason(for: plan, headlines: fresh, now: now))
+        XCTAssertNil(NextCandidatePlanNewsGuard.invalidationReason(for: plan, headlines: stale, now: now))
+        XCTAssertNil(NextCandidatePlanNewsGuard.invalidationReason(
+            for: plan, headlines: [NextNewsInput(title: "\(code) 市场观察", source: "新闻", publishedAt: freshAt)], now: now))
     }
 
     // MARK: - C 多日区间：网格档数由波动率与区间推导，不是固定 4 档
