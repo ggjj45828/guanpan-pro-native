@@ -203,6 +203,30 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertTrue(review.note.contains("未记录真实成交"))
     }
 
+    func testReviewWaitsForFreshTrustedQuoteAfterActualFill() {
+        var filled = record(snapshot())
+        filled.outcome = .filled
+        filled.outcomeAt = now.addingTimeInterval(-60)
+        XCTAssertEqual(NextDecisionMemory.laterReviewPrice(for: filled, quote: quote("1.410"), now: now),
+                       Decimal(string: "1.410"))
+        XCTAssertNil(NextDecisionMemory.laterReviewPrice(for: filled,
+            quote: quote("1.410", time: filled.outcomeAt), now: now),
+            "成交同一时刻的行情不能作为后续表现")
+        XCTAssertNil(NextDecisionMemory.laterReviewPrice(for: filled,
+            quote: quote("1.410", time: now.addingTimeInterval(-180)), now: now),
+            "旧缓存行情不能作为成交后的复盘结果")
+        XCTAssertNil(NextDecisionMemory.laterReviewPrice(for: filled,
+            quote: quote("1.410", time: now.addingTimeInterval(-90)), now: now),
+            "成交之前的行情不能冒充后续结果")
+        let receiptOnly = NextQuote(code: "159941", name: "纳指ETF", price: 1.410, previousClose: 1.400,
+            time: now, source: "EastMoney", timeQuality: "receipt_only")
+        XCTAssertNil(NextDecisionMemory.laterReviewPrice(for: filled, quote: receiptOnly, now: now),
+            "仅接收时间不能作为复盘行情时间")
+        let pendingReview = NextDecisionMemory.review(filled, laterPrice: nil, at: now)
+        XCTAssertNil(pendingReview.reviewedAt, "没有可靠后续行情时应继续待复盘")
+        XCTAssertTrue(pendingReview.note.contains("待复盘"))
+    }
+
     // MARK: - 新闻 → 持仓 → 计划
 
     private var currentNewsDate: String {

@@ -279,6 +279,15 @@ enum NextDecisionMemory {
         return true
     }
 
+    /// Only a fresh, supplier-timestamped quote observed after the confirmed fill may
+    /// become the later-price point used by a review.
+    static func laterReviewPrice(for record: NextDecisionRecord, quote: NextQuote?, now: Date) -> Decimal? {
+        guard record.outcome == .filled, let quote,
+              quote.isFreshForPricePlan(at: now),
+              quote.time > (record.outcomeAt ?? record.createdAt) else { return nil }
+        return quote.price
+    }
+
     /// 将 NAS 跨市场 DTO 压成有界、可追溯的快照；仅记事实和验证状态，不把相关性包装成交易信号。
     private static func crossMarketSnapshot(_ evidence: NextNASResearch.CrossMarketEvidence?) -> [String]? {
         guard let evidence else { return nil }
@@ -449,10 +458,8 @@ enum NextDecisionMemory {
     static func review(_ record: NextDecisionRecord, laterPrice: Decimal?, at now: Date) -> NextDecisionReview {
         var review = record.review
         guard let laterPrice else {
-            review.reviewedAt = now
-            if review.note.isEmpty {
-                review.note = "没有可用于复盘的最新价，暂不出结论"
-            }
+            review.reviewedAt = nil
+            review.note = "暂缺成交后新鲜且可信的行情；保留待复盘状态，后续刷新再计算"
             return review
         }
         review.laterPrice = "\(laterPrice)"

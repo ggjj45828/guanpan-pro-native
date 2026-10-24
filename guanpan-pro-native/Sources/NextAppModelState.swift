@@ -468,7 +468,8 @@ import Combine
         merged = merged.map { record in
             guard record.outcome == .filled, record.review.reviewedAt == nil else { return record }
             var copy = record
-            copy.review = NextDecisionMemory.review(record, laterPrice: quoteMap[record.code]?.price, at: now)
+            let laterPrice = NextDecisionMemory.laterReviewPrice(for: record, quote: quoteMap[record.code], now: now)
+            copy.review = NextDecisionMemory.review(record, laterPrice: laterPrice, at: now)
             return copy
         }
         if merged != decisionMemory { decisionMemory = merged }
