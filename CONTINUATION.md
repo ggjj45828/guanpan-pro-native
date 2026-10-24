@@ -135,6 +135,8 @@
 - 加入A股午休11:30→12:50的实测价格变化计算。新增历史假设回放函数：12:50时只按当时可见输入形成冻结假设，13:00后样本独立用于确认/拒绝；回放按日期去重、保留输入指纹，达不到最低样本数时 `confirmationRate=null`。研究报告不会创建账户、交易、持仓或收益账本。
 - `domain.py` 增加独立 `cross_market_minute` 证据档案表，保留交易所本地时间偏移；校验来源、价格、时间戳与未来数据。新增只读接口 `/v1/research/cross-market/replay`，从真实NAS分钟档案重放；没有档案时明确返回 `insufficient_real_archive`，不编造结果。该端点当前只能读取档案；真实跨市场提供方与采集worker尚未接入。
 - NAS research tests：21/21通过；包括未来点排除、过期数据、午休缺样本、12:50冻结隔离、100个合成交易日累计与重复日期去重、分钟存储交易所日期、只读回放无档案时显式不足。`compileall`通过，`docker compose config -q`通过，`git diff --check`通过。
-- 本轮既有候选计划修复仍在工作树中：新鲜重大新闻作废原候选计划；计划过期/作废后仍允许补录券商真实部分成交。Swift回归已编写但当前无本机Swift/Xcode，尚未运行。此前GitHub Actions run需复查；当前这批工作尚未提交或推送。
+- 本轮既有候选计划修复已纳入验证分支：新鲜重大新闻作废原候选计划；计划过期/作废后仍允许补录券商真实部分成交。Swift回归已编写但当前无本机Swift/Xcode，尚未运行。
 - 下一步必须先给NAS跨市场归档接入一个有验证证据和时间戳的分钟源/市场代码映射；再将NAS研究DTO、手机 `NextDecisionContext`、Risk Guard与DecisionMemory接上。没有找到可靠历史数据源前必须保留“暂无稳定领先关系/证据不足”。随后用真实归档滚动回放至少100–200个有效交易日；合成夹具不能代替该验收。
 - 目前新跨市场功能没有更改或启动任何模拟账户，也没有自动下单。真实外部市场行情源、NAS部署和iPhone实测仍未验证。
+
+- 当前本地提交 e73623，已通过Git Database API以远端最新 729abd8 为父提交追加到 alidation/acceptance-20261024，远端提交 39d2eb1287ad64e2d8c2e4bee25ec0a70cea981a；远端矩阵/延续记录与其他模型的先前修改已保留。Actions：Build iOS IPA run 40087046731、Validate isolated foundation run 40087046734 正在运行，Validate iOS candidate run 40087046787 排队。18-cross-market-replay-foundation仍无真实外部分钟采集worker，不能发布为功能完成。
