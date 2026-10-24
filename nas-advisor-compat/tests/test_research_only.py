@@ -259,6 +259,78 @@ class PreRegisteredHypothesisTests(unittest.TestCase):
                                                     "2026-10-23T00:00:00+00:00", now=now)
         del database
 
+    def test_registration_api_is_queryable_and_never_mutates_real_book(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).resolve().parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        before = database.get_real("main")
+        body = {"leader": "KR_KOSPI", "asset": "512480", "hypothesis": {"id": "kr-lunch-v1"},
+                "notBefore": "2099-01-01T00:00:00+00:00"}
+        raw = json.dumps(body).encode()
+        handler = object.__new__(app.make_handler(database))
+        handler.path = "/v1/research/cross-market/registrations"
+        handler.headers = {"Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        responses = []
+        handler.reply = lambda status, value: responses.append((status, value))
+        handler.do_POST()
+        self.assertEqual(responses[0][0], 201)
+        registration = responses[0][1]
+        self.assertEqual(registration["state"], "awaiting_future_observations")
+        self.assertFalse(registration["eligibleForTradingSignal"])
+        self.assertEqual(database.get_real("main"), before)
+
+        handler.path = "/v1/research/cross-market/registrations?limit=20"
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["registrations"][0]["registrationId"], registration["registrationId"])
+        self.assertFalse(responses[0][1]["registrations"][0]["eligibleForTradingSignal"])
+
+        handler.path = "/v1/research/cross-market/registrations/" + registration["registrationId"]
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["definitionFingerprint"], registration["definitionFingerprint"])
+        self.assertFalse(responses[0][1]["eligibleForTradingSignal"])
+
+        invalid = dict(body, notBefore="2020-01-01T00:00:00+00:00")
+        encoded = json.dumps(invalid).encode()
+        handler.path = "/v1/research/cross-market/registrations"
+        handler.headers = {"Content-Length": str(len(encoded))}
+        handler.rfile = io.BytesIO(encoded)
+        responses.clear()
+        handler.do_POST()
+        self.assertEqual(responses[0][0], 400)
+        self.assertEqual(database.get_real("main"), before)
+        del database
+
+    def test_pre_registered_evaluation_refuses_pre_window_and_stays_research_only(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).resolve().parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        registered = mobile_research.preregister_hypothesis(
+            database, "KR_KOSPI", "512480", {"id": "kr-lunch-v1"},
+            "2026-10-20T00:00:00+00:00", now=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        before = database.get_real("main")
+        with self.assertRaises(ValueError):
+            mobile_research.evaluate_pre_registered_hypothesis(
+                database, registered["registrationId"], "2026-10-19", "2026-10-21", 1,
+                now=datetime(2026, 10, 24, tzinfo=timezone.utc))
+        result = mobile_research.evaluate_pre_registered_hypothesis(
+            database, registered["registrationId"], "2026-10-20", "2026-10-23", 1,
+            now=datetime(2026, 10, 24, tzinfo=timezone.utc))
+        self.assertEqual(result["registrationId"], registered["registrationId"])
+        self.assertEqual(result["evidenceState"], "insufficient_real_archive")
+        self.assertFalse(result["eligibleForTradingSignal"])
+        self.assertEqual(database.get_real("main"), before)
+        self.assertEqual(database.list_research("cross_market_point_in_time_replay"), [])
+        del database
+
 
 class PointInTimeArchiveTests(unittest.TestCase):
     def test_first_observed_snapshots_survive_later_provider_corrections(self):

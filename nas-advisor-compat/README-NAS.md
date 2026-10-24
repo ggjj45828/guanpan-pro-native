@@ -1,6 +1,6 @@
 # 观盘 NAS：基于你提供的 guanpan2 改造
 
-版本：3.6.0-r26-expiring-cross-market-observations。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
+版本：3.6.0-r27-preregistered-cross-market-research。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
 
 本版在 `/v1/research/{代码}` 的 `crossMarket.liveDivergences` 中增加最近15分钟跨市场与该ETF的同窗价格观察。必须有两端新鲜、时间端点相近的真实分钟点；数据过期或时间不齐就标为 `stale` / `insufficient_data`。方向相反只标记为 `observed_divergence`，明确 `eligibleForTradingSignal=false`，不产生预测、策略或交易价格。每条观察含 `expiresAt`；手机在离线使用研究缓存时再次检查到期时间，过期的背离不得进入当次在线AI决策文字。
 
@@ -26,7 +26,7 @@
 
 1. 备份 NAS 上的 `guanpan_advisor_data` 卷及当前 `.env`。不要将备份或密钥放入本包。此包复用原项目、端口和卷，不要与原容器同时启动。
 2. 将本包完整解压到新目录；将自己现有的 `.env` 安全地复制到新目录，核对变量后运行 `docker compose -p guanpan-advisor up -d --build`。不要把 `.env.example` 当成真实密钥。
-3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r26-expiring-cross-market-observations`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
+3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r27-preregistered-cross-market-research`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
 4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`；在 App 内执行“测试连接”，并检查 `/v1/research/512480` 是否包含 `minuteStats`。空档案、旧行情或缺量时手机应显示数据不足。
 5. 如需回滚，先停止新容器，再以备份的旧代码和原数据卷启动；不要使用 `docker compose down -v`。
 
@@ -41,6 +41,8 @@ NAS Compose 使用 Docker 默认网络，没有设置 `network_mode: none`、自
 新增的只读历史午休假设回放接口为 `/v1/research/cross-market/replay?leader=KR_KOSPI&asset=512480&start=2026-01-01&end=2026-10-23`，可附加 `leaderShockAtLeast`、`assetMorningAtMost`、`expectedDirection` 和 `minimumSamples`（默认100个独立有效交易日作为最低回放样本数）。它只读取 `cross_market_minute` 外部市场档案和真实持仓ETF分钟档案，12:50冻结假设，13:00之后的实际观测用于验证；目标时点之前的报价不能代替13:00价格。汇总按时间先后保留最后30%作为留出段，比较触发日和数据完整的未触发日，给出Wilson区间与增量效果区间。有效样本总数不足100，或留出段触发/对照各不足30时，`state` 和确认率保持 `insufficient_samples` / `null`；完整样本的命中率另放在 `inSampleConfirmationRate`，不冒充验证结果。只有区间能排除至少5个百分点的实际优势才报告 `no_stable_relationship`（“没有稳定领先关系”）；统计上看似有优势也只标为 `candidate_requires_replication`，不能称为已证实规律。每次回放会返回 `replayId`、生成时间和输入/结果两份规范化SHA-256指纹，并在NAS `research_runs` 独立研究表以确定性 gzip+base64 快照保存完整双边分钟序列、数据来源/采集时间和结果；检索时会分别重算输入与结果指纹，快照或结论损坏/不匹配则拒绝返回。通过 `GET /v1/research/cross-market/runs?limit=20` 可找回最近摘要，再以 `GET /v1/research/cross-market/runs/{replayId}` 取回原始证据复核。无分钟证据时只返回不足说明，不保存空记录。该研究记录不涉及真实账本、资金、持仓或成交。缺数据时不会产生预测结论。目前上游采集器和代码已具备，但当前 NAS 尚未部署、也未积累真实历史档案，不能据此声称日韩与任何ETF存在领先关系。
 
 可变条件研究接口为只读 `POST /v1/research/cross-market/hypothesis`。请求传入 `leader`、真实ETF `asset`、`start`/`end` 和一个受限 `hypothesis` JSON：定义冻结时间、各序列时区、1–8个按分钟窗口计算的 `gte`/`lte`/`between` 条件、预期方向、13:00后验证时点及结果窗口。改变市场经验假设只需换请求里的条件参数，无需新增账户或交易代码；系统不会执行任意脚本。它与午休回放共用不可变证据留档和 `GET /v1/research/cross-market/runs/{replayId}` 检索接口。此接口只读历史分钟档案，没有数据就返回 `insufficient_real_archive`，不会回测虚拟资金或模拟成交。
+
+如需检验尚未发生的市场经验，使用 `POST /v1/research/cross-market/registrations` 保存 `leader`、`asset`、受限 `hypothesis` 与带时区的未来 `notBefore`。服务会生成不可变定义指纹，返回 `awaiting_future_observations` 和 `eligibleForTradingSignal:false`；`GET /v1/research/cross-market/registrations` 及 `/{registrationId}` 只用于复核研究定义。未来窗口结束后，才可向 `POST /v1/research/cross-market/registrations/{registrationId}/evaluate` 提交已经结束的 `start`、`end` 与 `minimumSamples`。接口拒绝预注册窗口之前或当天尚未结束的数据，并沿用冻结回放与证据快照规则。这个流程只生成研究报告，绝不创建候选订单、虚拟成交或真实账本记录；即使未来复现通过，手机端也只允许它作为短时风险拦截，不能单独生成做T或网格价格。
 
 Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。
 

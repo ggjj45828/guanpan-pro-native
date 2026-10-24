@@ -482,6 +482,19 @@ final class NextCoreTests: XCTestCase {
         let older = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"insufficient_real_archive","reason":null,"source":null,"asOf":null,"sampleCount":0,"bestLagMinutes":null,"conditionalWinRate":null}}"#.utf8)
         XCTAssertNil(try JSONDecoder().decode(NextNASResearch.self, from: older).crossMarket?.currentMarketStatus)
     }
+    func testCrossMarketRiskGuardOnlyBlocksFreshProspectivelyReplicatedEvidence() throws {
+        let payload = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)
+        let evidence = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self, from: payload).crossMarket)
+        let formatter = ISO8601DateFormatter()
+        let freshAt = try XCTUnwrap(formatter.date(from: "2026-10-23T09:59:00Z"))
+        XCTAssertNotNil(NextCrossMarketRiskGuard.blockingReason(evidence: evidence, now: freshAt))
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: evidence, now: freshAt.addingTimeInterval(120)),
+                     "过期的跨市场观察不得继续拦截或制造当天判断")
+        let historicalOnly = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,
+            from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":false,"validationState":"historical_candidate","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)).crossMarket)
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: historicalOnly, now: freshAt),
+                     "仅历史候选绝不能改变做T或网格计划")
+    }
     func testFixedIntradayAxisCoversFullSessionAndCompressesLunch() throws {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm"

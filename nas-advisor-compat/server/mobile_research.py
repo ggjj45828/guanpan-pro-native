@@ -15,7 +15,7 @@ import hashlib
 import uuid
 import zlib
 from collections import defaultdict
-from datetime import datetime, time, timezone, timedelta
+from datetime import date, datetime, time, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from statistics import median, pstdev
@@ -255,6 +255,49 @@ def preregister_hypothesis(database, leader, asset, hypothesis, not_before, *, n
               "note": "预注册研究定义；只能在notBefore之后用未见档案评估，不能作为交易信号"}
     database.put_research(registration_id, record)
     return {"registrationId": registration_id, **record}
+
+
+def evaluate_pre_registered_hypothesis(database, registration_id, start, end, minimum_samples=100, *, now=None):
+    """Evaluate only observations that were unavailable when a study was registered.
+
+    The result remains research evidence.  In particular it must never become a
+    candidate plan: its `eligibleForTradingSignal` flag is permanently false
+    until a separately reviewed product rule says otherwise.
+    """
+    now = now or datetime.now(timezone.utc)
+    record = database.get_research(registration_id)
+    if not record or record.get("kind") != "cross_market_pre_registered_hypothesis":
+        raise ValueError("pre-registered hypothesis not found")
+    definition = record.get("definition")
+    if not isinstance(definition, dict):
+        raise ValueError("pre-registered hypothesis definition is unreadable")
+    try:
+        not_before = datetime.fromisoformat(str(definition["notBefore"]).replace("Z", "+00:00"))
+        first, last = date.fromisoformat(start), date.fromisoformat(end)
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid evaluation date range")
+    if now.tzinfo is None or not_before.tzinfo is None or not_before > now:
+        raise ValueError("hypothesis is not eligible for future-observation evaluation yet")
+    if first > last or first < not_before.astimezone(timezone.utc).date():
+        raise ValueError("evaluation range must start on or after the pre-registered future window")
+    if last >= now.astimezone(timezone.utc).date():
+        raise ValueError("evaluation range must end before the current UTC date")
+    if not isinstance(minimum_samples, int) or isinstance(minimum_samples, bool) or not 1 <= minimum_samples <= 1000:
+        raise ValueError("minimumSamples must be from 1 to 1000")
+    report = replay_hypothesis_archive(database, definition.get("leader"), definition.get("asset"),
+                                       start, end, definition.get("hypothesis"), minimum_samples)
+    report.update({"registrationId": registration_id,
+                   "definitionFingerprint": record.get("definitionFingerprint"),
+                   "preRegistrationState": record.get("state"),
+                   "eligibleForTradingSignal": False,
+                   "warning": report.get("warning") or
+                       "这是预注册后的研究评估，不是交易信号，不能改变候选限价计划或真实账本"})
+    saved = persist_replay(database, report, {
+        "type": "pre_registered_future_evaluation", "registrationId": registration_id,
+        "definitionFingerprint": record.get("definitionFingerprint"),
+        "definition": definition, "minimumSamples": minimum_samples})
+    saved["eligibleForTradingSignal"] = False
+    return saved
 
 
 def persist_replay(database, report, hypothesis):

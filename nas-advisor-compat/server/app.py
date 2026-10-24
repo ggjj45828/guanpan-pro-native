@@ -118,6 +118,33 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(200, result)
                 except (InvalidData, ValueError) as error:
                     return self.reply(400, {"error": str(error)})
+            if path == "/v1/research/cross-market/registrations":
+                try:
+                    limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+                    rows = database.list_research("cross_market_pre_registered_hypothesis", limit)
+                    # The list is deliberately compact.  A registration is a future-study
+                    # definition, never a candidate order or a hidden account mutation.
+                    return self.reply(200, {"registrations": [{
+                        "registrationId": row["id"],
+                        "registeredAt": row["record"].get("registeredAt"),
+                        "definition": row["record"].get("definition"),
+                        "definitionFingerprint": row["record"].get("definitionFingerprint"),
+                        "state": row["record"].get("state"),
+                        "eligibleForTradingSignal": False,
+                        "note": row["record"].get("note")
+                    } for row in rows]})
+                except (InvalidData, ValueError) as error:
+                    return self.reply(400, {"error": str(error)})
+            if path.startswith("/v1/research/cross-market/registrations/"):
+                registration_id = path.rsplit("/", 1)[-1]
+                try:
+                    record = database.get_research(registration_id)
+                    if not record or record.get("kind") != "cross_market_pre_registered_hypothesis":
+                        return self.reply(404, {"error": "pre-registered hypothesis not found"})
+                    return self.reply(200, {"registrationId": registration_id, **record,
+                                            "eligibleForTradingSignal": False})
+                except (InvalidData, ValueError) as error:
+                    return self.reply(400, {"error": str(error)})
             if path in ("/", "/index.html"):
                 return self.reply(200, {"service": "guanpan-advisor", "role": "NAS 后台研究与数据服务",
                                         "client": "请使用观盘 iOS App 查看真实持仓与唯一 AI 指导",
@@ -271,10 +298,28 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 16 * 1024 * 1024:
                     return self.reply(413, {"error": "invalid body size"})
-                if path == "/v1/research/cross-market/hypothesis" and length > 256 * 1024:
+                registration_prefix = "/v1/research/cross-market/registrations/"
+                registration_evaluation = (path.startswith(registration_prefix) and path.endswith("/evaluate"))
+                if (path in ("/v1/research/cross-market/hypothesis", "/v1/research/cross-market/registrations")
+                        or registration_evaluation) and length > 256 * 1024:
                     return self.reply(413, {"error": "hypothesis request is too large"})
                 value = json.loads(self.rfile.read(length))
                 if not isinstance(value, dict): raise InvalidData("JSON object required")
+                if registration_evaluation:
+                    registration_id = path[len(registration_prefix):-len("/evaluate")]
+                    if not registration_id or "/" in registration_id:
+                        raise InvalidData("invalid pre-registered hypothesis id")
+                    result = mobile_research.evaluate_pre_registered_hypothesis(
+                        database, registration_id, value.get("start"), value.get("end"),
+                        value.get("minimumSamples", 100), now=datetime.now(timezone.utc))
+                    return self.reply(200, result)
+                if path == "/v1/research/cross-market/registrations":
+                    result = mobile_research.preregister_hypothesis(
+                        database, value.get("leader"), value.get("asset"), value.get("hypothesis"),
+                        value.get("notBefore"), now=datetime.now(timezone.utc))
+                    # 201 says a research definition was stored.  It is not a trade plan,
+                    # and registering it cannot modify cash, positions, cost, or history.
+                    return self.reply(201, result)
                 if path == "/v1/research/cross-market/hypothesis":
                     hypothesis = value.get("hypothesis")
                     minimum = value.get("minimumSamples", 100)

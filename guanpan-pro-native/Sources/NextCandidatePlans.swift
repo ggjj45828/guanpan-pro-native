@@ -200,6 +200,40 @@ enum NextCandidatePlanNewsGuard {
     }
 }
 
+/// Cross-market research is deliberately allowed to *remove* a stale plan, never
+/// to create one.  This is a Risk Guard, not a second strategy engine: a live
+/// divergence must have passed prospective replication on NAS and still be fresh
+/// before it can pause an otherwise rule-engine-generated candidate plan.
+enum NextCrossMarketRiskGuard {
+    static func blockingReason(evidence: NextNASResearch.CrossMarketEvidence?, now: Date) -> String? {
+        guard let evidence,
+              evidence.eligibleForTradingSignal == true,
+              evidence.validationState == "prospectively_replicated",
+              evidence.currentMarketStatus == "open" else { return nil }
+        guard let divergence = evidence.liveDivergences?.first(where: {
+            $0.state == "observed_divergence" && $0.eligibleForTradingSignal == true && $0.isFresh(at: now)
+        }) else { return nil }
+        return "已通过预注册未来复现的 (divergence.market) 跨市场观察出现新鲜背离；只暂停原候选计划并重新评估，不据此生成买卖价格"
+    }
+
+    static func apply(evidence: NextNASResearch.CrossMarketEvidence?, to item: NextGuidanceItem,
+                      now: Date) -> NextGuidanceItem {
+        guard let reason = blockingReason(evidence: evidence, now: now) else { return item }
+        let tPlan: NextTPlannerResult? = item.tPlan?.isReady == true
+            ? .notWorthwhile([reason]) : item.tPlan
+        let gridPlan: NextGridPlannerResult? = item.gridPlan?.isReady == true
+            ? .notRecommended([reason]) : item.gridPlan
+        return NextGuidanceItem(code: item.code, name: item.name, state: item.state,
+                                strategy: item.strategy, headline: "跨市场风险复核",
+                                whyToday: item.whyToday + [reason], tPlan: tPlan, gridPlan: gridPlan,
+                                recovery: item.recovery, confidence: item.confidence,
+                                portfolioNote: item.portfolioNote,
+                                riskNotes: item.riskNotes + [reason], score: item.score - 3,
+                                rank: item.rank, isActionable: false,
+                                profileNote: item.profileNote, newsImpact: item.newsImpact)
+    }
+}
+
 // MARK: - 机会扫描：每天主动告诉「今天有没有值得操作的机会」
 
 struct NextGuidanceItem: Equatable, Identifiable {
@@ -406,7 +440,11 @@ enum NextOpportunityScanner {
                                             score: score, rank: 0, isActionable: actionable,
                                             profileNote: profileNote,
                                             newsImpact: impact.isEmpty ? nil : impact)
-            items.append(NextNewsImpactEngine.apply(impact, to: baseItem))
+            let newsApplied = NextNewsImpactEngine.apply(impact, to: baseItem)
+            // NAS research may only hard-stop a plan after prospective replication
+            // and a fresh explicit live observation.  It can never create a plan.
+            items.append(NextCrossMarketRiskGuard.apply(
+                evidence: research[position.code]?.crossMarket, to: newsApplied, now: now))
         }
 
         let sorted = items.sorted { $0.score == $1.score ? $0.code < $1.code : $0.score > $1.score }
