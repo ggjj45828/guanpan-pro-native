@@ -147,7 +147,7 @@ final class NextLocalRepository {
     }
 }
 
-final class NextAppModel: ObservableObject {
+final class NextAppModel {
     let objectWillChange = ObservableObjectPublisher()
     var ledger = NextAuditedBook(current: NextBook()) { didSet { objectWillChange.send(); reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
     var preferences = LocalPreferences() { didSet { objectWillChange.send(); reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
@@ -1629,3 +1629,5 @@ final class NextAppModel: ObservableObject {
         return archive
     }
 }
+
+extension NextAppModel: ObservableObject {}
