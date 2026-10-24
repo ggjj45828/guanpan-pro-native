@@ -75,24 +75,31 @@ def research_factors(code, bars):
         "source": "NAS archived Tencent qfqday", "type": "local-factor-research", "realOrder": False}
 
 
+def tracked_codes(database):
+    """Return only explicitly tracked instruments and positive real NAS holdings.
+
+    Archived rows are evidence, not authorization to keep polling an instrument.
+    In particular this prevents old preview/demo archives from becoming permanent
+    upstream API consumers after upgrading the service.
+    """
+    holdings = set()
+    try:
+        stored = database.get_real("main")
+        book = json.loads(stored["bookJSON"]) if stored.get("bookJSON") else {}
+        for position in book.get("positions", []):
+            if position.get("units", 0) > 0:
+                code = position.get("code")
+                symbol_for(code)
+                holdings.add(code)
+    except (ValueError, TypeError, KeyError):
+        pass
+    return sorted(set(DEFAULT_CODES) | set(database.tracked_instruments()) | holdings)
+
+
 def start_workers(database, daily_fetcher=fetch_daily, minute_fetcher=fetch_minute, quote_fetcher=fetch_quotes):
     """Each loop owns its own timer and failure handling; sync APIs never stop them."""
     def tracked():
-        with database.connect() as connection:
-            rows = connection.execute("SELECT code FROM daily_bars UNION SELECT DISTINCT code FROM minute_archive").fetchall()
-        # Also collect real holdings without modifying the book or tracked-instrument table.
-        holdings = set()
-        try:
-            stored = database.get_real("main")
-            book = json.loads(stored["bookJSON"]) if stored.get("bookJSON") else {}
-            for position in book.get("positions", []):
-                if position.get("units", 0) > 0:
-                    code = position.get("code")
-                    symbol_for(code)
-                    holdings.add(code)
-        except (ValueError, TypeError, KeyError):
-            pass
-        return sorted(set(DEFAULT_CODES) | set(database.tracked_instruments()) | {row[0] for row in rows} | holdings)
+        return tracked_codes(database)
 
     def update(name, state, detail):
         database.put_worker_status(name, datetime.now(timezone.utc).isoformat(), state, detail[:500])

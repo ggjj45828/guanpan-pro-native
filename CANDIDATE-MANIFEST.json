@@ -28,14 +28,19 @@
       "sha256": "9cb8ae1abfc3ea3cae3e5f07c96362d583b5d07a837e799235535b692d222a06"
     },
     {
+      "path": "115项功能清单-当前状态.md",
+      "size": 46646,
+      "sha256": "b56f645f03b5c1f913dc996c2049c07f8e6ee9f3adc7e93f02f2eef47c27dc63"
+    },
+    {
       "path": "AI私人顾问本轮状态.md",
       "size": 6146,
       "sha256": "a0bbc0d9cb48b0aad69f221765003e5c9329b43a74a8ab3ce732feb8086acc07"
     },
     {
       "path": "CONTINUATION.md",
-      "size": 19471,
-      "sha256": "ee3a12e351e8bef0b0516d48d008c58c2864a17e50078a7ae018c0bb5bb71286"
+      "size": 21139,
+      "sha256": "46fa6064fac851ddf2b4ebcc6b044764969002f6790c905726516ec23cd9cfe2"
     },
     {
       "path": "CURRENT-HANDOFF-r2.md",
@@ -49,8 +54,8 @@
     },
     {
       "path": "Master Acceptance Matrix.md",
-      "size": 46153,
-      "sha256": "aafb25bd839a7813b6c959d095284687ad7b693e5e4261c0b5db8bfbc7abd06d"
+      "size": 46496,
+      "sha256": "37d61dea0b3af8b05ca7fa9c111127a292531f4758f43dfd902245592e6de9fb"
     },
     {
       "path": "README-GitHub构建.md",
@@ -61,11 +66,6 @@
       "path": "README-NAS同步服务器.md",
       "size": 5623,
       "sha256": "56e2a3123a8132847b51bc4eed12de2df5d0642f5143c7cb2d9558fe310e587b"
-    },
-    {
-      "path": "SOURCE-MANIFEST.json",
-      "size": 17763,
-      "sha256": "ea67c8d46bae17bef9afc1869fdb9bef453c094c6cdfed2005fa4deb3b3b8bc4"
     },
     {
       "path": "START-HERE.md",
@@ -159,8 +159,8 @@
     },
     {
       "path": "guanpan-pro-native/README.md",
-      "size": 11219,
-      "sha256": "388a62328b29e384ab1348524f68e66e6f46afb224ab309943cb2c6a716ddf36"
+      "size": 11201,
+      "sha256": "a768048a6c758009edd0daa6b1adaa35cd077ded05d15afe7366190b98868101"
     },
     {
       "path": "guanpan-pro-native/Sources/AIGuidanceViews.swift",
@@ -174,8 +174,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
-      "size": 863207,
-      "sha256": "efab7baec3f170368f93cddacf2a6f16f0010675518eebe26f276cb6f3013219"
+      "size": 1006424,
+      "sha256": "2eb62ee333e669e5b62eea96d64a42e2cd4bdcbf9c12465147ffda2c02e11b84"
     },
     {
       "path": "guanpan-pro-native/Sources/Assets.xcassets/AppIcon.appiconset/Contents.json",
@@ -204,8 +204,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/DesignSystem.swift",
-      "size": 18264,
-      "sha256": "0a919bdf82676d92bd480a5eb91da53abf21d0bd8f3522a55859f5f2558ce4f4"
+      "size": 18315,
+      "sha256": "ed3774277bc5675437cf01dd7f8d9e1c9ece3b586f2fa84496676b50092f71e4"
     },
     {
       "path": "guanpan-pro-native/Sources/GPAssetCards.swift",
@@ -214,8 +214,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/GPDividendScore.swift",
-      "size": 9635,
-      "sha256": "fa2ad1e504d4a829e87cb7d35120c0d6630b4be730b93da1e6eab73f21b546a4"
+      "size": 9910,
+      "sha256": "f0bd18e86dc5f80753f34ffb9adee6e1c6b5ad51f7deb281e2b6379bcd37ee16"
     },
     {
       "path": "guanpan-pro-native/Sources/GlobalIndices.swift",
@@ -224,8 +224,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/GuanpanAdvisorApp.swift",
-      "size": 199597,
-      "sha256": "e3604c856102924eb94b92e9a8fa1853412c7b832508806c86b4d5025216b1cf"
+      "size": 201364,
+      "sha256": "8902f67559bcc772dca0cc50c7ab4c5ed6a1797fe0c9977018f86700eede567e"
     },
     {
       "path": "guanpan-pro-native/Sources/IndexDetailView.swift",
@@ -259,8 +259,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/LocalRules.swift",
-      "size": 54535,
-      "sha256": "08284ce464248e0a8063ea30093d83fe53e4dcc34d5b2434896fe76d84ff156e"
+      "size": 54720,
+      "sha256": "c73033a5ac2754fd6948796eb968f56fda75d3b2f292778c71fbc81161532e77"
     },
     {
       "path": "guanpan-pro-native/Sources/MarketDataService.swift",
@@ -289,8 +289,8 @@
     },
     {
       "path": "guanpan-pro-native/Sources/NextAppModelState.swift",
-      "size": 103643,
-      "sha256": "8a84e9d5c84e6e348dd85d25a82f30ff5f9ec1b680d6d26b1eefc23032aeca82"
+      "size": 104176,
+      "sha256": "2260a45c309e20242e08587fcb3725f9ad15f6c39a72f697c9ed2aa4d5d92d24"
     },
     {
       "path": "guanpan-pro-native/Sources/NextCandidatePlans.swift",
@@ -329,18 +329,18 @@
     },
     {
       "path": "guanpan-pro-native/Sources/ThemeHome.swift",
-      "size": 76444,
-      "sha256": "ee4e46a2d296b8fd95f3541964d2a1726f696f97ca39e771978deb726f6c1172"
+      "size": 77156,
+      "sha256": "9b5f97a97a6f42c5c380c66fe555338fbbfee956dbaf7a171df629107bd60e43"
     },
     {
       "path": "guanpan-pro-native/Sources/ThemeKit.swift",
-      "size": 14288,
-      "sha256": "ee0842ab184fc64708f97278f2e39e7fcacc3bcbd67e5f61943de7046867abe2"
+      "size": 14851,
+      "sha256": "c0d936947072168cda550a9f86590c043f9c6d32294f1a9ac0d4bc91896695c3"
     },
     {
       "path": "guanpan-pro-native/Sources/UnifiedChartView.swift",
-      "size": 49260,
-      "sha256": "5bd1c58b7ecb6854aac8c3d57b953d80292d71edd156a095c8fb4d9018ca9b8c"
+      "size": 50776,
+      "sha256": "d17887f0473a10ff09804b3d25421bee254e2b1288632b6d654b6f8fd6773b7a"
     },
     {
       "path": "guanpan-pro-native/Tests/NextChainScenarioTests.swift",
@@ -349,8 +349,8 @@
     },
     {
       "path": "guanpan-pro-native/Tests/NextCoreTests.swift",
-      "size": 60750,
-      "sha256": "2728e335a2caebce048e45a65515069972d50753407a82f634702a9656f00a8f"
+      "size": 63084,
+      "sha256": "d46c591d624f1069555bbaf0a9bb159ba392735b38d149ac0a55ce09982e0e9a"
     },
     {
       "path": "guanpan-pro-native/Tests/NextDecisionMemoryTests.swift",
@@ -369,8 +369,8 @@
     },
     {
       "path": "guanpan-pro-native/project.yml",
-      "size": 2501,
-      "sha256": "7b5043e915d6dc9dd12c3b1bb429dfd9e5ec1dbfbc1e967ded9f70ebc33a5e6e"
+      "size": 2500,
+      "sha256": "0561138a84de39e5e6eb80b973767ca17e359e1cf71cea38c1a6dd091ac0cc29"
     },
     {
       "path": "guanpan-pro-native/scripts/test_verify_ipa.py",
@@ -399,8 +399,8 @@
     },
     {
       "path": "nas-advisor-compat/README-NAS.md",
-      "size": 4725,
-      "sha256": "d176fceba824cd42de86a93bab05fda2b13f1c35b22924f5986074e0b4db1b16"
+      "size": 5297,
+      "sha256": "80d16be7af51d6e5fa7fa85b9c02e3be6097e427ed93a6064d2785fe79dcfed3"
     },
     {
       "path": "nas-advisor-compat/compose.yml",
@@ -414,8 +414,8 @@
     },
     {
       "path": "nas-advisor-compat/server/VERSION",
-      "size": 33,
-      "sha256": "d97370adce289f80bcbc58eada038f7662d8d9565f65f2431de7f62b8fa752fc"
+      "size": 35,
+      "sha256": "ac7ffb6fc4ec533044548080884560f098764281598cdc884acb5b03157fbaf1"
     },
     {
       "path": "nas-advisor-compat/server/app.py",
@@ -444,13 +444,13 @@
     },
     {
       "path": "nas-advisor-compat/server/workers.py",
-      "size": 9585,
-      "sha256": "dd9dc021cbcbe379a5bc3355d9dc458b41de10cde73ea42a6b25435831f3d65f"
+      "size": 9630,
+      "sha256": "086be41b2622679dea1f1c72ab8baa9f6d19ad7a257dece74f9d8ac5c3343398"
     },
     {
       "path": "nas-advisor-compat/tests/test_research_only.py",
-      "size": 11975,
-      "sha256": "b1fc54cab933da0238acfd6553f5e3b050eae4661926b5ca1b88cc98d6d2c319"
+      "size": 12945,
+      "sha256": "0dba9a7a0b76944e2c08e4d57bbf5491e663d4ec24029934e745c5e55e0d8558"
     },
     {
       "path": "nas-advisor-compat/update.sh",

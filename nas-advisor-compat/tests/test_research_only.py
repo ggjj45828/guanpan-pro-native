@@ -1,6 +1,7 @@
 import sys
 import unittest
 import inspect
+import json
 import tempfile
 import gc
 from datetime import datetime, timezone
@@ -129,6 +130,32 @@ class RetiredRoutesTests(unittest.TestCase):
         self.assertEqual(started, ["daily-archive", "minute-archive", "dividend-research", "factor-research"])
         self.assertFalse(any("simulation" in name or "grid" in name for name, _, _ in statuses))
         self.assertEqual(workers.DEFAULT_CODES, ())
+
+    def test_archives_alone_do_not_keep_demo_symbols_on_upstream_poll_list(self):
+        class Database:
+            archived_codes = {"512480", "513520"}
+
+            def tracked_instruments(self):
+                return []
+
+            def get_real(self, book_id):
+                return {"bookJSON": None}
+
+        codes = workers.tracked_codes(Database())
+        self.assertEqual(codes, [], "old archive rows are not permission to keep polling symbols")
+
+    def test_collector_uses_explicit_tracking_and_real_positive_holdings(self):
+        class Database:
+            def tracked_instruments(self):
+                return ["510300"]
+
+            def get_real(self, book_id):
+                return {"bookJSON": json.dumps({"positions": [
+                    {"code": "512480", "units": 500},
+                    {"code": "513520", "units": 0},
+                ]})}
+
+        self.assertEqual(workers.tracked_codes(Database()), ["510300", "512480"])
 
     def test_archive_workers_use_multi_source_quote_and_daily_adapters(self):
         parameters = inspect.signature(workers.start_workers).parameters
