@@ -229,6 +229,18 @@ struct DecisionRecordDetail: View {
                 if let low = s.nasSupportP10, let high = s.nasResistanceP90 {
                     line("长期价格带", "¥\(low)–¥\(high)", note: "p10–p90")
                 }
+                if let crossMarket = s.crossMarketEvidence, !crossMarket.isEmpty {
+                    Text("跨市场研究快照").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.muted).padding(.top, 3)
+                    ForEach(crossMarket.prefix(8), id: \.self) { item in
+                        Text("· \(item)").font(.system(size: 9)).foregroundStyle(p.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if crossMarket.count > 8 {
+                        line("其余证据", "\(crossMarket.count - 8) 条", note: "已保存在当时快照")
+                    }
+                } else {
+                    line("跨市场研究", "当时未提供", note: "不推断领先关系")
+                }
                 if !s.profileTags.isEmpty {
                     line("画像", s.profileTags.joined(separator: " · "), note: "只影响排序，不改价格")
                 }

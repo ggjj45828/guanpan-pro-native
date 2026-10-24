@@ -33,6 +33,9 @@ struct NextDecisionSnapshot: Codable, Equatable {
     let nasResistanceP90: String?
     let nasStale: Bool?
     let nasEnoughForLongTerm: Bool?
+    /// 跨市场研究在建议生成时的原始证据摘要。历史候选与可交易资格分开保存，供改判解释与复盘。
+    /// Optional so archives written before this field continue to decode.
+    let crossMarketEvidence: [String]?
     /// 新闻（只存标题与来源，不存正文）
     let newsTitles: [String]
     /// 画像
@@ -61,6 +64,7 @@ struct NextDecisionSnapshot: Codable, Equatable {
          nasAmplitude60: Double? = nil, nasRoundTrips60: Double? = nil, nasVolatility120: Double? = nil,
          nasSupportP10: String? = nil, nasResistanceP90: String? = nil,
          nasStale: Bool? = nil, nasEnoughForLongTerm: Bool? = nil,
+         crossMarketEvidence: [String]? = nil,
          newsTitles: [String] = [], profileTags: [String] = [],
          state: String, strategy: String, headline: String,
          evidence: [String] = [], risks: [String] = [],
@@ -77,6 +81,7 @@ struct NextDecisionSnapshot: Codable, Equatable {
         self.nasVolatility120 = nasVolatility120
         self.nasSupportP10 = nasSupportP10; self.nasResistanceP90 = nasResistanceP90
         self.nasStale = nasStale; self.nasEnoughForLongTerm = nasEnoughForLongTerm
+        self.crossMarketEvidence = crossMarketEvidence
         self.newsTitles = newsTitles; self.profileTags = profileTags
         self.state = state; self.strategy = strategy; self.headline = headline
         self.evidence = evidence; self.risks = risks
@@ -208,6 +213,16 @@ enum NextDecisionDiff {
         if old.units != new.units {
             changes.append("持仓从 \(old.units) 份变为 \(new.units) 份")
         }
+        let oldCrossMarket = Set(old.crossMarketEvidence ?? [])
+        let newCrossMarket = Set(new.crossMarketEvidence ?? [])
+        let addedCrossMarket = newCrossMarket.subtracting(oldCrossMarket).sorted()
+        let removedCrossMarket = oldCrossMarket.subtracting(newCrossMarket).sorted()
+        if !addedCrossMarket.isEmpty {
+            changes.append("跨市场证据新增：\(addedCrossMarket.prefix(2).joined(separator: "；"))")
+        }
+        if !removedCrossMarket.isEmpty {
+            changes.append("跨市场证据撤回或更新：\(removedCrossMarket.prefix(2).joined(separator: "；"))")
+        }
         return changes
     }
 
@@ -232,6 +247,43 @@ enum NextDecisionDiff {
 // MARK: - 决策记忆仓库（只做内存整理，持久化由 App 层负责）
 
 enum NextDecisionMemory {
+    /// 将 NAS 跨市场 DTO 压成有界、可追溯的快照；仅记事实和验证状态，不把相关性包装成交易信号。
+    private static func crossMarketSnapshot(_ evidence: NextNASResearch.CrossMarketEvidence?) -> [String]? {
+        guard let evidence else { return nil }
+        var rows = [
+            "state=\(evidence.state)",
+            "validation=\(evidence.validationState ?? "unknown")",
+            "eligibleForTradingSignal=\(evidence.eligibleForTradingSignal.map { String($0) } ?? "unknown")",
+            "bestMarket=\(evidence.bestMarket ?? "unknown")",
+            "bestLagMinutes=\(evidence.bestLagMinutes.map(String.init) ?? "unknown")",
+            "sampleCount=\(evidence.sampleCount.map(String.init) ?? "unknown")",
+            "currentMarketStatus=\(evidence.currentMarketStatus ?? "unknown")",
+            "source=\(evidence.source ?? "unknown")",
+            "asOf=\(evidence.asOf ?? "unknown")"
+        ]
+        if let winRate = evidence.conditionalWinRate {
+            rows.append("conditionalWinRate=\(String(format: "%.4f", winRate))")
+        }
+        for item in evidence.liveDivergences ?? [] {
+            rows.append("liveDivergence=\(item.market)|\(item.state)|window=\(item.windowMinutes.map(String.init) ?? "unknown")|leader=\(item.leaderReturnPercent.map { String(format: "%.4f", $0) } ?? "unknown")|asset=\(item.assetReturnPercent.map { String(format: "%.4f", $0) } ?? "unknown")|eligible=\(item.eligibleForTradingSignal.map { String($0) } ?? "unknown")|expires=\(item.expiresAt ?? "unknown")")
+        }
+        if let fx = evidence.currencyContext {
+            rows.append("currency=\(fx.pair ?? "unknown")|state=\(fx.state)|return=\(fx.fxReturnPercent.map { String(format: "%.4f", $0) } ?? "unknown")|source=\(fx.source ?? "unknown")|asOf=\(fx.asOf ?? "unknown")|eligible=\(fx.eligibleForTradingSignal.map { String($0) } ?? "unknown")")
+        }
+        for item in evidence.overnightAbsorption ?? [] {
+            rows.append("overnight=\(item.market)|\(item.state)|samples=\(item.sampleCount)|start=\(item.sampleStartDay ?? "unknown")|end=\(item.sampleEndDay ?? "unknown")|eligible=\(item.eligibleForTradingSignal.map { String($0) } ?? "unknown")")
+        }
+        if let tail = evidence.tailToNextDay {
+            rows.append("tailToNextDay=\(tail.state)|samples=\(tail.sampleCount)|start=\(tail.sampleStartDay ?? "unknown")|end=\(tail.sampleEndDay ?? "unknown")|eligible=\(tail.eligibleForTradingSignal.map { String($0) } ?? "unknown")")
+        }
+        for row in evidence.rollingValidity ?? [] {
+            for window in row.windows {
+                rows.append("rolling=\(row.market)|lag=\(row.lagMinutes)|horizon=\(row.horizonMinutes)|window=\(window.windowSessions)|samples=\(window.sampleCount)|state=\(window.state)|eligible=\(window.eligibleForTradingSignal.map { String($0) } ?? "unknown")")
+            }
+        }
+        return Array(rows.prefix(64))
+    }
+
     /// 从一条指导生成「当时」的快照。全部字段取自本次真实的行情 / 持仓 / NAS / 新闻 / 画像，
     /// 不允许调用方传入「后来」的数字。
     static func snapshot(item: NextGuidanceItem, quote: NextQuote?, position: NextPosition?,
@@ -279,6 +331,7 @@ enum NextDecisionMemory {
             nasResistanceP90: w20?.resistanceP90 ?? w20?.resistance,
             nasStale: stats?.freshness.stale,
             nasEnoughForLongTerm: stats?.quality.enoughForLongTerm,
+            crossMarketEvidence: crossMarketSnapshot(research?.crossMarket),
             newsTitles: news.map(\.title),
             profileTags: profile?.styleTags ?? [],
             state: item.state.rawValue,
@@ -301,7 +354,9 @@ enum NextDecisionMemory {
                         profile: NextInvestorProfile?) -> [NextDecisionRecord] {
         guidance.items.compactMap { item in
             let hasPlan = item.tPlan?.isReady == true || item.gridPlan?.isReady == true
-            guard hasPlan || item.newsImpact?.action.blocksPlan == true else { return nil }
+            let crossMarketBlocked = NextCrossMarketRiskGuard.blockingReason(
+                evidence: research[item.code]?.crossMarket, now: guidance.generatedAt) != nil
+            guard hasPlan || item.newsImpact?.action.blocksPlan == true || crossMarketBlocked else { return nil }
             let snapshot = snapshot(item: item, quote: quotes[item.code],
                                     position: book.positions.first { $0.code == item.code },
                                     research: research[item.code], news: news[item.code] ?? [],

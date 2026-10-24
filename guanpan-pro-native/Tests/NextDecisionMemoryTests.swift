@@ -14,13 +14,15 @@ final class NextDecisionMemoryTests: XCTestCase {
                           limitUnits: Int? = 3000, vwapDeviation: Double = 0.4,
                           nasDays: Int = 20, nasStale: Bool = false,
                           validUntil: Date? = nil, risks: [String] = [],
-                          news: [String] = [], confidence: String = "高") -> NextDecisionSnapshot {
+                          news: [String] = [], crossMarketEvidence: [String]? = nil,
+                          confidence: String = "高") -> NextDecisionSnapshot {
         NextDecisionSnapshot(price: price, previousClose: "1.396", quoteSource: "test", quoteAt: now,
                              units: 10_000, averageCost: "1.38",
                              nasDays: nasDays, nasVwap20: "1.398", nasCloseVsVwap20: vwapDeviation,
                              nasAmplitude60: 1.6, nasRoundTrips60: 2.4, nasVolatility120: 1.1,
                              nasSupportP10: "1.360", nasResistanceP90: "1.440",
                              nasStale: nasStale, nasEnoughForLongTerm: nasDays >= 5,
+                             crossMarketEvidence: crossMarketEvidence,
                              newsTitles: news, profileTags: ["中期", "做T活跃"],
                              state: state, strategy: strategy, headline: headline,
                              evidence: ["VWAP 1.398"], risks: risks,
@@ -56,6 +58,69 @@ final class NextDecisionMemoryTests: XCTestCase {
         // 0.1% 的抖动不值得改判：结论没变就不该冒出「变化说明」。
         let changes = NextDecisionDiff.compare(old: snapshot(price: "1.400"), new: snapshot(price: "1.4014"))
         XCTAssertTrue(changes.isEmpty, "微小价格抖动不应产生改判记录：\(changes)")
+    }
+
+    func testCrossMarketEvidenceIsCapturedAndExplainsDecisionRevision() {
+        let old = snapshot(crossMarketEvidence: [
+            "bestMarket=KOSPI", "validation=historical_candidate",
+            "eligibleForTradingSignal=false", "asOf=2026-10-20T12:50:00+08:00"
+        ])
+        let revised = snapshot(crossMarketEvidence: [
+            "bestMarket=KOSPI", "validation=prospectively_replicated",
+            "eligibleForTradingSignal=true", "asOf=2026-10-21T12:50:00+08:00",
+            "liveDivergence=KOSPI|observed_divergence|eligible=true"
+        ])
+        let changes = NextDecisionDiff.compare(old: old, new: revised)
+        XCTAssertTrue(changes.contains { $0.contains("跨市场证据新增") && $0.contains("prospectively_replicated") })
+        XCTAssertTrue(changes.contains { $0.contains("跨市场证据撤回或更新") && $0.contains("historical_candidate") })
+        XCTAssertEqual(old.crossMarketEvidence?.count, 4, "快照保留生成建议时的跨市场验证事实")
+    }
+
+    func testOlderDecisionSnapshotDecodesWithoutCrossMarketField() throws {
+        let encoded = try JSONEncoder().encode(snapshot())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "crossMarketEvidence")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(NextDecisionSnapshot.self, from: legacyData)
+        XCTAssertNil(decoded.crossMarketEvidence, "旧版本决策记忆应迁移为无跨市场记录，而不是丢失整条历史")
+    }
+
+    func testCrossMarketRiskBlockedCandidateIsKeptInDecisionMemory() throws {
+        let expiry = ISO8601DateFormatter().string(from: now.addingTimeInterval(300))
+        let divergence = NextNASResearch.CrossMarketEvidence.LiveDivergence(
+            market: "KOSPI", state: "observed_divergence", reason: "same-window divergence",
+            windowMinutes: 15, leaderReturnPercent: 0.7, assetReturnPercent: -0.4,
+            leaderAgeSeconds: 10, assetAgeSeconds: 8,
+            eligibleForTradingSignal: true, expiresAt: expiry)
+        let evidence = NextNASResearch.CrossMarketEvidence(
+            state: "validated", reason: "prospective validation passed", source: "NAS archive",
+            asOf: "2026-10-21T13:00:00+08:00", sampleCount: 120,
+            bestLagMinutes: 15, conditionalWinRate: 0.62, bestMarket: "KOSPI",
+            currentMarketStatus: "open", ageSeconds: 10,
+            eligibleForTradingSignal: true, validationState: "prospectively_replicated",
+            liveDivergences: [divergence])
+        let research = NextNASResearch(factors: nil, ai: nil, providerConfigured: false,
+                                       crossMarket: evidence)
+        let confidence = NextDataConfidence(level: .medium, quoteAgeSeconds: 10,
+                                            quoteSource: "fixture", dailyBarCount: 60,
+                                            minuteSampleCount: 100, minuteCompletenessPercent: 40,
+                                            missing: [], summary: "fixture")
+        let item = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .narrowRange,
+                                    strategy: .tTrade, headline: "跨市场风险复核",
+                                    whyToday: ["风险守卫暂停原候选"], tPlan: .notWorthwhile(["新鲜背离"]),
+                                    gridPlan: nil, recovery: nil, confidence: confidence,
+                                    portfolioNote: nil, riskNotes: ["新鲜背离"], score: 0,
+                                    rank: 1, isActionable: false)
+        let guidance = NextDailyGuidance(generatedAt: now, items: [item], summary: "复核",
+                                         noActionSummary: "不交易", dataState: "NAS证据有效")
+        let book = NextBook(positions: [NextPosition(code: "159941", name: "纳指ETF",
+                                                     units: 1000, bookCost: 1400)])
+        let records = NextDecisionMemory.records(from: guidance, quotes: [:], book: book,
+                                                 research: ["159941": research], news: [:], profile: nil)
+        XCTAssertEqual(records.count, 1, "Risk Guard撤回的机会也必须留档，供之后解释")
+        XCTAssertTrue(records[0].snapshot.crossMarketEvidence?.contains("validation=prospectively_replicated") == true)
+        XCTAssertTrue(records[0].snapshot.crossMarketEvidence?.contains(where: { $0.contains("liveDivergence=KOSPI") }) == true)
+        XCTAssertNil(records[0].snapshot.limitPrice, "被撤回的计划不能把价格留成有效候选价")
     }
 
     func testReviseOnlyAppendsWhenSomethingActuallyChanged() {
