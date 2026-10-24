@@ -23,6 +23,9 @@ struct HomeSnapshot {
     let openPlanCount: Int
     let dataState: String
     let hasPositions: Bool
+    var crossMarketSummary = "NAS 跨市场研究尚未同步"
+    var crossMarketFreshRiskCount = 0
+    var crossMarketResearchCount = 0
 
     var dateText: String {
         let formatter = DateFormatter()
@@ -101,6 +104,21 @@ struct HomeSnapshot {
         let cashPercent = equity > 0 ? NextNum.double(model.book.cash / equity * 100) : 0
         let items = guidance?.items ?? []
         let lead = items.first(where: { $0.isActionable }) ?? items.first
+        let research = positions.compactMap { model.nasResearch[$0.code]?.crossMarket }
+        let freshRiskCount = research.flatMap { $0.liveDivergences ?? [] }.filter {
+            $0.eligibleForTradingSignal == true && $0.state == "observed_divergence" && $0.isFresh(at: Date())
+        }.count
+        let negativeCount = research.filter { $0.state == "no_stable_relationship" }.count
+        let crossMarketSummary: String
+        if research.isEmpty {
+            crossMarketSummary = "NAS 跨市场证据尚未同步；不把海外市场传闻当成持仓信号。"
+        } else if freshRiskCount > 0 {
+            crossMarketSummary = "有 \(freshRiskCount) 条经过未来复现且仍新鲜的观察，只用于复核现有计划。"
+        } else if !positions.isEmpty && research.count == positions.count && negativeCount == research.count {
+            crossMarketSummary = "当前研究样本没有稳定领先关系；不生成跨市场信号。"
+        } else {
+            crossMarketSummary = "已收到 \(research.count) 只持仓的研究；尚无可用的新鲜风险观察。"
+        }
         return HomeSnapshot(now: Date(), guidance: guidance, lead: lead, positions: positions,
                             quotes: quotes, totalEquity: equity, pnlAmount: costBasis > 0 ? marketValue - costBasis : nil,
                             pnlPercent: pnl, cashPercent: cashPercent,
@@ -111,7 +129,10 @@ struct HomeSnapshot {
                             profileTags: model.profile.styleTags,
                             openPlanCount: model.candidatePlans.filter { $0.state.isOpen }.count,
                             dataState: guidance?.dataState ?? "本地规则",
-                            hasPositions: !positions.isEmpty)
+                            hasPositions: !positions.isEmpty,
+                            crossMarketSummary: crossMarketSummary,
+                            crossMarketFreshRiskCount: freshRiskCount,
+                            crossMarketResearchCount: research.count)
     }
 }
 
@@ -144,6 +165,44 @@ struct ThemeHomeScreen: View {
                 if !model.preferences.nasBaseURL.isEmpty { await model.probeNAS(notifyOnFailure: false) }
             }
         }
+    }
+}
+
+/// Compact market pulse shared by the five home layouts. It reports only NAS
+/// evidence tied to positive real holdings and never presents a new trade.
+private struct HomeCrossMarketPulseCard: View {
+    @EnvironmentObject private var model: NextAppModel
+    @Environment(\.gp) private var p
+    let snapshot: HomeSnapshot
+
+    var body: some View {
+        Button { model.requestTab(.decision, route: .decision(nil)) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: snapshot.crossMarketFreshRiskCount > 0 ? "waveform.path.ecg.rectangle" : "globe.americas.fill")
+                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(p.primary)
+                    .frame(width: 32, height: 32)
+                    .background(p.tint, in: RoundedRectangle(cornerRadius: p.theme == .puzzle ? 12 : 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("跨市场脉搏").font(.system(size: 12, weight: .bold, design: p.theme == .magazine || p.theme == .editorial ? .serif : .default)).foregroundStyle(p.ink)
+                        Spacer(minLength: 4)
+                        Text(snapshot.crossMarketResearchCount == 0 ? "待同步" : "\(snapshot.crossMarketResearchCount) 只持仓")
+                            .font(.system(size: 9, weight: .semibold)).foregroundStyle(p.primary)
+                    }
+                    Text(snapshot.crossMarketSummary).font(.system(size: 10)).foregroundStyle(p.muted)
+                        .fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
+                }
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(p.muted).padding(.top, 10)
+            }
+            .padding(p.theme == .magazine ? 14 : 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.theme == .dashboard ? p.heroSurface : (p.theme == .editorial || p.theme == .magazine ? p.paperAlt : p.paper),
+                        in: RoundedRectangle(cornerRadius: p.theme == .puzzle ? 18 : p.cardRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: p.theme == .puzzle ? 18 : p.cardRadius, style: .continuous)
+                .stroke(p.primary.opacity(p.theme == .dashboard ? 0.32 : 0.18), lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("home.cross-market-pulse")
     }
 }
 
@@ -925,6 +984,7 @@ private struct EditorialHome: View {
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(p.chartGold.opacity(0.3), lineWidth: 0.8))
                 HomeIndexBoard(style: .chips)
                 aiCard
+                HomeCrossMarketPulseCard(snapshot: snapshot)
                 sectionTitle("今日最重要机会", accent: p.chartGold)
                 LeadOpportunityCard(snapshot: snapshot, style: .editorial)
                 sectionTitle("真实持仓", accent: p.jade)
@@ -1036,6 +1096,7 @@ private struct ModernHome: View {
                     quickTab("市场行情", active: false, route: nil, tab: .market)
                 }
                 aiHero
+                HomeCrossMarketPulseCard(snapshot: snapshot)
                 HomeIndexBoard(style: .cards)
                 HoldingsSummaryCard(snapshot: snapshot, showsRing: true)
                 LeadOpportunityCard(snapshot: snapshot, style: .modern)
@@ -1136,6 +1197,7 @@ private struct DashboardHome: View {
                 tabHeader
                 HomeIndexBoard(style: .tiles)
                 aiHero
+                HomeCrossMarketPulseCard(snapshot: snapshot)
                 opportunityBoard
                 HoldingsSummaryCard(snapshot: snapshot, showsRing: false)
                 newsRow
@@ -1306,6 +1368,7 @@ private struct MagazineHome: View {
                     }
                 }
                 observationCard
+                HomeCrossMarketPulseCard(snapshot: snapshot)
                 HomeIndexBoard(style: .cards)
                 HStack(spacing: 6) {
                     Image(systemName: "sparkle").font(.system(size: 11, weight: .semibold)).foregroundStyle(p.primary)
@@ -1421,6 +1484,7 @@ private struct PuzzleHome: View {
                         }
                     }
                 }
+                HomeCrossMarketPulseCard(snapshot: snapshot)
                 HStack(spacing: 10) {
                     positionTile(snapshot.positions.first, tone: tones[2], toneIndex: 2)
                     positionTile(snapshot.positions.count > 1 ? snapshot.positions[1] : nil, tone: tones[3], toneIndex: 3)

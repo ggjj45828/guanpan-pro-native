@@ -573,7 +573,7 @@ enum NextETFPremiumExecutionGuard {
         let premium = NextNum.double((quote.price / iopv - 1) * 100)
         guard abs(premium) >= maximumAbsolutePremiumPercent else { return nil }
         let direction = premium >= 0 ? "溢价" : "折价"
-        return "实时 IOPV (direction) (String(format: "%.2f", premium))%（阈值 ±\(String(format: "%.1f", maximumAbsolutePremiumPercent))%）；净值与市价偏离过大，拒绝生成具体候选限价，等待溢折价收敛后再评估"
+        return "实时 IOPV \(direction) \(String(format: "%.2f", premium))%（阈值 ±\(String(format: "%.1f", maximumAbsolutePremiumPercent))%）；净值与市价偏离过大，拒绝生成具体候选限价，等待溢折价收敛后再评估"
     }
 
     static func evidence(quote: NextQuote, now: Date) -> String? {

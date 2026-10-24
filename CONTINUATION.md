@@ -202,3 +202,10 @@
 - 本地 NAS 研究套件 **54/54**、Python `compileall` 和 `git diff --check` 通过。当前Windows仍无Swift/Xcode；真实NAS、真实100–200日预注册档案、iPhone与Actions实际结果均未验证，不能称为功能完成。
 - 本地提交 `52b7780 Add pre-registered cross-market research guards` 已按授权推送到 `validation/acceptance-20261024`，应触发 IPA 构建和iOS验证；网页/API状态读取暂不可用，需后续确认实际Actions结果后才可提供IPA。
 - 下一项：检查Actions的Swift编译/模拟器结果并修复；继续完成可信FX数据采集与传输、预注册研究的真实持续观察/多阶段复现，以及以真实档案验证跨市场Risk Guard。始终保持：真实账户唯一、NAS只研究、手机最终指导、用户手工成交；不得创建模拟账户、虚拟资金、数字孪生或自动下单。
+
+## 2026-10-24 GitHub Actions 构建故障续记
+
+- 已检查 GitHub Actions：提交 b659cf2 的 validate-ios、build-ios 均失败，NAS隔离验证通过。通过已配置的 GitHub 凭据只读获取到两份作业日志。
+- 根因：NextAIGuide.swift:576 的 IOPV文案把 direction 和格式化百分比当作普通文本；NextAppModelState.swift:651、660 两段跨市场摘要内嵌的三元表达式字符串未闭合，造成Swift语法错误；NextCandidatePlans.swift:608 使用的日期格式API与Package声明的macOS 10.15目标不兼容。
+- 已修正以上三处，并保留前一轮待提交的五主题首页跨市场脉搏卡、持仓详情证据卡、风险理由插值修复和对应测试/矩阵更新。NAS研究测试58/58、Python compileall、git diff --check 通过；本机没有Swift/Xcode，需重新触发macOS Actions做真实编译与模拟器验收。
+- 当前下一步：提交并推送修复后的完整工作树至 validation/acceptance-20261024；读取新Actions日志，若还有编译/测试失败继续修复并重跑。仅在iOS构建和模拟器测试实际通过后，才更新矩阵对应Test/Result；外部NAS、真机和真实历史数据验证仍须标为未验证。

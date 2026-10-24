@@ -710,6 +710,52 @@ private struct InstrumentDetailScreen: View {
         if amount >= 10_000 { return String(format: "%.3f万", amount / 10_000) }
         return NextMoney.text(value, digits: 0)
     }
+    @ViewBuilder private var crossMarketEvidenceSection: some View {
+        if let evidence = model.nasResearch[code]?.crossMarket {
+            EditorialSection(title: "跨市场研究", trailing: evidence.eligibleForTradingSignal == true ? "已验证 · 风险参考" : "研究参考", accent: p.chartViolet) {
+                GPCard(accent: p.chartViolet) {
+                    GPDataRow(title: "历史结论", value: crossMarketStateTitle(evidence.state),
+                              note: evidence.reason ?? "仅基于 NAS 已归档的独立交易日样本")
+                    if let market = evidence.bestMarket {
+                        GPDataRow(title: "历史候选来源", value: market,
+                                  note: "\(evidence.sampleCount ?? 0) 个独立交易日 · \(evidence.bestLagMinutes.map { "领先约 \($0) 分钟" } ?? "未给出稳定窗口")")
+                    }
+                    if let age = evidence.ageSeconds {
+                        GPDataRow(title: "跨市场数据年龄", value: age <= 600 ? "\(Int(age)) 秒" : "已过期",
+                                  note: "来源 \(evidence.source ?? "未知") · \(evidence.asOf ?? "未知时间")",
+                                  valueColor: age <= 600 ? p.forest : p.terracotta)
+                    }
+                    let currentObservations = (evidence.liveDivergences ?? []).filter { $0.state == "observed_divergence" && $0.isFresh(at: Date()) }
+                    if !currentObservations.isEmpty {
+                        ForEach(currentObservations.prefix(2), id: \.market) { observation in
+                            GPDataRow(title: "\(observation.market) 同窗观察",
+                                      value: "\(observation.leaderReturnPercent.map { String(format: "%+.2f%%", $0) } ?? "—") / \(observation.assetReturnPercent.map { String(format: "%+.2f%%", $0) } ?? "—")",
+                                      note: "15分钟价格观察 · 资格 \(observation.eligibleForTradingSignal == true ? "已验证风险参考" : "仅观察")")
+                        }
+                    } else {
+                        GPDataRow(title: "实时跨市场观察", value: "暂无新鲜背离",
+                                  note: "数据不足或已过期时不沿用旧观察")
+                    }
+                    if let fx = evidence.currencyContext {
+                        let fxMove = fx.fxReturnPercent.map { String(format: "%+.4f%%", $0) } ?? "—"
+                        GPDataRow(title: "USD/CNY 上下文", value: fx.state == "observed_context" ? fxMove : fx.state,
+                                  note: "\(fx.source ?? "来源未验证") · \(fx.asOf ?? fx.reason ?? "暂无同窗样本")；仅用于风险复核")
+                    }
+                    Text("历史领先关系不代表因果。没有通过预注册未来复现时，跨市场观察不会改变策略；它也不会生成挂单价格或份额。")
+                        .font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+    private func crossMarketStateTitle(_ state: String) -> String {
+        switch state {
+        case "stable_candidate": return "历史候选 · 待未来复现"
+        case "no_stable_relationship": return "没有稳定领先关系"
+        case "insufficient_real_archive", "insufficient": return "历史样本不足"
+        case "stale": return "来源数据已过期"
+        default: return state
+        }
+    }
     @ViewBuilder private func statCell(title: String, value: String, valueColor: Color? = nil) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.system(size: 10)).foregroundStyle(p.muted)
@@ -805,6 +851,7 @@ private struct InstrumentDetailScreen: View {
                     if let rules = model.rules[code] { GPDataRow(title: "结算规则", value: rules.settlement == .unknown ? "未知" : rules.settlement.rawValue.uppercased(), note: rules.source); if let lot = rules.lotSize { GPDataRow(title: "交易单位", value: "\(lot) 份") } }
                     else { GPDataRow(title: "ETF 交易规则", value: "未接入来源") }
                 }
+                if position != nil { crossMarketEvidenceSection }
                 EditorialSection(title: "分红与收息参考", trailing: "历史数据", accent: p.chartGold) {
                     NavigationLink(value: GPRoute.dividends(code)) { IntentRow(icon: "calendar", title: "查看完整派息历史", detail: "登记日、除息日、发放日与数据来源") }.buttonStyle(.plain)
                     // 先讲清楚"这只到底分不分红"。很多宽基/行业 ETF 成立以来从不分红，

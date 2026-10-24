@@ -490,7 +490,9 @@ final class NextCoreTests: XCTestCase {
         let evidence = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self, from: payload).crossMarket)
         let formatter = ISO8601DateFormatter()
         let freshAt = try XCTUnwrap(formatter.date(from: "2026-10-23T09:59:00Z"))
-        XCTAssertNotNil(NextCrossMarketRiskGuard.blockingReason(evidence: evidence, now: freshAt))
+        let riskReason = NextCrossMarketRiskGuard.blockingReason(evidence: evidence, now: freshAt)
+        XCTAssertNotNil(riskReason)
+        XCTAssertTrue(riskReason?.contains("KR_KOSPI") == true)
         XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: evidence, now: freshAt.addingTimeInterval(120)),
                      "过期的跨市场观察不得继续拦截或制造当天判断")
         let historicalOnly = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,

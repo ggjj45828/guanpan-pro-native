@@ -213,7 +213,7 @@ enum NextCrossMarketRiskGuard {
         guard let divergence = evidence.liveDivergences?.first(where: {
             $0.state == "observed_divergence" && $0.eligibleForTradingSignal == true && $0.isFresh(at: now)
         }) else { return nil }
-        return "已通过预注册未来复现的 (divergence.market) 跨市场观察出现新鲜背离；只暂停原候选计划并重新评估，不据此生成买卖价格"
+        return "已通过预注册未来复现的 \(divergence.market) 跨市场观察出现新鲜背离；只暂停原候选计划并重新评估，不据此生成买卖价格"
     }
 
     static func apply(evidence: NextNASResearch.CrossMarketEvidence?, to item: NextGuidanceItem,
@@ -602,10 +602,14 @@ enum NextDecisionContextBuilder {
                       newsLines: [String], profileLines: [String] = [],
                       now: Date) -> NextDecisionContext {
         var holdings: [String] = []
+        let timestampFormatter = DateFormatter()
+        timestampFormatter.locale = Locale(identifier: "zh_CN")
+        timestampFormatter.dateStyle = .short
+        timestampFormatter.timeStyle = .short
         for position in book.positions where position.units > 0 {
             let quote = quotes[position.code]
             let priceText = quote.map {
-                "现价 ¥\(NextMoney.text($0.price, digits: 3))，来源 \($0.source)，行情时间 \($0.time.formatted(date: .numeric, time: .shortened))，\($0.isFresh(at: now) ? "新鲜" : "已过期/需核对")"
+                "现价 ¥\(NextMoney.text($0.price, digits: 3))，来源 \($0.source)，行情时间 \(timestampFormatter.string(from: $0.time))，\($0.isFresh(at: now) ? "新鲜" : "已过期/需核对")"
             } ?? "无报价"
             let weight: String
             if let total = book.total(using: quotes), total > 0, let quote {

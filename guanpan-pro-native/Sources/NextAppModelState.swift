@@ -648,7 +648,8 @@ import Combine
                         let relation = row.leaderOpenGapCorrelation.map { String(format: "隔夜变化与缺口相关 %.2f", $0) } ?? "相关性不可用"
                         let absorbed = row.meanGapAbsorptionFraction.map { String(format: "缺口回归均值 %.2fx", $0) } ?? "回归统计不足"
                         let period = [row.sampleStartDay, row.sampleEndDay].compactMap { $0 }.joined(separator: "–")
-                        return "\(row.market) \(row.state) \(row.sampleCount)日\(period.isEmpty ? "" : "（\(period)）)：\(relation)，\(gap)，\(absorbed)"
+                        let periodLabel = period.isEmpty ? "" : "（\(period)）"
+                        return "\(row.market) \(row.state) \(row.sampleCount)日\(periodLabel)：\(relation)，\(gap)，\(absorbed)"
                     }.joined(separator: "；")
                     overnightSummary = "隔夜→开盘历史描述（不是预测或交易信号）：\(samples)"
                 }
@@ -657,7 +658,8 @@ import Combine
                     let tailGap = tail.tailToOpenGapCorrelation.map { String(format: "尾盘与次日缺口相关 %.2f", $0) } ?? "尾盘与次日缺口相关性不足"
                     let tailOpen = tail.tailToFirstThirtyMinuteCorrelation.map { String(format: "尾盘与开盘后30分钟相关 %.2f", $0) } ?? "开盘后相关性不足"
                     let period = [tail.sampleStartDay, tail.sampleEndDay].compactMap { $0 }.joined(separator: "–")
-                    tailSummary = "尾盘→次日历史描述（不是预测或交易信号）：\(tail.state) \(tail.sampleCount)日\(period.isEmpty ? "" : "（\(period)）)，\(tailGap)，\(tailOpen)"
+                    let periodLabel = period.isEmpty ? "" : "（\(period)）"
+                    tailSummary = "尾盘→次日历史描述（不是预测或交易信号）：\(tail.state) \(tail.sampleCount)日\(periodLabel)，\(tailGap)，\(tailOpen)"
                 } else {
                     tailSummary = "尾盘→次日统计未提供"
                 }
