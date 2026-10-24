@@ -226,6 +226,37 @@ def replay_hypothesis_archive(database, leader, asset, start, end, hypothesis, m
     return report
 
 
+def preregister_hypothesis(database, leader, asset, hypothesis, not_before, *, now=None):
+    """Persist an immutable future-study definition before its observation window.
+
+    Registration creates research metadata only: no plan, account, order, cash
+    or position is changed. A later evaluator must use a time window beginning
+    no earlier than ``notBefore`` and retain the definition fingerprint.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or not isinstance(leader, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,80}", leader) is None:
+        raise ValueError("valid leader and timezone-aware registration time are required")
+    if not isinstance(asset, str) or len(asset) != 6 or not asset.isdigit() or not isinstance(hypothesis, dict):
+        raise ValueError("valid real ETF asset and hypothesis are required")
+    try:
+        start = datetime.fromisoformat(not_before.replace("Z", "+00:00")) if isinstance(not_before, str) else None
+    except ValueError:
+        start = None
+    if start is None or start.tzinfo is None or start.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+        raise ValueError("notBefore must be a future timezone-aware timestamp")
+    definition = {"leader": leader, "asset": asset, "hypothesis": hypothesis,
+                  "notBefore": start.astimezone(timezone.utc).isoformat()}
+    canonical = json.dumps(definition, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    registration_id = "pre-register-" + uuid.uuid4().hex
+    record = {"kind": "cross_market_pre_registered_hypothesis", "registeredAt": now.astimezone(timezone.utc).isoformat(),
+              "definition": definition, "definitionFingerprint": fingerprint,
+              "state": "awaiting_future_observations", "eligibleForTradingSignal": False,
+              "note": "预注册研究定义；只能在notBefore之后用未见档案评估，不能作为交易信号"}
+    database.put_research(registration_id, record)
+    return {"registrationId": registration_id, **record}
+
+
 def persist_replay(database, report, hypothesis):
     """Keep an immutable, research-only point-in-time replay snapshot.
 

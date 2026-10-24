@@ -239,6 +239,27 @@ class CurrencyContextTests(unittest.TestCase):
         self.assertEqual(stale["state"], "stale")
 
 
+class PreRegisteredHypothesisTests(unittest.TestCase):
+    def test_registration_is_future_only_and_never_creates_a_trade_record(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).resolve().parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        now = datetime(2026, 10, 24, 1, tzinfo=timezone.utc)
+        result = mobile_research.preregister_hypothesis(
+            database, "KR_KOSPI", "512480", {"id": "kr-lunch-v1"},
+            "2026-10-25T00:00:00+00:00", now=now)
+        self.assertEqual(result["state"], "awaiting_future_observations")
+        self.assertFalse(result["eligibleForTradingSignal"])
+        self.assertEqual(database.get_research(result["registrationId"])["definitionFingerprint"], result["definitionFingerprint"])
+        self.assertIsNone(database.get_real("main")["bookJSON"])
+        with self.assertRaises(ValueError):
+            mobile_research.preregister_hypothesis(database, "KR_KOSPI", "512480", {"id": "bad"},
+                                                    "2026-10-23T00:00:00+00:00", now=now)
+        del database
+
+
 class PointInTimeArchiveTests(unittest.TestCase):
     def test_first_observed_snapshots_survive_later_provider_corrections(self):
         import shutil
