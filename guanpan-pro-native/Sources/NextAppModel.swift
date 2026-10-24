@@ -2,6 +2,28 @@ import Foundation
 import SwiftUI
 import Combine
 
+enum NextMarketSourceMode: String, Codable, CaseIterable, Identifiable {
+    case nasPreferred
+    case nasOnly
+    case phoneDirect
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .nasPreferred: return "NAS优先，断线备用"
+        case .nasOnly: return "仅使用NAS"
+        case .phoneDirect: return "手机直连优先"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .nasPreferred: return "报价、日K、分时和新闻先取NAS；失败才切手机来源。长期分时研究仍由NAS提供。"
+        case .nasOnly: return "报价、日K、分时和新闻只取NAS；NAS不可用时保留旧缓存，不会悄悄切到手机直连。"
+        case .phoneDirect: return "手机多源直连获取报价、日K、分时和新闻；NAS只提供长期分时研究与账本同步，减少穿透流量。"
+        }
+    }
+}
+
 struct LocalPreferences: Codable {
     var goal = NextGoal()
     var watch = ["159941", "563020", "159545", "159352"]
@@ -19,14 +41,17 @@ struct LocalPreferences: Codable {
     var nasSyncedAt: Date?
     /// 自动上传本机账本（默认开）。关掉后只保留手动上传。
     var nasAutoUpload = true
+    /// Explicitly controls where live quotes/charts come from. Long-term research remains NAS-only.
+    var marketSourceMode: NextMarketSourceMode = .phoneDirect
     /// 五套视觉主题：nil = 跟随场景（首页编辑室 / 盘中仪表盘 / AI 日报杂志 / 持仓拼图 / 详情现代卡片）。
     /// 用户手动选一套后写成具体值，手动选择永远优先于场景推断。
     var themeStyle: AppTheme?
-    enum CodingKeys: String, CodingKey { case goal, watch, navigation, theme, appearance, notifications, nasBaseURL, legacyWebBaseURL, nasRevision, nasSyncedFingerprint, nasSyncedAt, nasAutoUpload, themeStyle }
-    init(goal: NextGoal = NextGoal(), watch: [String] = ["159941", "563020", "159545", "159352"], navigation: NextNavigationState = NextNavigationState(), theme: GPTheme = .light, appearance: GPAppearance = GPAppearance(), notifications: NextNotificationCenter = NextNotificationCenter(), nasBaseURL: String = "", legacyWebBaseURL: String = "", nasRevision: Int? = nil, nasSyncedFingerprint: String? = nil, nasSyncedAt: Date? = nil, nasAutoUpload: Bool = true, themeStyle: AppTheme? = nil) {
+    enum CodingKeys: String, CodingKey { case goal, watch, navigation, theme, appearance, notifications, nasBaseURL, legacyWebBaseURL, nasRevision, nasSyncedFingerprint, nasSyncedAt, nasAutoUpload, marketSourceMode, themeStyle }
+    init(goal: NextGoal = NextGoal(), watch: [String] = ["159941", "563020", "159545", "159352"], navigation: NextNavigationState = NextNavigationState(), theme: GPTheme = .light, appearance: GPAppearance = GPAppearance(), notifications: NextNotificationCenter = NextNotificationCenter(), nasBaseURL: String = "", legacyWebBaseURL: String = "", nasRevision: Int? = nil, nasSyncedFingerprint: String? = nil, nasSyncedAt: Date? = nil, nasAutoUpload: Bool = true, marketSourceMode: NextMarketSourceMode = .phoneDirect, themeStyle: AppTheme? = nil) {
         self.goal = goal; self.watch = watch; self.navigation = navigation; self.theme = theme; self.appearance = appearance; self.notifications = notifications
         self.nasBaseURL = nasBaseURL; self.legacyWebBaseURL = legacyWebBaseURL; self.nasRevision = nasRevision
         self.nasSyncedFingerprint = nasSyncedFingerprint; self.nasSyncedAt = nasSyncedAt; self.nasAutoUpload = nasAutoUpload
+        self.marketSourceMode = marketSourceMode
         self.themeStyle = themeStyle
     }
     init(from decoder: Decoder) throws {
@@ -43,6 +68,7 @@ struct LocalPreferences: Codable {
         nasSyncedFingerprint = try values.decodeIfPresent(String.self, forKey: .nasSyncedFingerprint)
         nasSyncedAt = try values.decodeIfPresent(Date.self, forKey: .nasSyncedAt)
         nasAutoUpload = try values.decodeIfPresent(Bool.self, forKey: .nasAutoUpload) ?? true
+        marketSourceMode = try values.decodeIfPresent(NextMarketSourceMode.self, forKey: .marketSourceMode) ?? .phoneDirect
         themeStyle = try values.decodeIfPresent(AppTheme.self, forKey: .themeStyle)
     }
 }

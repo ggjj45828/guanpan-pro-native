@@ -76,6 +76,26 @@ enum NextNewsImpactEngine {
                              "溢价", "折价", "规模", "份额", "跟踪", "指数调整", "流动性",
                              "公告", "业绩", "净值"]
 
+    /// A headline without a parseable publication time must not influence a current plan.
+    static func isFreshPublishedAt(_ raw: String?, now: Date) -> Bool {
+        guard let raw, !raw.isEmpty else { return false }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = iso.date(from: raw) ?? {
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: raw)
+        }() ?? {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            return formatter.date(from: raw)
+        }()
+        guard let date else { return false }
+        return date >= now.addingTimeInterval(-30 * 24 * 60 * 60)
+            && date <= now.addingTimeInterval(2 * 60 * 60)
+    }
+
     static func severity(of title: String) -> (NextNewsSeverity, [String]) {
         let upper = title.uppercased()
         let majorHits = majorWords.filter { upper.contains($0.uppercased()) }
@@ -104,6 +124,7 @@ enum NextNewsImpactEngine {
                          hasTPlan: Bool, hasGridPlan: Bool, now: Date) -> NextNewsImpact {
         var hits: [NextNewsHit] = []
         for item in titles {
+            guard isFreshPublishedAt(item.publishedAt, now: now) else { continue }
             let (severity, keywords) = severity(of: item.title)
             guard severity != .neutral else { continue }
             hits.append(NextNewsHit(title: item.title, source: item.source,
@@ -181,7 +202,7 @@ extension NextGridPlannerResult {
     var isReady: Bool { if case .ready = self { return true } else { return false } }
 }
 
-/// 从 NAS 拿到的单条新闻标题（手机端最小输入）。
+/// 手机直连或 NAS 回退得到的单条新闻标题（手机 AI 的最小新闻输入，不含正文）。
 struct NextNewsInput: Codable, Equatable, Identifiable {
     var id: String { url ?? title }
     let title: String

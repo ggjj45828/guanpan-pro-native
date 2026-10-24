@@ -453,7 +453,7 @@ private struct PortfolioAnalysisScreen: View {
     }
 }
 
-/// 持仓新闻独立入口：显示真实 NAS 新闻缓存并按持仓归类，不再误跳 AI 今日指导。
+/// 持仓新闻入口：显示手机直连优先的真实新闻标题；同一批标题也会进入 AI 今日指导。
 private struct HoldingsNewsScreen: View {
     @EnvironmentObject private var model: NextAppModel
     @Environment(\.gp) private var p
@@ -464,7 +464,7 @@ private struct HoldingsNewsScreen: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("与你的真实持仓相关的新闻")
                     .font(.headline).foregroundStyle(p.ink)
-                Text("新闻标题来自 NAS 缓存；缺少来源时会明确显示，不用示例新闻补位。重大事件会在 AI 指导中标记计划风险。")
+                Text("手机会自动获取相关新闻标题并交给 AI 今日指导分析，你不必逐条阅读。这里仅用于查看来源；标题来自搜索聚合，AI会把它当线索而非已核实事实。")
                     .font(.caption).foregroundStyle(p.muted)
                 Button {
                     guard !refreshing else { return }
@@ -2004,7 +2004,8 @@ private struct SettingsScreen: View {
                         GPDataRow(title: "NAS 服务", value: model.syncStatus)
                         GPDataRow(title: "行情服务", value: model.status,
                                   note: "盘中每 10 秒自动刷新，分时每 60 秒；收盘后每 5 分钟。打开应用即刷一次")
-                        GPDataRow(title: "同步通道", value: "账本(自动+手动) · 行情 · 研究，三条互相独立")
+                        GPDataRow(title: "行情来源", value: model.preferences.marketSourceMode.title,
+                                  note: "真实账本只在你确认后同步；长期研究和相关新闻由已配置的NAS提供")
                     }
                 }
                 EditorialSection(title: "AI 投资研究", accent: p.terracotta) {
@@ -2048,7 +2049,7 @@ private struct SettingsScreen: View {
                     }.disabled(testingMobileAI)
                     Text("连接测试只发送简短探针，不发送持仓、账本或行情；服务商可能计费。API Key 只保存在本机钥匙串。")
                         .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
-                    Text("NAS 只负责长期行情、统计和新闻研究；手机端 API Key 由本机安全保存，最终建议由手机统一生成。")
+                    Text("NAS 负责长期1分钟行情采集、历史统计与账本同步；手机直连获取最新行情、日K和新闻，并由手机统一生成最终建议。")
                         .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -2097,12 +2098,26 @@ private struct SettingsScreen: View {
                 }
                 EditorialSection(title: "NAS 数据服务") {
                     GPCard {
+                    Picker("行情与图表来源", selection: Binding(
+                        get: { model.preferences.marketSourceMode },
+                        set: { mode in
+                            model.preferences.marketSourceMode = mode
+                            model.preferences = model.preferences
+                            model.status = "行情来源已切换为「\(mode.title)」；下一次行情刷新生效"
+                        }
+                    )) {
+                        ForEach(NextMarketSourceMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    }.pickerStyle(.menu).accessibilityIdentifier("settings.market.source-mode")
+                    Text(model.preferences.marketSourceMode.detail)
+                        .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+                    GPDataRow(title: "当前行情状态", value: model.status,
+                              note: "报价、日K和分时遵循上方选择；每次更新会显示实际数据源和时间")
                     TextField("NAS 地址，例如 http://192.168.1.10:8789", text: $nasURL).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).textFieldStyle(.roundedBorder).accessibilityIdentifier("settings.nas.address")
                     HStack { Button("保存并测试") { do { try model.configureNAS(baseURL: nasURL); Task { await model.probeNAS() } } catch { model.errorMessage = error.localizedDescription } }.font(.caption.weight(.semibold)).accessibilityIdentifier("settings.nas.save-test"); Spacer(); Button("重新检查") { Task { await model.probeNAS() } }.font(.caption).accessibilityIdentifier("settings.nas.recheck") }.tint(p.forest)
                     GPActionButton(title: "从 NAS 下载账本", secondary: true, systemImage: "arrow.down.doc") { confirmDownload = true }
                     GPActionButton(title: "上传本机账本到 NAS", secondary: true, systemImage: "arrow.up.doc") { confirmSync = true }
                     Divider().padding(.vertical, 4)
-                    Text("NAS 负责长期行情研究和数据同步；账本同步只记录你确认的真实账户变更，并通过修订号防止覆盖冲突。公网连接请使用 HTTPS。")
+                    Text("默认手机直连获取报价、日K、分时和新闻，减少 NAS 穿透流量；NAS地址用于长期分钟档案与研究、必要时的备用来源、分红和真实账本同步。真实账本可关闭自动上传；下载与强制覆盖需要确认，并通过修订号防止静默覆盖。公网连接请使用 HTTPS。")
                         .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                     }
                 }

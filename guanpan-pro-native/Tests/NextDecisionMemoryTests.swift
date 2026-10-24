@@ -118,10 +118,23 @@ final class NextDecisionMemoryTests: XCTestCase {
 
     // MARK: - 新闻 → 持仓 → 计划
 
+    private var currentNewsDate: String {
+        ISO8601DateFormatter().string(from: now)
+    }
+
+    func testStaleOrUntimedHeadlineCannotInvalidateCurrentPlan() {
+        let impact = NextNewsImpactEngine.evaluate(
+            code: "159941", name: "纳指ETF",
+            titles: [NextNewsInput(title: "纳指ETF 公告停牌", source: "测试源", publishedAt: "2025-01-01T00:00:00Z"),
+                     NextNewsInput(title: "纳指ETF 退市风险", source: "测试源")],
+            hasTPlan: true, hasGridPlan: false, now: now)
+        XCTAssertTrue(impact.isEmpty, "旧标题或没有发布时间的标题不能取消现在的交易计划")
+    }
+
     func testMajorHeadlineInvalidatesReadyTPlan() {
         let impact = NextNewsImpactEngine.evaluate(
             code: "159941", name: "纳指ETF",
-            titles: [NextNewsInput(title: "纳指ETF 159941 公告：基金份额持有人大会决议停牌", source: "测试源")],
+            titles: [NextNewsInput(title: "纳指ETF 159941 公告：基金份额持有人大会决议停牌", source: "测试源", publishedAt: currentNewsDate)],
             hasTPlan: true, hasGridPlan: false, now: now)
         XCTAssertEqual(impact.severity, .major)
         XCTAssertEqual(impact.action, .pauseGrid, "停牌意味着无法成交，网格必须暂停")
@@ -135,7 +148,7 @@ final class NextDecisionMemoryTests: XCTestCase {
     func testDelistingHeadlineInvalidatesTPlan() {
         let impact = NextNewsImpactEngine.evaluate(
             code: "159941", name: "纳指ETF",
-            titles: [NextNewsInput(title: "某基金发布退市风险提示")],
+            titles: [NextNewsInput(title: "某基金发布退市风险提示", publishedAt: currentNewsDate)],
             hasTPlan: true, hasGridPlan: true, now: now)
         XCTAssertEqual(impact.action, .invalidateT)
         let applied = NextNewsImpactEngine.apply(impact, to: guidanceItem(tPlan: .ready(tPlan()), gridPlan: nil))
@@ -159,7 +172,7 @@ final class NextDecisionMemoryTests: XCTestCase {
     func testWatchLevelHeadlineOnlyAddsNote() {
         let impact = NextNewsImpactEngine.evaluate(
             code: "159941", name: "纳指ETF",
-            titles: [NextNewsInput(title: "纳指ETF 管理费费率下调 0.05%")],
+            titles: [NextNewsInput(title: "纳指ETF 管理费费率下调 0.05%", publishedAt: currentNewsDate)],
             hasTPlan: true, hasGridPlan: false, now: now)
         XCTAssertEqual(impact.severity, .watch)
         XCTAssertEqual(impact.action, .watch)

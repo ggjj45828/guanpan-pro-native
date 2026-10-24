@@ -437,7 +437,8 @@ enum NextDecisionContextBuilder {
         【A股交易日历】\(NextMarketClock.sessionDescription(now))。休市日、周末、盘前、午休和收盘后不得描述为“今天可挂”；只能引用规则引擎给出的有效候选计划，计划缺失就明确说没有当日可执行价格。
         【市场状态与候选计划】\(planLines.joined(separator: "\n"))
         【NAS 长期研究】\(nasResearchLines.isEmpty ? "暂无（NAS 离线或未返回）" : nasResearchLines.joined(separator: "\n"))
-        【新闻】\(newsLines.isEmpty ? "暂无" : newsLines.joined(separator: "\n"))
+        【新闻线索】\(newsLines.isEmpty ? "暂无（本次不含新闻判断）" : newsLines.joined(separator: "\n"))
+        新闻输入是手机或NAS取得的搜索聚合标题，不含正文；来源与发布时间必须一并考虑。标题未经原文核实，不得仅凭标题断言事件已发生；重要线索应降低置信度、提示核实，并说明可能影响哪只持仓和哪项计划。
         【投资画像】\(profileLines.isEmpty ? "暂无足够行为样本，按默认门槛处理" : profileLines.joined(separator: "\n"))
         【今日结论】\(guidance.summary)
         硬性约束：

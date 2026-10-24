@@ -432,7 +432,7 @@ import Combine
         // NAS 长期分时统计是「市场状态 / 做T / 网格区间」的输入之一，
         // 缺了就补、过期就重取——但不允许用本地临时数据假装成 NAS 长期档案。
         if !preferences.nasBaseURL.isEmpty {
-            guidanceStatus = "正在取 NAS 长期分时统计与相关新闻…"
+            guidanceStatus = "正在取 NAS 长期分时统计…"
             for position in book.positions where position.units > 0 {
                 if let cached = nasResearch[position.code] {
                     let stats = cached.minuteStats
@@ -440,8 +440,11 @@ import Combine
                 } else {
                     await refreshNASResearch(position.code)
                 }
-                if nasNews[position.code] == nil { await refreshNASNews(position.code) }
             }
+        }
+        // Headlines are refreshed for this guidance run; phone-direct mode does not depend on NAS.
+        for position in book.positions where position.units > 0 {
+            await refreshNASNews(position.code)
         }
         guidanceStatus = "正在扫描全部持仓…"
         let guidance = buildGuidance(now: Date())
@@ -601,7 +604,8 @@ import Combine
         }
         let quoteMap = Dictionary(uniqueKeysWithValues: quotes.map { ($0.key, $0.value.quote) })
         let newsLines = book.positions.flatMap { position in
-            (nasNews[position.code] ?? []).map { "\(position.name)(\(position.code))｜\($0.title)｜来源 \($0.source ?? "未知")｜时间 \($0.publishedAt ?? "未知")｜\($0.url ?? "无链接")" }
+            (nasNews[position.code] ?? []).filter { NextNewsImpactEngine.isFreshPublishedAt($0.publishedAt, now: Date()) }
+                .map { "\(position.name)(\(position.code))｜\($0.title)｜来源 \($0.source ?? "未知")｜时间 \($0.publishedAt ?? "未知")｜\($0.url ?? "无链接")" }
         }
         return NextDecisionContextBuilder.build(guidance: guidance, book: book, quotes: quoteMap,
                                                 nasResearchLines: researchLines, newsLines: newsLines,
@@ -1081,20 +1085,29 @@ import Combine
             var sourceNote = ""
             var skippedStale = 0
             let fetched: [NextQuote]
-            if !preferences.nasBaseURL.isEmpty {
+            if preferences.marketSourceMode == .phoneDirect {
+                let direct = try await NextMarketDataService.fetchQuotes(codes: unique)
+                fetched = direct.value
+                sourceNote = "手机直连 · \(direct.source)"
+            } else if preferences.marketSourceMode == .nasOnly {
+                guard !preferences.nasBaseURL.isEmpty else {
+                    throw NextError.invalid("行情来源设为仅使用NAS，但尚未配置NAS地址")
+                }
+                fetched = try await NextNASService.fetchQuotes(codes: unique, baseURL: preferences.nasBaseURL)
+                sourceNote = "NAS行情（仅NAS模式）"
+            } else if !preferences.nasBaseURL.isEmpty {
                 do {
                     fetched = try await NextNASService.fetchQuotes(codes: unique, baseURL: preferences.nasBaseURL)
-                    sourceNote = "NAS 代理"
+                    sourceNote = "NAS行情"
                 } catch {
-                    // NAS 不可用不等于没有行情：直连链 腾讯 → 东财 → 新浪 依次兜底。
                     let direct = try await NextMarketDataService.fetchQuotes(codes: unique)
                     fetched = direct.value
-                    sourceNote = "NAS 离线 · \(direct.source) 直连"
+                    sourceNote = "NAS不可用 · \(direct.source)手机备用"
                 }
             } else {
                 let direct = try await NextMarketDataService.fetchQuotes(codes: unique)
                 fetched = direct.value
-                sourceNote = "\(direct.source) 直连"
+                sourceNote = "手机直连 · \(direct.source)"
             }
             var updated = quotes
             var updatedRules = rules
@@ -1161,36 +1174,43 @@ import Combine
     }
 
     /// 只刷新分时（不碰日 K 与 NAS 档案注册），用于盘中每隔一分钟补一次曲线。
-    /// 失败就静默保留现有曲线 —— 自动刷新不该弹窗打断人。
+    /// 行情来源严格跟随用户选择；NAS直连失败时只有“NAS优先”模式才回退手机源。
     func refreshIntraday(_ code: String) async {
         do {
-            // 分时多源链：腾讯 → 东财 1 分钟 K。失败静默保留现有曲线，自动刷新不弹窗打断人。
-            let result = try await NextMarketDataService.fetchIntraday(code: code)
-            let dataset = quotes[code].map { result.value.attachingVerifiedIOPV($0.quote) } ?? result.value
+            let fetched: NextChartDataset
+            switch preferences.marketSourceMode {
+            case .phoneDirect:
+                let direct = try await NextMarketDataService.fetchIntraday(code: code)
+                fetched = direct.value
+            case .nasOnly:
+                guard !preferences.nasBaseURL.isEmpty else { throw NextError.invalid("行情来源设为仅使用NAS，但尚未配置NAS地址") }
+                fetched = try await NextNASService.fetchMinute(code: code, day: Date(), baseURL: preferences.nasBaseURL)
+            case .nasPreferred:
+                if !preferences.nasBaseURL.isEmpty {
+                    do { fetched = try await NextNASService.fetchMinute(code: code, day: Date(), baseURL: preferences.nasBaseURL) }
+                    catch {
+                        let direct = try await NextMarketDataService.fetchIntraday(code: code)
+                        fetched = direct.value
+                    }
+                } else {
+                    let direct = try await NextMarketDataService.fetchIntraday(code: code)
+                    fetched = direct.value
+                }
+            }
+            let dataset = quotes[code].map { fetched.attachingVerifiedIOPV($0.quote) } ?? fetched
             try dataset.validate()
             chartData[code] = dataset
-        } catch { }
+            status = "分时已更新 · \(dataset.priceSource) · \(dataset.samples.count)点 · \(dataset.observedAt.formatted(date: .omitted, time: .shortened))"
+        } catch {
+            status = "分时更新失败 · 按来源设置保留本机缓存 · \(error.localizedDescription)"
+        }
     }
 
     func refreshInstrument(_ code: String) async {
         await registerNASArchive(code)
         await refreshQuotes(codes: [code])
         await refreshDaily(code)
-        do {
-            // 分时多源链：腾讯 → 东财；两者都失败再退回 NAS 归档分时。
-            let result = try await NextMarketDataService.fetchIntraday(code: code)
-            let dataset = quotes[code].map { result.value.attachingVerifiedIOPV($0.quote) } ?? result.value
-            try dataset.validate()
-            chartData[code] = dataset
-            status = "行情与分时已更新 · \(result.source) · \(dataset.samples.count) 点 · \(dataset.observedAt.formatted(date: .omitted, time: .shortened))"
-        } catch {
-            if !preferences.nasBaseURL.isEmpty {
-                await loadNASMinute(code: code, day: Date())
-            } else {
-                status = "报价缓存可用 · 分时历史暂不可用"
-                errorMessage = "\(error.localizedDescription)。不会用报价点补造历史曲线或 IOPV。"
-            }
-        }
+        await refreshIntraday(code)
     }
     func refreshDividendHistory(_ code: String) async {
         guard !preferences.nasBaseURL.isEmpty else { return }
@@ -1317,28 +1337,39 @@ import Combine
                 : "NAS 刷新失败 · 当前显示本机缓存"
         }
     }
-    /// 新闻 → 持仓：只取标题，取不到就如实说「本次结论不含新闻」，绝不用本地示例新闻凑数。
+    /// 新闻 → 持仓：默认手机直连，NAS只按来源偏好作为备用；只保存带时间和链接的标题。
     func refreshNASNews(_ code: String) async {
-        guard !preferences.nasBaseURL.isEmpty else {
-            newsStatus[code] = "未配置 NAS · 没有新闻来源"
-            return
-        }
         let baseURL = preferences.nasBaseURL
-        do {
-            let result = try await NextNASService.fetchNews(code: code, baseURL: baseURL)
-            guard preferences.nasBaseURL == baseURL else {
-                newsStatus[code] = "NAS 地址已变更 · 保留原新闻缓存，未混用新旧服务"
-                return
-            }
-            if !result.items.isEmpty { nasNews[code] = result.items }
-            newsStatus[code] = result.items.isEmpty
-                ? "新闻源本次没有返回标题"
-                : "已取到 \(result.items.count) 条标题"
-        } catch {
-            newsStatus[code] = nasNews[code] == nil
-                ? "新闻不可用 · 本次结论不含新闻"
-                : "刷新失败 · 沿用上次标题"
+        let name = book.positions.first(where: { $0.code == code })?.name ?? NextNameBook.name(for: code) ?? code
+        let modes: [NextMarketSourceMode]
+        switch preferences.marketSourceMode {
+        case .phoneDirect: modes = [.phoneDirect, .nasPreferred]
+        case .nasPreferred: modes = [.nasPreferred, .phoneDirect]
+        case .nasOnly: modes = [.nasOnly]
         }
+        var failures: [String] = []
+        for mode in modes {
+            do {
+                let result: (items: [NextNewsInput], source: String)
+                switch mode {
+                case .phoneDirect:
+                    let direct = try await NextMarketDataService.fetchNews(code: code, name: name)
+                    result = (direct.value, direct.source)
+                case .nasPreferred, .nasOnly:
+                    guard !baseURL.isEmpty else { throw NextError.invalid("未配置 NAS 地址") }
+                    let nas = try await NextNASService.fetchNews(code: code, baseURL: baseURL)
+                    guard preferences.nasBaseURL == baseURL else { throw NextError.invalid("NAS 地址已变更") }
+                    result = (nas.items, "NAS 新闻 · \(nas.state)")
+                }
+                guard !result.items.isEmpty else { throw NextError.invalid("来源没有返回有效标题") }
+                nasNews[code] = result.items
+                newsStatus[code] = "\(result.source) · \(result.items.count)条 · \(Date.now.formatted(date: .omitted, time: .shortened))"
+                return
+            } catch { failures.append(error.localizedDescription) }
+        }
+        newsStatus[code] = nasNews[code] == nil
+            ? "新闻源不可用 · \(failures.joined(separator: "；")) · 本次结论不含新闻"
+            : "新闻刷新失败 · 保留本机旧缓存（不视为最新）· \(failures.joined(separator: "；"))"
     }
     func registerNASArchive(_ code: String) async {
         guard !preferences.nasBaseURL.isEmpty else { return }
@@ -1354,17 +1385,24 @@ import Combine
             return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
-    /// 日 K 多源链：NAS（部署服务的缓存口径）优先，失败自动直连 腾讯 → 东财 → 新浪。
-    /// 任一源成功即写入缓存；全部失败才记录错误——不再因为「NAS 取不到」就没有日 K。
+    /// 日 K 来源跟随用户偏好；手机直连优先是默认设置，以减少 NAS 代理流量。
     /// 旧数据不覆盖新数据：新结果的最新样本不晚于缓存时，保留原缓存。
     func refreshDaily(_ code: String, required: Bool = false) async {
-        if !preferences.nasBaseURL.isEmpty {
+        if preferences.marketSourceMode == .nasOnly && preferences.nasBaseURL.isEmpty {
+            dailyErrors[code] = "行情来源设为仅使用NAS，但尚未配置NAS地址"
+            return
+        }
+        if preferences.marketSourceMode != .phoneDirect && !preferences.nasBaseURL.isEmpty {
             do {
                 let dataset = try await NextNASService.fetchDaily(code: code, baseURL: preferences.nasBaseURL)
                 dailyErrors.removeValue(forKey: code)
                 if shouldReplaceDayDataset(chartData["\(code):day"], with: dataset) { chartData["\(code):day"] = dataset }
                 return
             } catch let nasFailure {
+                guard preferences.marketSourceMode == .nasPreferred else {
+                    dailyErrors[code] = "仅NAS模式 · NAS日 K 不可用：\(nasFailure.localizedDescription)"
+                    return
+                }
                 do {
                     let direct = try await NextMarketDataService.fetchDaily(code: code)
                     dailyErrors.removeValue(forKey: code)
@@ -1407,7 +1445,7 @@ import Combine
         else { try repository.writeRawSafetyCopy() }
         try repository.replaceAll(with: incoming)
         ledger = NextAuditedBook(current: incoming.book, events: incoming.audits)
-        preferences = LocalPreferences(goal: incoming.goal, watch: incoming.watch, navigation: incoming.navigation, theme: GPTheme(rawValue: incoming.theme.rawValue) ?? .light, appearance: preferences.appearance, notifications: incoming.notifications, nasBaseURL: preferences.nasBaseURL, legacyWebBaseURL: preferences.legacyWebBaseURL, nasRevision: nil)
+        preferences = LocalPreferences(goal: incoming.goal, watch: incoming.watch, navigation: incoming.navigation, theme: GPTheme(rawValue: incoming.theme.rawValue) ?? .light, appearance: preferences.appearance, notifications: incoming.notifications, nasBaseURL: preferences.nasBaseURL, legacyWebBaseURL: preferences.legacyWebBaseURL, nasRevision: nil, marketSourceMode: preferences.marketSourceMode)
         quotes = incoming.cachedQuotes; chartData = incoming.chartData; rules = incoming.instrumentRules; orderBooks = incoming.orderBooks
         decisions = incoming.decisionHistory
         nasResearch = incoming.nasResearch
