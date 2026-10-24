@@ -16,9 +16,11 @@ DENIED = re.compile(r"(^|/)(\.env|[^/]*\.(?:db|sqlite3?|ipa|p12|pem|mobileprovis
 
 
 def tracked_files() -> list[str]:
-    result = subprocess.run(["git", "-c", f"safe.directory={ROOT.as_posix()}", "ls-files"],
-                            cwd=ROOT, check=True, capture_output=True, text=True)
-    return sorted(line.replace("\\", "/") for line in result.stdout.splitlines() if line)
+    result = subprocess.run(["git", "-c", f"safe.directory={ROOT.as_posix()}",
+                             "-c", "core.quotepath=false", "ls-files", "-z"],
+                            cwd=ROOT, check=True, capture_output=True)
+    return sorted(line.decode("utf-8").replace("\\", "/")
+                  for line in result.stdout.split(b"\0") if line)
 
 
 def sha256(path: Path) -> str:
