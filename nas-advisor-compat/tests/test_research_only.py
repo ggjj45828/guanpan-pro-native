@@ -34,6 +34,8 @@ class LiveDivergenceTests(unittest.TestCase):
         self.assertAlmostEqual(result["leaderReturnPercent"], -0.6, places=4)
         self.assertAlmostEqual(result["assetReturnPercent"], 0.4, places=4)
         self.assertFalse(result["eligibleForTradingSignal"])
+        self.assertEqual(datetime.fromisoformat(result["expiresAt"]),
+                         datetime.fromisoformat("2026-10-23T09:55:00+08:00"))
         self.assertNotIn("price", result)
 
     def test_divergence_rejects_future_points_and_stale_sources(self):

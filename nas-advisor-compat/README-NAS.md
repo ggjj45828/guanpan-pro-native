@@ -1,8 +1,8 @@
 # 观盘 NAS：基于你提供的 guanpan2 改造
 
-版本：3.6.0-r25-point-in-time-archive-evidence。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
+版本：3.6.0-r26-expiring-cross-market-observations。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
 
-本版在 `/v1/research/{代码}` 的 `crossMarket.liveDivergences` 中增加最近15分钟跨市场与该ETF的同窗价格观察。必须有两端新鲜、时间端点相近的真实分钟点；数据过期或时间不齐就标为 `stale` / `insufficient_data`。方向相反只标记为 `observed_divergence`，明确 `eligibleForTradingSignal=false`，不产生预测、策略或交易价格。
+本版在 `/v1/research/{代码}` 的 `crossMarket.liveDivergences` 中增加最近15分钟跨市场与该ETF的同窗价格观察。必须有两端新鲜、时间端点相近的真实分钟点；数据过期或时间不齐就标为 `stale` / `insufficient_data`。方向相反只标记为 `observed_divergence`，明确 `eligibleForTradingSignal=false`，不产生预测、策略或交易价格。每条观察含 `expiresAt`；手机在离线使用研究缓存时再次检查到期时间，过期的背离不得进入当次在线AI决策文字。
 
 分钟归档保留每个价格点第一次被 NAS 获取时的快照、来源和时间，同时继续维护最新归档供实时研究使用。历史假设回放只允许使用冻结时点之前首次采到的输入；结果行情按交易所时间戳作为后验标签，不受采集延迟影响。旧数据库无法还原初次采集记录，迁移时按可知的最后采集时间保守标注，较早冻结点会被拒绝使用，从而避免把收盘后补齐的旧行情伪装成当时已知信息。
 
@@ -26,7 +26,7 @@
 
 1. 备份 NAS 上的 `guanpan_advisor_data` 卷及当前 `.env`。不要将备份或密钥放入本包。此包复用原项目、端口和卷，不要与原容器同时启动。
 2. 将本包完整解压到新目录；将自己现有的 `.env` 安全地复制到新目录，核对变量后运行 `docker compose -p guanpan-advisor up -d --build`。不要把 `.env.example` 当成真实密钥。
-3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r25-point-in-time-archive-evidence`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
+3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r26-expiring-cross-market-observations`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
 4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`；在 App 内执行“测试连接”，并检查 `/v1/research/512480` 是否包含 `minuteStats`。空档案、旧行情或缺量时手机应显示数据不足。
 5. 如需回滚，先停止新容器，再以备份的旧代码和原数据卷启动；不要使用 `docker compose down -v`。
 

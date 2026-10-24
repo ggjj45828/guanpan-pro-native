@@ -1198,6 +1198,18 @@ struct NextNASResearch: Codable, Equatable {
             let leaderAgeSeconds: Double?
             let assetAgeSeconds: Double?
             let eligibleForTradingSignal: Bool?
+            let expiresAt: String?
+
+            func isFresh(at now: Date) -> Bool {
+                guard let expiresAt else { return false }
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let parsed = formatter.date(from: expiresAt) ?? {
+                    formatter.formatOptions = [.withInternetDateTime]
+                    return formatter.date(from: expiresAt)
+                }()
+                return parsed.map { $0 > now } ?? false
+            }
         }
         var liveDivergences: [LiveDivergence]? = nil
     }

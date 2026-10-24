@@ -625,8 +625,9 @@ import Combine
                     ? "已获准进入风险判断，仍需核对当时行情与A股确认"
                     : "仅历史研究候选，尚无预注册未来样本复现；不得作为做T/网格或加仓信号"
                 let observations = evidence.liveDivergences ?? []
-                let observed = observations.filter { $0.state == "observed_divergence" }
-                let staleCount = observations.filter { $0.state == "stale" }.count
+                let contextNow = Date()
+                let observed = observations.filter { $0.state == "observed_divergence" && $0.isFresh(at: contextNow) }
+                let staleCount = observations.filter { $0.state == "stale" || !$0.isFresh(at: contextNow) }.count
                 let insufficientCount = observations.filter { $0.state == "insufficient_data" }.count
                 let divergenceSummary: String
                 if observations.isEmpty {

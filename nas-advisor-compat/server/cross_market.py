@@ -295,6 +295,7 @@ def detect_live_divergence(leader_rows, asset_rows, *, as_of, window_minutes=15,
     asset_then = _nearest(asset, target, tolerance_seconds, asset_stamps)
     result = {"windowMinutes": window_minutes, "asOf": common_at.isoformat(),
               "leaderLatestAt": leader_latest.isoformat(), "assetLatestAt": asset_latest.isoformat(),
+              "expiresAt": (common_at + timedelta(seconds=maximum_age_seconds)).isoformat(),
               "leaderAgeSeconds": max(0, leader_age), "assetAgeSeconds": max(0, asset_age),
               "eligibleForTradingSignal": False,
               "note": "仅描述同一时段的已观察价格差异，不代表领先预测，也不能单独触发交易"}
