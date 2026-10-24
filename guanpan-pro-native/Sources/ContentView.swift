@@ -1264,34 +1264,32 @@ struct AISettingsView: View {
 
 struct MoreHubView: View {
     @EnvironmentObject private var store: PortfolioStore
-    @State private var showAnalysisTools = false
-    @State private var showPlanningTools = false
-    @State private var showAppSettings = false
-    @State private var showDataSync = false
-    @State private var showAdvisor = false
-    @State private var showInvestorProfile = false
-    @State private var showAISettings = false
+    private enum Destination: Hashable {
+        case analysisTools, planningTools, appSettings, dataSync
+        case advisor, investorProfile, aiSettings
+    }
+    @State private var path: [Destination] = []
     // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
     // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
     /// 三个弹窗入口合并成一个目标（见 `MoreHubSheet`）。
     @State private var activeSheet: MoreHubSheet?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section {
                     VStack(spacing: 10) {
                         MoreHubCard(title: "AI 今日指导", subtitle: "唯一建议 · 真实持仓、NAS研究与手机AI",
                                     icon: "sparkles", tint: store.effectiveAccentColor) {
-                            showAdvisor = true
+                            path.append(.advisor)
                         }
                         MoreHubCard(title: "AI 对我的了解", subtitle: "真实成交与建议反馈形成的动态画像",
                                     icon: "person.text.rectangle", tint: Color(red: 0.36, green: 0.54, blue: 0.84)) {
-                            showInvestorProfile = true
+                            path.append(.investorProfile)
                         }
                         MoreHubCard(title: "手机 AI 接口设置", subtitle: "API 密钥仅保存在本机钥匙串",
                                     icon: "key.fill", tint: Color(red: 0.52, green: 0.38, blue: 0.78)) {
-                            showAISettings = true
+                            path.append(.aiSettings)
                         }
                         HStack(spacing: 10) {
                             MoreHubTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
@@ -1315,19 +1313,19 @@ struct MoreHubView: View {
                     VStack(spacing: 10) {
                         HStack(spacing: 10) {
                             MoreHubTile(title: "分析工具", subtitle: "风险、信号\n账户体检", icon: "chart.bar.xaxis", tint: .blue) {
-                                showAnalysisTools = true
+                                path.append(.analysisTools)
                             }
                             MoreHubTile(title: "计划与复盘", subtitle: "网格、收益\n历史回看", icon: "calendar.badge.clock", tint: .orange) {
-                                showPlanningTools = true
+                                path.append(.planningTools)
                             }
                         }
                         HStack(spacing: 10) {
                             MoreHubTile(title: "应用设置", subtitle: "配色、行情\n成本口径", icon: "gearshape.fill", tint: .gray) {
-                                showAppSettings = true
-                            }
+                                path.append(.appSettings)
+                            }.accessibilityIdentifier("more.app-settings")
                             MoreHubTile(title: "数据与同步", subtitle: "备份、NAS\n通知权限", icon: "externaldrive.fill", tint: .purple) {
-                                showDataSync = true
-                            }
+                                path.append(.dataSync)
+                            }.accessibilityIdentifier("more.data-sync")
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
@@ -1350,17 +1348,21 @@ struct MoreHubView: View {
             .listStyle(.plain)
             .appListLayout()
             .background(.clear)
-            .navigationTitle("更多")
+            .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(AppTheme.palette(for: store.resolvedAppearance).surface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .navigationDestination(isPresented: $showAnalysisTools) { ToolsView(title: "分析工具") }
-            .navigationDestination(isPresented: $showPlanningTools) { ToolsView(title: "计划与复盘") }
-            .navigationDestination(isPresented: $showAppSettings) { SettingsView(mode: .app) }
-            .navigationDestination(isPresented: $showDataSync) { SettingsView(mode: .sync) }
-            .navigationDestination(isPresented: $showAdvisor) { LabResearchView() }
-            .navigationDestination(isPresented: $showInvestorProfile) { InvestorProfileView() }
-            .navigationDestination(isPresented: $showAISettings) { AISettingsView() }
+            .navigationDestination(for: Destination.self) { destination in
+                switch destination {
+                case .analysisTools: ToolsView(title: "分析工具")
+                case .planningTools: ToolsView(title: "计划与复盘")
+                case .appSettings: SettingsView(mode: .app)
+                case .dataSync: SettingsView(mode: .sync)
+                case .advisor: LabResearchView()
+                case .investorProfile: InvestorProfileView()
+                case .aiSettings: AISettingsView()
+                }
+            }
             // 三层 sheet → **一层**（见 `MoreHubSheet`）。
             .sheet(item: $activeSheet) { sheet in
                 MoreHubSheetContent(sheet: sheet)
@@ -7126,8 +7128,7 @@ struct SettingsView: View {
 
     /// 表单主体单独成表达式：与尾部三十余个修饰符分开做类型检查，避免整条 body 超时。
     private var formContent: some View {
-        NavigationStack {
-            Form {
+        Form {
                 if mode != .sync {
                     appearanceSection
                     ledgerSection
@@ -7150,20 +7151,17 @@ struct SettingsView: View {
                     notificationSection
                 }
                 if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
-            }
-            .navigationTitle(mode == .sync ? "数据与同步" : mode == .app ? "应用设置" : "设置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .keyboardDoneToolbar()
-            .scrollContentBackground(.hidden)
-            .listStyle(.plain)
-            .appListLayout()
-            .listRowBackground(Color.clear)
-            .fullRowRowButtons()
-            .background(.clear)
         }
-        // presentationBackground 要挂在 sheet 的导航根上；挂在 Form 内层会留下系统默认的不透明白底。
+        .navigationTitle(mode == .sync ? "数据与同步" : mode == .app ? "应用设置" : "设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        .keyboardDoneToolbar()
+        .scrollContentBackground(.hidden)
+        .listStyle(.plain)
+        .appListLayout()
+        .listRowBackground(Color.clear)
+        .fullRowRowButtons()
+        .background(.clear)
         .themedSheetBackground()
     }
 
