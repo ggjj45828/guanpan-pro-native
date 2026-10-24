@@ -2254,7 +2254,7 @@ private struct AlertCenterScreen: View {
         GPPageBackground {
             EditorialSection(title: "通知记录", trailing: "去重与静默时段") {
                 Text("支持价格、均线、组合风险、限价计划、AI候选计划状态和 NAS 数据异常。本机提醒遵循系统通知权限；NAS 的 APNs 远程推送需单独配置。").font(.caption).foregroundStyle(p.muted)
-                HStack { Button("允许本机通知") { Task { await model.requestNotificationPermission() } }; Button("发送测试提醒") { model.postLocalAlert(level: "测试", fingerprint: "local-notification-test", title: "观盘 Pro 提醒测试", detail: "这是一条本机通知测试，不代表交易信号。", stamp: NextDataStamp(source: "本机测试", observedAt: Date(), quality: .live, detail: "用户手动触发")) } }.buttonStyle(.bordered).tint(p.forest)
+                HStack { Button("允许本机通知") { Task { await model.requestNotificationPermission() } }; Button("发送测试提醒") { model.postLocalAlert(level: "测试", fingerprint: "local-notification-test", title: "观盘Max提醒测试", detail: "这是一条本机通知测试，不代表交易信号。", stamp: NextDataStamp(source: "本机测试", observedAt: Date(), quality: .live, detail: "用户手动触发")) } }.buttonStyle(.bordered).tint(p.forest)
                 Text(model.notificationStatus).font(.caption2).foregroundStyle(p.muted)
                 if model.preferences.notifications.alerts.isEmpty { GPStatus(title: "暂无通知记录", detail: "网络或 NAS 未连接时仍可查看本机已有提醒。", symbol: "bell.slash") }
                 ForEach(model.preferences.notifications.alerts) { alert in DataPanel(title: alert.title, caption: alert.level) { Text(alert.detail).font(.subheadline); Text(alert.stamp.label(now: Date())).font(.caption2.monospaced()).foregroundStyle(p.muted); Text(alert.delivery).font(.caption2).foregroundStyle(p.muted); if !alert.read { Button("标为已读") { guard let index = model.preferences.notifications.alerts.firstIndex(where: { $0.id == alert.id }) else { return }; model.preferences.notifications.alerts[index].read = true; model.preferences = model.preferences }.font(.caption.weight(.semibold)).tint(p.forest) } } }
@@ -2472,6 +2472,10 @@ private struct DividendAdviceCard: View {
         guard let price = quote?.price, price > 0 else {
             return ("还没拿到这只的行情", "点「查询」会自动拉现价与派息历史；离线时只显示本机缓存。", p.muted)
         }
+        guard let quote, quote.isFresh(at: Date()) else {
+            let time = quote?.time.formatted(date: .abbreviated, time: .shortened) ?? "未知"
+            return ("行情已过期，暂不判断当前价位", "最后报价时间：\(time)。历史股息和价格统计可以查看，但不能据此生成今天的买入倾向。", p.muted)
+        }
         guard perShare > 0 else {
             return ("近 12 个月没有已核实派息", "无法计算股息率与目标买入价；不会用推算值冒充已核实分红。", p.muted)
         }
@@ -2678,7 +2682,7 @@ private struct BackupRestoreScreen: View {
             Text("恢复前会检查版本、结构和校验值，再显示数据数量供你确认。若安全副本写入失败，恢复会停止。")
                 .font(.caption).foregroundStyle(p.muted).padding(.vertical, 8)
         }.navigationTitle("备份与恢复").navigationBarTitleDisplayMode(.inline).gpKeyboardDismiss()
-            .fileExporter(isPresented: $isExporting, document: document, contentType: .json, defaultFilename: "观盘Pro-安全备份") { result in
+            .fileExporter(isPresented: $isExporting, document: document, contentType: .json, defaultFilename: "观盘Max-安全备份") { result in
                 if case .failure(let error) = result { model.errorMessage = "导出失败：\(error.localizedDescription)" }
             }
             .fileImporter(isPresented: $isImporting, allowedContentTypes: [.json]) { result in
