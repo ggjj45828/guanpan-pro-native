@@ -16,6 +16,7 @@
 - 运行此工作流不需要 Personal Access Token，也不需要配置 GitHub Secrets；仓库所有者可直接在 Actions 页面启动。
 - 不要把 GitHub Token、Apple 密码或证书私钥写进源码、提交记录或聊天。
 - 这个工作流通过 XcodeGen 生成 Xcode 工程，在 macOS 上编译并打包未签名 IPA。它证明云端编译链路可用，但**未签名 IPA 不能直接安装到 iPhone**。
+- 包内应用目录和主程序文件名固定为 ASCII（`Payload/GuanpanPro.app/GuanpanPro`），桌面显示名仍为“观盘 Pro”。构建会校验 ZIP CRC、`CFBundleExecutable` 与真实文件路径、Mach-O 文件头及 Bundle ID；路径或文件不匹配时构建失败，不上传坏包。
 - 安装前需要用有效的 Apple 开发签名和匹配设备的 provisioning profile 重签。单纯用 3uTools 传输 IPA 不会自动让未签名包变成可安装应用。免费个人签名的证书与描述文件也有有效期限制。
 - 当前工作流不会使用或读取任何签名凭据。需要签名时，应另行设计签名步骤，并通过 GitHub 仓库的 Actions Secrets 安全提供所需文件和密码，不要发送给助手。
 

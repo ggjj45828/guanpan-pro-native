@@ -42,6 +42,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native
         PRODUCT_MODULE_NAME: GuanpanProNative
         PRODUCT_NAME: GuanpanPro
+        EXECUTABLE_NAME: GuanpanPro
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: "NO"
         TARGETED_DEVICE_FAMILY: "1,2"

@@ -91,3 +91,6 @@
 - 当前本地验证分支新提交：64df68a（手机 AI 排版/清理旧NAS helper），714ba52（做T只接受当天且5分钟内的分时证据）。已再次尝试推送，仍因无法解析 github.com 失败；Actions 编译未触发。
 
 - 进一步收紧日K新鲜度：做T/网格/统一扫描器都检查最新K线日期；缺日期、超前超过1天或晚于15天即拒绝具体价格。15天窗口兼容长假，不会把跨节期间周五日K误判成坏数据。新增Swift测试覆盖过期日K和长假窗口；需要macOS运行。
+
+- 回答云编译/签名问题后继续改进打包：GitHub Actions的macOS构建工作流仍在 .github/workflows/build-ios.yml，模拟器验证在 validate-ios.yml；当前未跑的原因是本机GitHub推送网络被代理/DNS阻断，不是撤掉了云构建。当前Edge的GitHub页可浏览公开仓库，但没有可供命令行推送的gh CLI。
+- IPA签名报错路径明确出现乱码中文 .app 名及中文主程序名，符合旧版本 PRODUCT_NAME/CFBundleExecutable 中文导致某些Windows sideload zip解码器找不到文件的症状；当前project.yml为ASCII产品名，但我进一步固定 EXECUTABLE_NAME=GuanpanPro，新增 verify_ipa.py 在云端检查包内 app 路径、Info.plist的可执行名、Mach-O头、Bundle ID、ZIP CRC与签名文件，发现错包即阻止上传。4个合成IPA正反例测试通过；还需实际云构建证明本轮产物。
