@@ -91,8 +91,7 @@ final class NextLocalRepository {
         // app's own sandbox when both the test scheme and explicit test flag
         // are present; normal launches never delete persisted account data.
         let args = ProcessInfo.processInfo.arguments
-        let isUITestReset = ProcessInfo.processInfo.environment["GUANPAN_TESTING"] == "1"
-            && args.contains("-ui-testing") && args.contains("-ui-testing-reset")
+        let isUITestReset = args.contains("-ui-testing") && args.contains("-ui-testing-reset")
         if isUITestReset {
             try? fileManager.removeItem(at: directory)
             try? fileManager.removeItem(at: recoveryDirectory)
