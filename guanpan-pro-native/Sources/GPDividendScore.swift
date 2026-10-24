@@ -107,7 +107,12 @@ struct DividendBuyScoreRow: View {
     let score: DividendBuyScore
     let targetYield: Decimal
 
+    private var quoteIsFresh: Bool {
+        guard let quote = model.quotes[score.code]?.quote else { return false }
+        return quote.isFresh(at: Date())
+    }
     private var tone: Color {
+        guard quoteIsFresh else { return p.muted }
         switch score.tier {
         case .attention: return p.jade
         case .batch: return p.chartGold
@@ -147,7 +152,7 @@ struct DividendBuyScoreRow: View {
                     GPPillBadge(text: isETF ? "ETF" : "股票", color: isETF ? p.jade : p.chartBlue)
                     Spacer(minLength: 4)
                     Text("\(score.total) 分").font(.system(.subheadline, design: .rounded).weight(.bold)).monospacedDigit().foregroundStyle(tone)
-                    Text(score.tier.rawValue).font(.caption.weight(.semibold)).foregroundStyle(tone)
+                    Text(quoteIsFresh ? score.tier.rawValue : "行情过期").font(.caption.weight(.semibold)).foregroundStyle(tone)
                 }
                 Text(priceLine).font(.caption).foregroundStyle(p.ink).lineLimit(1).minimumScaleFactor(0.8)
                 Text(componentsLine).font(.caption2).foregroundStyle(p.muted).lineLimit(1).minimumScaleFactor(0.8)
