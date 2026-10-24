@@ -515,7 +515,18 @@ import Combine
         var updates: [String] = []
         for index in candidatePlans.indices {
             let quote = quotes[candidatePlans[index].code]?.quote
-            if let change = candidatePlans[index].refresh(quote: quote, now: now) { updates.append(change) }
+            if let change = candidatePlans[index].refresh(quote: quote, now: now) {
+                updates.append(change)
+                continue
+            }
+            guard candidatePlans[index].state.isOpen else { continue }
+            let plan = candidatePlans[index]
+            guard let reason = NextCandidatePlanNewsGuard.invalidationReason(
+                for: plan, headlines: nasNews[plan.code] ?? [], now: now) else { continue }
+            if let change = candidatePlans[index].invalidate(
+                reason: reason, at: now) {
+                updates.append(change)
+            }
         }
         for line in updates {
             postLocalAlert(level: "AI 候选计划", fingerprint: "candidate-plan-\(UUID().uuidString)", title: line,
@@ -593,6 +604,7 @@ import Combine
     func makeDecisionContext() -> NextDecisionContext {
         let guidance = dailyGuidance ?? buildGuidance(now: Date())
         var researchLines: [String] = []
+        var crossMarketLines: [String] = []
         for (code, report) in nasResearch {
             if let stats = report.minuteStats {
                 let w20 = stats.window(20)
@@ -603,6 +615,17 @@ import Combine
             } else {
                 researchLines.append("\(NextNameBook.resolve(code))(\(code))：NAS长期分钟统计缺失")
             }
+            if let evidence = report.crossMarket {
+                let count = evidence.sampleCount.map(String.init) ?? "未知"
+                let lag = evidence.bestLagMinutes.map { "，最佳领先 \($0) 分钟" } ?? ""
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：\(evidence.state)；样本 \(count)\(lag)；来源 \(evidence.source ?? "未知")；时间 \(evidence.asOf ?? "未知")；\(evidence.reason ?? "")")
+            } else {
+                crossMarketLines.append("\(NextNameBook.resolve(code))(\(code))：NAS未提供跨市场验证结果；不可推断领先关系")
+            }
+        }
+        let reportedCodes = Set(nasResearch.keys)
+        for position in book.positions where position.units > 0 && !reportedCodes.contains(position.code) {
+            crossMarketLines.append("\(position.name)(\(position.code))：NAS未提供跨市场验证结果；不可推断领先关系")
         }
         let quoteMap = Dictionary(uniqueKeysWithValues: quotes.map { ($0.key, $0.value.quote) })
         let newsLines = book.positions.flatMap { position in
@@ -610,7 +633,9 @@ import Combine
                 .map { "\(position.name)(\(position.code))｜\($0.title)｜来源 \($0.source ?? "未知")｜时间 \($0.publishedAt ?? "未知")｜\($0.url ?? "无链接")" }
         }
         return NextDecisionContextBuilder.build(guidance: guidance, book: book, quotes: quoteMap,
-                                                nasResearchLines: researchLines, newsLines: newsLines,
+                                                nasResearchLines: researchLines,
+                                                crossMarketLines: crossMarketLines,
+                                                newsLines: newsLines,
                                                 profileLines: NextProfileEngine.promptLines(profile: profile),
                                                 now: Date())
     }

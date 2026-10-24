@@ -1,6 +1,6 @@
 # 观盘 NAS：基于你提供的 guanpan2 改造
 
-版本：3.6.0-r17-holdings-only-collection。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
+版本：3.6.0-r18-cross-market-replay-foundation。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
 
 ## 这次改了什么
 
@@ -22,10 +22,14 @@
 
 1. 备份 NAS 上的 `guanpan_advisor_data` 卷及当前 `.env`。不要将备份或密钥放入本包。此包复用原项目、端口和卷，不要与原容器同时启动。
 2. 将本包完整解压到新目录；将自己现有的 `.env` 安全地复制到新目录，核对变量后运行 `docker compose -p guanpan-advisor up -d --build`。不要把 `.env.example` 当成真实密钥。
-3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r17-holdings-only-collection`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
+3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r18-cross-market-replay-foundation`。旧 NAS `.env` 中的模型 Key 可以删去；新容器不读取它。
 4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`；在 App 内执行“测试连接”，并检查 `/v1/research/512480` 是否包含 `minuteStats`。空档案、旧行情或缺量时手机应显示数据不足。
 5. 如需回滚，先停止新容器，再以备份的旧代码和原数据卷启动；不要使用 `docker compose down -v`。
 
 NAS Compose 使用 Docker 默认网络，没有设置 `network_mode: none`、自定义 DNS 或 IPv4/IPv6 策略；这只能说明源码没有主动封锁外网，不能证明 NAS 主机、路由器、DNS 或 Docker daemon 实际可访问行情源。容器继承 Docker 主机的系统时钟，当前 `/health` 也不检测时钟偏差。若接口返回 502/503，需要在 NAS 上分别核对 UTC 时间、DNS 解析和到 Tencent/Eastmoney 的 HTTPS 连接；Docker 镜像改用镜像站下载不等于容器的运行时外网一定被封，也不等于一定畅通。
 
-本包 Python 测试覆盖采集对象、行情回退、分钟数据校验和旧入口停用；它们不能替代 NAS 网络和时钟实机诊断。NAS 分时统计已接入手机现有的 `/v1/research/{code}` 解码链路：仅使用分钟量覆盖至少 98%、单日不少于 200 个点、并与独立日 K 成交量差异不超过 1% 的交易日计算 VWAP 和分钟路径往返次数。开发环境对有限样本的行情源验证不能证明 NAS 已积累长期档案。Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。
+本包 Python 测试覆盖采集对象、行情回退、分钟数据校验和旧入口停用；它们不能替代 NAS 网络和时钟实机诊断。NAS 分时统计已接入手机现有的 `/v1/research/{code}` 解码链路：仅使用分钟量覆盖至少 98%、单日不少于 200 个点、并与独立日 K 成交量差异不超过 1% 的交易日计算 VWAP 和分钟路径往返次数。开发环境对有限样本的行情源验证不能证明 NAS 已积累长期档案。
+
+新增的只读历史午休假设回放接口为 `/v1/research/cross-market/replay?leader=KR_KOSPI&asset=512480&start=2026-01-01&end=2026-10-23`，可附加 `leaderShockAtLeast`、`assetMorningAtMost`、`expectedDirection` 和 `minimumSamples`（默认100个触发样本才计算汇总确认率）。它只读取 `cross_market_minute` 外部市场档案和真实持仓ETF分钟档案，12:50冻结假设，13:00后数据只计算验证结果；样本不足时成功率为 `null`。**当前部署还没有经过验证的外部市场分钟采集源/worker，因此此接口会如实返回 `insufficient_real_archive`，不会生成日韩领先结论。**
+
+Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。

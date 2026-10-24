@@ -8,13 +8,43 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import defaultdict
 from datetime import datetime, time, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from statistics import median, pstdev
+import cross_market
 
 CN = ZoneInfo("Asia/Shanghai")
+
+
+def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samples=30):
+    """Replay archived provider observations; never synthesize absent sessions."""
+    if not isinstance(leader, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,80}", leader) is None:
+        raise ValueError("invalid leader id")
+    if not isinstance(asset, str) or len(asset) != 6 or not asset.isdigit():
+        raise ValueError("invalid asset code")
+    session_days = database.cross_market_days(leader, start, end)
+    sessions, missing_asset = [], 0
+    sources = set()
+    for day in session_days:
+        lead = database.get_cross_market_minute(leader, day)
+        held = database.get_minute(asset, day)
+        if not lead["rows"] or not held["rows"]:
+            missing_asset += 1
+            continue
+        if isinstance(lead["source"], str):
+            sources.add(lead["source"])
+        sessions.append({"day": day, "leader": lead["rows"], "asset": held["rows"]})
+    report = cross_market.replay_lunch_days(sessions, source=", ".join(sorted(sources)) or "未验证来源",
+                                            rule=rule, minimum_samples=minimum_samples)
+    report.update({"leader": leader, "asset": asset, "range": {"start": start, "end": end},
+                   "archivedLeaderSessions": len(session_days), "replayedSessions": len(sessions),
+                   "missingAssetSessions": missing_asset,
+                   "evidenceState": "available" if sessions else "insufficient_real_archive",
+                   "warning": None if sessions else "NAS没有可用于回放的跨市场与持仓分钟档案；没有生成预测结论"})
+    return report
 
 
 def minute_stats(database, code, now=None):
