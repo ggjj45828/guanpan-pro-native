@@ -255,8 +255,13 @@ struct UnifiedChartView: View {
                     .accessibilityIdentifier("chart.ma250.insufficient-history")
             }
             if samples.isEmpty {
-                GPStatus(title: dataset == nil ? "暂无可绘制行情" : "该周期暂无历史数据", detail: dataset == nil ? "分时由手机读取，日 K 由 NAS 归档后下载；离线时显示已有缓存。" : "当前数据周期为“\(label(dataset!.interval))”。切换日 K 或分时查看；不会把其他周期的数据冒充为本周期。", symbol: "chart.xyaxis.line")
-                    .frame(height: chartHeight)
+                if let dataset {
+                    GPStatus(title: "该周期暂无历史数据", detail: "当前数据周期为“\(label(dataset.interval))”。切换日 K 或分时查看；不会把其他周期的数据冒充为本周期。", symbol: "chart.xyaxis.line")
+                        .frame(height: chartHeight)
+                } else {
+                    GPStatus(title: "暂无可绘制行情", detail: "分时由手机读取，日 K 由 NAS 归档后下载；离线时显示已有缓存。", symbol: "chart.xyaxis.line")
+                        .frame(height: chartHeight)
+                }
             } else {
                 GeometryReader { geometry in
                     Canvas { context, size in draw(context: &context, size: size) }

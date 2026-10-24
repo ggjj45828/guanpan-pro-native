@@ -1,8 +1,8 @@
 """Read-only bridge from the existing NAS archive to phone-side research.
 
 This never reads or writes virtual accounts and never computes an order price.
-The Tencent minute cumulative-volume unit has not been verified, so volume and
-VWAP are intentionally absent from the mobile evidence.
+Minute-volume evidence is admitted only after per-session comparison with the
+independent daily-volume archive; unverified/incomplete sessions are excluded.
 """
 from __future__ import annotations
 
@@ -12,8 +12,133 @@ from collections import defaultdict
 from datetime import datetime, time, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+from statistics import median, pstdev
 
 CN = ZoneInfo("Asia/Shanghai")
+
+
+def minute_stats(database, code, now=None):
+    """Build the exact research wire shape consumed by the iOS advisor.
+
+    Tencent reports cumulative minute volume. We difference it in the archive
+    worker, then validate each session sum against daily archive volume before
+    using those rows for VWAP or volatility statistics.
+    """
+    now = now or datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    daily = database.get_daily(code) or {}
+    daily_by_day = {row.get("date"): row for row in daily.get("bars", [])
+                    if isinstance(row, dict) and isinstance(row.get("date"), str)}
+    with database.connect() as db:
+        lower_bound = (now.astimezone(CN).date() - timedelta(days=240)).isoformat()
+        raw_rows = db.execute("SELECT stamp, body, fetched_at FROM minute_archive WHERE code=? AND stamp>=? ORDER BY stamp",
+                              (code, lower_bound)).fetchall()
+    grouped = defaultdict(list)
+    fetched = {}
+    for stamp_text, body, fetched_at in raw_rows:
+        try:
+            row = json.loads(body)
+            stamp = datetime.fromisoformat(row["timestamp"])
+            if stamp.tzinfo is None or int(stamp.timestamp() * 1000) > now_ms:
+                continue
+            local = stamp.astimezone(CN)
+            clock = local.time()
+            if local.weekday() >= 5 or not (time(9, 30) <= clock < time(11, 30) or time(13) <= clock < time(15)):
+                continue
+            price = Decimal(str(row["price"]))
+            volume = Decimal(str(row["volume"])) if row.get("volume") is not None else None
+            if not price.is_finite() or price <= 0 or (volume is not None and (not volume.is_finite() or volume < 0)):
+                continue
+            key = local.date().isoformat()
+            grouped[key].append((stamp, price, volume))
+            fetched[key] = max(fetched.get(key, 0), milliseconds(fetched_at) or 0)
+        except (KeyError, TypeError, ValueError, InvalidOperation, OverflowError):
+            continue
+
+    sessions = []
+    for day in sorted(grouped)[-120:]:
+        points = sorted(grouped[day], key=lambda item: item[0])
+        bar = daily_by_day.get(day)
+        try:
+            daily_volume = Decimal(str(bar["volume"])) if bar else None
+            prices = [p for _, p, _ in points]
+            valid_volumes = [v for _, _, v in points if v is not None]
+            observed_volume = sum(valid_volumes, Decimal(0))
+            coverage = len(valid_volumes) / max(1, len(points))
+            mismatch = (abs(observed_volume - daily_volume) / daily_volume
+                        if daily_volume and daily_volume > 0 else None)
+            # 1% tolerance accounts for first-minute delta and provider refresh
+            # timing. Outside it, the day cannot support VWAP calculations.
+            verified = len(points) >= 200 and coverage >= 0.98 and mismatch is not None and mismatch <= Decimal("0.01")
+            vwap = (sum((p * v for _, p, v in points if v is not None), Decimal(0)) / observed_volume
+                    if verified and observed_volume > 0 else None)
+            crossings = 0
+            if vwap is not None:
+                sides = [1 if price > vwap else -1 if price < vwap else 0 for price in prices]
+                sides = [side for side in sides if side]
+                crossings = sum(1 for left, right in zip(sides, sides[1:]) if left != right)
+            low = Decimal(str(bar["low"])) if bar else min(prices)
+            high = Decimal(str(bar["high"])) if bar else max(prices)
+            sessions.append({"day": day, "points": points, "prices": prices, "vwap": vwap,
+                             "low": low, "high": high, "volumeCoverage": coverage,
+                             "roundTrips": crossings // 2, "verified": verified,
+                             "fetchedAt": fetched.get(day, 0)})
+        except (KeyError, TypeError, ValueError, InvalidOperation, ZeroDivisionError):
+            continue
+
+    sessions = sessions[-120:]
+    verified_sessions = [row for row in sessions if row["verified"]]
+    last_day = sessions[-1]["day"] if sessions else None
+    last_stamp = max((int(row["points"][-1][0].timestamp() * 1000) for row in sessions if row["points"]), default=None)
+    age_minutes = max(0.0, (now_ms - last_stamp) / 60000) if last_stamp else None
+    stale = age_minutes is None or age_minutes > 36 * 60
+    freshness = {"lastDay": last_day, "ageMinutes": age_minutes,
+                 "isToday": last_day == now.astimezone(CN).date().isoformat() if last_day else False,
+                 "stale": stale, "reason": "分钟归档超过36小时或尚无样本" if stale else None}
+    n = len(sessions)
+    volume_coverage = len(verified_sessions) / max(1, n)
+    minute_coverage = min(1.0, sum(min(len(row["points"]) / 240, 1.0) for row in sessions) / max(1, n))
+
+    windows = {}
+    for count in (5, 20, 60, 120):
+        chosen = sessions[-count:]
+        good = [row for row in chosen if row["verified"]]
+        if not good:
+            continue
+        aggregate_volume = sum((sum((v for _, _, v in row["points"] if v is not None), Decimal(0)) for row in good), Decimal(0))
+        aggregate_value = sum((sum((p * v for _, p, v in row["points"] if v is not None), Decimal(0)) for row in good), Decimal(0))
+        if aggregate_volume <= 0:
+            continue
+        daily_vwaps = [float(row["vwap"]) for row in good]
+        amplitudes = [(float(row["high"] - row["low"]) / float(row["low"]) * 100) for row in good if row["low"] > 0]
+        close = Decimal(str(daily_by_day.get(good[-1]["day"], {}).get("close", good[-1]["prices"][-1])))
+        close_vs_vwap = (float((close / (aggregate_value / aggregate_volume) - 1) * 100))
+        lows = sorted(float(row["low"]) for row in good)
+        highs = sorted(float(row["high"]) for row in good)
+        returns = [float(Decimal(str(daily_by_day[day]["close"])) / Decimal(str(daily_by_day[prior]["close"])) - 1)
+                   for prior, day in zip([r["day"] for r in good], [r["day"] for r in good][1:])
+                   if day in daily_by_day and prior in daily_by_day and Decimal(str(daily_by_day[prior]["close"])) > 0]
+        price = lambda value: format(Decimal(str(value)).quantize(Decimal("0.0001")), "f")
+        windows[str(count)] = {
+            "window": count, "daysUsed": len(good), "dayCoverage": len(good) / max(1, len(chosen)),
+            "minuteCoverage": min(1.0, sum(min(len(row["points"]) / 240, 1.0) for row in good) / max(1, len(good))),
+            "vwap": price(aggregate_value / aggregate_volume), "closeVsVwapPercent": close_vs_vwap,
+            "amplitudeMedianPercent": median(amplitudes) if amplitudes else None,
+            "roundTripsMedian": median([row["roundTrips"] for row in good]),
+            "support": price(lows[0]), "resistance": price(highs[-1]),
+            "supportP10": price(lows[max(0, int((len(lows) - 1) * .10))]),
+            "resistanceP90": price(highs[min(len(highs) - 1, int((len(highs) - 1) * .90))]),
+            "volatilityPercent": pstdev(returns) * 100 if len(returns) > 1 else None,
+            "vwapHighDeviationMedian": median([max((float(p / row["vwap"] - 1) for p in row["prices"]), default=0) for row in good]),
+            "vwapLowDeviationMedian": median([min((float(p / row["vwap"] - 1) for p in row["prices"]), default=0) for row in good]),
+            "volumeCoverage": sum(row["volumeCoverage"] for row in good) / len(good)}
+
+    enough = len(sessions) >= 60 and volume_coverage >= 0.8 and minute_coverage >= 0.8
+    return {"days": n, "minutes": sum(len(row["points"]) for row in sessions), "lastDay": last_day,
+            "quality": {"days": len(verified_sessions), "minuteCoverage": minute_coverage,
+                        "hasVolume": bool(verified_sessions), "enoughForLongTerm": enough,
+                        "volumeCoverage": volume_coverage}, "freshness": freshness,
+            "windows": windows, "roundTripEvidence": None}
 
 
 def milliseconds(stamp):
@@ -38,6 +163,7 @@ def price_units(value):
 
 
 def minute_summary(rows, now_ms):
+    """Raw timestamp/point completeness only; validated volume is in minute_stats."""
     by_day = defaultdict(set)
     for raw in rows:
         try:
@@ -58,11 +184,11 @@ def minute_summary(rows, now_ms):
             "firstDay": sessions[0] if sessions else None,
             "lastDay": sessions[-1] if sessions else None,
             "completeMinuteDays": complete,
-            "volumeCoverage": 0, "minuteEvidence": [],
+            "volumeCoverage": None, "minuteEvidence": [],
             "windows": {str(n): {"available": len(sessions) >= n,
                                    "sessions": min(n, len(sessions))} for n in (5, 20, 60, 120)},
-            "status": "insufficient-history-or-coverage", "pricePlansAllowed": False,
-            "limitations": ["分钟成交量单位未经供应商核验，不能计算可靠 VWAP 或具体挂单价"]}
+            "status": "raw-archive-only", "pricePlansAllowed": False,
+            "limitations": ["本字段只描述分钟时间点覆盖；分钟量校验及VWAP见同响应 minuteStats"]}
 
 
 def snapshot(database, market_fetcher, now=None):
@@ -98,7 +224,8 @@ def snapshot(database, market_fetcher, now=None):
         asset = "etf" if code.startswith(("15", "16", "50", "51", "52", "56", "58", "59")) and not code.startswith("508") else "stock"
         row = {"symbol": code, "asset": asset, "source": "guanpan2 NAS archive",
                "evidenceIDs": ["guanpan2:" + code], "bars": bars,
-               "intradayResearch": minute_summary(minutes, now_ms)}
+               "intradayResearch": minute_summary(minutes, now_ms),
+               "minuteStats": minute_stats(database, code, now)}
         # Eastmoney fallback currently stamps reception time, not the exchange
         # event time.  It must not become apparently fresh trading evidence.
         if (quote_at is not None and 0 < quote_at <= now_ms and quote_price is not None
@@ -107,6 +234,6 @@ def snapshot(database, market_fetcher, now=None):
         instruments.append(row)
     research = {"asOf": now_ms, "scope": "NAS archived tracked symbols; phone filters to real holdings",
                 "universeComplete": False, "instruments": instruments, "books": [],
-                "news": [], "availabilityNote": "只读历史证据；成交量单位未核验，不提供 VWAP 或限价"}
+                "news": [], "availabilityNote": "只读历史证据；VWAP仅在分钟量与日K成交量交叉校验通过后计算，未达到60个有效交易日不支持具体计划"}
     return {"ok": True, "source": "guanpan2-read-only-adapter", "generatedAt": now.isoformat(),
             "revision": 0, "data": {"quality": {"researchSnapshot": research}}}

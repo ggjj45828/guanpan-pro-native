@@ -13,16 +13,16 @@
 
 ## 与当前手机 App 连接
 
-App 的“数据与同步”中，**真实账本同步地址**继续使用原来能提供 `/api/native/data` 的服务。新增“只读研究 NAS 地址”填 `http://NAS地址:8789`。手机从 guanpan2 只读历史研究；真实持仓仍以手机账本为准。若没有原生同步服务，可暂时只在手机保存真实账本，不能把 guanpan2 的旧账本当作已自动同步到手机。
+手机 App 的“我的 → NAS连接”只配置一个 NAS 地址。填 `http://NAS地址:8789`，同一服务负责健康检查、真实账本同步、NAS行情、长期研究、新闻和分红历史；NAS 本地真实账本只作为同步副本，App 的真实持仓仍由手机账本参与统一决策。连接测试会先读 `/health`，再读真实账本状态。
 
-`/v1/mobile/research` 是只读过渡接口，并不声称旧 guanpan2 已实现当前 App 的 `/api/native/data`、`/api/v2/channels/assets`、`/api/v2/channels/quant` 协议。旧 NAS 研究结果也不含已核验的逐分钟成交量/盘口，不会单独产生做 T 或网格价格。
+手机逐只读取 `/v1/research/{code}`，其中 `minuteStats` 是长期研究字段；`/v1/mobile/research` 是可浏览的只读总览接口。分钟量未通过日K交叉校验时统计窗口为空，分钟历史不足60个有效交易日时手机不生成具体做T或网格挂单价。新闻、行情以及真实账本同步均在同一 NAS 地址下，不需要配置第二个“研究 NAS”。
 
 ## 更新前后
 
 1. 备份 NAS 上的 `guanpan_advisor_data` 卷及当前 `.env`。不要将备份或密钥放入本包。此包复用原项目、端口和卷，不要与原容器同时启动。
 2. 将本包完整解压到新目录；将自己现有的 `.env` 安全地复制到新目录，核对变量后运行 `docker compose -p guanpan-advisor up -d --build`。不要把 `.env.example` 当成真实密钥。
 3. 检查 `docker compose -p guanpan-advisor ps` 和 `logs --tail=100`，再打开 `http://NAS地址:8789/health`，确认 `codeVersion` 是 `3.6.0-r14-phone-advisor-research`。
-4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`。空档案、旧行情或缺量时手机应显示数据不足。
+4. 打开 `http://NAS地址:8789/v1/mobile/research`，应返回 `ok:true` 和 `data.quality.researchSnapshot`；在 App 内执行“测试连接”，并检查 `/v1/research/512480` 是否包含 `minuteStats`。空档案、旧行情或缺量时手机应显示数据不足。
 5. 如需回滚，先停止新容器，再以备份的旧代码和原数据卷启动；不要使用 `docker compose down -v`。
 
-当前已完成源码改造、9 项 Python 测试、Compose 配置校验，并从开发环境实测腾讯报价和 640 根日 K 返回。Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。
+当前完成了源码改造、11 项 Python 测试与 Compose 配置校验。NAS 分时统计已接入手机现有的 `/v1/research/{code}` 解码链路：仅使用分钟量覆盖至少 98%、单日不少于 200 个点、并与独立日 K 成交量差异不超过 1% 的交易日计算 VWAP 和分钟路径往返次数。开发环境对四只 ETF 的真实 Tencent 分钟量与日 K 成交量抽样差异均小于 1%；这只是有限样本，不代表 NAS 已积累长期档案。此前从开发环境实测腾讯报价和 640 根日 K 返回。Docker Desktop daemon 未运行，尚未构建容器；你的 NAS 和 iPhone 连接仍待实机验证。服务无应用登录认证，只能在可信局域网/VPN 使用，不要直接暴露公网。

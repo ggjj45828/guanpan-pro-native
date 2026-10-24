@@ -177,7 +177,7 @@ struct NextIncomeEvent: Codable, Identifiable, Equatable {
               grossAmount > 0, !grossAmount.isNaN, tax >= 0, !tax.isNaN, tax <= grossAmount,
               units.map({ $0 > 0 }) ?? true,
               perUnit.map({ $0 > 0 && !$0.isNaN }) ?? true,
-              (code == nil || (code!.count == 6 && code!.allSatisfy(\.isNumber))),
+              code.map({ $0.count == 6 && $0.allSatisfy(\.isNumber) }) ?? true,
               status != .received || receivedAt != nil else {
             throw NextError.invalid("收息记录的金额、税额、证券代码或到账状态无效")
         }

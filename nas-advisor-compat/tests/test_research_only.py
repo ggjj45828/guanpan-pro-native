@@ -16,8 +16,8 @@ from domain import NextDatabase
 
 
 class RetiredRoutesTests(unittest.TestCase):
-    def request(self, path, method):
-        handler = object.__new__(app.make_handler(object()))
+    def request(self, path, method, database=None):
+        handler = object.__new__(app.make_handler(database or object()))
         handler.path = path
         replies = []
         handler.reply = lambda status, body: replies.append((status, body))
@@ -150,12 +150,68 @@ class RetiredRoutesTests(unittest.TestCase):
             self.assertEqual(row["symbol"], "512480")
             self.assertEqual(row["bars"][0]["close"], 8420)
             self.assertEqual(row["quote"]["price"], 8420)
-            self.assertEqual(row["intradayResearch"]["volumeCoverage"], 0)
+            self.assertIsNone(row["intradayResearch"]["volumeCoverage"])
             self.assertFalse(row["intradayResearch"]["pricePlansAllowed"])
-            self.assertEqual(row["intradayResearch"]["status"], "insufficient-history-or-coverage")
+            self.assertEqual(row["intradayResearch"]["status"], "raw-archive-only")
+            self.assertIn("minuteStats", row)
             quote["source"] = "Eastmoney quote"
             fallback = mobile_research.snapshot(database, lambda codes: [quote], now)
             self.assertNotIn("quote", fallback["data"]["quality"]["researchSnapshot"]["instruments"][0])
+            del database
+            gc.collect()
+
+    def test_minute_stats_require_daily_volume_crosscheck_and_match_ios_schema(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as root:
+            database = NextDatabase(Path(root) / "advisor.sqlite3")
+            database.put_daily("512480", [{"date": "2026-10-23", "open": "0.800",
+                "high": "0.850", "low": "0.790", "close": "0.842", "volume": "240"}],
+                "2026-10-23T08:00:00+00:00")
+            rows = []
+            for index in range(240):
+                if index < 120:
+                    hour, minute = 9 + (30 + index) // 60, (30 + index) % 60
+                else:
+                    afternoon = index - 120
+                    hour, minute = 13 + afternoon // 60, afternoon % 60
+                stamp = datetime(2026, 10, 23, hour, minute, tzinfo=mobile_research.CN)
+                rows.append({"timestamp": stamp.isoformat(), "price": "0.841" if index % 2 else "0.839",
+                             "volume": "1", "iopv": None})
+            database.put_minute("512480", rows, "2026-10-23T08:00:00+00:00")
+            stats = mobile_research.minute_stats(database, "512480", datetime(2026, 10, 24, 1, 0, tzinfo=timezone.utc))
+            self.assertEqual(set(stats), {"days", "minutes", "lastDay", "quality", "freshness", "windows", "roundTripEvidence"})
+            self.assertEqual(set(stats["quality"]), {"days", "minuteCoverage", "hasVolume", "enoughForLongTerm", "volumeCoverage"})
+            self.assertEqual(set(stats["freshness"]), {"lastDay", "ageMinutes", "isToday", "stale", "reason"})
+            self.assertEqual(stats["days"], 1)
+            self.assertTrue(stats["quality"]["hasVolume"])
+            self.assertFalse(stats["quality"]["enoughForLongTerm"])
+            self.assertEqual(stats["windows"]["5"]["vwap"], "0.8400")
+            self.assertEqual(set(stats["windows"]["5"]), {
+                "window", "daysUsed", "dayCoverage", "minuteCoverage", "vwap", "closeVsVwapPercent",
+                "amplitudeMedianPercent", "roundTripsMedian", "support", "resistance", "supportP10",
+                "resistanceP90", "volatilityPercent", "vwapHighDeviationMedian", "vwapLowDeviationMedian",
+                "volumeCoverage"})
+            self.assertEqual(stats["windows"]["5"]["daysUsed"], 1)
+            self.assertGreater(stats["windows"]["5"]["roundTripsMedian"], 0)
+            self.assertEqual(stats["roundTripEvidence"], None)
+            # A mismatched daily total invalidates this session instead of
+            # silently converting uncertain provider units into a VWAP.
+            database.put_daily("512480", [{"date": "2026-10-23", "open": "0.800",
+                "high": "0.850", "low": "0.790", "close": "0.842", "volume": "500"}],
+                "2026-10-23T08:00:00+00:00")
+            rejected = mobile_research.minute_stats(database, "512480", datetime(2026, 10, 24, 1, 0, tzinfo=timezone.utc))
+            self.assertFalse(rejected["quality"]["hasVolume"])
+            self.assertEqual(rejected["windows"], {})
+            del database
+            gc.collect()
+
+    def test_phone_research_endpoint_includes_optional_long_term_stats(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as root:
+            database = NextDatabase(Path(root) / "advisor.sqlite3")
+            response = self.request("/v1/research/512480", "do_GET", database)
+            self.assertEqual(response[0][0], 200)
+            self.assertIn("minuteStats", response[0][1])
+            self.assertEqual(response[0][1]["minuteStats"]["days"], 0)
+            self.assertFalse(response[0][1]["minuteStats"]["quality"]["enoughForLongTerm"])
             del database
             gc.collect()
 

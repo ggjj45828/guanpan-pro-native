@@ -431,6 +431,9 @@ struct NextPlanCaps: Equatable {
     var nasVolumeCoverage60: Double? = nil
     var nasVwapHighDeviation60: Double? = nil
     var nasVwapLowDeviation60: Double? = nil
+    /// Long-term sample quality and freshness are hard gates for concrete prices.
+    var nasLongTermQuality = false
+    var nasFreshnessValid = false
 
     static let none = NextPlanCaps()
 
@@ -449,13 +452,17 @@ struct NextPlanCaps: Equatable {
             }
             caps.maxGridTiers = max(2, profile.thresholds.gridMaxTiers)
             let ratio = max(0.05, min(1.0, profile.thresholds.gridMaxCashRatio))
-            caps.maxGridCash = book.cash * Decimal(string: "\(ratio)")!
+            caps.maxGridCash = book.cash * Decimal(ratio)
             if ratio < 1 {
                 caps.gridNotes.append("网格资金占用按你的画像上限封顶在可用现金的 \(Int((ratio * 100).rounded()))%（¥\(NextMoney.text(caps.maxGridCash ?? 0))）")
             }
         }
         if let stats = nasStats {
             caps.nasDays = stats.days
+            caps.nasLongTermQuality = stats.quality.enoughForLongTerm
+                && stats.quality.minuteCoverage >= 0.8
+                && (stats.quality.volumeCoverage ?? 0) >= 0.8
+            caps.nasFreshnessValid = !stats.freshness.stale
             if let w60 = stats.window(60) {
                 caps.nasAmplitude60 = w60.amplitudeMedianPercent
                 caps.nasRoundTrips60 = w60.roundTripsMedian
@@ -545,7 +552,8 @@ enum NextTradeTPlanner {
               let feePerTrade = rules.feePerTrade, feePerTrade >= 0 else {
             return .insufficientData(confidence, ["该证券的交易规则未核实（份额单位/手续费），为避免错误委托拒绝生成价格"])
         }
-        guard let caps, (caps.nasDays ?? 0) >= 60,
+        guard let caps, caps.nasLongTermQuality, caps.nasFreshnessValid,
+              (caps.nasDays ?? 0) >= 60,
               (caps.nasVolumeCoverage60 ?? 0) >= 0.8,
               let historicalHighDeviation = caps.nasVwapHighDeviation60, historicalHighDeviation > 0,
               let historicalLowDeviation = caps.nasVwapLowDeviation60, historicalLowDeviation < 0,
@@ -608,16 +616,16 @@ enum NextTradeTPlanner {
         let buyPrice: Decimal
         switch kind {
         case .reverse:
-            let ceiling = vwap * Decimal(string: "\(1 + upDeviation)")!
+            let ceiling = vwap * Decimal(1 + upDeviation)
             let anchored = min(dayHigh, ceiling)
             // 现价已达偏离上限时按现价挂，否则挂锚定价与日内高点的较低者。
             sellPrice = quote.price >= ceiling ? quote.price : NextPriceRounding.tick(anchored)
-            buyPrice = NextPriceRounding.tick(max(dayLow, vwap * Decimal(string: "\(1 - downDeviation)")!))
+            buyPrice = NextPriceRounding.tick(max(dayLow, vwap * Decimal(1 - downDeviation)))
         case .forward:
-            let floorPrice = vwap * Decimal(string: "\(1 - downDeviation)")!
+            let floorPrice = vwap * Decimal(1 - downDeviation)
             let anchored = max(dayLow, floorPrice)
             buyPrice = quote.price <= floorPrice ? quote.price : NextPriceRounding.tick(anchored)
-            sellPrice = NextPriceRounding.tick(min(dayHigh, vwap * Decimal(string: "\(1 + upDeviation)")!))
+            sellPrice = NextPriceRounding.tick(min(dayHigh, vwap * Decimal(1 + upDeviation)))
         }
         guard buyPrice < sellPrice else {
             return .notWorthwhile(["当前 VWAP 偏离与日内高低点算不出正价差：卖出 ¥\(NextMoney.text(sellPrice, digits: 3)) / 买回 ¥\(NextMoney.text(buyPrice, digits: 3))，今天不做这笔 T"])
@@ -631,7 +639,7 @@ enum NextTradeTPlanner {
         let costReduction = netGain / Decimal(position.units)
 
         // 踏空风险：以 1× 今日振幅的继续上涨为参考，量化「卖飞」的代价。
-        let referenceRise = sellPrice * Decimal(string: "\(amplitude / 100)")!
+        let referenceRise = sellPrice * Decimal(amplitude / 100)
         let missCost = (sellPrice + referenceRise - buyPrice) * Decimal(units) - feeTotal
         var trample = "若卖出后价格继续上涨超过 \(String(format: "%.2f", amplitude))%（约 ¥\(NextMoney.text(sellPrice + referenceRise, digits: 3))）且当日不回落至买回价，本次做T踏空，约少赚 ¥\(NextMoney.text(max(0, missCost)))"
         if let historyMissRate {
@@ -815,7 +823,7 @@ enum NextGridPlanner {
         // 买入档：现价下方，间距按波动率递增。
         for index in 1...buyTiers {
             let offset = spacingPercent / 100 * Double(index)
-            let candidate = current * Decimal(string: "\(1 - offset)")!
+            let candidate = current * Decimal(1 - offset)
             if candidate >= lower, buyUnitsPerTier >= lotSize {
                 let price = NextPriceRounding.tick(candidate)
                 tiers.append(NextGridTier(side: "buy", price: price, units: buyUnitsPerTier,
@@ -826,7 +834,7 @@ enum NextGridPlanner {
         if sellUnitsPerTier >= lotSize {
             for index in 1...max(1, tierCount / 2) {
                 let offset = spacingPercent / 100 * Double(index)
-                let candidate = current * Decimal(string: "\(1 + offset)")!
+                let candidate = current * Decimal(1 + offset)
                 if candidate <= upper {
                     let price = NextPriceRounding.tick(candidate)
                     tiers.append(NextGridTier(side: "sell", price: price, units: sellUnitsPerTier, cashRequired: 0))

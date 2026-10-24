@@ -14,11 +14,16 @@
 
 ## 当前目录和Git
 - 仓库：`C:\Users\Administrator\.codex\.chatgpt-projects\g-p-6ac90ddb9a888191a751dc24eb6a329d\work\github-upload`
-- 当前分支：`upgrade/v2.13.55-r2`，比 origin/main 领先40个提交，存在本轮未提交变更。
+- 当前验证分支：`validation/acceptance-20261024`，本地 HEAD 应检查后续提交；本轮提交在本地，GitHub 推送因 github.com:443 网络连接重置/超时失败，尚未触发 Actions。
+- 同名旧验证分支远端已比本地分叉；为避免强推覆盖，已撤销合并并创建独立验证分支。workflow 已接受 `validation/**`。
 - 用户之前已明确授权把本轮 iOS 修改推送到验证分支并运行 Actions 编译。
 - 默认仓库 compose 已改为从 `nas-advisor-compat/server` 构建，NAS compat compose 同步加入容器端口变量。
 
 ## 本轮已做
+- 补上原先未接通的 NAS 分时研究链路：`/v1/research/{code}` 现在带 `minuteStats`，手机端的 `NextNASResearch.minuteStats` 会实际解码到；计算按最近240个日历日限量读取，按5/20/60/120个交易日窗口统计。
+- 分时成交量须通过日K成交量独立交叉校验（分钟覆盖≥98%、每天≥200点、分时量与日K量相差≤1%）后，才进入VWAP及日内VWAP往返次数统计；不足60个有效交易日或长期质量不足时，手机已有的T计划硬门槛拒绝提供具体价格，网格也要求有效NAS区间。
+- 数据质量/新鲜度按现有 iOS `NextNASMinuteStats` schema 输出，包括有效日数、分时覆盖、量覆盖、长期可用性、最后日期、样本年龄与过期原因。没有有效量价证据时返回空窗口，不会用简单均价填VWAP。
+- 开发环境对4只ETF逐分钟成交量合计与日K成交量做过抽样比对，偏差约 -0.63%、+0.21%、-0.06%、-0.32%；这只是2026-10-23单日有限样本，不能证明长期源质量。
 - NAS旧网页、模拟账户、网格推进/回测服务模块及网页文件已从 compat 包删除；旧路径明确返回410；新根路径只提示 NAS 研究与同步角色。workers 只启研究采集。
 - 修正 compat Dockerfile 对已删除 web 目录的 COPY；start.sh 不再将旧 web 放回运行容器。
 - 修正默认顶层 compose 误构建旧 `server/`；将默认构建切换到 r29 兼容研究服务。
@@ -26,21 +31,26 @@
 - NAS日K归档超过30分钟会尝试更新，数据源失败时保留旧归档并标记 staleArchive；无缓存且上游不可用返回503。NAS研究移动桥按真实采集时间设置 availableAt，避免伪装新鲜。
 - 统一 SwiftUI colorScheme：五个主题不再受系统深色模式造成局部跳色，仪表盘全局深色；我的页改为短 hub，设置、画像、成交历史走二级入口。持仓页移除了旧的圆环/粗略市场温度重复卡片；“市场温度”原本把指数平均涨跌映射成温度且会给出“低价分批”等误导口径，已从持仓首页移除。
 - 设置页标题明确为设置；UI测试随我的页入口更新。
+- 持仓详情盘口渲染移除对 `orderBooks[code]!` 的强制解包，状态变化时安全处理快照缺失。
 - NAS service minute/daily timestamps不再用当前接收时间填充；应用安全目录缺失时停止真实账本写入，避免临时目录伪持久化。
-- 新增NAS测试：来源时间戳、全部源失败、陈旧日K缓存回退；NAS测试当前9项通过。
+- 做T策略新增 NAS 研究质量和新鲜度硬门槛：分时档案过期或长期样本覆盖不足时，不能绕过规则生成具体价格；新增 Swift 回归测试，必须等 macOS Actions 实际运行。
+- 崩溃风险审计替换图表空状态 `dataset!`、NAS URLComponents 强制解包、可空收息证券代码 `code!` 以及策略动态数值字符串强制解包；剩余来源级强制解包主要是编译期常量/固定时区，仍需通过 iOS 构建确认。
+- App只有一个NAS地址，同时用于真实账本同步、行情、研究、新闻和分红接口；修正旧 README 对“单独研究NAS地址”的错误说明。
+- 新增NAS测试：来源时间戳、全部源失败、陈旧日K缓存回退、分钟量交叉校验、VWAP/往返统计和手机研究接口解码形状；NAS测试当前11项通过。
 - 真实行情只读请求在网络授权测试中成功：Tencent返回 512480 行情，时间 2026-10-23 16:14:55 +08:00；日K返回640根。**这是开发环境上游连通测试，不等于用户NAS或iPhone联调通过。**
-- 矩阵更新了3、6、7、8、60、74行。其他行仍要逐模块继续审计，不能据此宣布满足。
+- 矩阵更新了3、5–10、15–16、60、74行。其他行仍要逐模块继续审计，不能据此宣布满足。
 
 ## 已验证
-- `python -m unittest discover -s nas-advisor-compat/tests -v`：9/9通过。
+- `python -m unittest discover -s nas-advisor-compat/tests -v`：11/11通过。
 - 顶层 `docker compose config -q`：通过。
 - `git diff --check`：通过（Git输出仅换行格式提示）。
 - 真实Tencent行情/日K只读请求成功。
 - Docker镜像没有构建：本机 Docker Desktop daemon 未运行（无法连接 npipe `dockerDesktopLinuxEngine`）。
 - 本机无 Swift/Xcode/xcodegen；iOS编译、模拟器运行、真实截图仍必须通过 macOS Actions 验证。
+- 独立验证分支的 push 尝试三次失败（远端旧同名分支先行更新导致拒绝；独立分支在 HTTP/2 与 HTTP/1.1 下均连接 github.com 失败）。不要强推旧分支；网络恢复后重试推送 `validation/acceptance-20261024`。
 
 ## 下一步顺序
-1. 先复核现有修改和矩阵，确认Swift语法/导航、测试更新；用Bundled Python重新跑NAS测试和 Compose 配置。
+1. 先复核现有修改和矩阵，确认Swift schema 解码与导航、测试更新；用Bundled Python重新跑NAS测试和 Compose 配置。
 2. 检查 NAS 接口与 iOS 的 /health、quotes、daily、minute、research、news路径/字段完全一致；核对日K陈旧标记在手机端实际可见。
 3. 检查指数卡尺寸、主题背景、Settings Form/Sheets/Alerts、卡片 NavigationLink 闪退与底栏路由。全部主题必须一个配色系统内，截图未知就标记未验证。
 4. 继续按115项检查真实持仓、市场状态、做T/网格报价门槛、手续费0.10元每笔、成交反馈、AI记忆、动态画像、新闻映射与市场休市；发现未连通则修代码和测试。
@@ -54,7 +64,7 @@
 - `guanpan-pro-native/Sources/GuanpanAdvisorApp.swift`：底栏、短Hub、主题统一、设置入口、持仓页。
 - `guanpan-pro-native/Sources/NASService.swift` 与 `NextAppModelState.swift`：手机NAS/行情链路。
 - `nas-advisor-compat/server/{app.py,market.py,mobile_research.py,domain.py,workers.py,Dockerfile,start.sh}`：NAS研究、行情、采集和部署。
-- `nas-advisor-compat/tests/test_research_only.py`：当前9项NAS测试。
+- `nas-advisor-compat/tests/test_research_only.py`：当前11项NAS测试。
 - `.github/workflows/{validate-ios.yml,build-ios.yml}`：iOS模拟器验证与IPA构建。
 
 用户最新指示：主题必须全页一致，全面排查闪退与多余入口，NAS连接和 NAS Market 行情必须能取数；严格按115项验收，不要拖沓。

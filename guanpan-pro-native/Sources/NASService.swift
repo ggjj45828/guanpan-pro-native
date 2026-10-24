@@ -190,9 +190,12 @@ enum NextNASService {
 
     /// 只保留最近 `keep` 个版本，返回被删掉的个数。
     static func pruneBookHistory(keep: Int, baseURL: String, session: URLSession = .shared) async throws -> Int {
-        var components = URLComponents(url: try endpoint(baseURL).appendingPathComponent("history"), resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: try endpoint(baseURL).appendingPathComponent("history"), resolvingAgainstBaseURL: false) else {
+            throw NextError.invalid("NAS 历史地址无效")
+        }
         components.queryItems = [URLQueryItem(name: "keep", value: String(keep))]
-        var request = URLRequest(url: components.url!, timeoutInterval: 15); request.httpMethod = "DELETE"
+        guard let url = components.url else { throw NextError.invalid("NAS 历史地址无法生成") }
+        var request = URLRequest(url: url, timeoutInterval: 15); request.httpMethod = "DELETE"
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw NextError.invalid("清理失败（\((response as? HTTPURLResponse).map { String($0.statusCode) } ?? "无响应")）")
@@ -205,9 +208,12 @@ enum NextNASService {
         guard code.count == 6, code.allSatisfy(\.isNumber) else { throw NextError.invalid("证券代码无效") }
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        var parts = URLComponents(url: try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("market").appendingPathComponent("minute").appendingPathComponent(code), resolvingAgainstBaseURL: false)!
+        guard var parts = URLComponents(url: try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("market").appendingPathComponent("minute").appendingPathComponent(code), resolvingAgainstBaseURL: false) else {
+            throw NextError.invalid("NAS 分时地址无效")
+        }
         parts.queryItems = [URLQueryItem(name: "day", value: formatter.string(from: day))]
-        let (data, response) = try await session.data(for: URLRequest(url: parts.url!, timeoutInterval: 12))
+        guard let url = parts.url else { throw NextError.invalid("NAS 分时地址无法生成") }
+        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 12))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw NextError.invalid("NAS 分时档案读取失败") }
         let payload = try JSONDecoder().decode(MinuteWire.self, from: data)
         guard payload.code == code, !payload.rows.isEmpty else { throw NextError.invalid("该日期还没有 NAS 分时档案") }
@@ -322,9 +328,12 @@ enum NextNASService {
     private struct DailyRow: Decodable { let date: String; let open: String; let high: String; let low: String; let close: String; let volume: String }
 
     static func fetchQuotes(codes: [String], baseURL: String, session: URLSession = .shared) async throws -> [NextQuote] {
-        var components = URLComponents(url: try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("market").appendingPathComponent("quotes"), resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: try validateURL(baseURL).appendingPathComponent("v1").appendingPathComponent("market").appendingPathComponent("quotes"), resolvingAgainstBaseURL: false) else {
+            throw NextError.invalid("NAS 行情地址无效")
+        }
         components.queryItems = [URLQueryItem(name: "codes", value: codes.joined(separator: ","))]
-        let (data, response) = try await session.data(for: URLRequest(url: components.url!, timeoutInterval: 10))
+        guard let url = components.url else { throw NextError.invalid("NAS 行情地址无法生成") }
+        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 10))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw NextError.invalid("NAS 行情读取失败；尝试直连行情源或使用本机缓存") }
         let payload = try JSONDecoder().decode(QuoteResponse.self, from: data)
         let values = try payload.quotes.map { try $0.quote() }

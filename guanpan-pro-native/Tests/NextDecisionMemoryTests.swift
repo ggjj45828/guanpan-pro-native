@@ -207,7 +207,9 @@ final class NextDecisionMemoryTests: XCTestCase {
                                                                nasRoundTrips60: 3, nasDays: 60,
                                                                nasVolumeCoverage60: 0.95,
                                                                nasVwapHighDeviation60: 0.008,
-                                                               nasVwapLowDeviation60: -0.008),
+                                                               nasVwapLowDeviation60: -0.008,
+                                                               nasLongTermQuality: true,
+                                                               nasFreshnessValid: true),
                                             now: now)
         guard case let .ready(plan) = result else {
             return XCTFail("反T 应能出价：\(result)")
@@ -215,6 +217,27 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertEqual(plan.units, 2000, "份额必须被画像上限压住，而不是只在界面上提示")
         XCTAssertTrue(plan.evidence.contains { $0.contains("测试上限") })
         XCTAssertTrue(plan.evidence.contains { $0.contains("压到 2000 份") })
+    }
+
+    func testTPlannerRejectsStaleOrLowQualityNASStats() {
+        let book = NextBook(cash: 50_000, positions: [
+            NextPosition(code: "159941", name: "纳指ETF", units: 10_000, bookCost: Decimal(string: "13800")!)
+        ])
+        let quote = NextQuote(code: "159941", name: "纳指ETF", price: Decimal(string: "1.400")!,
+                              previousClose: Decimal(string: "1.396")!, time: now, source: "test")
+        let result = NextTradeTPlanner.plan(kind: .reverse, book: book, quote: quote, daily: dailyBars(),
+                                            intraday: oscillatingMinutes(), rules: rules(), orderBook: orderBook(),
+                                            caps: NextPlanCaps(nasRoundTrips60: 3, nasDays: 120,
+                                                               nasVolumeCoverage60: 1,
+                                                               nasVwapHighDeviation60: 0.008,
+                                                               nasVwapLowDeviation60: -0.008,
+                                                               nasLongTermQuality: true,
+                                                               nasFreshnessValid: false),
+                                            now: now)
+        guard case let .insufficientData(_, reasons) = result else {
+            return XCTFail("过期NAS统计不得生成做T价格：\(result)")
+        }
+        XCTAssertTrue(reasons.contains { $0.contains("NAS 60 日") })
     }
 
     func testGridPlannerHonoursTierAndCashCaps() {

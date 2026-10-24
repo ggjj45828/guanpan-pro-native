@@ -108,7 +108,8 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(200, {"factors": database.get_research("factors-" + code),
                                             "ai": database.get_research("deepseek-" + code),
                                             "providerConfigured": provider_status()["configured"],
-                                            "providerStatus": provider_status()})
+                                            "providerStatus": provider_status(),
+                                            "minuteStats": mobile_research.minute_stats(database, code)})
                 except (InvalidData, ValueError) as error: return self.reply(400, {"error": str(error)})
             if path == "/v1/market/indices":
                 try: return self.reply(200, {"indices": fetch_indices()})
