@@ -99,6 +99,16 @@ def make_handler(database, market_fetcher=fetch_quotes, daily_fetcher=fetch_dail
                     return self.reply(400, {"error": str(error)})
                 except Exception:
                     return self.reply(503, {"error": "历史跨市场档案暂不可用；没有生成预测结论"})
+            if path == "/v1/research/cross-market/runs":
+                try:
+                    limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+                    rows = database.list_research("cross_market_point_in_time_replay", limit)
+                    return self.reply(200, {"runs": [{"replayId": row["id"],
+                        "generatedAt": row["record"].get("generatedAt"),
+                        "inputFingerprint": row["record"].get("inputFingerprint"),
+                        "summary": row["record"].get("report", {})} for row in rows]})
+                except (InvalidData, ValueError) as error:
+                    return self.reply(400, {"error": str(error)})
             if path.startswith("/v1/research/cross-market/runs/"):
                 run_id = path.rsplit("/", 1)[-1]
                 try:

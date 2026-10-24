@@ -186,6 +186,7 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(responses[0][0], 200)
         self.assertEqual(responses[0][1]["evidenceState"], "insufficient_real_archive")
         self.assertIsNone(responses[0][1]["confirmationRate"])
+        self.assertEqual(database.list_research("cross_market_point_in_time_replay"), [])
 
     def test_replay_api_persists_exact_research_evidence_without_touching_real_book(self):
         import shutil
@@ -215,6 +216,7 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(record["kind"], "cross_market_point_in_time_replay")
         self.assertEqual(record["snapshotEncoding"], "gzip+base64")
         self.assertNotIn("evidenceSessions", record)
+        self.assertEqual(len(summary["reportFingerprint"]), 64)
         self.assertEqual(database.get_real("main"), book_before)
 
         handler.path = "/v1/research/cross-market/runs/" + summary["replayId"]
@@ -226,6 +228,26 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["leader"]["source"], "verified fixture")
         self.assertEqual(evidence["leader"]["fetchedAtRange"]["last"], fetched)
         self.assertEqual(evidence["asset"]["rows"][0]["price"], "1")
+
+        handler.path = "/v1/research/cross-market/runs?limit=20"
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["runs"][0]["replayId"], summary["replayId"])
+        self.assertNotIn("evidenceSessions", responses[0][1]["runs"][0]["summary"])
+        handler.path = "/v1/research/cross-market/runs?limit=101"
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 400)
+
+        altered_report = json.loads(json.dumps(record))
+        altered_report["report"]["state"] = "forged"
+        database.put_research(summary["replayId"], altered_report)
+        handler.path = "/v1/research/cross-market/runs/" + summary["replayId"]
+        responses.clear()
+        handler.do_GET()
+        self.assertEqual(responses[0][0], 400)
+        self.assertIn("report fingerprint", responses[0][1]["error"])
 
         encoded = record["evidenceSnapshot"]
         record["evidenceSnapshot"] = ("B" if encoded[0] == "A" else "A") + encoded[1:]

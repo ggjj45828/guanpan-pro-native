@@ -739,6 +739,21 @@ class NextDatabase:
             row = db.execute("SELECT body FROM research_runs WHERE id=?", (run_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def list_research(self, kind, limit=20):
+        if not isinstance(kind, str) or not kind or type(limit) is not int or not 1 <= limit <= 100:
+            raise InvalidData("invalid research list query")
+        with self.connect() as db:
+            rows = db.execute("SELECT id, body FROM research_runs WHERE body LIKE ? ORDER BY rowid DESC LIMIT ?",
+                              ("%" + kind + "%", limit * 4)).fetchall()
+        results = []
+        for run_id, body in rows:
+            try: value = json.loads(body)
+            except (ValueError, TypeError): continue
+            if isinstance(value, dict) and value.get("kind") == kind:
+                results.append({"id": run_id, "record": value})
+                if len(results) >= limit: break
+        return results
+
     def put_research(self, run_id, body):
         self.validate_id(run_id)
         if not isinstance(body, dict): raise InvalidData("invalid research body")

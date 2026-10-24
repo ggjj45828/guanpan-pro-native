@@ -194,6 +194,9 @@ def persist_replay(database, report, hypothesis):
     cash, positions, or simulated account state.
     """
     sessions = report.pop("evidenceSessions", [])
+    if not sessions:
+        # Do not accumulate empty runs caused by temporarily missing archive data.
+        return report
     evidence = {"leader": report.get("leader"), "asset": report.get("asset"),
                 "range": report.get("range"), "hypothesis": hypothesis,
                 "sessions": sessions}
@@ -204,8 +207,12 @@ def persist_replay(database, report, hypothesis):
     report.update({"replayId": run_id, "generatedAt": generated_at,
                    "inputFingerprint": fingerprint,
                    "evidenceSessionCount": len(sessions)})
+    report_fingerprint = hashlib.sha256(json.dumps(report, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+    report["reportFingerprint"] = report_fingerprint
     database.put_research(run_id, {"kind": "cross_market_point_in_time_replay",
         "generatedAt": generated_at, "inputFingerprint": fingerprint,
+        "reportFingerprint": report_fingerprint,
         "request": {"leader": report.get("leader"), "asset": report.get("asset"),
                     "range": report.get("range"), "hypothesis": hypothesis},
         "report": report, "snapshotEncoding": "gzip+base64",
@@ -231,6 +238,14 @@ def restore_replay(database, run_id):
         separators=(",", ":")).encode("utf-8")).hexdigest()
     if fingerprint != record.get("inputFingerprint"):
         raise ValueError("replay evidence fingerprint mismatch")
+    report = record.get("report")
+    if not isinstance(report, dict):
+        raise ValueError("replay report is unreadable")
+    report_body = {key: value for key, value in report.items() if key != "reportFingerprint"}
+    report_fingerprint = hashlib.sha256(json.dumps(report_body, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+    if report_fingerprint != record.get("reportFingerprint") or report_fingerprint != report.get("reportFingerprint"):
+        raise ValueError("replay report fingerprint mismatch")
     return {**record, "request": {"leader": evidence.get("leader"), "asset": evidence.get("asset"),
                                   "range": evidence.get("range"), "hypothesis": evidence.get("hypothesis")},
             "evidenceSessions": evidence.get("sessions", [])}

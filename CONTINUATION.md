@@ -170,5 +170,8 @@
 - `get_minute` / `get_cross_market_minute` 现在连同归档观察返回采集时间元数据，使回放快照可以保留证据来源与时间。新增测试验证回放留档、按ID取回、输入指纹稳定和真实账本不变。
 - NAS版本提升为 `3.6.0-r21-replay-evidence-archive`。NAS研究测试34/34通过；Python `compileall`、Compose静态配置和 `git diff --check` 均通过。完整145项矩阵中第144项已更新，仍为🟠，因为没有真实100–200日样本和后续未见数据复现。
 - 本地提交为 `7dd9a17`。按既有授权尝试普通及提升权限的 GitHub 推送，均因当前执行环境无法解析/连接 `github.com:443` 失败；远端 Actions 因此没有由本提交触发。本机没有 `swift`/`xcodebuild`，IPA只能待云端构建恢复后确认。
+- 后续继续完善回放可发现性：新增只读最近回放摘要列表 `/v1/research/cross-market/runs?limit=20`，最大100条；没有真实分钟档案的请求不写入空研究记录。更新后 NAS 版本为 `3.6.0-r22-replay-history-index`，研究套件仍为34/34通过；尚未提交/推送这批变更。
+- 扩大回归时，之前未提权运行的 HTTP 测试因 Windows 沙箱禁止本机回环端口失败；改为只在 `127.0.0.1` 进行的本地测试后，根目录 58/58、旧服务 84/84、NAS兼容服务 34/34、IPA校验脚本 4/4 均通过。`compileall`、NAS Compose解析、差异检查也通过。此验证没有访问外网行情或真实账户。
+- 回放归档现在同时校验输入快照和最终报告各自的SHA-256；新增测试证明篡改快照或报告都会被拒绝。无数据请求只回显 `insufficient_real_archive`，不占用研究历史。NAS版本仍为 `3.6.0-r22-replay-history-index`，上述NAS 34项已重新全通过。
 - 当前构建情况：Windows环境没有Xcode/Swift编译器，需使用已授权GitHub Actions检查iOS构建/模拟器验证；本地NAS源码可用Python/Compose进行验证，但Docker Desktop未运行，仍不能声称NAS部署或iPhone联调完成。
 - 下一步从本记录继续：完成NAS静态/回归验证，逐项核查提交差异和文档版本；随后在授权验证分支安全推送源码以触发iOS Actions，检查并修复失败；准备NAS兼容格式包与完整源码包，逐一验证包内文件/密钥排除和哈希。只在可完成事项均完成后提供文件及逐项状态清单，外部NAS/iPhone/真实历史依赖项明确保留⚠️。
