@@ -123,6 +123,33 @@ final class NextCoreTests: XCTestCase {
             return XCTFail("最坏情形下网格买档会跌破现金储备时必须撤回")
         }
     }
+    func testRecoveryAddOptionRequiresCompletePortfolioQuotesAndCashGuard() {
+        let held = NextPosition(code: "159941", name: "纳指ETF", units: 1_000, bookCost: 2_000)
+        let other = NextPosition(code: "563020", name: "行业ETF", units: 1_000, bookCost: 3_000)
+        let book = NextBook(cash: 10_000, positions: [held, other])
+        let ownQuote = quote(time: now)
+        let missingOther = NextRecoveryAnalyzer.analyze(book: book, quotes: [held.code: ownQuote],
+            quote: ownQuote, rules: etfRules(), goal: NextGoal(concentrationLimit: 100), tNetGain: nil, now: now)
+        XCTAssertEqual(missingOther?.addOption?.allowed, false,
+            "缺少其他持仓的行情时，不能把组合总值默认为零并放行补仓")
+        XCTAssertTrue(missingOther?.addOption?.note.contains("组合占比无法核验") == true)
+
+        let otherQuote = NextQuote(code: other.code, name: other.name, price: 1.4, previousClose: 1.4,
+                                   time: now, source: "test")
+        let completeQuotes = [held.code: ownQuote, other.code: otherQuote]
+        let reserveBlocks = NextRecoveryAnalyzer.analyze(book: book, quotes: completeQuotes, quote: ownQuote,
+            rules: etfRules(), goal: NextGoal(concentrationLimit: 100, targetWeights: [held.code: 10]),
+            tNetGain: nil, now: now)
+        XCTAssertEqual(reserveBlocks?.addOption?.allowed, false,
+            "补仓资金会侵占目标现金储备时，不应显示允许")
+
+        let noReserve = NextRecoveryAnalyzer.analyze(book: book, quotes: completeQuotes, quote: ownQuote,
+            rules: etfRules(), goal: NextGoal(concentrationLimit: 100), tNetGain: nil, now: now)
+        XCTAssertEqual(noReserve?.addOption?.allowed, true,
+            "报价完整、现金足够且未超集中度时，补仓情景可以标为通过账户守卫")
+        XCTAssertEqual(noReserve?.addOption?.newAverageCost, Decimal(string: "1.70005"),
+            "新成本应含真实买入手续费，并按持仓账面成本和实际新增份额重算")
+    }
     func testWithdrawnGuidanceCannotBeSavedAsCandidatePlan() {
         let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
         let blocked = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,

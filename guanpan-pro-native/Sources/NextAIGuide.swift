@@ -1011,7 +1011,8 @@ struct NextRecoveryReading: Equatable {
 }
 
 enum NextRecoveryAnalyzer {
-    static func analyze(book: NextBook, quote: NextQuote?, rules: NextInstrumentRules?, goal: NextGoal, tNetGain: Decimal?, now: Date) -> NextRecoveryReading? {
+    static func analyze(book: NextBook, quotes: [String: NextQuote], quote: NextQuote?, rules: NextInstrumentRules?,
+                        goal: NextGoal, tNetGain: Decimal?, now: Date) -> NextRecoveryReading? {
         guard let quote, let position = book.positions.first(where: { $0.code == quote.code }), position.units > 0 else { return nil }
         let cost = position.costPerUnit
         guard cost > 0, quote.price > 0 else { return nil }
@@ -1026,30 +1027,52 @@ enum NextRecoveryAnalyzer {
                 tSessions = Int(sessions)
             }
         }
-        // 等量补仓选项：份额翻倍，成本取均值；受组合仓位上限约束。
+        // 补仓份额、手续费和新成本按实际交易单位计算；规则不确定时不提供带份额的选项。
         var addOption: NextRecoveryAddOption?
-        let lotSize = rules?.lotSize ?? 100
-        let fee = rules?.feePerTrade ?? NextTradeFees.etfPerTrade
-        let doubleUnits = (position.units / lotSize) * lotSize
-        if doubleUnits >= lotSize {
-            let cashRequired = quote.price * Decimal(doubleUnits) + fee
-            let newCost = (cost + quote.price) / 2
-            let total = book.total(using: [quote.code: quote]) ?? Decimal.zero
-            let weightAfter = total > 0 ? NextNum.double((quote.price * Decimal(position.units + doubleUnits)) / total * 100) : 0
-            let allowed = weightAfter <= NextNum.double(goal.concentrationLimit)
-            var note = "再买入 \(doubleUnits) 份，平均成本从 ¥\(NextMoney.text(cost, digits: 3)) 降到约 ¥\(NextMoney.text(newCost, digits: 3))"
-            note += allowed ? "；补仓后占比 \(String(format: "%.1f", weightAfter))%，未超你设置的 \(NextNum.text(NextNum.double(goal.concentrationLimit)))% 上限" : "；但补仓后占比将达 \(String(format: "%.1f", weightAfter))%，超过你设置的 \(NextNum.text(NextNum.double(goal.concentrationLimit)))% 上限，组合层面不建议"
-            if !allowed { warnings.append("组合仓位已到上限：价格再有吸引力也不继续增加这一只") }
-            addOption = NextRecoveryAddOption(units: doubleUnits, cashRequired: cashRequired, newAverageCost: newCost, allowed: allowed, note: note)
+        let verifiedRules = rules.flatMap { $0.isVerified && $0.assetClass == .etf ? $0 : nil }
+        let lotSize = verifiedRules?.lotSize ?? 0
+        let fee = verifiedRules?.feePerTrade
+        if lotSize > 0, let fee, fee >= 0 {
+            let doubleUnits = (position.units / lotSize) * lotSize
+            if doubleUnits < lotSize {
+                warnings.append("真实持仓不足一个已核实交易单位；不生成补仓份额")
+            } else {
+                let cashRequired = quote.price * Decimal(doubleUnits) + fee
+                let newCost = (position.bookCost + cashRequired) / Decimal(position.units + doubleUnits)
+                let total = book.total(using: quotes)
+                let totalAfterFee = total.map { $0 - fee }
+                let weightAfter = totalAfterFee.flatMap {
+                    $0 > 0 ? NextNum.double((quote.price * Decimal(position.units + doubleUnits)) / $0 * 100) : nil
+                }
+                let concentrationAllowed = weightAfter.map { $0 <= NextNum.double(goal.concentrationLimit) } ?? false
+                let cashBlock = NextPortfolioRiskGuard.cashReserveBlock(availableCash: book.cash, totalAssets: total,
+                    targetCashPercent: goal.targetCashPercent, requiredCash: cashRequired)
+                let allowed = concentrationAllowed && cashBlock == nil
+                var note = "再买入 \(doubleUnits) 份，平均成本从 ¥\(NextMoney.text(cost, digits: 3)) 降到约 ¥\(NextMoney.text(newCost, digits: 3))"
+                if let weightAfter {
+                    note += weightAfter <= NextNum.double(goal.concentrationLimit)
+                        ? "；补仓后占比约 \(String(format: "%.1f", weightAfter))%，未超过你设置的 \(NextNum.text(NextNum.double(goal.concentrationLimit)))% 上限"
+                        : "；补仓后占比将达 \(String(format: "%.1f", weightAfter))%，超过你设置的 \(NextNum.text(NextNum.double(goal.concentrationLimit)))% 上限，组合层面不建议"
+                } else {
+                    note += "；其他真实持仓的可靠报价不完整，组合占比无法核验"
+                }
+                if let cashBlock { note += "；\(cashBlock)" }
+                if !allowed { warnings.append("补仓未通过完整组合集中度与现金储备检查：仅显示风险情景，不作为买入建议") }
+                addOption = NextRecoveryAddOption(units: doubleUnits, cashRequired: cashRequired, newAverageCost: newCost, allowed: allowed, note: note)
+            }
+        } else {
+            warnings.append("ETF交易规则未核实（交易单位/手续费），不显示补仓或减仓份额")
         }
         // 减仓选项：卖出一半（向下取整到整手），说明风险变化。
         var reduceOption: NextRecoveryReduceOption?
-        let available = book.availableUnits(for: quote.code, at: now)
-        let halfUnits = (available / 2 / lotSize) * lotSize
-        if halfUnits >= lotSize {
-            let freed = quote.price * Decimal(halfUnits) - fee
-            reduceOption = NextRecoveryReduceOption(units: halfUnits, freedCash: freed,
-                note: "卖出 \(halfUnits) 份回收约 ¥\(NextMoney.text(freed))；剩余仓位继续下跌的损失减半，上涨也少赚一半")
+        if lotSize > 0, let fee, fee >= 0 {
+            let available = book.availableUnits(for: quote.code, at: now)
+            let halfUnits = (available / 2 / lotSize) * lotSize
+            if halfUnits >= lotSize {
+                let freed = quote.price * Decimal(halfUnits) - fee
+                reduceOption = NextRecoveryReduceOption(units: halfUnits, freedCash: freed,
+                    note: "卖出 \(halfUnits) 份回收约 ¥\(NextMoney.text(freed))；剩余仓位继续下跌的损失减半，上涨也少赚一半")
+            }
         }
         let verdict: String
         if abs(lossPercent) < 2 {

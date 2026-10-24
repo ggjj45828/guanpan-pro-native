@@ -397,6 +397,7 @@ enum NextOpportunityScanner {
             guard let quote = matchingQuotes[position.code] else { return false }
             return quote.code == position.code && quote.isFreshForPricePlan(at: now)
         }
+        let reliablePortfolioQuotes = portfolioValuationReliable ? matchingQuotes : [:]
         var items: [NextGuidanceItem] = []
 
         for position in book.positions where position.units > 0 {
@@ -526,7 +527,8 @@ enum NextOpportunityScanner {
 
             var tNetGain: Decimal?
             if let tPlan, case let .ready(plan) = tPlan { tNetGain = plan.netGain }
-            let recovery = NextRecoveryAnalyzer.analyze(book: book, quote: quote, rules: rules[position.code],
+            let recovery = NextRecoveryAnalyzer.analyze(book: book, quotes: reliablePortfolioQuotes,
+                                                        quote: quote, rules: rules[position.code],
                                                         goal: goal, tNetGain: tNetGain, now: now)
 
             var actionable = false
