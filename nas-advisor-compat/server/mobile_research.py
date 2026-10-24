@@ -146,8 +146,8 @@ def replay_lunch_archive(database, leader, asset, start, end, rule, minimum_samp
     sources = set()
     evidence_sessions = []
     for day in session_days:
-        lead = database.get_cross_market_minute(leader, day)
-        held = database.get_minute(asset, day)
+        lead = database.get_cross_market_minute_observations(leader, day)
+        held = database.get_minute_observations(asset, day)
         if not lead["rows"] or not held["rows"]:
             missing_asset += 1
             continue
@@ -179,8 +179,8 @@ def replay_hypothesis_archive(database, leader, asset, start, end, hypothesis, m
     sources = set()
     evidence_sessions = []
     for day in session_days:
-        lead = database.get_cross_market_minute(leader, day)
-        held = database.get_minute(asset, day)
+        lead = database.get_cross_market_minute_observations(leader, day)
+        held = database.get_minute_observations(asset, day)
         if not lead["rows"] or not held["rows"]:
             missing_asset += 1
             continue

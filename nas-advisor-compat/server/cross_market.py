@@ -88,7 +88,7 @@ def _timestamp(value):
         return None
 
 
-def _series(rows, as_of):
+def _series(rows, as_of, *, require_available=True):
     """Normalize positive, timezone-aware points and enforce point-in-time data."""
     result = {}
     if not isinstance(rows, list):
@@ -97,11 +97,16 @@ def _series(rows, as_of):
         if not isinstance(row, dict):
             continue
         stamp = _timestamp(row.get("timestamp"))
+        available_at = row.get("availableAt")
+        availability = _timestamp(available_at) if available_at is not None else None
         try:
             price = float(row.get("price"))
         except (TypeError, ValueError, OverflowError):
             continue
-        if stamp is None or stamp > as_of or not (price > 0 and price < float("inf")):
+        if (stamp is None or stamp > as_of or
+                (require_available and available_at is not None and
+                 (availability is None or availability > as_of)) or
+                not (price > 0 and price < float("inf"))):
             continue
         result[stamp] = price
     return dict(sorted(result.items()))
@@ -421,7 +426,9 @@ def replay_hypothesis_day(leader_rows, asset_rows, *, day, source, hypothesis,
               "state": "hypothesis" if trigger else "no_hypothesis",
               "reason": None if trigger else "冻结时点条件不成立或输入分钟数据不完整"}
     max_outcome = max([baseline, confirmation] + horizons)
-    asset_all = _series(asset_rows, max_outcome)
+    # Outcome labels may be collected shortly after their event timestamp; the
+    # availability cutoff applies to frozen inputs, not to later ground truth.
+    asset_all = _series(asset_rows, max_outcome, require_available=False)
     outcome_stamps = list(asset_all)
     base_value = _following(asset_all, baseline, stamps=outcome_stamps)
     confirm_value = _following(asset_all, confirmation, stamps=outcome_stamps)
@@ -517,7 +524,9 @@ def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
               "state": "hypothesis" if triggered else "no_hypothesis",
               "reason": None if triggered else "截止时点不满足假设条件或数据不足"}
     # Outcome rows are deliberately isolated from the 12:50 frozen block.
-    post = _series(asset_rows, datetime.max.replace(tzinfo=timezone.utc))
+    # Outcomes are realized prices, so they are selected by exchange timestamp;
+    # only the frozen 12:50 input pass is gated by first-observed time.
+    post = _series(asset_rows, datetime.max.replace(tzinfo=timezone.utc), require_available=False)
     post_stamps = list(post)
     open_1300 = _following(post, _timestamp(day + "T13:00:00+08:00"), stamps=post_stamps)
     outcomes = {}

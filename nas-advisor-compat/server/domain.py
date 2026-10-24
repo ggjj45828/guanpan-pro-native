@@ -360,10 +360,12 @@ class NextDatabase:
                     rules_version INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS minute_archive (
                     code TEXT NOT NULL, stamp TEXT NOT NULL, body TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    first_body TEXT, first_fetched_at TEXT,
                     PRIMARY KEY(code, stamp));
                 CREATE TABLE IF NOT EXISTS cross_market_minute (
                     market TEXT NOT NULL, stamp TEXT NOT NULL, body TEXT NOT NULL,
                     source TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    first_body TEXT, first_source TEXT, first_fetched_at TEXT,
                     PRIMARY KEY(market, stamp));
                 CREATE TABLE IF NOT EXISTS research_runs (
                     id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -385,6 +387,26 @@ class NextDatabase:
                 db.execute("ALTER TABLE dividend_archive ADD COLUMN rules_version INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
+            # Preserve the first source snapshot and collection time separately
+            # from the latest corrected copy. This is required for point-in-time
+            # research replays; legacy rows are conservatively dated at their
+            # last known fetch time.
+            for table, columns in (
+                ("minute_archive", ("first_body TEXT", "first_fetched_at TEXT")),
+                ("cross_market_minute", ("first_body TEXT", "first_source TEXT", "first_fetched_at TEXT")),
+            ):
+                known = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+                for definition in columns:
+                    name = definition.split()[0]
+                    if name not in known:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+                if table == "minute_archive":
+                    db.execute("UPDATE minute_archive SET first_body=body WHERE first_body IS NULL")
+                    db.execute("UPDATE minute_archive SET first_fetched_at=fetched_at WHERE first_fetched_at IS NULL")
+                else:
+                    db.execute("UPDATE cross_market_minute SET first_body=body WHERE first_body IS NULL")
+                    db.execute("UPDATE cross_market_minute SET first_source=source WHERE first_source IS NULL")
+                    db.execute("UPDATE cross_market_minute SET first_fetched_at=fetched_at WHERE first_fetched_at IS NULL")
 
     def connect(self):
         return sqlite3.connect(self.filename, timeout=15)
@@ -604,16 +626,25 @@ class NextDatabase:
             validated.append((code, stamp, json.dumps(row, ensure_ascii=False), fetched_at))
         with self.connect() as db:
             for code, stamp, body, fetched_at in validated:
-                existing = db.execute("SELECT body, fetched_at FROM minute_archive WHERE code=? AND stamp=?", (code, stamp)).fetchone()
+                existing = db.execute("SELECT body, fetched_at, first_body, first_fetched_at "
+                                      "FROM minute_archive WHERE code=? AND stamp=?", (code, stamp)).fetchone()
+                first_body, first_fetched = body, fetched_at
+                current_body, current_fetched = body, fetched_at
                 if existing:
-                    if incoming_at < observed_at(existing[1]):
-                        continue
-                    prior = json.loads(existing[0])
-                    incoming = json.loads(body)
-                    if incoming.get("iopv") is None and prior.get("iopv") is not None:
-                        incoming["iopv"] = prior["iopv"]
-                        body = json.dumps(incoming, ensure_ascii=False)
-                db.execute("INSERT OR REPLACE INTO minute_archive VALUES (?, ?, ?, ?)", (code, stamp, body, fetched_at))
+                    current_body, current_fetched = existing[0], existing[1]
+                    first_body, first_fetched = existing[2] or existing[0], existing[3] or existing[1]
+                    if incoming_at < observed_at(first_fetched):
+                        first_body, first_fetched = body, fetched_at
+                    if incoming_at >= observed_at(current_fetched):
+                        prior = json.loads(current_body)
+                        incoming = json.loads(body)
+                        if incoming.get("iopv") is None and prior.get("iopv") is not None:
+                            incoming["iopv"] = prior["iopv"]
+                            body = json.dumps(incoming, ensure_ascii=False)
+                        current_body, current_fetched = body, fetched_at
+                db.execute("INSERT OR REPLACE INTO minute_archive "
+                           "(code,stamp,body,fetched_at,first_body,first_fetched_at) VALUES (?,?,?,?,?,?)",
+                           (code, stamp, current_body, current_fetched, first_body, first_fetched))
 
     def get_dividend_events(self, code):
         self.validate_id(code)
@@ -679,6 +710,32 @@ class NextDatabase:
                 "fetchedAtRange": {"first": fetched[0], "last": fetched[-1]} if fetched else None,
                 "rows": [json.loads(row[0]) for row in rows]}
 
+    def get_minute_observations(self, code, day):
+        """Read immutable first-observed rows for point-in-time replay only."""
+        self.validate_id(code)
+        if len(code) != 6 or not code.isdigit() or not isinstance(day, str): raise InvalidData("invalid minute query")
+        try: date.fromisoformat(day)
+        except ValueError: raise InvalidData("invalid minute query")
+        with self.connect() as db:
+            rows = db.execute("SELECT first_body, first_fetched_at FROM minute_archive "
+                              "WHERE code=? AND stamp LIKE ? ORDER BY stamp", (code, day + "%")).fetchall()
+        observations = []
+        fetched = []
+        for body, available_at in rows:
+            try:
+                instant = observed_at(available_at)
+                value = json.loads(body)
+                value["availableAt"] = available_at
+                observations.append(value)
+                fetched.append((instant, available_at))
+            except (InvalidData, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        fetched.sort()
+        values = [item[1] for item in fetched]
+        return {"code": code, "day": day, "source": "minute archive first-observed snapshot",
+                "fetchedAtRange": {"first": values[0], "last": values[-1]} if values else None,
+                "rows": observations}
+
     def put_cross_market_minute(self, market, rows, source, fetched_at):
         """Persist provider-observed external minute points for research/replay only."""
         self.validate_id(market)
@@ -715,12 +772,25 @@ class NextDatabase:
                               json.dumps(canonical, separators=(",", ":"))))
         with self.connect() as db:
             for stamp, body in validated:
-                existing = db.execute("SELECT fetched_at FROM cross_market_minute WHERE market=? AND stamp=?",
+                existing = db.execute("SELECT body, source, fetched_at, first_body, first_source, first_fetched_at "
+                                      "FROM cross_market_minute WHERE market=? AND stamp=?",
                                       (market, stamp)).fetchone()
-                if existing and fetched < observed_at(existing[0]):
-                    continue
-                db.execute("INSERT OR REPLACE INTO cross_market_minute VALUES (?, ?, ?, ?, ?)",
-                           (market, stamp, body, source[:120], fetched.isoformat()))
+                current_body, current_source, current_fetched = body, source[:120], fetched.isoformat()
+                first_body, first_source, first_fetched = body, source[:120], fetched.isoformat()
+                if existing:
+                    current_body, current_source, current_fetched = existing[0], existing[1], existing[2]
+                    first_body = existing[3] or existing[0]
+                    first_source = existing[4] or existing[1]
+                    first_fetched = existing[5] or existing[2]
+                    if fetched < observed_at(first_fetched):
+                        first_body, first_source, first_fetched = body, source[:120], fetched.isoformat()
+                    if fetched >= observed_at(current_fetched):
+                        current_body, current_source, current_fetched = body, source[:120], fetched.isoformat()
+                db.execute("INSERT OR REPLACE INTO cross_market_minute "
+                           "(market,stamp,body,source,fetched_at,first_body,first_source,first_fetched_at) "
+                           "VALUES (?,?,?,?,?,?,?,?)",
+                           (market, stamp, current_body, current_source, current_fetched,
+                            first_body, first_source, first_fetched))
 
     def get_cross_market_minute(self, market, day):
         self.validate_id(market)
@@ -735,6 +805,32 @@ class NextDatabase:
                 "fetchedAt": fetched[-1] if fetched else None,
                 "fetchedAtRange": {"first": fetched[0], "last": fetched[-1]} if fetched else None,
                 "rows": [json.loads(row[0]) for row in rows]}
+
+    def get_cross_market_minute_observations(self, market, day):
+        """Read immutable first-observed source points for point-in-time replay."""
+        self.validate_id(market)
+        try: date.fromisoformat(day)
+        except (ValueError, TypeError): raise InvalidData("invalid cross-market date")
+        with self.connect() as db:
+            rows = db.execute("SELECT first_body, first_source, first_fetched_at FROM cross_market_minute "
+                              "WHERE market=? AND stamp LIKE ? ORDER BY stamp", (market, day + "%")).fetchall()
+        observations, fetched = [], []
+        for body, source, available_at in rows:
+            try:
+                instant = observed_at(available_at)
+                value = json.loads(body)
+                value["availableAt"] = available_at
+                observations.append(value)
+                fetched.append((instant, available_at, source))
+            except (InvalidData, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        fetched.sort()
+        times = [item[1] for item in fetched]
+        sources = sorted({item[2] for item in fetched if item[2]})
+        return {"market": market, "day": day,
+                "source": sources[0] if len(sources) == 1 else sources,
+                "fetchedAtRange": {"first": times[0], "last": times[-1]} if times else None,
+                "rows": observations}
 
     def get_cross_market_range(self, market, start, end):
         """Read a bounded source archive range for research without per-day DB opens."""

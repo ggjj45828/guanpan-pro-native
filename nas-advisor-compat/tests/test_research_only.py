@@ -74,6 +74,81 @@ class LiveDivergenceTests(unittest.TestCase):
                                                     minimum_move_percent=threshold)
 
 
+class PointInTimeArchiveTests(unittest.TestCase):
+    def test_first_observed_snapshots_survive_later_provider_corrections(self):
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        database = NextDatabase(Path(root) / "advisor.sqlite3")
+        stamp = "2026-10-23T12:50:00+08:00"
+        first = "2026-10-23T04:50:30+00:00"
+        later = "2026-10-23T05:10:00+00:00"
+        database.put_minute("512480", [{"timestamp": stamp, "price": "1.000", "volume": "100", "iopv": None}], first)
+        database.put_minute("512480", [{"timestamp": stamp, "price": "1.010", "volume": "120", "iopv": None}], later)
+        current_asset = database.get_minute("512480", "2026-10-23")
+        observed_asset = database.get_minute_observations("512480", "2026-10-23")
+        self.assertEqual(current_asset["rows"][0]["price"], "1.010")
+        self.assertEqual(observed_asset["rows"][0]["price"], "1.000")
+        self.assertEqual(observed_asset["rows"][0]["availableAt"], first)
+
+        database.put_cross_market_minute("KR_KOSPI", [{"timestamp": stamp, "price": "100"}], "first", first)
+        database.put_cross_market_minute("KR_KOSPI", [{"timestamp": stamp, "price": "101"}], "later", later)
+        current_leader = database.get_cross_market_minute("KR_KOSPI", "2026-10-23")
+        observed_leader = database.get_cross_market_minute_observations("KR_KOSPI", "2026-10-23")
+        self.assertEqual(current_leader["rows"][0]["price"], "101")
+        self.assertEqual(observed_leader["rows"][0]["price"], "100")
+        self.assertEqual(observed_leader["rows"][0]["availableAt"], first)
+        self.assertEqual(observed_leader["source"], "first")
+
+    def test_lunch_replay_excludes_points_not_collected_by_freeze_time(self):
+        leader = [
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": "100",
+             "availableAt": "2026-10-23T11:31:00+08:00"},
+            {"timestamp": "2026-10-23T12:50:00+08:00", "price": "101",
+             "availableAt": "2026-10-23T12:51:00+08:00"},
+        ]
+        asset = [
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": "50",
+             "availableAt": "2026-10-23T09:31:00+08:00"},
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": "49",
+             "availableAt": "2026-10-23T11:31:00+08:00"},
+            {"timestamp": "2026-10-23T13:00:00+08:00", "price": "49",
+             "availableAt": "2026-10-23T13:01:00+08:00"},
+            {"timestamp": "2026-10-23T13:05:00+08:00", "price": "49.5",
+             "availableAt": "2026-10-23T13:06:00+08:00"},
+        ]
+        report = cross_market.replay_lunch_day(leader, asset, day="2026-10-23", source="fixture",
+            rule={"leaderShockAtLeast": 0.005, "assetMorningAtMost": 0.0, "expectedDirection": 1})
+        self.assertEqual(report["frozenHypothesis"]["state"], "no_hypothesis")
+        self.assertEqual(report["frozenHypothesis"]["reason"], "截止时点不满足假设条件或数据不足")
+        self.assertTrue(report["confirmedAt5m"], "后验真实价格可晚几分钟被采集，不得反向进入冻结输入")
+
+    def test_legacy_schema_migrates_first_observed_metadata_conservatively(self):
+        import sqlite3
+        import shutil
+        root = tempfile.mkdtemp(dir=Path(__file__).parent)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.addCleanup(gc.collect)
+        path = Path(root) / "legacy.sqlite3"
+        with sqlite3.connect(path) as db:
+            db.executescript("""
+                CREATE TABLE minute_archive(code TEXT NOT NULL, stamp TEXT NOT NULL, body TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL, PRIMARY KEY(code, stamp));
+                CREATE TABLE cross_market_minute(market TEXT NOT NULL, stamp TEXT NOT NULL, body TEXT NOT NULL,
+                    source TEXT NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(market, stamp));
+            """)
+            minute = json.dumps({"timestamp": "2026-10-23T12:50:00+08:00", "price": "1", "volume": None, "iopv": None})
+            external = json.dumps({"timestamp": "2026-10-23T12:50:00+08:00", "price": "100", "volume": None, "iopv": None})
+            db.execute("INSERT INTO minute_archive VALUES (?,?,?,?)", ("512480", "2026-10-23T12:50:00+08:00", minute, "2026-10-23T13:10:00+08:00"))
+            db.execute("INSERT INTO cross_market_minute VALUES (?,?,?,?,?)", ("KR_KOSPI", "2026-10-23T12:50:00+08:00", external, "legacy", "2026-10-23T13:10:00+08:00"))
+        database = NextDatabase(path)
+        asset = database.get_minute_observations("512480", "2026-10-23")["rows"][0]
+        leader = database.get_cross_market_minute_observations("KR_KOSPI", "2026-10-23")["rows"][0]
+        self.assertEqual(asset["availableAt"], "2026-10-23T13:10:00+08:00")
+        self.assertEqual(leader["availableAt"], "2026-10-23T13:10:00+08:00")
+
+
 class CrossMarketEvidenceTests(unittest.TestCase):
     def test_older_fetch_cannot_replace_newer_daily_or_minute_evidence(self):
         import shutil
