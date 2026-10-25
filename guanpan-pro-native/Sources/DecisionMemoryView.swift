@@ -355,16 +355,33 @@ struct DecisionRecordDetail: View {
     }
 
     private func line(_ title: String, _ value: String, note: String?) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(title).font(.system(size: 11)).foregroundStyle(p.muted).frame(width: 88, alignment: .leading)
-            Text(value).font(.system(size: 11, weight: .medium)).foregroundStyle(p.ink)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 2)
-            if let note {
-                Text(note).font(.system(size: 9)).foregroundStyle(p.muted).lineLimit(2)
-                    .multilineTextAlignment(.trailing)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title).font(.system(size: 11)).foregroundStyle(p.muted)
+                    .frame(width: 88, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+                Text(value).font(.system(size: 11, weight: .medium)).foregroundStyle(p.ink)
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 2)
+                if let note {
+                    Text(note).font(.system(size: 9)).foregroundStyle(p.muted)
+                        .fixedSize(horizontal: true, vertical: false).multilineTextAlignment(.trailing)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(title).font(.system(size: 10)).foregroundStyle(p.muted)
+                    Spacer(minLength: 4)
+                }
+                Text(value).font(.system(size: 11, weight: .medium)).foregroundStyle(p.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let note {
+                    Text(note).font(.system(size: 9)).foregroundStyle(p.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func pill(_ text: String, _ tone: Color) -> some View {

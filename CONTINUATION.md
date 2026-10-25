@@ -488,3 +488,13 @@
 - 部署身份已在`nas-advisor-compat/README-NAS.md`记录：B的Bundle ID `com.guanpan.pro.native`；NAS Compose `guanpan-advisor`/`advisor`，默认容器`guanpan-advisor-advisor-1`，端口8789，volume `guanpan_advisor_data`，SQLite `/data/guanpan-advisor.sqlite3`，真实账本API `/v1/real/books/main`，协议schema 1；iOS私有Application Support路径亦已记录。没有改变B的NAS/Bundle配置。
 - 断点续跑（2026-10-25）：完整Validate run `40154353539` 的 Core XCTest 136/136、账本Repository/AppModel集成5/5通过；模拟器现金流水E2E失败于`assets.cash.record`无法变成hittable，确认当时测试仍未可靠收起小数键盘/滚动到操作按钮。现本地提交`79bd051`改为显式点击`keyboard.done`（带可读失败断言）、只在收起键盘后对持仓主ScrollView慢速滚动，失败前保存UI截图附件。尚未推送、尚未由新的Xcode运行验证。`Master Acceptance Matrix`已据事实记录失败和复测条件，未升级状态。
 - 本轮环境状态：NAS三套测试run `40154353540`均通过，共200/200；IPA build `40154353536`成功（unsigned构建，不等于设备签名/安装）。本机无Swift/Xcode，必须依靠macOS GitHub Actions验证UI改动。普通shell目前无法连外网代理（127.0.0.1:7890）且`git credential fill`未返回可用凭据；不能声称新修复已推送。下一步优先通过已登录GitHub工作流通道恢复把B验证分支当前提交`79bd051`及文档矩阵推送并触发完整Validate/IPA；若此轮恢复不了推送，则继续本机可做的静态/后端检查，不将XCTest/UI标为通过。
+- 最新进展覆盖以上“待推送/待复测”状态：B分支快进推送到`67d2fd2`成功；Validate run `40155666581`成功，Swift Core XCTest 136/136、模拟器UI 10/10、账本Repository/AppModel集成5/5全部通过。现金流水E2E已完成录入、确认、强制终止和重启后检查余额及记录原因。IPA run `40155666561`也成功，artifact `guanpan-pro-unsigned-ipa`约7.2 MB，仍是unsigned产物。
+- 矩阵更新：第4项由🟠改为🟡（CI模拟器账本链已验，NAS/iPhone真机仍外部未验），当前统计✅1、🟡17、🟠123、⚠️4。第27保持🟡；第29、145仍Partial，因为复杂决策历史视觉联调、真实NAS长档案/真机Key/成交反馈尚未完成。
+- 下一步：继续从Master Acceptance Matrix里可在本环境推进的Partial出发，不新增功能，不在B内并入A；先核对 Decision Memory 详情展示及其5主题适配，再选下一项已编码未验证的 Swift/ NAS 链路补回归。真实NAS长期历史档案、真实手机/Key等仅标外部验收，不替代可做的测试。
+
+
+## 2026-10-25 决策记忆详情窄屏适配续记
+
+- 继续检查 Decision Memory 详情，发现证据行把标签、长值和说明固定排在一行，窄屏或长跨市场/新闻文本可能挤压。现改为优先横向呈现，空间不足时使用纵向布局；数据模型和决策逻辑不变。
+- 当前仅做静态差异检查，Windows环境没有Swift/Xcode，尚未编译或模拟器验证；不因此升级Matrix状态。
+- 下一步第一件事：检查矩阵和差异无误后提交并推送，触发完整Validate与IPA Actions。通过后再继续从Master Acceptance Matrix中当前可推进的Partial/Not Verified项目开发。
