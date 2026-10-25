@@ -105,6 +105,14 @@ final class NextCoreTests: XCTestCase {
             targetCashPercent: nil, requiredCash: 100), "无储备目标时也必须守住真实可用现金")
         XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 100, totalAssets: nil,
             targetCashPercent: 20, requiredCash: 0), "设置了现金目标但总资产不可核验时必须 fail-closed")
+        XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: Decimal.nan, totalAssets: total,
+            targetCashPercent: 20, requiredCash: 0), "NaN真实现金不能绕过资金守卫")
+        XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 100, totalAssets: total,
+            targetCashPercent: 20, requiredCash: Decimal.nan), "NaN买入需求不能绕过资金守卫")
+        XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 100, totalAssets: Decimal.nan,
+            targetCashPercent: 20, requiredCash: 0), "NaN组合总资产不能形成虚假的储备金额")
+        XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: 100, totalAssets: total,
+            targetCashPercent: Decimal.nan, requiredCash: 0), "NaN储备目标不能绕过资金守卫")
 
         let confidence = NextDataConfidence.assess(quote: quote(time: now), now: now,
             dailyBarCount: 60, minuteSampleCount: 120, intradayLatestAt: now, dailyLatestAt: now)

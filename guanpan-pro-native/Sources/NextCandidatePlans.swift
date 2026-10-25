@@ -331,19 +331,26 @@ enum NextPortfolioRiskGuard {
     /// Check the worst case where every planned buy tier fills and no sell tier fills.
     static func cashReserveBlock(availableCash: Decimal, totalAssets: Decimal?,
                                  targetCashPercent: Decimal?, requiredCash: Decimal) -> String? {
-        guard requiredCash >= 0, availableCash >= 0 else {
+        guard !requiredCash.isNaN, !availableCash.isNaN,
+              requiredCash >= 0, availableCash >= 0 else {
             return "现金或买入资金需求无效；暂停新增买入计划"
         }
         guard requiredCash <= availableCash else {
             return "该买入计划需要 ¥\(NextMoney.text(requiredCash))，超过当前真实可用现金 ¥\(NextMoney.text(availableCash))；暂停新增买入计划"
         }
         guard let targetCashPercent else { return nil }
-        guard targetCashPercent >= 0, targetCashPercent <= 100,
-              let totalAssets, totalAssets > 0 else {
+        guard !targetCashPercent.isNaN, targetCashPercent >= 0, targetCashPercent <= 100,
+              let totalAssets, !totalAssets.isNaN, totalAssets > 0 else {
             return "现金储备目标或组合总资产无法核验；暂停新增买入计划"
         }
         let reserve = totalAssets * targetCashPercent / 100
+        guard !reserve.isNaN else {
+            return "现金储备计算结果无效；暂停新增买入计划"
+        }
         let spendable = max(Decimal.zero, availableCash - reserve)
+        guard !spendable.isNaN else {
+            return "现金储备计算结果无效；暂停新增买入计划"
+        }
         guard requiredCash <= spendable else {
             return "该买入计划最坏占用 ¥\(NextMoney.text(requiredCash))，超过现金扣除长期储备目标后的可用额 ¥\(NextMoney.text(spendable))；保留至少 ¥\(NextMoney.text(reserve)) 现金，暂停新增买入计划"
         }
