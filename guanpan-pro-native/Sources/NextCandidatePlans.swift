@@ -346,6 +346,13 @@ struct NextDailyGuidance: Equatable {
 }
 
 enum NextPortfolioRiskGuard {
+    static func hasReliablePortfolioQuote(position: NextPosition, quote: NextQuote?, now: Date) -> Bool {
+        guard let quote, quote.code == position.code, quote.isFreshForPricePlan(at: now),
+              NextPortfolioCalculator.anomalyReason(quote: quote,
+                  storedCostPerUnit: position.costPerUnit) == nil else { return false }
+        return true
+    }
+
     /// A grid contains buy tiers; it cannot remain actionable after the account
     /// concentration cap has been breached.
     static func apply(overweightNote: String?, to result: NextGridPlannerResult) -> NextGridPlannerResult {
@@ -531,8 +538,8 @@ enum NextOpportunityScanner {
         let total = book.total(using: matchingQuotes)
         let heldPositions = book.positions.filter { $0.units > 0 }
         let portfolioValuationReliable = !heldPositions.isEmpty && heldPositions.allSatisfy { position in
-            guard let quote = matchingQuotes[position.code] else { return false }
-            return quote.code == position.code && quote.isFreshForPricePlan(at: now)
+            NextPortfolioRiskGuard.hasReliablePortfolioQuote(position: position,
+                quote: matchingQuotes[position.code], now: now)
         }
         let reliablePortfolioQuotes = portfolioValuationReliable ? matchingQuotes : [:]
         var items: [NextGuidanceItem] = []

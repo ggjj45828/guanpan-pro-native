@@ -277,6 +277,21 @@ final class NextCoreTests: XCTestCase {
             totalAssets: nil, plannedCashUsage: 100, estimatedFees: 0,
             concentrationLimit: 40, targetPercent: nil), "组合总资产不完整时必须fail closed")
     }
+
+    func testPortfolioRiskQuoteGateRejectsFreshButAnomalousPrices() {
+        let position = NextPosition(code: "159941", name: "纳指ETF", units: 1_000, bookCost: 1_000)
+        let fresh = quote(time: now)
+        XCTAssertTrue(NextPortfolioRiskGuard.hasReliablePortfolioQuote(position: position,
+            quote: fresh, now: now))
+        let mismatch = NextQuote(code: position.code, name: position.name, price: 1.4,
+            previousClose: 1.0, time: now, source: "licensed:test")
+        XCTAssertFalse(NextPortfolioRiskGuard.hasReliablePortfolioQuote(position: position,
+            quote: mismatch, now: now), "fresh timestamp must not override an impossible one-day move")
+        let outlier = NextQuote(code: position.code, name: position.name, price: 4.0,
+            previousClose: 1.4, time: now, source: "licensed:test")
+        XCTAssertFalse(NextPortfolioRiskGuard.hasReliablePortfolioQuote(position: position,
+            quote: outlier, now: now), "cost-multiple anomaly must keep portfolio weights unavailable")
+    }
     func testRecoveryAddOptionRequiresCompletePortfolioQuotesAndCashGuard() {
         let held = NextPosition(code: "159941", name: "纳指ETF", units: 1_000, bookCost: 2_000)
         let other = NextPosition(code: "563020", name: "行业ETF", units: 1_000, bookCost: 3_000)
