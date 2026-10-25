@@ -702,7 +702,8 @@ final class NextCoreTests: XCTestCase {
         XCTAssertFalse(center.append(duplicate, now: date.addingTimeInterval(60)))
         XCTAssertEqual(center.alerts.count, 1)
         center.dedupeMinutes = Int.max
-        XCTAssertFalse(center.append(duplicate, now: date.addingTimeInterval(61)), "极大去重窗口不能发生整数溢出")
+        var distinct = duplicate; distinct.fingerprint = "different-alert"
+        XCTAssertFalse(center.append(distinct, now: date.addingTimeInterval(61)), "极大去重窗口应拒绝通知，避免整数溢出或通知风暴")
         var invalidQuietHours = NextQuietHours(enabled: true, startMinute: Int.max, endMinute: -1)
         XCTAssertTrue(invalidQuietHours.isQuiet(date, calendar: calendar), "损坏的静默时段配置应安全静默")
         invalidQuietHours.enabled = false

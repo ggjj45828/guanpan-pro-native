@@ -1179,7 +1179,10 @@ struct NextNotificationCenter: Codable, Equatable {
         dedupeMinutes = try values.decodeIfPresent(Int.self, forKey: .dedupeMinutes) ?? 30
     }
     mutating func append(_ alert: NextAlert, now: Date) -> Bool {
-        let dedupeWindow = Double(max(0, dedupeMinutes)) * 60
+        // Malformed persisted dedupe settings must not disable deduplication
+        // or overflow into a notification storm.
+        guard (0...10_080).contains(dedupeMinutes) else { return false }
+        let dedupeWindow = Double(dedupeMinutes) * 60
         let duplicate = alerts.contains { $0.fingerprint == alert.fingerprint && now.timeIntervalSince($0.createdAt) >= 0 && now.timeIntervalSince($0.createdAt) < dedupeWindow }
         guard !duplicate else { return false }
         alerts.insert(alert, at: 0)
