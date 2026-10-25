@@ -128,7 +128,7 @@ enum NextNewsImpactEngine {
     static func relevantHeadlines(code: String, name: String, titles: [NextNewsInput], now: Date,
                                   industryWords: [String] = []) -> [NextNewsInput] {
         let keywords = Array(Set(industryWords + InstrumentCatalog.newsKeywords(for: code, name: name)))
-        titles.filter { item in
+        return titles.filter { item in
             isFreshPublishedAt(item.publishedAt, now: now)
                 && belongs(item.title, code: code, name: name, industryWords: keywords)
         }
