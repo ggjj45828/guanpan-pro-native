@@ -381,7 +381,7 @@ private struct AIHubScreen: View {
         [
             AIHubShortcut(identifier: "ai.chat.open", title: "AI 持仓问答", detail: "基于真实持仓、最新行情和 NAS 研究继续追问", symbol: "bubble.left.and.bubble.right", route: .chat, accent: p.chartBlue),
             AIHubShortcut(identifier: "ai.grid.open", title: "智能网格候选", detail: "只展示今日统一指导生成的网格计划", symbol: "square.grid.2x2", route: .grid, accent: p.chartViolet),
-            AIHubShortcut(identifier: "ai.news.open", title: "新闻与持仓影响", detail: "查看与真实持仓相关的事件", symbol: "newspaper", route: .news, accent: p.chartGold),
+            AIHubShortcut(identifier: "ai.news.open", title: "新闻与持仓影响", detail: "查看与真实持仓相关的事件", symbol: "newspaper", route: .news, accent: p.chartCost),
             AIHubShortcut(identifier: "ai.history.open", title: "决策记忆与复盘", detail: "查看过去判断和真实成交反馈", symbol: "clock.arrow.circlepath", route: .history, accent: p.jade)
         ]
     }
@@ -453,7 +453,7 @@ private struct AIHubScreen: View {
                     .font(.system(size: 29, weight: .bold, design: .serif)).foregroundStyle(p.ink)
                 Text("观盘 · AI 私人投资手册").font(.caption).foregroundStyle(p.muted)
                 guidanceCard(style: .magazine)
-                EditorialSection(title: "延伸阅读", accent: p.chartRose) {
+                EditorialSection(title: "延伸阅读", accent: p.chartCost) {
                     VStack(spacing: 8) {
                         ForEach(actions) { action in AIHubShortcutCard(action: action, layout: .magazineRow) }
                     }
@@ -519,7 +519,7 @@ private enum AIHubGuidanceStyle: Equatable { case editorial, modern, dashboard, 
         case .editorial: palette.chartGold
         case .modern: palette.primary
         case .dashboard: palette.chartViolet
-        case .magazine: palette.chartRose
+        case .magazine: palette.chartCost
         case .puzzle: palette.chartGold
         }
     }

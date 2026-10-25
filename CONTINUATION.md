@@ -677,6 +677,14 @@
 - 下一步第一件事：读取#120与#121的run/job终态；下载#121 `ios-validation-results`和主题截图，核对完整XCTest结果、五主题专属布局断言、实际卡片间距/文字遮挡。修复真实编译、测试或视觉失败后继续推送B分支并复验；然后依Master Acceptance Matrix处理其余可推进Partial，不因本批CI通过而结束。
 - 红线不变：B独立于A，唯一真实账本，无模拟交易或自动下单；统计关系不解释为因果，不降低minimum sessions、fail-closed或防未来数据限制。
 
+## 2026-10-25 Build IPA #190失败修复
+
+- `Build iOS IPA #190`（run `40168515065`，commit`b604d9e`）的`Build for iPhone`步骤真实失败。日志指出`GPPalette`没有`chartRose`属性，位置为`GuanpanAdvisorApp.swift`约456、522行；IPA未打包/上传。不是签名问题。
+- 已将杂志主题强调色改用设计系统现有`chartCost`令牌；没有新增并重复颜色token，也没有改变业务数据。修复目前仅在本地，尚未编译。
+- Validate #121（同一`b604d9e`）当时仍运行中，代码含同一缺失令牌，必须等终态并检查具体Xcode日志；不可把它当通过。Validate #120（`1a7c323`）仍在运行，Core步骤已成功，Apple编译/XCTest未结。
+- 当前需要检查`git diff --check`与主题测试差异，然后提交令牌修复并沿B验证分支安全快进；读新完整XCTest、iPhone Release build和截图工件。若再失败按日志修复，不降低测试/安全门槛。新修复前，Matrix仍为✅1、🟡18、🟠126、⚠️0，第54/56/60/61均🟠。
+- 本地回归本轮已实际通过NAS研究58/58、同步服务58/58；上一节记录的服务84/84是历史结果而非本轮重测。产品红线保持B独立、真实账本、不模拟成交、不自动下单；统计口径、fail-closed与防未来数据约束不放松。
+
 ## 2026-10-25 Validate #116成功与继续的UI/时效修复
 
 - 修复后的验证提交`fe36150b769a95e15c1468e850e34e5e9c294460`触发Validate #116 `40164683820`和Build IPA #185 `40164683817`。完整Portable Swift Core、Xcode编译、Unit/Integration/UI XCTest全部成功；UI截图artifact验证为可读ZIP，共24张iPhone 16 Pro截图，覆盖主导航、设置、图表、AI问答、账本强制重启和当前默认主题。IPA构建成功但为unsigned，不能推导签名/安装成功。
