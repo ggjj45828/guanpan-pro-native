@@ -239,4 +239,38 @@ final class NativeNavigationTests: XCTestCase {
         XCTAssertTrue(byId(app, "ai.chat.send").exists)
         attach(app, "ai-holdings-chat")
     }
+
+    func testCashLedgerSurvivesForcedAppRestart() throws {
+        let app = launch()
+        let holdings = byId(app, "tab.assets")
+        XCTAssertTrue(holdings.waitForExistence(timeout: 10))
+        holdings.tap()
+
+        let amount = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "金额")).firstMatch
+        for _ in 0..<12 where !amount.isHittable { app.swipeUp() }
+        XCTAssertTrue(amount.waitForExistence(timeout: 5))
+        amount.tap()
+        amount.typeText("10000")
+
+        let record = byLabel(app, "审核并记录现金变动")
+        revealAndTap(record, in: app)
+        let confirm = app.buttons["确认记录"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "用户记录的场内现金变动"))
+            .firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "10,000.000"))
+            .firstMatch.exists)
+
+        app.terminate()
+        app.launchArguments = ["-ui-testing", "1"] // preserve the sandbox; do not reset the real test ledger
+        app.launchEnvironment["GUANPAN_TESTING"] = "1"
+        app.launch()
+        XCTAssertTrue(byId(app, "tab.assets").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "用户记录的场内现金变动"))
+            .firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "10,000.000"))
+            .firstMatch.exists, "强制终止并重启后现金余额应仍是 ¥10,000")
+        attach(app, "ledger-after-forced-restart")
+    }
 }
