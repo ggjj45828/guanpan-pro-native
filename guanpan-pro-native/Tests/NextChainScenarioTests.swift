@@ -330,6 +330,27 @@ final class NextChainScenarioTests: XCTestCase {
             "513100日经ETF建议买回 200 份 @ 0.850 元。", guidance: twoHoldingGuidance),
             "一只ETF的有效价格不能被挪用到另一只ETF")
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 200 份 @ 1.10009 元。", guidance: twoHoldingGuidance),
+            "守卫必须核对完整小数；不能把未授权数字的前四位当作有效价格")
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 200 份 @ 1.1000 元。", guidance: twoHoldingGuidance),
+            "多写不改变数值的尾随零仍是同一限价")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 200 份 @ 1.100abc 元。", guidance: twoHoldingGuidance),
+            "数字后缀不能让守卫只匹配数值前缀")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 2,000 份 @ 1.100 元。", guidance: twoHoldingGuidance),
+            "逗号分组的份额数字不能截取末尾位数后误通过")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 200 份，限价 ¥1,100。", guidance: twoHoldingGuidance),
+            "逗号分组的价格不能被部分匹配成合法前缀")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 -200 份 @ 1.100 元。", guidance: twoHoldingGuidance),
+            "负份额不能因数字部分与合法份额相同而通过")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF sell 200 shares at $1.10009", guidance: twoHoldingGuidance),
+            "英文输出也必须使用同证券白名单并校验完整价格token")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
             "建议卖出 500 份 @ 0.850 元。", guidance: twoHoldingGuidance),
             "存在多个可执行持仓时，未标证券的具体交易数字应拒绝")
         let withdrawnOther = NextGuidanceItem(code: "510050", name: "上证50ETF", state: .trendingDown,

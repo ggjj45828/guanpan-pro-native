@@ -610,3 +610,17 @@
 - 对照`NextProfileTraitID`、`NextProfileCatalog`声明后发现编译错误来自新校验器调用了不存在的`NextProfileTraitID.isNumeric(id)`；真实静态方法为`NextProfileCatalog.isNumeric(id)`。已在工作树修正调用。由于本机无Swift，修复仍需Actions完整`swift test`证明。
 - `.github/workflows/validate-ios.yml`现同时记录portable `swift test`和`xcodebuild test`日志，并always写关键错误/XCTest摘要到step summary；工作流尚未提交和经macOS runner验证。
 - 下一步：检查diff与shell/YAML格式，提交Swift修复、诊断工作流和矩阵/续记，推送B验证分支；根据新run的step summary确认编译及全部Core/App/XCTest结果，继续修复真实失败。
+
+## 2026-10-25 AI交易数字守卫完整数字边界
+
+- 审计B版`NextAIOutputGuard`发现价位正则只接收最多4位小数且没有完整token边界，可能把`1.10009`的前缀当成通过的价格；份额/价格正则也需要拒绝逗号分组和负数截取。已将匹配改为完整数字token，逗号分组不解析为可授权数字，负号进入比较后因不在规则计划集合而被拦截。
+- 新增`NextChainScenarioTests`断言：跨证券长小数价位拒绝、相同数值尾随零放行、逗号格式份额/价格拒绝、负份额拒绝。守卫在手机统一AI结果、持仓问答均共用，调用链静态核对通过；本机没有Swift/Xcode，此批新回归尚未运行。
+- Matrix第46行保持🟡，旧Core守卫曾在`40153805941`136/136通过，但新发现的前缀漏洞说明旧覆盖不足；新增边界修复不得在CI通过前宣称已验证。总状态仍✅1、🟡17、🟠123、⚠️4。
+- 下一步：与画像类型引用修复、Portable XCTest失败摘要一起检查`git diff --check`，提交并推送B验证分支，取得最新完整Core/App/XCTest结果；如CI仍失败，使用step summary具体错误修复。继续B独立开发，无A代码合并。
+
+## 2026-10-25 AI交易数字守卫边界回归续记
+
+- 前一断点中画像校验器类型名错误已于`6a17b2b`修复并推送；当前工作树重新审计显示，新增守卫变更尚未提交。之前“portable测试失败”是该类型名错误导致，不能沿用为最新CI结论，需看新run。
+- 继续收紧AI交易数字守卫：匹配完整数字token，处理有符号数字、逗号分组、英文操作措辞；逗号格式明确拒绝；新增长小数前缀绕过、非法后缀、逗号份额/价格、负份额、英文价格和尾随零等回归断言。JavaScript捕获组烟测覆盖这些边界，`git diff --check`通过；不是Swift/XCTest执行结果。
+- Matrix第46项仍🟡，新回归未由Swift运行。总数维持✅1、🟡17、🟠123、⚠️4。
+- 下一步：提交并推送本批守卫及测试至独立B验证分支，观察CI诊断摘要；如果portable Swift测试通过，再继续完整Xcode测试的具体失败定位。若仍失败，按实际日志修复，不降低测试/统计/防未来门槛。此后从Matrix继续下一个可处理Partial。产品红线：B独立、真实账户唯一、无模拟交易、无自动下单。

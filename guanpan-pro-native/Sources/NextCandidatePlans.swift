@@ -863,14 +863,14 @@ enum NextDecisionContextFreshness {
 /// decimal is present in the deterministic rule-engine plan supplied to this call.
 enum NextAIOutputGuard {
     private static let actionPricePatterns = [
-        #"(?:卖出|买回|买入|卖|买|挂单|限价|建议卖价|建议买价)\s*(?:价)?[^\n。；;]{0,40}?(?:¥|￥)?\s*(\d+\.\d{1,4})"#,
-        #"(?:卖出|买回|买入|卖|买|挂单|限价)[^\n。；;]{0,40}?(?:¥|￥)\s*(\d+(?:\.\d{1,4})?)"#,
-        #"(?:建议卖价|建议买价|卖出价|买回价|买入价|限价)\s*[:：]?\s*(\d+(?:\.\d{1,4})?)\s*(?:元)?"#,
-        #"(\d+\.\d{1,4})\s*(?:元)?\s*(?:卖出|买回|买入|挂单|限价)"#
+        #"(?:卖出|买回|买入|卖|买|挂单|限价|建议卖价|建议买价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)\s*(?:价)?[^\n。；;]{0,40}?(?:¥|￥|\$)?\s*(?<![\d.,A-Za-z_])([-+]?\d[\d,]*\.\d+[A-Za-z_]*)(?![\d.,A-Za-z_])"#,
+        #"(?:卖出|买回|买入|卖|买|挂单|限价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)[^\n。；;]{0,40}?(?:¥|￥|\$)\s*(?<![\d.,A-Za-z_])([-+]?\d[\d,]*(?:\.\d+)?[A-Za-z_]*)(?![\d.,A-Za-z_])"#,
+        #"(?:建议卖价|建议买价|卖出价|买回价|买入价|限价|sell\s+price|buyback\s+price|limit\s+price)\s*[:：]?\s*(?<![\d.,A-Za-z_])([-+]?\d[\d,]*(?:\.\d+)?[A-Za-z_]*)(?![\d.,A-Za-z_])\s*(?:元)?"#,
+        #"(?<![\d.,A-Za-z_])([-+]?\d[\d,]*\.\d+[A-Za-z_]*)(?![\d.,A-Za-z_])\s*(?:元)?\s*(?:卖出|买回|买入|挂单|限价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)"#
     ]
     private static let actionUnitPatterns = [
-        #"(?:卖出|买回|买入|卖|买|挂单|限价)[^\n。；;]{0,28}?(\d+)\s*(?:份|股)"#,
-        #"(\d+)\s*(?:份|股)[^\n。；;]{0,16}?(?:卖出|买回|买入|挂单|限价)"#
+        #"(?:卖出|买回|买入|卖|买|挂单|限价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)[^\n。；;]{0,28}?(?<![\d.,A-Za-z_])([-+]?\d[\d,]*)(?![\d.,A-Za-z_])\s*(?:份|股|units?|shares?)"#,
+        #"(?<![\d.,A-Za-z_])([-+]?\d[\d,]*)(?![\d.,A-Za-z_])\s*(?:份|股|units?|shares?)[^\n。；;]{0,16}?(?:卖出|买回|买入|挂单|限价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)"#
     ]
     private static let financialClaimPatterns = [
         #"(?:预计|预估|理论)?(?:净收益|毛收益|收益|毛价差|价差|等效降本|降本|成本降低|手续费|胜率|成功率|触达概率|资金占用|持仓占比|现金占比|回本涨幅)[^\n。；;]{0,20}?(?:¥|￥)?\s*\d+(?:\.\d+)?\s*(?:元|%|倍|/份)?"#,
@@ -945,7 +945,7 @@ enum NextAIOutputGuard {
 
     private static func containsActionMetrics(_ text: String) -> Bool {
         for pattern in actionPricePatterns + actionUnitPatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             if regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return true }
         }
         return false
@@ -953,17 +953,18 @@ enum NextAIOutputGuard {
 
     static func containsUnverifiedAction(_ text: String, approvedPrices: Set<Decimal>, approvedUnits: Set<Int>) -> Bool {
         for pattern in actionPricePatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             let range = NSRange(text.startIndex..., in: text)
             for match in regex.matches(in: text, range: range) {
                 guard match.numberOfRanges > 1,
                       let valueRange = Range(match.range(at: 1), in: text) else { continue }
-                guard let decimal = Decimal(string: String(text[valueRange])),
+                let raw = String(text[valueRange])
+                guard !raw.contains(","), let decimal = Decimal(string: raw),
                       approvedPrices.contains(where: { abs($0 - decimal) < Decimal(string: "0.000001")! }) else { return true }
             }
         }
         for pattern in actionUnitPatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             let range = NSRange(text.startIndex..., in: text)
             for match in regex.matches(in: text, range: range) {
                 guard match.numberOfRanges > 1,
