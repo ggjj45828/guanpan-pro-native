@@ -247,6 +247,17 @@ enum NextDecisionDiff {
 // MARK: - 决策记忆仓库（只做内存整理，持久化由 App 层负责）
 
 enum NextDecisionMemory {
+    /// A manual ledger fill may be associated only with the same holding's still-pending
+    /// decision from the same Shanghai trading day. The UI must let the user choose it;
+    /// matching by code/time alone is never treated as proof that a fill followed advice.
+    static func canLinkManualFill(_ record: NextDecisionRecord, code: String, at time: Date) -> Bool {
+        guard record.code == code, record.outcome == .pending,
+              record.createdAt <= time, time.timeIntervalSince1970.isFinite else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar.isDate(record.createdAt, inSameDayAs: time)
+    }
+
     /// Resolve a saved manual-trade candidate to today's pending evidence record.
     /// Revisions preserve the original immutable snapshot, so matching by the latest price
     /// would incorrectly fail after an intraday repricing; code/day/strategy is the stable key.

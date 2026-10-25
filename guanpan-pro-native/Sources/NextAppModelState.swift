@@ -210,7 +210,7 @@ import Combine
     }
 
     func recordTrade(code: String, name: String, side: String, units: Int, price: Decimal, fee: Decimal,
-                     at tradedAt: Date = Date()) throws {
+                     at tradedAt: Date = Date(), decisionMemoryID: UUID? = nil) throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), units > 0, price > 0,
               side == "buy" || side == "sell", fee >= 0, !fee.isNaN,
               tradedAt.timeIntervalSince1970.isFinite, tradedAt <= Date().addingTimeInterval(60) else {
@@ -218,6 +218,18 @@ import Combine
         }
         if rules[code]?.assetClass == .etf || quotes[code]?.quote.providerInstrumentType == "ETF" {
             guard fee == NextTradeFees.etfPerTrade else { throw NextError.invalid("已核实 ETF 的手续费按每笔 ¥0.10 记录") }
+        }
+        var linkedDecision: NextDecisionRecord?
+        if let decisionMemoryID {
+            guard let record = decisionMemory.first(where: { $0.id == decisionMemoryID }),
+                  NextDecisionMemory.canLinkManualFill(record, code: code, at: tradedAt) else {
+                throw NextError.invalid("所选 AI 决策不属于这只证券、不是同一交易日或已经处理；真实流水未写入")
+            }
+            var revised = record
+            guard NextDecisionMemory.confirmFill(&revised, price: price, units: units, at: tradedAt) else {
+                throw NextError.invalid("成交时间早于 AI 决策或成交信息无效；真实流水未写入")
+            }
+            linkedDecision = revised
         }
         let gross = price * Decimal(units)
         var updated = book
@@ -253,6 +265,9 @@ import Combine
         }
         updated.fills.append(NextFill(date: tradedAt, code: code, side: side, units: units, price: price, fee: fee, realized: realized))
         try commitRealLedger(updated, action: side == "buy" ? "记录成交买入" : "记录成交卖出", reason: "用户核对成交；本笔手续费 ¥\(NextMoney.text(fee))")
+        if let linkedDecision, let index = decisionMemory.firstIndex(where: { $0.id == linkedDecision.id }) {
+            decisionMemory[index] = linkedDecision
+        }
         // 真实成交是画像的主要证据来源：记完账立刻重算一次，界面上的「AI 对我的了解」同步变化。
         learnProfile()
     }

@@ -1789,10 +1789,14 @@ struct TradeEntrySheet: View {
     @State private var fee = ""
     @State private var confirm = false
     @State private var confirmImport = false
+    @State private var linkedDecisionID: UUID?
     private var name: String { model.name(for: request.code) }
     /// 名称没查出来时返回的是代码本身（不再用「场内证券」这种占位词），据此判断是否还在等名称。
     private var nameResolved: Bool { name != request.code }
     private var verifiedETF: Bool { model.rules[request.code]?.assetClass == .etf || model.quotes[request.code]?.quote.providerInstrumentType == "ETF" }
+    private var linkableDecisions: [NextDecisionRecord] {
+        model.decisionMemory.filter { NextDecisionMemory.canLinkManualFill($0, code: request.code, at: Date()) }
+    }
     /// 本笔需要的现金（买入含手续费）。字段没填全就是 nil。
     private var tradeAmount: Decimal? {
         guard let count = Int(units), count > 0,
@@ -1854,6 +1858,19 @@ struct TradeEntrySheet: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                if !linkableDecisions.isEmpty {
+                    Section("AI 决策记忆（可选关联）") {
+                        Picker("对应的当日判断", selection: $linkedDecisionID) {
+                            Text("不关联").tag(Optional<UUID>.none)
+                            ForEach(linkableDecisions) { record in
+                                Text("\(record.snapshot.headline) · \(record.createdAt.formatted(date: .omitted, time: .shortened))")
+                                    .tag(Optional(record.id))
+                            }
+                        }
+                        Text("只有你确认本笔真实成交确实来自所选判断时才关联；未选择时只记真实流水，不自动猜测。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle(request.side == "buy" ? "记录买入" : "记录卖出")
             .navigationBarTitleDisplayMode(.inline)
@@ -1876,7 +1893,10 @@ struct TradeEntrySheet: View {
                 Button("确认记录") {
                     do {
                         guard let count = Int(units) else { throw NextError.invalid("份额无效") }
-                        try model.recordTrade(code: request.code, name: name, side: request.side, units: count, price: try NextMoney.parse(price), fee: try NextMoney.parse(fee))
+                        try model.recordTrade(code: request.code, name: name, side: request.side, units: count,
+                                              price: try NextMoney.parse(price), fee: try NextMoney.parse(fee),
+                                              decisionMemoryID: linkedDecisionID)
+                        Task { await model.refreshGuidance() }
                         dismiss()
                     } catch { model.errorMessage = error.localizedDescription }
                 }

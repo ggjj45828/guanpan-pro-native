@@ -227,6 +227,20 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertTrue(pendingReview.note.contains("待复盘"))
     }
 
+    func testManualFillCanLinkOnlySameHoldingPendingDecisionOnSameShanghaiDay() {
+        let pending = record(snapshot())
+        XCTAssertTrue(NextDecisionMemory.canLinkManualFill(pending, code: "159941", at: now))
+        XCTAssertFalse(NextDecisionMemory.canLinkManualFill(pending, code: "513100", at: now))
+        XCTAssertFalse(NextDecisionMemory.canLinkManualFill(pending, code: "159941",
+                                                            at: now.addingTimeInterval(86_400)))
+        XCTAssertFalse(NextDecisionMemory.canLinkManualFill(pending, code: "159941",
+                                                            at: pending.createdAt.addingTimeInterval(-1)))
+        var handled = pending
+        XCTAssertTrue(NextDecisionMemory.confirmFill(&handled, price: Decimal(string: "1.4")!, units: 100, at: now))
+        XCTAssertFalse(NextDecisionMemory.canLinkManualFill(handled, code: "159941", at: now),
+                       "已处理决策不能再次关联另一笔手工成交")
+    }
+
     // MARK: - 新闻 → 持仓 → 计划
 
     private var currentNewsDate: String {

@@ -849,6 +849,11 @@ struct AIFillSheet: View {
     @State private var feeText = "0.10"
     @State private var tradedAt = Date()
     @State private var submitError: String?
+    @State private var linkedDecisionID: UUID?
+
+    private var linkableDecisions: [NextDecisionRecord] {
+        model.decisionMemory.filter { NextDecisionMemory.canLinkManualFill($0, code: code, at: tradedAt) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -867,6 +872,19 @@ struct AIFillSheet: View {
                 Section {
                     Text("只有券商已真实成交才填写。保存后会立刻更新真实份额、成本、现金与已实现收益，AI 随即按新账户状态重新分析。")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                if plan == nil && !linkableDecisions.isEmpty {
+                    Section("AI 决策记忆（可选关联）") {
+                        Picker("对应的当日判断", selection: $linkedDecisionID) {
+                            Text("不关联").tag(Optional<UUID>.none)
+                            ForEach(linkableDecisions) { record in
+                                Text("\(record.snapshot.headline) · \(record.createdAt.formatted(date: .omitted, time: .shortened))")
+                                    .tag(Optional(record.id))
+                            }
+                        }
+                        Text("只有确认成交来自所选判断时才关联；不选择时不会自动猜测。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if let submitError {
                     Section { Text(submitError).font(.caption).foregroundStyle(.red) }
@@ -895,7 +913,8 @@ struct AIFillSheet: View {
             if let plan {
                 try model.confirmCandidatePlan(plan.id, price: price, units: units, fee: fee, at: tradedAt)
             } else {
-                try model.recordTrade(code: code, name: name, side: side, units: units, price: price, fee: fee, at: tradedAt)
+                try model.recordTrade(code: code, name: name, side: side, units: units, price: price,
+                                      fee: fee, at: tradedAt, decisionMemoryID: linkedDecisionID)
                 Task { await model.refreshGuidance() }
             }
             dismiss()
