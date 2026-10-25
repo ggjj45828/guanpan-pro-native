@@ -66,6 +66,33 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertTrue(changes.isEmpty, "微小价格抖动不应产生改判记录：\(changes)")
     }
 
+    func testDecisionDiffExplainsChangedResearchAndAccountEvidence() {
+        let old = snapshot(risks: ["踏空风险"])
+        let revised = NextDecisionSnapshot(
+            price: "1.400", previousClose: "1.396", quoteSource: "test", quoteAt: now,
+            units: 8_000, averageCost: "1.390",
+            nasDays: 60, nasVwap20: "1.398", nasCloseVsVwap20: 0.4,
+            nasAmplitude60: 2.1, nasRoundTrips60: 3.2, nasVolatility120: 2.0,
+            nasSupportP10: "1.350", nasResistanceP90: "1.460",
+            nasStale: false, nasEnoughForLongTerm: true,
+            newsTitles: [], profileTags: ["长期持有", "核心仓"],
+            state: "窄幅震荡", strategy: "持有", headline: "持有",
+            evidence: ["成交量恢复", "组合限制新增买入"], risks: ["突破风险"],
+            limitPrice: nil, limitUnits: nil, expectedNetGain: nil,
+            expectedCostReduction: nil, confidenceLevel: "高")
+
+        let changes = NextDecisionDiff.compare(old: old, new: revised)
+        XCTAssertTrue(changes.contains { $0.contains("60日典型振幅") })
+        XCTAssertTrue(changes.contains { $0.contains("区间往返统计") })
+        XCTAssertTrue(changes.contains { $0.contains("120日波动率") })
+        XCTAssertTrue(changes.contains { $0.contains("NAS历史价格带") })
+        XCTAssertTrue(changes.contains { $0.contains("新增决策依据") && $0.contains("组合限制") })
+        XCTAssertTrue(changes.contains { $0.contains("决策依据不再成立") && $0.contains("VWAP") })
+        XCTAssertTrue(changes.contains { $0.contains("风险解除") })
+        XCTAssertTrue(changes.contains { $0.contains("账面单位成本") })
+        XCTAssertTrue(changes.contains { $0.contains("画像偏好") })
+    }
+
     func testCrossMarketEvidenceIsCapturedAndExplainsDecisionRevision() {
         let old = snapshot(crossMarketEvidence: [
             "bestMarket=KOSPI", "validation=historical_candidate",
@@ -89,6 +116,66 @@ final class NextDecisionMemoryTests: XCTestCase {
         let legacyData = try JSONSerialization.data(withJSONObject: object)
         let decoded = try JSONDecoder().decode(NextDecisionSnapshot.self, from: legacyData)
         XCTAssertNil(decoded.crossMarketEvidence, "旧版本决策记忆应迁移为无跨市场记录，而不是丢失整条历史")
+        XCTAssertNil(decoded.instrumentRole, "旧版本决策记忆缺少仓位角色时仍应可读取")
+        XCTAssertNil(decoded.instrumentRoleSource)
+        XCTAssertNil(decoded.instrumentRoleReason)
+    }
+
+    func testDecisionSnapshotCapturesPerInstrumentRoleAtDecisionTime() {
+        var profile = NextInvestorProfile()
+        profile.instrumentRoles["159941"] = NextInstrumentRole(
+            role: .core, source: .explicit, locked: true,
+            reason: "长期配置，不因短期波动做T", updatedAt: now)
+
+        let captured = NextDecisionMemory.snapshot(
+            item: guidanceItem(tPlan: nil, gridPlan: nil), quote: quote("1.400"),
+            position: NextPosition(code: "159941", name: "纳指ETF", units: 1_000,
+                                   bookCost: Decimal(string: "1400")!),
+            research: nil, news: [], profile: profile)
+
+        XCTAssertEqual(captured.instrumentRole, NextInstrumentRole.Role.core.rawValue)
+        XCTAssertEqual(captured.instrumentRoleSource, NextProfileSource.explicit.rawValue)
+        XCTAssertEqual(captured.instrumentRoleReason, "长期配置，不因短期波动做T")
+    }
+
+    func testUndecidedInstrumentRoleIsNotRecordedAsAnExplicitClassification() {
+        let captured = NextDecisionMemory.snapshot(
+            item: guidanceItem(tPlan: nil, gridPlan: nil), quote: nil, position: nil,
+            research: nil, news: [], profile: NextInvestorProfile())
+        XCTAssertNil(captured.instrumentRole)
+        XCTAssertNil(captured.instrumentRoleSource)
+        XCTAssertNil(captured.instrumentRoleReason)
+    }
+
+    func testDecisionDiffExplainsInstrumentRoleChange() {
+        let old = NextDecisionSnapshot(
+            instrumentRole: NextInstrumentRole.Role.tactical.rawValue,
+            instrumentRoleSource: NextProfileSource.learned.rawValue,
+            instrumentRoleReason: "真实成交样本达到最低门槛",
+            state: "窄幅震荡", strategy: "做T", headline: "候选做T",
+            confidenceLevel: "中")
+        let revised = NextDecisionSnapshot(
+            instrumentRole: NextInstrumentRole.Role.core.rawValue,
+            instrumentRoleSource: NextProfileSource.explicit.rawValue,
+            instrumentRoleReason: "用户指定为长期底仓",
+            state: "窄幅震荡", strategy: "持有", headline: "核心仓不做T",
+            confidenceLevel: "中")
+
+        let changes = NextDecisionDiff.compare(old: old, new: revised)
+        XCTAssertTrue(changes.contains {
+            $0.contains("行业机动仓") && $0.contains("长期核心仓") && $0.contains("用户指定为长期底仓")
+        })
+
+        let reasonOnly = NextDecisionDiff.compare(
+            old: revised,
+            new: NextDecisionSnapshot(
+                instrumentRole: NextInstrumentRole.Role.core.rawValue,
+                instrumentRoleSource: NextProfileSource.explicit.rawValue,
+                instrumentRoleReason: "用户调整了长期配置目标",
+                state: "窄幅震荡", strategy: "持有", headline: "核心仓不做T",
+                confidenceLevel: "中"))
+        XCTAssertTrue(reasonOnly.contains { $0.contains("用户调整了长期配置目标") },
+                      "角色不变但分类依据改变，也要进入改判解释")
     }
 
     func testCrossMarketRiskBlockedCandidateIsKeptInDecisionMemory() throws {
@@ -129,6 +216,35 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertNil(records[0].snapshot.limitPrice, "被撤回的计划不能把价格留成有效候选价")
     }
 
+    func testDecisionMemoryPersistsNoTradeConclusionForRealHoldingsOnly() {
+        let confidence = NextDataConfidence(level: .medium, quoteAgeSeconds: 10,
+                                            quoteSource: "fixture", dailyBarCount: 30,
+                                            minuteSampleCount: 0, minuteCompletenessPercent: 0,
+                                            missing: ["NAS分钟数据"], summary: "数据不足")
+        let held = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .insufficient,
+                                    strategy: .noTrade, headline: "今天不交易",
+                                    whyToday: ["分钟样本不足"], tPlan: nil, gridPlan: nil,
+                                    recovery: nil, confidence: confidence, portfolioNote: nil,
+                                    riskNotes: ["缺少长期分时证据"], score: 0, rank: 1,
+                                    isActionable: false)
+        let watchOnly = NextGuidanceItem(code: "510300", name: "沪深300ETF", state: .narrowRange,
+                                         strategy: .hold, headline: "观察",
+                                         whyToday: [], tPlan: nil, gridPlan: nil, recovery: nil,
+                                         confidence: confidence, portfolioNote: nil, riskNotes: [],
+                                         score: 0, rank: 2, isActionable: false)
+        let guidance = NextDailyGuidance(generatedAt: now, items: [held, watchOnly],
+                                         summary: "今日指导", noActionSummary: "不交易",
+                                         dataState: "测试数据")
+        let book = NextBook(positions: [NextPosition(code: "159941", name: "纳指ETF",
+                                                     units: 1_000, bookCost: Decimal(1_400))])
+
+        let records = NextDecisionMemory.records(from: guidance, quotes: [:], book: book,
+                                                 research: [:], news: [:], profile: nil)
+        XCTAssertEqual(records.map(\.code), ["159941"], "应记录真实持仓的不交易结论，不记录仅观察标的")
+        XCTAssertEqual(records.first?.snapshot.strategy, NextStrategyKind.noTrade.rawValue)
+        XCTAssertNil(records.first?.snapshot.limitPrice)
+    }
+
     func testReviseOnlyAppendsWhenSomethingActuallyChanged() {
         var memory = record(snapshot())
         XCTAssertNil(memory.revise(with: snapshot(), at: now.addingTimeInterval(60)))
@@ -150,6 +266,29 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertEqual(merged.count, 1, "同一天同一只只保留一条待处理记录")
         XCTAssertEqual(merged[0].snapshot.price, "1.400", "保留的是当时那一份快照")
         XCTAssertEqual(merged[0].revisions.count, 1)
+    }
+
+    func testDecisionMergeUsesShanghaiTradingDayAcrossUTCDateBoundaries() throws {
+        let formatter = ISO8601DateFormatter()
+        let beforeShanghaiMidnight = try XCTUnwrap(formatter.date(from: "2026-10-24T16:01:00Z"))
+        let afterShanghaiMidnight = try XCTUnwrap(formatter.date(from: "2026-10-25T15:59:00Z"))
+        let sameShanghaiDay = NextDecisionMemory.merge(
+            existing: [NextDecisionRecord(code: "159941", name: "纳指ETF",
+                                           createdAt: beforeShanghaiMidnight, snapshot: snapshot())],
+            incoming: [NextDecisionRecord(code: "159941", name: "纳指ETF",
+                                           createdAt: afterShanghaiMidnight,
+                                           snapshot: snapshot(headline: "日内改判"))])
+        XCTAssertEqual(sameShanghaiDay.count, 1, "同一上海交易日不能因UTC日期不同而重复建档")
+
+        let justBeforeShanghaiMidnight = try XCTUnwrap(formatter.date(from: "2026-10-25T15:59:00Z"))
+        let justAfterShanghaiMidnight = try XCTUnwrap(formatter.date(from: "2026-10-25T16:01:00Z"))
+        let differentShanghaiDays = NextDecisionMemory.merge(
+            existing: [NextDecisionRecord(code: "159941", name: "纳指ETF",
+                                           createdAt: justBeforeShanghaiMidnight, snapshot: snapshot())],
+            incoming: [NextDecisionRecord(code: "159941", name: "纳指ETF",
+                                           createdAt: justAfterShanghaiMidnight,
+                                           snapshot: snapshot(headline: "次日判断"))])
+        XCTAssertEqual(differentShanghaiDays.count, 2, "相同UTC日期的上海跨日判断不能合并")
     }
 
     func testExpireMarksExpiredWithoutProducingAnyFill() {

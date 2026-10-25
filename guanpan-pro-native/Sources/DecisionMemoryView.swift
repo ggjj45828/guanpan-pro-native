@@ -241,6 +241,10 @@ struct DecisionRecordDetail: View {
                 if !s.profileTags.isEmpty {
                     line("画像", s.profileTags.joined(separator: " · "), note: "只影响排序，不改价格")
                 }
+                if let role = s.instrumentRole {
+                    let source = s.instrumentRoleSource.map { " · \($0)" } ?? ""
+                    line("证券角色", role + source, note: s.instrumentRoleReason)
+                }
                 if !s.newsTitles.isEmpty {
                     line("相关新闻", "\(s.newsTitles.count) 条", note: s.newsTitles.first)
                 }

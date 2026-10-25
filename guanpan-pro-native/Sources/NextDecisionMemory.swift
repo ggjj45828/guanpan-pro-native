@@ -40,6 +40,10 @@ struct NextDecisionSnapshot: Codable, Equatable {
     let newsTitles: [String]
     /// 画像
     let profileTags: [String]
+    /// 建议生成时该证券在投资者画像中的角色；旧档案缺少这些字段时保持 nil。
+    let instrumentRole: String?
+    let instrumentRoleSource: String?
+    let instrumentRoleReason: String?
     /// 结论
     let state: String
     let strategy: String
@@ -66,6 +70,8 @@ struct NextDecisionSnapshot: Codable, Equatable {
          nasStale: Bool? = nil, nasEnoughForLongTerm: Bool? = nil,
          crossMarketEvidence: [String]? = nil,
          newsTitles: [String] = [], profileTags: [String] = [],
+         instrumentRole: String? = nil, instrumentRoleSource: String? = nil,
+         instrumentRoleReason: String? = nil,
          state: String, strategy: String, headline: String,
          evidence: [String] = [], risks: [String] = [],
          validUntil: Date? = nil, invalidConditions: [String] = [],
@@ -83,6 +89,9 @@ struct NextDecisionSnapshot: Codable, Equatable {
         self.nasStale = nasStale; self.nasEnoughForLongTerm = nasEnoughForLongTerm
         self.crossMarketEvidence = crossMarketEvidence
         self.newsTitles = newsTitles; self.profileTags = profileTags
+        self.instrumentRole = instrumentRole
+        self.instrumentRoleSource = instrumentRoleSource
+        self.instrumentRoleReason = instrumentRoleReason
         self.state = state; self.strategy = strategy; self.headline = headline
         self.evidence = evidence; self.risks = risks
         self.validUntil = validUntil; self.invalidConditions = invalidConditions
@@ -177,6 +186,18 @@ enum NextDecisionDiff {
         if old.headline != new.headline {
             changes.append("结论从「\(old.headline)」变为「\(new.headline)」")
         }
+        if old.instrumentRole != new.instrumentRole
+            || old.instrumentRoleSource != new.instrumentRoleSource
+            || old.instrumentRoleReason != new.instrumentRoleReason,
+           old.instrumentRole != nil || new.instrumentRole != nil
+                || old.instrumentRoleSource != nil || new.instrumentRoleSource != nil
+                || old.instrumentRoleReason != nil || new.instrumentRoleReason != nil {
+            let before = old.instrumentRole ?? "未分类/旧记录未保存"
+            let after = new.instrumentRole ?? "未分类"
+            let source = new.instrumentRoleSource.map { "（\($0)）" } ?? ""
+            let reason = new.instrumentRoleReason.map { "：\($0)" } ?? ""
+            changes.append("该证券画像角色从「\(before)」变为「\(after)」\(source)\(reason)")
+        }
         if let move = priceMove(from: old.price, to: new.price) {
             changes.append("价格从 ¥\(old.price ?? "—") 变为 ¥\(new.price ?? "—")（\(String(format: "%+.2f", move))%）")
         }
@@ -187,14 +208,37 @@ enum NextDecisionDiff {
         if old.nasStale != new.nasStale, let stale = new.nasStale {
             changes.append(stale ? "NAS 长期分时变成过期数据，结论降档" : "NAS 长期分时恢复新鲜，结论回到原档")
         }
+        if old.nasEnoughForLongTerm != new.nasEnoughForLongTerm,
+           let enough = new.nasEnoughForLongTerm {
+            changes.append(enough ? "NAS分钟档案达到长期统计质量门槛" : "NAS分钟档案不再满足长期统计质量门槛")
+        }
         if old.nasDays != new.nasDays, let days = new.nasDays {
             changes.append("NAS 分时归档从 \(old.nasDays.map(String.init) ?? "无") 天变为 \(days) 天")
+        }
+        if let before = old.nasAmplitude60, let after = new.nasAmplitude60, abs(before - after) >= 0.2 {
+            changes.append("60日典型振幅从 \(String(format: "%.2f", before))% 变为 \(String(format: "%.2f", after))%")
+        }
+        if let before = old.nasRoundTrips60, let after = new.nasRoundTrips60, abs(before - after) >= 0.5 {
+            changes.append("60日区间往返统计从 \(String(format: "%.1f", before)) 次变为 \(String(format: "%.1f", after)) 次")
+        }
+        if let before = old.nasVolatility120, let after = new.nasVolatility120, abs(before - after) >= 0.3 {
+            changes.append("120日波动率从 \(String(format: "%.2f", before))% 变为 \(String(format: "%.2f", after))%")
+        }
+        if old.nasSupportP10 != new.nasSupportP10 || old.nasResistanceP90 != new.nasResistanceP90 {
+            changes.append("NAS历史价格带从 ¥\(old.nasSupportP10 ?? "无")–¥\(old.nasResistanceP90 ?? "无") 变为 ¥\(new.nasSupportP10 ?? "无")–¥\(new.nasResistanceP90 ?? "无")")
         }
         if old.limitPrice != new.limitPrice {
             changes.append("限价从 ¥\(old.limitPrice ?? "无") 变为 ¥\(new.limitPrice ?? "无")")
         }
         if old.limitUnits != new.limitUnits {
             changes.append("份额从 \(old.limitUnits.map(String.init) ?? "无") 份变为 \(new.limitUnits.map(String.init) ?? "无") 份")
+        }
+        if old.expectedNetGain != new.expectedNetGain, old.expectedNetGain != nil || new.expectedNetGain != nil {
+            changes.append("预计净收益从 ¥\(old.expectedNetGain ?? "无") 变为 ¥\(new.expectedNetGain ?? "无")")
+        }
+        if old.expectedCostReduction != new.expectedCostReduction,
+           old.expectedCostReduction != nil || new.expectedCostReduction != nil {
+            changes.append("预计等效降本从 ¥\(old.expectedCostReduction ?? "无")/份 变为 ¥\(new.expectedCostReduction ?? "无")/份")
         }
         if old.validUntil != new.validUntil {
             changes.append("有效期从 \(dateText(old.validUntil)) 变为 \(dateText(new.validUntil))")
@@ -207,11 +251,33 @@ enum NextDecisionDiff {
         if !addedRisks.isEmpty {
             changes.append("新增风险 \(addedRisks.count) 条：\(Array(addedRisks).prefix(2).joined(separator: "；"))")
         }
+        let removedRisks = Set(old.risks).subtracting(Set(new.risks)).sorted()
+        if !removedRisks.isEmpty {
+            changes.append("风险解除：\(removedRisks.prefix(2).joined(separator: "；"))")
+        }
         if old.confidenceLevel != new.confidenceLevel {
             changes.append("数据置信度从 \(old.confidenceLevel) 变为 \(new.confidenceLevel)")
         }
         if old.units != new.units {
             changes.append("持仓从 \(old.units) 份变为 \(new.units) 份")
+        }
+        if old.averageCost != new.averageCost, old.averageCost != nil || new.averageCost != nil {
+            changes.append("账面单位成本从 ¥\(old.averageCost ?? "无") 变为 ¥\(new.averageCost ?? "无")")
+        }
+        let oldEvidence = Set(old.evidence)
+        let newEvidence = Set(new.evidence)
+        let addedEvidence = newEvidence.subtracting(oldEvidence).sorted()
+        let removedEvidence = oldEvidence.subtracting(newEvidence).sorted()
+        if !addedEvidence.isEmpty {
+            changes.append("新增决策依据：\(addedEvidence.prefix(2).joined(separator: "；"))")
+        }
+        if !removedEvidence.isEmpty {
+            changes.append("决策依据不再成立：\(removedEvidence.prefix(2).joined(separator: "；"))")
+        }
+        let oldProfileTags = Set(old.profileTags)
+        let newProfileTags = Set(new.profileTags)
+        if oldProfileTags != newProfileTags {
+            changes.append("画像偏好从「\(oldProfileTags.sorted().joined(separator: "、"))」变为「\(newProfileTags.sorted().joined(separator: "、"))」")
         }
         let oldCrossMarket = Set(old.crossMarketEvidence ?? [])
         let newCrossMarket = Set(new.crossMarketEvidence ?? [])
@@ -366,6 +432,8 @@ enum NextDecisionMemory {
             validUntil = plan.validUntil
             invalidConditions = plan.pauseConditions
         }
+        let role = profile?.role(for: item.code)
+        let roleIsKnown = role.map { $0.role != .undecided || !$0.reason.isEmpty } ?? false
         return NextDecisionSnapshot(
             price: quote.map { "\($0.price)" },
             previousClose: quote.map { "\($0.previousClose)" },
@@ -386,6 +454,9 @@ enum NextDecisionMemory {
             crossMarketEvidence: crossMarketSnapshot(research?.crossMarket),
             newsTitles: news.map(\.title),
             profileTags: profile?.styleTags ?? [],
+            instrumentRole: roleIsKnown ? role?.role.rawValue : nil,
+            instrumentRoleSource: roleIsKnown ? role?.source.rawValue : nil,
+            instrumentRoleReason: roleIsKnown ? role?.reason : nil,
             state: item.state.rawValue,
             strategy: item.strategy.rawValue,
             headline: item.headline,
@@ -400,17 +471,17 @@ enum NextDecisionMemory {
             confidenceLevel: item.confidence.level.rawValue)
     }
 
-    /// 只把「今天有动作或有机会」的持仓写进记忆：全是持有的不需要每天刷一条。
+    /// 每只真实持仓都保留当天的最终判断，包括持有/不交易；普通观察列表不进入账户决策记忆。
+    /// 同日刷新由 merge 合并为一条待处理记录并保存改判轨迹。
     static func records(from guidance: NextDailyGuidance, quotes: [String: NextQuote], book: NextBook,
                         research: [String: NextNASResearch], news: [String: [NextNewsInput]],
                         profile: NextInvestorProfile?) -> [NextDecisionRecord] {
         guidance.items.compactMap { item in
-            let hasPlan = item.tPlan?.isReady == true || item.gridPlan?.isReady == true
-            let crossMarketBlocked = NextCrossMarketRiskGuard.blockingReason(
-                evidence: research[item.code]?.crossMarket, now: guidance.generatedAt) != nil
-            guard hasPlan || item.newsImpact?.action.blocksPlan == true || crossMarketBlocked else { return nil }
+            guard let position = book.positions.first(where: { $0.code == item.code }), position.units > 0 else {
+                return nil
+            }
             let snapshot = snapshot(item: item, quote: quotes[item.code],
-                                    position: book.positions.first { $0.code == item.code },
+                                    position: position,
                                     research: research[item.code], news: news[item.code] ?? [],
                                     profile: profile)
             return NextDecisionRecord(code: item.code, name: item.name,
@@ -420,12 +491,19 @@ enum NextDecisionMemory {
 
     /// 同一天同一只证券只保留最新一条「待处理」记录，避免刷一次页面就堆一条。
     static func merge(existing: [NextDecisionRecord], incoming: [NextDecisionRecord],
-                      calendar: Calendar = .current) -> [NextDecisionRecord] {
+                      calendar: Calendar? = nil) -> [NextDecisionRecord] {
+        var tradingCalendar: Calendar
+        if let calendar {
+            tradingCalendar = calendar
+        } else {
+            tradingCalendar = Calendar(identifier: .gregorian)
+            tradingCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        }
         var result = existing
         for record in incoming {
             if let index = result.firstIndex(where: {
                 $0.code == record.code && $0.outcome == .pending
-                    && calendar.isDate($0.createdAt, inSameDayAs: record.createdAt)
+                    && tradingCalendar.isDate($0.createdAt, inSameDayAs: record.createdAt)
             }) {
                 // 同一天同一只：保留原记录，但把改判写进轨迹，不改「当时」的快照。
                 _ = result[index].revise(with: record.snapshot, at: record.createdAt)
