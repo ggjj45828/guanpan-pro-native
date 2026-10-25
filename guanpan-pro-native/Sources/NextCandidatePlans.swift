@@ -844,12 +844,22 @@ enum NextAIOutputGuard {
         #"(?:¥|￥)\s*\d+(?:\.\d+)?\s*(?:元)?[^\n。；;]{0,20}?(?:净收益|毛收益|收益|价差|降本|成本降低|手续费|资金占用)"#,
         #"\d+(?:\.\d+)?\s*(?:元/份|元每份|%|倍)?[^\n。；;]{0,12}?(?:净收益|毛收益|收益|降本|成本降低|手续费|胜率|成功率|触达概率)"#
     ]
+    // DecisionContext currently has no verified issuer/fundamental data feed.
+    // Reject numeric fundamentals from an LLM until such evidence is explicitly
+    // supplied and bound to the same security/context.
+    private static let unsupportedFundamentalPatterns = [
+        #"(?:市盈率|动态市盈率|静态市盈率|PE\s*\(?(?:TTM)?\)?|P/E)[^\n。；;]{0,12}?\d+(?:\.\d+)?\s*(?:倍)?"#,
+        #"(?:市净率|PB\s*\(?(?:MRQ)?\)?|P/B|市销率|PS\s*\(?(?:TTM)?\)?|P/S)[^\n。；;]{0,12}?\d+(?:\.\d+)?\s*(?:倍)?"#,
+        #"(?:ROE|ROA|EPS|净资产收益率|资产回报率|每股收益|资产负债率|股息率|分红率)[^\n。；;]{0,12}?\d+(?:\.\d+)?\s*%?"#,
+        #"(?:营收|营业收入|净利润|归母净利润|毛利率|净利率|营收增长|利润增长)[^\n。；;]{0,16}?(?:¥|￥)?\s*\d+(?:\.\d+)?\s*(?:亿元|万元|元|%)?"#,
+        #"\d+(?:\.\d+)?\s*(?:倍|亿元|万元|元|%)?[^\n。；;]{0,12}?(?:市盈率|动态市盈率|静态市盈率|PE\s*\(?(?:TTM)?\)?|P/E|市净率|PB\s*\(?(?:MRQ)?\)?|P/B|市销率|PS\s*\(?(?:TTM)?\)?|P/S|ROE|ROA|EPS|净资产收益率|资产回报率|每股收益|资产负债率|股息率|分红率|营收|营业收入|净利润|归母净利润|毛利率|净利率)"#
+    ]
 
     /// Numeric financial results belong to deterministic plan/account cards. The
     /// language model may explain them, but must not restate or recalculate them.
     static func containsUnverifiedFinancialClaim(_ text: String) -> Bool {
-        for pattern in financialClaimPatterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for pattern in financialClaimPatterns + unsupportedFundamentalPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             if regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return true }
         }
         return false

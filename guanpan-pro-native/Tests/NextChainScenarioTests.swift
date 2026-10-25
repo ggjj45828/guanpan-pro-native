@@ -273,6 +273,18 @@ final class NextChainScenarioTests: XCTestCase {
                       "大模型不能重述或编造计划收益与降本数值")
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("手续费 0.10 元/笔。"),
                       "手续费只能使用交易规则卡片的确定值")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("该基金PE(TTM)为12.5倍，ROE达到15%。"),
+                      "没有可信基本面输入时，在线模型不得编造PE或ROE数字")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("营收增长18%，归母净利润为3.2亿元。"),
+                      "没有可信基本面输入时，在线模型不得编造营收和利润数字")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("PB 1.4倍，净资产收益率 12.0%。"),
+                      "中英文基本面指标都必须受守卫约束")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("roe 12.0%, p/e 9.5x."),
+                      "大小写变化不能绕过基本面数字守卫")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("股息率为4.2%，资产负债率为38%。"),
+                      "股息率和资产负债率同样需要可信数据源")
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedFinancialClaim("当前没有可信基本面数据，暂不引用PE、ROE或营收。"),
+                       "仅说明缺少数据、不附未经验证数字时允许输出")
         XCTAssertFalse(NextAIOutputGuard.containsUnverifiedFinancialClaim("今天先观察，主要风险是单边下跌。"))
 
         let confidence = NextDataConfidence.assess(quote: quote(price: 1.4), now: now,
