@@ -547,6 +547,27 @@ final class NextChainScenarioTests: XCTestCase {
         }
     }
 
+    func testCoreHoldingProfileOverridesAutomaticGridCandidateToHold() throws {
+        let intraday = minutes((0..<60).map { 1.390 + Double($0) * 0.0003 })
+        var profile = NextInvestorProfile()
+        var role = NextInstrumentRole()
+        role.role = .core
+        role.source = .explicit
+        role.locked = true
+        role.updatedAt = now
+        role.reason = "用户手动标记的长期核心仓"
+        profile.instrumentRoles[code] = role
+
+        let guidance = scan(book(), quote: quote(price: 1.400), daily: bars(oscillatingCloses()),
+                            intraday: intraday, research: [code: research()], profile: profile)
+        let item = try XCTUnwrap(guidance.items.first)
+        XCTAssertEqual(item.strategy, .hold, "画像核心仓应优先于短期网格分类")
+        XCTAssertNil(item.gridPlan, "统一机会扫描不能为核心仓留下可执行网格")
+        XCTAssertNil(item.tPlan)
+        XCTAssertFalse(item.isActionable)
+        XCTAssertTrue(item.whyToday.contains { $0.contains("长期核心仓") })
+    }
+
     func testReliableLargeETFIOPVPremiumBlocksTAndGridExecutionPlans() throws {
         let intraday = minutes((0..<60).map { [1.386, 1.412, 1.387, 1.413, 1.388, 1.414][$0 % 6] })
         // 现价 1.400、可靠 IOPV 1.370，溢价约 +2.19%，超过明确的 ±1% 执行保护线。

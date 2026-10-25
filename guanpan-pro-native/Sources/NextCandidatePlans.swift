@@ -431,7 +431,7 @@ enum NextOpportunityScanner {
                                                          isOnExchange: NextDividendRules.isOnExchangeETF(position.code))
             let stats = NextIntradayStatsEngine.compute(samples: minutes, previousClose: quote?.previousClose)
             let oscillating = stats.vwapCrossings >= 2 && (stats.amplitudePercent ?? 0) >= 0.8
-            let strategy = NextStrategySelector.select(state: reading, grid: gridCheck, hasPosition: true,
+            var strategy = NextStrategySelector.select(state: reading, grid: gridCheck, hasPosition: true,
                                                        oscillating: oscillating, now: now)
             // NAS 长期统计：在场才有，没有就是没有。它参与「网格区间收敛」和「置信度降档」，
             // 但绝不改写行情事实，也绝不替本地算价格。
@@ -486,6 +486,14 @@ enum NextOpportunityScanner {
             let caps = NextPlanCaps.make(profile: profile, nasStats: nasStats, book: book,
                                          code: position.code,
                                          lotSize: rules[position.code]?.lotSize ?? 100, now: now)
+            let tacticalRoleNote = caps.tacticalTradingBlockReason
+            if let reason = tacticalRoleNote, (strategy.kind == .tTrade || strategy.kind == .grid) {
+                strategy = NextStrategyReading(kind: .hold,
+                    reasons: strategy.reasons + [reason],
+                    warnings: strategy.warnings + ["长期核心仓身份优先于短期震荡信号"],
+                    referencePrice: nil)
+            }
+            headline = strategy.kind.rawValue
 
             switch strategy.kind {
             case .tTrade:
@@ -574,6 +582,7 @@ enum NextOpportunityScanner {
             if !actionable { score -= 1 }
 
             var whyToday = reading.reasons + nasNotes
+            if let tacticalRoleNote { whyToday.append(tacticalRoleNote) }
             if let allocationContext { whyToday.append(allocationContext) }
             if let rsi = reading.signal?.rsi { whyToday.append("RSI14 \(String(format: "%.1f", rsi))") }
             if oscillating { whyToday.append("今日价格穿越 VWAP \(stats.vwapCrossings) 次，日内反复震荡") }

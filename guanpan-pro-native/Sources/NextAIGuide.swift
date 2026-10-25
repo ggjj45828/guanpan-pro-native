@@ -450,6 +450,8 @@ struct NextPlanCaps: Equatable {
     var maxGridTiers: Int? = nil
     var maxGridCash: Decimal? = nil
     var gridNotes: [String] = []
+    /// Long-term core holdings are not eligible for tactical T/grid plans.
+    var tacticalTradingBlockReason: String? = nil
     /// NAS 长期分时（60 日窗口）——只用于说明历史常见程度
     var nasAmplitude60: Double? = nil
     var nasRoundTrips60: Double? = nil
@@ -467,6 +469,12 @@ struct NextPlanCaps: Equatable {
                      book: NextBook, code: String, lotSize: Int, now: Date) -> NextPlanCaps {
         var caps = NextPlanCaps()
         if let profile {
+            let role = profile.role(for: code)
+            let learnedRoleIsFresh = role.updatedAt <= now
+                && now.timeIntervalSince(role.updatedAt) <= 90 * 86_400
+            if role.role == .core && (role.source == .explicit || role.locked || learnedRoleIsFresh) {
+                caps.tacticalTradingBlockReason = "该持仓在投资者画像中标记为长期核心仓；当前仅提供持有/组合风险指导，不生成做T或网格计划（可在画像中改为机动仓后重新评估）"
+            }
             if profile.trait(.tAppetite)?.value != "none" || profile.trait(.tAppetite)?.isKnown != true {
                 let available = book.availableUnits(for: code, at: now)
                 if available > 0 {
@@ -592,6 +600,9 @@ enum NextTradeTPlanner {
     static func plan(kind: NextTKind, book: NextBook, quote: NextQuote?, daily: [NextChartSample], intraday: [NextChartSample],
                      rules: NextInstrumentRules?, orderBook: NextOrderBookSnapshot? = nil, caps: NextPlanCaps? = nil,
                      now: Date, historyMissRate: Double? = nil) -> NextTPlannerResult {
+        if let reason = caps?.tacticalTradingBlockReason {
+            return .notWorthwhile([reason])
+        }
         // Planning receives only observations known at `now`; future timestamps are a hard look-ahead risk.
         let bars = daily.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
         let validIntraday = intraday.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
@@ -821,6 +832,9 @@ enum NextGridPlanner {
                      rules: NextInstrumentRules?, nasRange: NextNasRange? = nil,
                      orderBook: NextOrderBookSnapshot? = nil,
                      caps: NextPlanCaps? = nil, now: Date) -> NextGridPlannerResult {
+        if let reason = caps?.tacticalTradingBlockReason {
+            return .notRecommended([reason])
+        }
         // Daily bars can include a partial/current candle; future observations are never admissible.
         let bars = daily.filter { $0.close > 0 && $0.timestamp <= now }.sorted { $0.timestamp < $1.timestamp }
         // 网格不依赖当日分时点：按「日 K ≥60 + 行情 2 分钟内」评估（见 canPriceGridPlan）。

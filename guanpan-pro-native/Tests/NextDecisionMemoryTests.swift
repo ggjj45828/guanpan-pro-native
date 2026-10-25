@@ -319,6 +319,53 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertTrue(caps.gridNotes.first?.contains("40%") == true)
     }
 
+    func testCoreHoldingRoleBlocksTAndGridButUnknownAndStaleLearnedRolesDoNot() {
+        let book = NextBook(cash: 100_000, positions: [
+            NextPosition(code: "159941", name: "纳指ETF", units: 10_000, bookCost: Decimal(string: "13800")!)
+        ])
+        var profile = NextInvestorProfile()
+        var role = NextInstrumentRole()
+        role.role = .core
+        role.source = .learned
+        role.updatedAt = now
+        profile.instrumentRoles["159941"] = role
+        let coreCaps = NextPlanCaps.make(profile: profile, nasStats: nil, book: book, code: "159941",
+                                         lotSize: 100, now: now)
+        XCTAssertNotNil(coreCaps.tacticalTradingBlockReason)
+
+        let tResult = NextTradeTPlanner.plan(kind: .reverse, book: book, quote: nil, daily: [], intraday: [],
+                                             rules: nil, caps: coreCaps, now: now)
+        guard case let .notWorthwhile(tReasons) = tResult else {
+            return XCTFail("核心仓不应生成做T计划：\(tResult)")
+        }
+        XCTAssertTrue(tReasons.first?.contains("长期核心仓") == true)
+
+        let gridResult = NextGridPlanner.plan(book: book, quote: nil, daily: [], gridCheck: nil,
+                                              rules: nil, caps: coreCaps, now: now)
+        guard case let .notRecommended(gridReasons) = gridResult else {
+            return XCTFail("核心仓不应生成网格计划：\(gridResult)")
+        }
+        XCTAssertTrue(gridReasons.first?.contains("长期核心仓") == true)
+
+        role.updatedAt = now.addingTimeInterval(-91 * 86_400)
+        profile.instrumentRoles["159941"] = role
+        XCTAssertNil(NextPlanCaps.make(profile: profile, nasStats: nil, book: book, code: "159941",
+                                       lotSize: 100, now: now).tacticalTradingBlockReason,
+                     "过期的学习角色不能永久锁死计划")
+
+        role.source = .explicit
+        role.updatedAt = now.addingTimeInterval(-365 * 86_400)
+        profile.instrumentRoles["159941"] = role
+        XCTAssertNotNil(NextPlanCaps.make(profile: profile, nasStats: nil, book: book, code: "159941",
+                                          lotSize: 100, now: now).tacticalTradingBlockReason,
+                        "用户明确设置的核心仓角色应持续生效")
+
+        profile.instrumentRoles["159941"] = NextInstrumentRole()
+        XCTAssertNil(NextPlanCaps.make(profile: profile, nasStats: nil, book: book, code: "159941",
+                                       lotSize: 100, now: now).tacticalTradingBlockReason,
+                     "未分类持仓不得被误拦")
+    }
+
     func testTPlannerCapsUnitsByProfileRatio() {
         let book = NextBook(cash: 50_000, positions: [
             NextPosition(code: "159941", name: "纳指ETF", units: 10_000, bookCost: Decimal(string: "13800")!)
