@@ -597,3 +597,16 @@
 - 在`.github/workflows/validate-ios.yml`为`xcodebuild test`增加`tee`构建日志，并新增always-run汇总步骤，把编译/test failure行及`xcresulttool` XCTest summary输出到Actions step summary。目的是避免CI只显示exit 65、日志因匿名访问被挡时仍无法识别具体失败；不更改测试命令、门槛或策略逻辑。
 - 工作流变更通过手工检查缩进和shell管道结构；本机无Python YAML解析器/Swift/Xcode及bash，尚未在真实runner验证该summary命令兼容性，须由下次完整Validate证明。
 - 下一步：将画像数值校验、Core/AppModel测试、工作流诊断及矩阵一起提交，推送已授权B验证分支；以新run完整执行全部Swift/XCTest，优先获取详细失败并修复。不得把9c66bbf的IPA成功算作XCTest成功，也不得改变矩阵总状态。
+
+## 2026-10-25 画像用例CI失败定位续记
+
+- Actions工作流列表确认`00e59b5`的Validate run `40161974993`与仅增加Xcode诊断的`e8ba6dd` run `40162054574`都在第4步`Run portable Swift core tests`以exit 1失败；没有进入模拟器测试。上一轮先前仅知道Xcode阶段exit65的判断已被新提交验证覆盖，当前真实阻塞是Portable Swift测试。
+- 两个run的匿名详情页仅给出exit code且没有工件；因此尚不能确认是Swift编译错误还是新增断言失败。现已给portable `swift test`同样加日志 tee 与always-run失败摘要，未改测试口径。
+- `00e59b5`画像输入数值防崩代码/测试及`e8ba6dd`Xcode诊断已推送；新增Portable Swift诊断改动当前在工作树未提交。先检查工作流diff与shell结构、再提交/推送并触发下一次完整Validate，从step summary读具体错误并修复。
+- 本机无Swift/Xcode，新增数值校验Core测试未能本机运行。矩阵第32状态仍🟠，总计仍✅1、🟡17、🟠123、⚠️4。外部CI可用且必须继续排错，不可把“本机没有Swift”作为停止理由。
+
+## 2026-10-25 Portable Swift 失败静态定位
+
+- 对照`NextProfileTraitID`、`NextProfileCatalog`声明后发现编译错误来自新校验器调用了不存在的`NextProfileTraitID.isNumeric(id)`；真实静态方法为`NextProfileCatalog.isNumeric(id)`。已在工作树修正调用。由于本机无Swift，修复仍需Actions完整`swift test`证明。
+- `.github/workflows/validate-ios.yml`现同时记录portable `swift test`和`xcodebuild test`日志，并always写关键错误/XCTest摘要到step summary；工作流尚未提交和经macOS runner验证。
+- 下一步：检查diff与shell/YAML格式，提交Swift修复、诊断工作流和矩阵/续记，推送B验证分支；根据新run的step summary确认编译及全部Core/App/XCTest结果，继续修复真实失败。

@@ -222,7 +222,7 @@ enum NextProfileNumericInput {
     /// strategy engine can represent safely. Grid plans themselves are dynamic
     /// and currently produce at most six tiers.
     static func validationError(for id: NextProfileTraitID, value: Double) -> String? {
-        guard NextProfileTraitID.isNumeric(id) else { return "该画像项目不接受数值输入" }
+        guard NextProfileCatalog.isNumeric(id) else { return "该画像项目不接受数值输入" }
         guard value.isFinite else { return "请输入有限的数字" }
         switch id {
         case .minSpread:

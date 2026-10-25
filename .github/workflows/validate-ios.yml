@@ -21,7 +21,23 @@ jobs:
           brew install xcodegen
           xcodegen generate
       - name: Run portable Swift core tests
-        run: swift test --package-path guanpan-pro-native
+        run: |
+          set -o pipefail
+          swift test --package-path guanpan-pro-native 2>&1 | tee "$RUNNER_TEMP/swift-core-test.log"
+      - name: Summarize portable Swift core failures
+        if: always()
+        run: |
+          {
+            echo '## Portable Swift core test diagnostics'
+            echo
+            if [ -f "$RUNNER_TEMP/swift-core-test.log" ]; then
+              echo '```text'
+              grep -E 'error:|failed|Failure|XCTAssert|Executed|Test Case|Test Suite|fatal error|warning:' "$RUNNER_TEMP/swift-core-test.log" | tail -n 160 || true
+              echo '```'
+            else
+              echo 'No portable Swift log was produced.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Select an available iPhone simulator
         run: |
           xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
