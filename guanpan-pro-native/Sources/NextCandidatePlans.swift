@@ -432,7 +432,8 @@ enum NextPortfolioRiskGuard {
             return ("该只占比 \(String(format: "%.1f", currentPercent))%，超过你设置的 \(String(format: "%.1f", concentrationLimit))% 组合上限", nil, 0)
         }
         guard let targetPercent, targetPercent.isFinite, targetPercent >= 0, targetPercent <= 100 else {
-            return (nil, nil)
+            // No configured target means no allocation preference signal.
+            return (nil, nil, 0)
         }
         let gap = targetPercent - currentPercent
         if gap >= 0.5 {

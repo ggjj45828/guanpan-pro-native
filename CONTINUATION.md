@@ -14,7 +14,7 @@
 
 ## 当前目录和Git
 - 仓库：`C:\Users\Administrator\.codex\.chatgpt-projects\g-p-6ac90ddb9a888191a751dc24eb6a329d\work\github-upload`
-- 当前验证分支：`validation/acceptance-20261024`，本地 HEAD 应检查后续提交；本轮提交在本地，GitHub 推送因 github.com:443 网络连接重置/超时失败，尚未触发 Actions。
+- 当前验证分支：`validation/acceptance-20261024`，HEAD `9d070d3` 已推送成功。GitHub Actions Build iOS IPA run 165 与 Validate iOS candidate run 93 均失败（分别约1分钟、52秒）；公开日志只暴露 exit code 65，匿名 API 因速率限制不可用，具体 Xcode 错误正文尚未取得。不要将该提交记为 iOS 编译或 XCTest 通过。
 - 同名旧验证分支远端已比本地分叉；为避免强推覆盖，已撤销合并并创建独立验证分支。workflow 已接受 `validation/**`。
 - 用户之前已明确授权把本轮 iOS 修改推送到验证分支并运行 Actions 编译。
 - 默认仓库 compose 已改为从 `nas-advisor-compat/server` 构建，NAS compat compose 同步加入容器端口变量。
@@ -424,4 +424,10 @@
 - 恢复时校验ID、代码、方向、份额、价格、费用、创建时间、未来时间和重复流水ID；建议回配仅限同一上海交易日，不猜测旧流水归属。候选计划撤销、耐心限价状态、用户反馈、决策选择/复盘等持久化数组统一整组赋值。
 - 新增Swift用例覆盖两笔真实成交恢复为加权成交价/费用、错证券或方向拒绝、旧NextFill缺失关联字段可解码、决策记忆重复恢复保留后续复盘。状态未升绿：此Windows环境无Swift/Xcode，新增测试尚未运行。
 - 本轮验证：NAS兼容服务58/58、旧服务84/84、同步服务58/58；Python compileall与顶层/兼容/同步三套Compose校验通过。Swift/XCTest、iOS编译、模拟器和NAS/iPhone端到端仍未验证。根测试脚本生成的验证日志/结果已更新。
-- 下一步第一项：触发验证分支GitHub Actions，修复任何Swift编译/XCTest问题；随后继续审核组合级配置、AI指导、成交与画像链路的剩余Partial。用户红线不变：只用真实账户、无模拟资金/持仓、不自动下单。
+- 下一步第一项：修复 run 165 日志中 `NextCandidatePlans.swift:435` 的元组返回类型错误，并在未设置组合目标比例的测试覆盖完整 `priorityBoost=0` 行为；随后推送并重跑 iOS CI。本机没有 Swift/Xcode，必须由macOS workflow验证。此后继续审核组合级配置、AI指导、成交与画像链路的剩余Partial。用户红线不变：只用真实账户、无模拟资金/持仓、不自动下单。
+
+## 2026-10-25 Actions编译错误修复续记
+
+- 已通过仓库现有GitHub凭据在内存中读取 run 165 日志，未显示或保存凭据。失败根因是 `NextCandidatePlans.swift:435` 的组合分配评估在目标比例缺失时返回二元组，而函数要求包含 `priorityBoost` 的三元组。
+- 现修正为 `(nil, nil, 0)`，并在 `NextCoreTests` 增加未设置目标比例时不拦截、不增加排序上下文、priority为0的用例。模拟器验证run 93由相同编译失败提前结束。
+- 该修复尚未推送及由macOS XCTest验证，矩阵统计和状态不升级。下一步推送后检查构建和模拟器验证，再继续现有核心链Partial。

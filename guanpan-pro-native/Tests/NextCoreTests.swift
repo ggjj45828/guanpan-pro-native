@@ -82,6 +82,13 @@ final class NextCoreTests: XCTestCase {
         XCTAssertTrue(NextPortfolioRiskGuard.allocationAssessment(currentPercent: .infinity,
                                                                    concentrationLimit: 40,
                                                                    targetPercent: nil).blockingNote?.contains("无法可靠计算") == true)
+
+        let noTarget = NextPortfolioRiskGuard.allocationAssessment(currentPercent: 12,
+                                                                     concentrationLimit: 40,
+                                                                     targetPercent: nil)
+        XCTAssertNil(noTarget.blockingNote)
+        XCTAssertNil(noTarget.context)
+        XCTAssertEqual(noTarget.priorityBoost, 0)
     }
     func testCashReserveIsHardLimitForPlannedBuys() {
         let total = Decimal(10_000)
