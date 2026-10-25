@@ -1010,21 +1010,39 @@ struct NextBuyOpportunity: Codable, Equatable {
         let center = (research.lower + research.upper) / 2
         let prices = [research.lower, center]
         let perStepBudget = budget / 2
+        var quantityOutOfRange = false
         let steps = prices.enumerated().compactMap { index, price -> NextPatientLimitStep? in
             guard price > 0, perStepBudget > fee else { return nil }
-            var lotCost = price * Decimal(lotSize)
+            let lotCost = price * Decimal(lotSize)
+            guard lotCost > 0, !lotCost.isNaN else { return nil }
             let availableBudget = perStepBudget - fee
             let unroundedLotCount = NSDecimalNumber(decimal: availableBudget)
                 .dividing(by: NSDecimalNumber(decimal: lotCost)).decimalValue
             var roundedLotCount = Decimal()
             var unroundedLotCountCopy = unroundedLotCount
             NSDecimalRound(&roundedLotCount, &unroundedLotCountCopy, 0, .down)
-            let rawUnits = NSDecimalNumber(decimal: roundedLotCount).intValue * lotSize
+            guard !roundedLotCount.isNaN, roundedLotCount >= 0 else { return nil }
+            let maxLots = NextPatientLimitPlan.maximumSafeUnits / lotSize
+            guard maxLots > 0, roundedLotCount <= Decimal(maxLots) else {
+                quantityOutOfRange = true
+                return nil
+            }
+            let lots = NSDecimalNumber(decimal: roundedLotCount).intValue
+            let (rawUnits, overflow) = lots.multipliedReportingOverflow(by: lotSize)
+            guard !overflow, rawUnits <= NextPatientLimitPlan.maximumSafeUnits else {
+                quantityOutOfRange = true
+                return nil
+            }
             guard rawUnits >= lotSize else { return nil }
             let amount = price * Decimal(rawUnits)
+            guard !amount.isNaN, amount >= 0, amount + fee <= perStepBudget else { return nil }
             return NextPatientLimitStep(level: index + 1, limit: price, units: rawUnits, budget: amount, fee: fee)
         }
-        if steps.isEmpty { reasons.append("当前每档预算不足一手，建议先累计新增预算。") }
+        if quantityOutOfRange {
+            reasons.append("预算对应份额超过单个候选计划的安全上限；请降低分配预算后重新分析，不生成超大份额计划。")
+        } else if steps.isEmpty {
+            reasons.append("当前每档预算不足一手，建议先累计新增预算。")
+        }
         reasons.append("价格只作用户可修改的等待计划；不会占用真实现金或提交订单。")
         return NextBuyOpportunity(code: code, evidence: evidence, priceResearch: research, limitSteps: steps, riskSummary: reasons.joined(separator: " "), status: "待你核对", canSavePlan: !steps.isEmpty)
     }
@@ -1032,6 +1050,7 @@ struct NextBuyOpportunity: Codable, Equatable {
 
 /// A patient limit plan is a reminder/decision record, never a broker order.
 struct NextPatientLimitPlan: Codable, Identifiable, Equatable {
+    static let maximumSafeUnits = 100_000_000
     var id = UUID()
     let code: String
     let name: String
@@ -1047,7 +1066,7 @@ struct NextPatientLimitPlan: Codable, Identifiable, Equatable {
     func validate() throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), !name.isEmpty,
               !limitPrice.isNaN, limitPrice > 0, limitPrice <= 100000,
-              units > 0, units <= 100000000, expiresAt > createdAt,
+              units > 0, units <= Self.maximumSafeUnits, expiresAt > createdAt,
               ["等待价格提醒", "已暂停", "价格已触发", "已撤销", "已过期"].contains(state),
               triggeredAt.map({ $0 >= createdAt && $0 <= expiresAt }) ?? true else {
             throw NextError.invalid("耐心限价计划的证券、目标价、份额或有效期无效")

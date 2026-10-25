@@ -663,6 +663,13 @@ final class NextCoreTests: XCTestCase {
         XCTAssertEqual(plan.limitSteps.count, 2, plan.riskSummary)
         XCTAssertEqual(plan.limitSteps[0].fee, Decimal(string: "0.10"))
         XCTAssertEqual(book.cash, 0, "planning never spends the real ledger")
+        var oversizedGoal = goal
+        oversizedGoal.monthlyBudget = Decimal(string: "1e30")!
+        let oversized = try NextBuyOpportunity.prepare(code: q.code, book: book, goal: oversizedGoal,
+            quote: live, research: range, rules: etfRules(), evidence: facts, now: now)
+        XCTAssertFalse(oversized.canSavePlan, "超过安全整数/候选计划份额范围的预算必须拒绝生成计划")
+        XCTAssertTrue(oversized.limitSteps.isEmpty)
+        XCTAssertTrue(oversized.riskSummary.contains("安全上限"))
         let unverified = try NextBuyOpportunity.prepare(code: q.code, book: book, goal: goal, quote: live, research: range, rules: nil, evidence: facts, now: now)
         XCTAssertFalse(unverified.canSavePlan, "a plausible lot size must not be guessed")
         let publicFeed = NextCachedQuote(quote: q, stamp: NextDataStamp(source: "Tencent qt.gtimg.cn", observedAt: now, quality: .live, detail: ""))
