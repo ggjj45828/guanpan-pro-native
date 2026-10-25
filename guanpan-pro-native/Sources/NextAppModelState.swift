@@ -478,18 +478,6 @@ import Combine
         if merged != decisionMemory { decisionMemory = merged }
     }
 
-    /// 用户确认「我在券商真的成交了」——只有这一步会写进决策记忆的成交字段。
-    /// 账本更新仍然由真实流水入口负责，这里不改持仓、不改现金。
-    func confirmDecisionFilled(id: UUID, price: Decimal, units: Int, at now: Date = Date()) {
-        guard let index = decisionMemory.firstIndex(where: { $0.id == id }) else { return }
-        var updated = decisionMemory[index]
-        guard NextDecisionMemory.confirmFill(&updated, price: price, units: units, at: now) else {
-            notice = "成交价与份额必须为正值，且决策仍可确认真实成交"; return
-        }
-        decisionMemory[index] = updated
-        notice = "已记录真实成交 \(units) 份 @ ¥\(price)。持仓与现金请在「录入真实成交」里更新。"
-    }
-
     func markDecisionSkipped(id: UUID, at now: Date = Date()) {
         guard let index = decisionMemory.firstIndex(where: { $0.id == id }) else { return }
         decisionMemory[index].outcome = .skipped

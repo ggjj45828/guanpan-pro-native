@@ -132,6 +132,62 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出价 1 元。",
                                                                    approvedPrices: planPrices, approvedUnits: [500]),
                       "整数价位同样不能绕过价格授权检查")
+
+        let confidence = NextDataConfidence.assess(quote: quote(price: 1.4), now: now,
+            dailyBarCount: 60, minuteSampleCount: 120, intradayLatestAt: now, dailyLatestAt: now)
+        let withdrawnPlan = NextTPlan(kind: .reverse, code: code, name: "纳指ETF",
+            sellPrice: Decimal(string: "0.850")!, buyPrice: Decimal(string: "0.830")!, units: 500,
+            grossSpread: 10, feeTotal: Decimal(string: "0.20")!, netGain: Decimal(string: "9.80")!,
+            costReductionPerUnit: Decimal(string: "0.0098")!, estimatedMissedUpside: 2,
+            estimatedContinuedDropLoss: 3, trampleRisk: "踏空风险", continuedDropRisk: "下跌风险",
+            volumeSupport: "成交量可支持", validUntil: now.addingTimeInterval(3600), cancelConditions: [],
+            evidence: [], confidence: confidence, historyMissRate: nil)
+        let withdrawnItem = NextGuidanceItem(code: code, name: "纳指ETF", state: .wideRange,
+            strategy: .tTrade, headline: "组合风险撤回", whyToday: [], tPlan: .ready(withdrawnPlan),
+            gridPlan: nil, recovery: nil, confidence: confidence,
+            portfolioNote: "组合仓位超过目标上限", riskNotes: [], score: 0, rank: 1, isActionable: false)
+        let withdrawnGuidance = NextDailyGuidance(generatedAt: now, items: [withdrawnItem],
+            summary: "今天不建议交易", noActionSummary: "继续持有", dataState: "组合风险撤回")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "建议卖出 500 份 @ 0.850 元，再在 0.830 买回。", guidance: withdrawnGuidance),
+            "被组合风险撤回的计划不能授权在线模型引用其中的价格或份额")
+
+        let allowedItem = NextGuidanceItem(code: code, name: "纳指ETF", state: .wideRange,
+            strategy: .tTrade, headline: "规则计划可执行", whyToday: [], tPlan: .ready(withdrawnPlan),
+            gridPlan: nil, recovery: nil, confidence: confidence, portfolioNote: nil, riskNotes: [],
+            score: 1, rank: 1, isActionable: true)
+        let otherPlan = NextTPlan(kind: .reverse, code: "513100", name: "日经ETF",
+            sellPrice: Decimal(string: "1.110")!, buyPrice: Decimal(string: "1.100")!, units: 200,
+            grossSpread: 2, feeTotal: Decimal(string: "0.20")!, netGain: Decimal(string: "1.80")!,
+            costReductionPerUnit: Decimal(string: "0.009")!, estimatedMissedUpside: 2,
+            estimatedContinuedDropLoss: 3, trampleRisk: "踏空风险", continuedDropRisk: "下跌风险",
+            volumeSupport: "成交量可支持", validUntil: now.addingTimeInterval(3600), cancelConditions: [],
+            evidence: [], confidence: confidence, historyMissRate: nil)
+        let otherItem = NextGuidanceItem(code: "513100", name: "日经ETF", state: .wideRange,
+            strategy: .tTrade, headline: "规则计划可执行", whyToday: [], tPlan: .ready(otherPlan),
+            gridPlan: nil, recovery: nil, confidence: confidence, portfolioNote: nil, riskNotes: [],
+            score: 1, rank: 2, isActionable: true)
+        let twoHoldingGuidance = NextDailyGuidance(generatedAt: now, items: [allowedItem, otherItem],
+            summary: "有两只候选", noActionSummary: "无", dataState: "完整")
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "纳指ETF建议卖出 500 份 @ 0.850 元；513100日经ETF建议买回 200 份 @ 1.100 元。",
+            guidance: twoHoldingGuidance))
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "513100日经ETF建议买回 200 份 @ 0.850 元。", guidance: twoHoldingGuidance),
+            "一只ETF的有效价格不能被挪用到另一只ETF")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "建议卖出 500 份 @ 0.850 元。", guidance: twoHoldingGuidance),
+            "存在多个可执行持仓时，未标证券的具体交易数字应拒绝")
+        let withdrawnOther = NextGuidanceItem(code: "510050", name: "上证50ETF", state: .trendingDown,
+            strategy: .pauseAdd, headline: "暂停加仓", whyToday: [], tPlan: nil, gridPlan: nil,
+            recovery: nil, confidence: confidence, portfolioNote: "组合超限", riskNotes: [],
+            score: -1, rank: 3, isActionable: false)
+        let mixedGuidance = NextDailyGuidance(generatedAt: now,
+            items: [allowedItem, otherItem, withdrawnOther], summary: "有候选", noActionSummary: "无",
+            dataState: "组合风险拦截")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedActionPrice(
+            "上证50ETF建议卖出 500 份 @ 0.850 元。", guidance: mixedGuidance),
+            "非actionable标的不能借用其他ETF的有效数字")
     }
 
     func testPhoneQuoteChainFillsOnlyMissingCodesFromFallbackSources() async throws {

@@ -720,9 +720,30 @@ enum NextAIOutputGuard {
     ]
 
     static func containsUnverifiedActionPrice(_ text: String, guidance: NextDailyGuidance) -> Bool {
-        var approvedPrices = Set<Decimal>()
-        var approvedUnits = Set<Int>()
-        for item in guidance.items {
+        // Validate each actionable sentence against its own security. A global
+        // whitelist would let the model copy ETF A's valid price onto ETF B.
+        let actionable = guidance.items.filter(\.isActionable)
+        let sentences = text.components(separatedBy: CharacterSet(charactersIn: "。！？；;\n"))
+        for sentence in sentences where containsActionMetrics(sentence) {
+            let referenced = guidance.items.filter {
+                sentence.contains($0.code) || sentence.localizedCaseInsensitiveContains($0.name)
+            }
+            // An explicit reference to a withdrawn holding cannot borrow another
+            // holding's actionable plan, even when the numeric values happen to match.
+            guard referenced.allSatisfy(\.isActionable) else { return true }
+            let matched = referenced.filter(\.isActionable)
+            let item: NextGuidanceItem
+            if matched.count == 1 {
+                item = matched[0]
+            } else if matched.isEmpty, actionable.count == 1, let only = actionable.first {
+                // A single actionable holding is unambiguous even if prose omits its name.
+                item = only
+            } else {
+                return true
+            }
+
+            var approvedPrices = Set<Decimal>()
+            var approvedUnits = Set<Int>()
             if case .ready(let plan) = item.tPlan {
                 approvedPrices.insert(plan.sellPrice)
                 approvedPrices.insert(plan.buyPrice)
@@ -736,8 +757,19 @@ enum NextAIOutputGuard {
                     approvedUnits.insert(tier.units)
                 }
             }
+            if containsUnverifiedAction(sentence, approvedPrices: approvedPrices, approvedUnits: approvedUnits) {
+                return true
+            }
         }
-        return containsUnverifiedAction(text, approvedPrices: approvedPrices, approvedUnits: approvedUnits)
+        return false
+    }
+
+    private static func containsActionMetrics(_ text: String) -> Bool {
+        for pattern in actionPricePatterns + actionUnitPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            if regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return true }
+        }
+        return false
     }
 
     static func containsUnverifiedAction(_ text: String, approvedPrices: Set<Decimal>, approvedUnits: Set<Int>) -> Bool {

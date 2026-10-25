@@ -162,9 +162,6 @@ struct DecisionRecordDetail: View {
     @Environment(\.gp) private var p
     @Environment(\.dismiss) private var dismiss
     let recordID: UUID
-    @State private var fillPrice = ""
-    @State private var fillUnits = ""
-    @State private var showFillForm = false
 
     private var record: NextDecisionRecord? { model.decisionMemory.first { $0.id == recordID } }
 
@@ -276,30 +273,13 @@ struct DecisionRecordDetail: View {
 
     private func handlingCard(_ record: NextDecisionRecord) -> some View {
         DataPanel(title: "我的处置", accent: p.chartGold, caption: record.outcome.rawValue) {
-            Text("只有你在券商真的成交了才点这里。这里只记事实，不自动改持仓与现金。")
+            Text("真实成交必须从 AI 候选计划的成交入口登记，才能同时更新真实流水、现金、持仓和本条决策记忆。此页不单独记成交。")
                 .font(.caption2).foregroundStyle(p.muted)
                 .fixedSize(horizontal: false, vertical: true)
             if record.outcome == .pending {
-                if showFillForm {
-                    HStack(spacing: 8) {
-                        TextField("成交价", text: $fillPrice).keyboardType(.decimalPad).textFieldStyle(.roundedBorder)
-                        TextField("份额", text: $fillUnits).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
-                    }
-                    HStack(spacing: 8) {
-                        GPActionButton(title: "确认成交", systemImage: "checkmark.circle") {
-                            if let price = Decimal(string: fillPrice), let units = Int(fillUnits) {
-                                model.confirmDecisionFilled(id: record.id, price: price, units: units)
-                                showFillForm = false
-                            }
-                        }
-                        GPActionButton(title: "取消", secondary: true) { showFillForm = false }
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        GPActionButton(title: "我已真实成交", systemImage: "checkmark.circle") { showFillForm = true }
-                        GPActionButton(title: "我放弃了", secondary: true) {
-                            model.markDecisionSkipped(id: record.id)
-                        }
+                HStack(spacing: 8) {
+                    GPActionButton(title: "我放弃了", secondary: true) {
+                        model.markDecisionSkipped(id: record.id)
                     }
                 }
             } else {
