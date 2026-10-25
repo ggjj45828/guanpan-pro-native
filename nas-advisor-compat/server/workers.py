@@ -38,6 +38,60 @@ EXTERNAL_MARKET_SESSIONS = {
     "US_NDX": ("America/New_York", (("09:30", "16:00"),)),
     "US_SPX": ("America/New_York", (("09:30", "16:00"),)),
 }
+# Official cash-market holidays for explicitly reviewed year/market pairs. An
+# unknown year (or market within a known year) cannot be treated as an ordinary
+# weekday and trigger market collection.
+# Sources: JPX calendar (jpx.co.jp/english/corporate/about-jpx/calendar/),
+# KRX/BOK 2026 holiday schedule (bok.or.kr/eng/main/contents.do?menuNo=400373),
+# HKEX Circular CT/075/25, and Nasdaq 2026 market holiday schedule.
+EXTERNAL_MARKET_CLOSURES_2026 = {
+    "JP_N225": frozenset({
+        "2026-01-01", "2026-01-02", "2026-01-12", "2026-02-11", "2026-02-23",
+        "2026-03-20", "2026-04-29", "2026-05-04", "2026-05-05", "2026-05-06",
+        "2026-07-20", "2026-08-11", "2026-09-21", "2026-09-22", "2026-09-23",
+        "2026-10-12", "2026-11-03", "2026-11-23", "2026-12-31",
+    }),
+    "KR_KOSPI": frozenset({
+        "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-02",
+        "2026-05-01", "2026-05-05", "2026-05-25", "2026-06-03", "2026-07-17",
+        "2026-08-17", "2026-09-24", "2026-09-25", "2026-10-05", "2026-10-09",
+        "2026-12-25", "2026-12-31",
+    }),
+    "HK_HSI": frozenset({
+        "2026-01-01", "2026-02-17", "2026-02-18", "2026-02-19", "2026-04-03",
+        "2026-04-06", "2026-04-07", "2026-05-01", "2026-05-25", "2026-06-19",
+        "2026-07-01", "2026-10-01", "2026-10-19", "2026-12-25",
+    }),
+    "US_NDX": frozenset({
+        "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+        "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+    }),
+    "US_SPX": frozenset({
+        "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+        "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+    }),
+}
+# JPX has published its 2027 cash-market calendar; other foreign 2027 calendars
+# remain unsupported and therefore fail closed until their own official source
+# is reviewed. Source: jpx.co.jp/english/corporate/about-jpx/calendar/.
+EXTERNAL_MARKET_CLOSURES_2027 = {
+    "JP_N225": frozenset({
+        "2027-01-01", "2027-01-02", "2027-01-03", "2027-01-11", "2027-02-11",
+        "2027-02-23", "2027-03-21", "2027-03-22", "2027-04-29", "2027-05-03",
+        "2027-05-04", "2027-05-05", "2027-07-19", "2027-08-11", "2027-09-20",
+        "2027-09-23", "2027-10-11", "2027-11-03", "2027-11-23", "2027-12-31",
+    }),
+}
+EXTERNAL_MARKET_EARLY_CLOSES_2026 = {
+    "US_NDX": {"2026-11-27": "13:00", "2026-12-24": "13:00"},
+    "US_SPX": {"2026-11-27": "13:00", "2026-12-24": "13:00"},
+    # HKEX 2026 circular CT/075/25: Lunar New Year, Christmas and New Year eves.
+    "HK_HSI": {"2026-02-16": "12:00", "2026-12-24": "12:00", "2026-12-31": "12:00"},
+}
+EXTERNAL_MARKET_SPECIAL_SESSIONS_2026 = {
+    # KRX opening ceremony delays the cash market open by one hour on Jan 2.
+    "KR_KOSPI": {"2026-01-02": (("10:00", "15:30"),)},
+}
 
 
 def market_session_open(market_id, now=None):
@@ -58,6 +112,23 @@ def market_session_open(market_id, now=None):
         return local.weekday() < 5 and ((570 <= minute <= 690) or (780 <= minute <= 900))
     timezone_name, sessions = EXTERNAL_MARKET_SESSIONS[market_id]
     local = now.astimezone(ZoneInfo(timezone_name))
+    day = local.date().isoformat()
+    if local.year == 2026:
+        closures = EXTERNAL_MARKET_CLOSURES_2026[market_id]
+    elif local.year == 2027:
+        closures = EXTERNAL_MARKET_CLOSURES_2027.get(market_id)
+        if closures is None:
+            return False
+    else:
+        return False
+    if day in closures:
+        return False
+    sessions = EXTERNAL_MARKET_SPECIAL_SESSIONS_2026.get(market_id, {}).get(day, sessions)
+    early_close = EXTERNAL_MARKET_EARLY_CLOSES_2026.get(market_id, {}).get(day)
+    if early_close:
+        close_minute = int(early_close[:2]) * 60 + int(early_close[3:])
+        sessions = tuple((start, min(end, early_close)) for start, end in sessions
+                         if int(start[:2]) * 60 + int(start[3:]) < close_minute)
     minute = local.hour * 60 + local.minute
     return local.weekday() < 5 and any(
         int(start[:2]) * 60 + int(start[3:]) <= minute <= int(end[:2]) * 60 + int(end[3:])

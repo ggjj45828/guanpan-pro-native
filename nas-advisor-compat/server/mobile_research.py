@@ -550,9 +550,11 @@ def minute_stats(database, code, now=None):
         close_vs_vwap = (float((close / (aggregate_value / aggregate_volume) - 1) * 100))
         lows = sorted(float(row["low"]) for row in good)
         highs = sorted(float(row["high"]) for row in good)
-        returns = [float(Decimal(str(daily_by_day[day]["close"])) / Decimal(str(daily_by_day[prior]["close"])) - 1)
-                   for prior, day in zip([r["day"] for r in good], [r["day"] for r in good][1:])
-                   if day in daily_by_day and prior in daily_by_day and Decimal(str(daily_by_day[prior]["close"])) > 0]
+        # Daily volatility must use adjacent archived daily bars, not adjacent
+        # *minute-verified* days. The latter can skip an unverified/missing
+        # session and accidentally label a multi-session return as one day.
+        window_days = [row["day"] for row in chosen]
+        returns = _daily_close_returns(daily_by_day, min(window_days), max(window_days)) if window_days else []
         price = lambda value: format(Decimal(str(value)).quantize(Decimal("0.0001")), "f")
         windows[str(count)] = {
             "window": count, "daysUsed": len(good), "dayCoverage": len(good) / max(1, len(chosen)),
@@ -574,6 +576,42 @@ def minute_stats(database, code, now=None):
                         "hasVolume": bool(verified_sessions), "enoughForLongTerm": enough,
                         "volumeCoverage": volume_coverage}, "freshness": freshness,
             "windows": windows, "roundTripEvidence": None}
+
+
+def _daily_close_returns(daily_by_day, first_day, last_day):
+    """Consecutive-session close returns inside a requested day window.
+
+    Rows between minute-qualified sessions remain in the daily series. This
+    keeps volatility on its declared one-session horizon when a minute day is
+    rejected for incomplete volume. Invalid closes break the series instead
+    of allowing a return to bridge across them.
+    """
+    closes = []
+    for day in sorted(key for key in daily_by_day if first_day <= key <= last_day):
+        try:
+            close = Decimal(str(daily_by_day[day]["close"]))
+            if close.is_finite() and close > 0:
+                closes.append((day, close))
+            else:
+                closes.append((day, None))
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            closes.append((day, None))
+    returns = []
+    for (previous_day, previous), (current_day, current) in zip(closes, closes[1:]):
+        if previous is None or current is None:
+            continue
+        try:
+            calendar_gap = (date.fromisoformat(current_day) - date.fromisoformat(previous_day)).days
+        except ValueError:
+            continue
+        # Friday→Monday is three calendar days; longer gaps may hide missing
+        # trading bars or an extended holiday, so do not label their return as
+        # one session. This intentionally reduces sample size rather than
+        # inventing a daily volatility observation.
+        if not 1 <= calendar_gap <= 3:
+            continue
+        returns.append(float(current / previous - 1))
+    return returns
 
 
 def milliseconds(stamp):

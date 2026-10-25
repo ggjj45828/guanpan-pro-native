@@ -381,9 +381,16 @@ enum NextTencentMinuteParser {
 // settlement rules from an ETF label, code prefix, or a hard-coded T+0 flag.
 enum NextSettlementRule: String, Codable { case t0, t1, unknown }
 enum NextAssetClass: String, Codable { case etf, equity, other, unknown }
-/// ETF 每笔固定手续费 ¥0.10：来自用户指定的核验规则，不按券商公告推断。
+/// ETF 估算手续费默认 ¥0.10/笔；实际成交手续费由用户按券商记录输入。
 enum NextTradeFees {
     static let etfPerTrade = Decimal(10) / Decimal(100)
+    static func isValid(_ fee: Decimal) -> Bool {
+        guard !fee.isNaN, fee >= 0, fee <= 100 else { return false }
+        var source = fee
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &source, 2, .plain)
+        return rounded == fee
+    }
 }
 struct NextInstrumentRules: Codable, Equatable {
     let code: String
@@ -394,21 +401,43 @@ struct NextInstrumentRules: Codable, Equatable {
     let feePerTrade: Decimal?
     let source: String
     let verifiedAt: Date?
-    var isVerified: Bool { assetClass != .unknown && settlement != .unknown && lotSize != nil && feePerTrade != nil && verifiedAt != nil && !source.isEmpty && !market.isEmpty }
-    static func verifiedETFMarketRule(code: String, market: String, at date: Date = Date()) -> NextInstrumentRules? {
+    var isVerified: Bool { isVerified(at: Date()) }
+    func isVerified(at now: Date, maximumAge: TimeInterval = 365 * 86_400) -> Bool {
+        guard assetClass != .unknown, settlement != .unknown, let lotSize, lotSize > 0,
+              let feePerTrade, NextTradeFees.isValid(feePerTrade), let verifiedAt,
+              !source.isEmpty, !market.isEmpty, maximumAge >= 0 else { return false }
+        let age = now.timeIntervalSince(verifiedAt)
+        return age.isFinite && age >= 0 && age <= maximumAge
+    }
+    static func verifiedETFMarketRule(code: String, market: String, at date: Date = Date(), feePerTrade: Decimal = NextTradeFees.etfPerTrade) -> NextInstrumentRules? {
         guard code.count == 6, code.allSatisfy(\.isNumber),
+              NextTradeFees.isValid(feePerTrade),
               (code.hasPrefix("15") && market == "SZSE") || ((code.hasPrefix("5") || code.hasPrefix("56")) && market == "SSE") else { return nil }
+        let feeText = NextMoney.text(feePerTrade)
         let provenance = market == "SSE"
-            ? "SSE ETF FAQ https://www.sse.com.cn/assortment/fund/etf/question/c/c_20240118_5734754.shtml · 100份；用户指定费率¥0.10；交收未知"
-            : "SZSE 基金竞价交易说明 https://investor.szse.cn/knowledge/fund/trade/t20171113_538865.html · 100份；用户指定费率¥0.10；交收未知"
+            ? "SSE ETF FAQ https://www.sse.com.cn/assortment/fund/etf/question/c/c_20240118_5734754.shtml · 100份；用户估算费率¥\(feeText)/笔；交收未知"
+            : "SZSE 基金竞价交易说明 https://investor.szse.cn/knowledge/fund/trade/t20171113_538865.html · 100份；用户估算费率¥\(feeText)/笔；交收未知"
         return NextInstrumentRules(code: code, market: market, assetClass: .etf, settlement: .unknown,
-            lotSize: 100, feePerTrade: NextTradeFees.etfPerTrade, source: provenance, verifiedAt: date)
+            lotSize: 100, feePerTrade: feePerTrade, source: provenance, verifiedAt: date)
+    }
+    /// A quote's ETF label is only fallback metadata. It must never replace a
+    /// still-current, more complete rule record (especially settlement).
+    static func preserveCurrentRule(existing: NextInstrumentRules?, fallback: NextInstrumentRules,
+                                    at date: Date = Date()) -> NextInstrumentRules {
+        guard let existing, existing.code == fallback.code, existing.isVerified(at: date) else { return fallback }
+        return existing
+    }
+    func withETFCommission(_ fee: Decimal) -> NextInstrumentRules {
+        let updatedSource = source.replacingOccurrences(of: #"用户(?:估算|指定)?费率¥[0-9.]+(?:/笔)?"#,
+            with: "用户估算费率¥\(NextMoney.text(fee))/笔", options: .regularExpression)
+        return NextInstrumentRules(code: code, market: market, assetClass: assetClass, settlement: settlement,
+            lotSize: lotSize, feePerTrade: fee, source: updatedSource, verifiedAt: verifiedAt)
     }
     func validate() throws {
         guard code.count == 6, code.allSatisfy(\.isNumber),
               (market.isEmpty || market.count <= 16), (source.isEmpty || source.count <= 160),
               lotSize.map({ $0 > 0 }) ?? true,
-              feePerTrade.map({ $0 >= 0 }) ?? true else {
+              feePerTrade.map({ NextTradeFees.isValid($0) }) ?? true else {
             throw NextError.invalid("证券交易规则无效")
         }
     }
@@ -424,6 +453,10 @@ struct NextOrderBookSnapshot: Codable, Equatable {
     let source: String
     let bids: [NextBookLevel]
     let asks: [NextBookLevel]
+    func isFresh(at now: Date, maximumAge: TimeInterval = 30) -> Bool {
+        let age = now.timeIntervalSince(observedAt)
+        return maximumAge >= 0 && age >= 0 && age <= maximumAge && (try? validate()) != nil
+    }
     func validate() throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), !source.isEmpty,
               bids.count == 5, asks.count == 5,
@@ -563,6 +596,42 @@ struct NextChartDataset: Codable, Equatable {
 /// only records when the phone/NAS response arrived. A successful response may
 /// still contain yesterday's bars and must not be presented as live data.
 enum NextIntradayDatasetGuard {
+    /// Historical archive bars are valid for chart inspection, but must never
+    /// be confused with the live session cache used by advice and decisions.
+    static func archiveKey(code: String, day: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "\(code):minute:\(formatter.string(from: day))"
+    }
+
+    static func archivedSessionOrThrow(_ dataset: NextChartDataset, code: String,
+                                       day: Date, now: Date = Date()) throws -> NextChartDataset {
+        let rows = dataset.orderedSamples
+        guard code.count == 6, code.allSatisfy(\.isNumber), dataset.code == code,
+              dataset.interval == .intraday, !rows.isEmpty, (try? dataset.validate()) != nil,
+              dataset.observedAt.timeIntervalSince1970.isFinite,
+              rows.allSatisfy({ $0.timestamp.timeIntervalSince1970.isFinite }),
+              rows.allSatisfy({ NextIntradayAxis.sameTradingDay($0.timestamp, day) }),
+              rows.allSatisfy({ $0.timestamp <= now.addingTimeInterval(60) }),
+              dataset.observedAt <= now.addingTimeInterval(60) else {
+            throw NextError.invalid("NAS历史分时与证券或所选日期不一致，或包含未来数据")
+        }
+        return dataset
+    }
+
+    /// Reject an otherwise well-formed provider response before source-chain
+    /// selection. A stale primary must not prevent trying a fresher fallback.
+    static func currentSessionOrThrow(_ dataset: NextChartDataset, now: Date,
+                                     marketOpen: Bool, maximumLiveAge: TimeInterval = 300) throws -> NextChartDataset {
+        guard isCurrentSessionData(dataset, now: now, marketOpen: marketOpen,
+                                   maximumLiveAge: maximumLiveAge) else {
+            throw NextError.invalid("分时来源返回非当日、未来或过期样本")
+        }
+        return dataset
+    }
+
     static func isCurrentSessionData(_ dataset: NextChartDataset, now: Date,
                                      marketOpen: Bool, maximumLiveAge: TimeInterval = 300) -> Bool {
         guard dataset.interval == .intraday, !dataset.samples.isEmpty,
@@ -771,10 +840,11 @@ struct NextCostBasis: Equatable {
 
 extension NextBook {
     /// 计算一只持仓的两种成本口径。
-    /// 今日买入、还没到 T+1 的份额 —— 当天不可卖。
-    /// 券商显示的「可用」就是这个口径（今天 700 持仓 / 400 可用 = 今天买了 300）。
-    func lockedUnits(for code: String, at now: Date) -> Int {
+    /// 按已核验的结算规则计算今日买入份额是否锁定；规则未知时按 T+1 保守计算。
+    /// 券商显示的「可用」通常对应这个口径（今天 700 持仓 / 400 可用 = 今天买了 300）。
+    func lockedUnits(for code: String, at now: Date, settlement: NextSettlementRule = .t1) -> Int {
         guard positions.contains(where: { $0.code == code }) else { return 0 }
+        guard settlement != .t0 else { return 0 }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         return fills
@@ -782,10 +852,10 @@ extension NextBook {
             .reduce(0) { $0 + $1.units }
     }
 
-    /// 可卖份额 = 持仓 − 今日买入。补录的持仓没有买入流水，所以整体可用。
-    func availableUnits(for code: String, at now: Date) -> Int {
+    /// 计划侧可卖份额 = 持仓 − 规则锁定的今日买入。确认真实成交时以券商已成交事实为准。
+    func availableUnits(for code: String, at now: Date, settlement: NextSettlementRule = .t1) -> Int {
         guard let position = positions.first(where: { $0.code == code }) else { return 0 }
-        return max(0, position.units - lockedUnits(for: code, at: now))
+        return max(0, position.units - lockedUnits(for: code, at: now, settlement: settlement))
     }
 
     func costBasis(for code: String) -> NextCostBasis? {
@@ -911,9 +981,9 @@ struct NextBuyOpportunity: Codable, Equatable {
             return NextBuyOpportunity(code: code, evidence: evidence, priceResearch: nil, limitSteps: [], riskSummary: reasons.joined(separator: " "), status: "价格依据待补", canSavePlan: false)
         }
         try research.validate(evidence: evidence)
-        guard let rules, rules.code == code, rules.isVerified, rules.assetClass == .etf,
-              let fee = rules.feePerTrade, fee == NextTradeFees.etfPerTrade, let lotSize = rules.lotSize else {
-            reasons.append("该证券类别、交易单位或 ETF 固定手续费未核实，暂不生成限价数量。")
+        guard let rules, rules.code == code, rules.isVerified(at: now), rules.assetClass == .etf,
+              let fee = rules.feePerTrade, NextTradeFees.isValid(fee), let lotSize = rules.lotSize else {
+            reasons.append("该证券类别、交易单位或 ETF 手续费设置无效，暂不生成限价数量。")
             return NextBuyOpportunity(code: code, evidence: evidence, priceResearch: research, limitSteps: [], riskSummary: reasons.joined(separator: " "), status: "交易规则待核验", canSavePlan: false)
         }
         let budget = goal.monthlyBudget
@@ -1191,6 +1261,36 @@ enum NextMarketClock {
     }
 }
 
+enum NextDailyDatasetGuard {
+    /// A fetched-at timestamp cannot make an old daily archive current. Keep
+    /// this limit aligned with the advisor's price-plan confidence gate.
+    static func currentHistoryOrThrow(_ dataset: NextChartDataset, now: Date,
+                                      maximumAge: TimeInterval = 15 * 86_400) throws -> NextChartDataset {
+        guard maximumAge >= 0, dataset.interval == .day, (try? dataset.validate()) != nil,
+              let latest = dataset.orderedSamples.last?.timestamp else {
+            throw NextError.invalid("日K来源没有有效的日线样本")
+        }
+        let age = now.timeIntervalSince(latest)
+        guard age >= 0, age <= maximumAge else {
+            throw NextError.invalid("日K最新交易日超前或超过15天，尝试备用行情源")
+        }
+        return dataset
+    }
+
+    /// A provider response with the same last trading day may still be a
+    /// truncated history. Preserve the fuller archive while allowing equal-
+    /// length responses to revise a forming daily candle.
+    static func shouldReplaceCached(_ cached: NextChartDataset?, with incoming: NextChartDataset) -> Bool {
+        guard (try? incoming.validate()) != nil, incoming.interval == .day else { return false }
+        guard let cached else { return true }
+        guard cached.interval == .day, (try? cached.validate()) != nil,
+              let cachedLast = cached.orderedSamples.last?.timestamp,
+              let incomingLast = incoming.orderedSamples.last?.timestamp else { return true }
+        if incomingLast != cachedLast { return incomingLast > cachedLast }
+        return incoming.orderedSamples.count >= cached.orderedSamples.count
+    }
+}
+
 /// Cached NAS research is portable with the encrypted local backup, but it is
 /// never a source of truth for the real ledger and never carries an API key.
 /// NAS 长期分时统计（1/5/20/60/120 日窗口）。手机端只拿结论，不重算、
@@ -1294,14 +1394,23 @@ struct NextNASResearch: Codable, Equatable {
             let expiresAt: String?
 
             func isFresh(at now: Date) -> Bool {
-                guard let expiresAt else { return false }
+                // Treat the NAS payload as untrusted at the point it reaches a
+                // trading guard. A future expiry alone must not make a stale,
+                // malformed, or timestamp-less observation actionable.
+                guard let expiresAt,
+                      let leaderAgeSeconds, let assetAgeSeconds,
+                      let leaderReturnPercent, let assetReturnPercent,
+                      leaderAgeSeconds.isFinite, assetAgeSeconds.isFinite,
+                      leaderReturnPercent.isFinite, assetReturnPercent.isFinite,
+                      (0...600).contains(leaderAgeSeconds),
+                      (0...600).contains(assetAgeSeconds) else { return false }
                 let formatter = ISO8601DateFormatter()
                 formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                let parsed = formatter.date(from: expiresAt) ?? {
+                guard let parsed = formatter.date(from: expiresAt) ?? {
                     formatter.formatOptions = [.withInternetDateTime]
                     return formatter.date(from: expiresAt)
-                }()
-                return parsed.map { $0 > now } ?? false
+                }(), parsed > now else { return false }
+                return parsed <= now.addingTimeInterval(600)
             }
         }
         /// Historical overnight move/open-gap comparison; descriptive only.
@@ -1423,7 +1532,8 @@ struct NextAppArchive: Codable, Equatable {
     /// 五套视觉主题（nil = 跟随场景）。备份要带走，换机后外观一致。
     var appTheme: AppTheme?
     var theme: NextTheme = .light
-    private enum CodingKeys: String, CodingKey { case schemaVersion, book, goal, watch, navigation, cachedQuotes, chartData, instrumentRules, orderBooks, notifications, audits, decisionHistory, nasResearch, dividendEvents, patientLimitPlans, candidatePlans, decisionMemory, profile, suggestions, appTheme, theme }
+    var etfFeePerTrade: Decimal = NextTradeFees.etfPerTrade
+    private enum CodingKeys: String, CodingKey { case schemaVersion, book, goal, watch, navigation, cachedQuotes, chartData, instrumentRules, orderBooks, notifications, audits, decisionHistory, nasResearch, dividendEvents, patientLimitPlans, candidatePlans, decisionMemory, profile, suggestions, appTheme, theme, etfFeePerTrade }
     init() {}
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1448,9 +1558,11 @@ struct NextAppArchive: Codable, Equatable {
         suggestions = try values.decodeIfPresent([NextSuggestionRecord].self, forKey: .suggestions) ?? []
         appTheme = try values.decodeIfPresent(AppTheme.self, forKey: .appTheme)
         theme = try values.decodeIfPresent(NextTheme.self, forKey: .theme) ?? .light
+        etfFeePerTrade = try values.decodeIfPresent(Decimal.self, forKey: .etfFeePerTrade) ?? NextTradeFees.etfPerTrade
     }
     func validate() throws {
         guard schemaVersion == 1 else { throw NextError.invalid("本机数据版本不受支持") }
+        guard NextTradeFees.isValid(etfFeePerTrade) else { throw NextError.invalid("备份中的 ETF 手续费无效") }
         try NextAuditedBook(current: book, events: audits).validate()
         try goal.validate()
         guard Set(patientLimitPlans.map(\.id)).count == patientLimitPlans.count else { throw NextError.invalid("耐心限价计划存在重复编号") }

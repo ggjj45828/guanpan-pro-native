@@ -24,13 +24,23 @@ enum DeepSeekMobile {
         guard !normalized.isEmpty else { throw DeepSeekError.invalidKey }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
-                                    kSecAttrAccount as String: account]
-        SecItemDelete(query as CFDictionary)
+                                    kSecAttrAccount as String: account,
+                                    kSecAttrSynchronizable as String: false]
+        let update: [String: Any] = [kSecValueData as String: Data(normalized.utf8),
+                                     kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else { throw DeepSeekError.keychain(updateStatus) }
+
         var item = query
         item[kSecValueData as String] = Data(normalized.utf8)
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        item[kSecAttrSynchronizable as String] = false
-        let status = SecItemAdd(item as CFDictionary, nil)
+        var status = SecItemAdd(item as CFDictionary, nil)
+        // Another app operation can create the item between update and add.
+        // Retry as an update instead of deleting the existing credential.
+        if status == errSecDuplicateItem {
+            status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        }
         guard status == errSecSuccess else { throw DeepSeekError.keychain(status) }
     }
 

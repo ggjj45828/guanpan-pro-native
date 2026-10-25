@@ -8,9 +8,10 @@ import Combine
         reportSave(repository.save(ledger, filename: "real-ledger-v1.json"))
     } }
     @Published var preferences = LocalPreferences() { didSet {
-        if preferences.goal != oldValue.goal || preferences.marketSourceMode != oldValue.marketSourceMode || preferences.nasBaseURL != oldValue.nasBaseURL {
+        if preferences.goal != oldValue.goal || preferences.marketSourceMode != oldValue.marketSourceMode || preferences.nasBaseURL != oldValue.nasBaseURL || preferences.etfFeePerTrade != oldValue.etfFeePerTrade {
             invalidateUnifiedAIAdviceForContextChange()
         }
+        if preferences.nasBaseURL != oldValue.nasBaseURL { historicalMinuteData.removeAll() }
         reportSave(repository.save(preferences, filename: "preferences-v1.json"))
     } }
     @Published var quotes: [String: NextCachedQuote] = [:] { didSet {
@@ -21,6 +22,10 @@ import Combine
         if chartData != oldValue { invalidateUnifiedAIAdviceForContextChange() }
         reportSave(repository.save(chartData, filename: "chart-history-v1.json"))
     } }
+    /// Historical NAS minutes are chart-only inspection data. Keeping them
+    /// separate prevents archive browsing from replacing live bars, persisting
+    /// into the decision snapshot, or invalidating a current AI response.
+    @Published private(set) var historicalMinuteData: [String: NextChartDataset] = [:]
     @Published var rules: [String: NextInstrumentRules] = [:] { didSet {
         if rules != oldValue { invalidateUnifiedAIAdviceForContextChange() }
         reportSave(repository.save(rules, filename: "instrument-rules-v1.json"))
@@ -82,6 +87,8 @@ import Combine
     @Published var requestedTab: NextTab? { didSet {  } }
     @Published var requestedRoute: GPRoute? { didSet {  } }
     @Published var routeRequestID = UUID() { didSet {  } }
+    /// Ephemeral routing state used only to select the automatic detail theme.
+    @Published var detailSceneTab: NextTab?
     private let repository: NextLocalRepository
     /// 合并自动上传用的延迟任务；连点几次"录入"只发一次。
     private var autoUploadTask: Task<Void, Never>?
@@ -181,6 +188,43 @@ import Combine
         ledger = copy
         scheduleAutoUpload()
     }
+    func setETFTradeFee(_ fee: Decimal) throws {
+        guard NextTradeFees.isValid(fee) else { throw NextError.invalid("ETF估算手续费须为0至100元之间、精确到分的金额") }
+        guard preferences.etfFeePerTrade != fee else { return }
+        let previousFee = preferences.etfFeePerTrade
+        let updatedRules = rules.mapValues { rule in
+            rule.assetClass == .etf ? rule.withETFCommission(fee) : rule
+        }
+        var updatedPreferences = preferences
+        updatedPreferences.etfFeePerTrade = fee
+        preferences = updatedPreferences
+        rules = updatedRules
+        var revisedPlans = candidatePlans
+        let now = Date()
+        for index in revisedPlans.indices where revisedPlans[index].state.isOpen && updatedRules[revisedPlans[index].code]?.assetClass == .etf {
+            _ = revisedPlans[index].invalidate(reason: "ETF估算手续费已从 ¥\(NextMoney.text(previousFee)) 调整为 ¥\(NextMoney.text(fee))；原收益估算失效", at: now)
+        }
+        let encoder = JSONEncoder()
+        let files: [(filename: String, data: Data)]
+        do {
+            files = [
+                ("candidate-plans-v1.json", try encoder.encode(revisedPlans)),
+                ("instrument-rules-v1.json", try encoder.encode(updatedRules)),
+                ("preferences-v1.json", try encoder.encode(updatedPreferences))
+            ]
+        } catch {
+            throw NextError.invalid("手续费未更新：新设置无法安全编码（\(error.localizedDescription)）")
+        }
+        if let failure = repository.saveTransaction(files) {
+            throw NextError.invalid("手续费未更新：计划、交易规则和设置未能作为一组安全保存（\(failure)）")
+        }
+        // Publish the new context only after all persisted files have landed.
+        // The didSet saves below are idempotent; the transaction above ensures
+        // a failed write cannot leave memory and disk using different fee rules.
+        preferences = updatedPreferences
+        rules = updatedRules
+        candidatePlans = revisedPlans
+    }
     /// 录入持仓。`acquiredAt` 是建仓日：只把建仓日及之后的派息算作你的，之前发生的除息不算
     /// （你刚录入一只已经持有很久、且早已分红过的票时，不会凭空冒出历史分红待确认）。不传则按录入当天处理。
     func addPosition(code: String, name: String, units: Int, cost: Decimal, acquiredAt: Date? = nil) throws {
@@ -268,9 +312,6 @@ import Combine
               tradedAt.timeIntervalSince1970.isFinite, tradedAt <= Date().addingTimeInterval(60) else {
             throw NextError.invalid("成交代码、方向、价格、份额、手续费或成交时间无效")
         }
-        if rules[code]?.assetClass == .etf || quotes[code]?.quote.providerInstrumentType == "ETF" {
-            guard fee == NextTradeFees.etfPerTrade else { throw NextError.invalid("已核实 ETF 的手续费按每笔 ¥0.10 记录") }
-        }
         var linkedDecision: NextDecisionRecord?
         if let decisionMemoryID {
             guard let record = decisionMemory.first(where: { $0.id == decisionMemoryID }),
@@ -301,12 +342,8 @@ import Combine
             }
         } else {
             guard let positionIndex, updated.positions[positionIndex].units >= units else { throw NextError.invalid("卖出份额超过真实账本持有份额") }
-            // T+1：今天买入的份额当天不能卖。券商显示「持仓 700 / 可用 400」就是这个意思。
-            let available = updated.availableUnits(for: code, at: tradedAt)
-            guard units <= available else {
-                let locked = updated.lockedUnits(for: code, at: tradedAt)
-                throw NextError.invalid("可卖份额不足：持有 \(updated.positions[positionIndex].units) 份，其中今天买入的 \(locked) 份要等下一个交易日才能卖，当前可卖 \(available) 份。")
-            }
+            // This is a user-confirmed broker fill, not an order proposal.
+            // Do not reject a real T+0 fill using an app-side T+1 assumption.
             let oldUnits = updated.positions[positionIndex].units
             let cost = updated.positions[positionIndex].bookCost * Decimal(units) / Decimal(oldUnits)
             realized = gross - fee - cost
@@ -837,9 +874,15 @@ import Combine
         let portfolioReview = NextAccountAdvisor.review(book: book, quotes: quoteMap,
             concentrationLimitPercent: goal.concentrationLimit, targetWeights: goal.targetWeights,
             realizedTotal: book.fills.reduce(Decimal.zero) { $0 + $1.realized }, now: decisionNow)
+        let scopedNews = Dictionary(uniqueKeysWithValues: book.positions.compactMap { position -> (String, [NextNewsInput])? in
+            let relevant = NextNewsImpactEngine.relevantHeadlines(
+                code: position.code, name: position.name, titles: nasNews[position.code] ?? [], now: decisionNow)
+            return relevant.isEmpty ? nil : (position.code, relevant)
+        })
         let newsLines = book.positions.flatMap { position in
-            (nasNews[position.code] ?? []).filter { NextNewsImpactEngine.isFreshPublishedAt($0.publishedAt, now: decisionNow) }
-                .map { "\(position.name)(\(position.code))｜\($0.title)｜来源 \($0.source ?? "未知")｜时间 \($0.publishedAt ?? "未知")｜\($0.url ?? "无链接")" }
+            (scopedNews[position.code] ?? []).map {
+                "\(position.name)(\(position.code))｜\($0.title)｜来源 \($0.source ?? "未知")｜时间 \($0.publishedAt ?? "未知")｜\($0.url ?? "无链接")"
+            }
         }
         return NextDecisionContextBuilder.build(guidance: guidance, book: book, quotes: quoteMap,
                                                 nasResearchLines: researchLines,
@@ -851,7 +894,7 @@ import Combine
                                                 dailyBars: dailyBars,
                                                 intradayBars: intradayBars,
                                                 nasResearchSnapshot: nasResearch,
-                                                newsSnapshot: nasNews,
+                                                newsSnapshot: scopedNews,
                                                 profileSnapshot: profile,
                                                 goalSnapshot: goal,
                                                 now: decisionNow)
@@ -1588,8 +1631,8 @@ import Combine
                 accepted.append(quote)
                 if quote.providerInstrumentType == "ETF" {
                     let market = quote.code.hasPrefix("15") ? "SZSE" : "SSE"
-                    if let rule = NextInstrumentRules.verifiedETFMarketRule(code: quote.code, market: market) {
-                        updatedRules[quote.code] = rule
+                    if let rule = NextInstrumentRules.verifiedETFMarketRule(code: quote.code, market: market, feePerTrade: preferences.etfFeePerTrade) {
+                        updatedRules[quote.code] = NextInstrumentRules.preserveCurrentRule(existing: updatedRules[quote.code], fallback: rule)
                     }
                 }
             }
@@ -1853,8 +1896,11 @@ import Combine
     @discardableResult func loadNASMinute(code: String, day: Date) async -> Bool {
         guard !preferences.nasBaseURL.isEmpty else { errorMessage = "先连接 NAS 才能读取归档日期"; return false }
         do {
-            let dataset = try await NextNASService.fetchMinute(code: code, day: day, baseURL: preferences.nasBaseURL)
-            chartData[code] = dataset
+            let key = NextIntradayDatasetGuard.archiveKey(code: code, day: day)
+            if historicalMinuteData[key] != nil { return true }
+            let fetched = try await NextNASService.fetchMinute(code: code, day: day, baseURL: preferences.nasBaseURL)
+            let dataset = try NextIntradayDatasetGuard.archivedSessionOrThrow(fetched, code: code, day: day)
+            historicalMinuteData[key] = dataset
             status = "已载入 NAS 分时档案 · \(dataset.priceSource) · \(dataset.samples.count) 点"
             return true
         } catch { errorMessage = error.localizedDescription; return false }
@@ -1868,7 +1914,8 @@ import Combine
         }
         if preferences.marketSourceMode != .phoneDirect && !preferences.nasBaseURL.isEmpty {
             do {
-                let dataset = try await NextNASService.fetchDaily(code: code, baseURL: preferences.nasBaseURL)
+                let fetched = try await NextNASService.fetchDaily(code: code, baseURL: preferences.nasBaseURL)
+                let dataset = try NextDailyDatasetGuard.currentHistoryOrThrow(fetched, now: Date())
                 dailyErrors.removeValue(forKey: code)
                 if shouldReplaceDayDataset(chartData["\(code):day"], with: dataset) { chartData["\(code):day"] = dataset }
                 return
@@ -1879,6 +1926,7 @@ import Combine
                 }
                 do {
                     let direct = try await NextMarketDataService.fetchDaily(code: code)
+                    _ = try NextDailyDatasetGuard.currentHistoryOrThrow(direct.value, now: Date())
                     dailyErrors.removeValue(forKey: code)
                     if shouldReplaceDayDataset(chartData["\(code):day"], with: direct.value) { chartData["\(code):day"] = direct.value }
                 } catch {
@@ -1889,6 +1937,7 @@ import Combine
         }
         do {
             let direct = try await NextMarketDataService.fetchDaily(code: code)
+            _ = try NextDailyDatasetGuard.currentHistoryOrThrow(direct.value, now: Date())
             dailyErrors.removeValue(forKey: code)
             if shouldReplaceDayDataset(chartData["\(code):day"], with: direct.value) { chartData["\(code):day"] = direct.value }
         } catch {
@@ -1899,12 +1948,12 @@ import Combine
     /// 多源 fallback 后各源样本口径可能不同，用「最新样本时间」做唯一裁判：
     /// 新数据没有更新就不替换，避免旧数据覆盖新数据。
     private func shouldReplaceDayDataset(_ cached: NextChartDataset?, with incoming: NextChartDataset) -> Bool {
-        guard let cached, let cachedLast = cached.orderedSamples.last?.timestamp,
-              let incomingLast = incoming.orderedSamples.last?.timestamp else { return true }
-        return incomingLast >= cachedLast
+        NextDailyDatasetGuard.shouldReplaceCached(cached, with: incoming)
     }
-    func acceptOrderBook(_ snapshot: NextOrderBookSnapshot, marketOpen: Bool) throws {
-        try snapshot.validate()
+    func acceptOrderBook(_ snapshot: NextOrderBookSnapshot, marketOpen: Bool, now: Date = Date()) throws {
+        guard marketOpen, NextMarketClock.canGenerateActionablePlan(now), snapshot.isFresh(at: now) else {
+            throw NextError.invalid("非交易时段或盘口已过期，不保存为可用于指导的盘口")
+        }
         orderBooks[snapshot.code] = snapshot
     }
     func makeBackup() throws -> NextArchiveEnvelope {
@@ -1919,7 +1968,7 @@ import Combine
         else { try repository.writeRawSafetyCopy() }
         try repository.replaceAll(with: incoming)
         ledger = NextAuditedBook(current: incoming.book, events: incoming.audits)
-        preferences = LocalPreferences(goal: incoming.goal, watch: incoming.watch, navigation: incoming.navigation, theme: GPTheme(rawValue: incoming.theme.rawValue) ?? .light, appearance: preferences.appearance, notifications: incoming.notifications, nasBaseURL: preferences.nasBaseURL, legacyWebBaseURL: preferences.legacyWebBaseURL, nasRevision: nil, marketSourceMode: preferences.marketSourceMode)
+        preferences = LocalPreferences(goal: incoming.goal, watch: incoming.watch, navigation: incoming.navigation, theme: GPTheme(rawValue: incoming.theme.rawValue) ?? .light, appearance: preferences.appearance, notifications: incoming.notifications, nasBaseURL: preferences.nasBaseURL, legacyWebBaseURL: preferences.legacyWebBaseURL, nasRevision: nil, marketSourceMode: preferences.marketSourceMode, etfFeePerTrade: incoming.etfFeePerTrade)
         quotes = incoming.cachedQuotes; chartData = incoming.chartData; rules = incoming.instrumentRules; orderBooks = incoming.orderBooks
         decisions = incoming.decisionHistory
         nasResearch = incoming.nasResearch
@@ -1969,6 +2018,7 @@ import Combine
         archive.profile = profile
         archive.suggestions = suggestions
         archive.appTheme = preferences.themeStyle
+        archive.etfFeePerTrade = preferences.etfFeePerTrade
         archive.theme = NextTheme(rawValue: theme.rawValue) ?? .light
         return archive
     }

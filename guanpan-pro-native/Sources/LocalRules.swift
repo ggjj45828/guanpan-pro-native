@@ -342,7 +342,13 @@ enum DividendBuyScoreEngine {
         }
 
         // 2) 3) 位置与回撤共用同一个日 K 窗口；没有日 K 就都记缺失。
-        let window = Array(samples.filter { $0.close > 0 }
+        // Keep this score point-in-time: a daily bar stamped today may still
+        // be forming, while bars dated after `today` are plainly future data.
+        let todayStart = NextMarketWire.day(today)
+        let window = Array(samples.filter { sample in
+            guard let todayStart else { return false }
+            return sample.close > 0 && sample.timestamp < todayStart
+        }
             .sorted { $0.timestamp < $1.timestamp }
             .suffix(windowBars))
         if window.count < windowBars { missing.append("近180日日K不足") }

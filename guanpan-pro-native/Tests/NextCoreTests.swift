@@ -2,6 +2,19 @@ import XCTest
 @testable import GuanpanAdvisorCore
 
 final class NextCoreTests: XCTestCase {
+    func testAutomaticThemeFollowsSceneAndFixedThemeOverridesEveryScene() {
+        XCTAssertEqual(ThemeManager.resolve(selection: .auto, scene: .home), .editorial)
+        XCTAssertEqual(ThemeManager.resolve(selection: .auto, scene: .market), .dashboard)
+        XCTAssertEqual(ThemeManager.resolve(selection: .auto, scene: .aiReport), .magazine)
+        XCTAssertEqual(ThemeManager.resolve(selection: .auto, scene: .holdings), .puzzle)
+        XCTAssertEqual(ThemeManager.resolve(selection: .auto, scene: .detail), .modern)
+
+        for scene in ThemeScene.allCases {
+            XCTAssertEqual(ThemeManager.resolve(selection: .fixed(.modern), scene: scene), .modern,
+                           "手动固定主题必须优先于场景推荐")
+        }
+    }
+
     let now = Date(timeIntervalSince1970: 1792375200)
     func testProfileNumericInputRejectsNonFiniteAndUnsafeValues() {
         XCTAssertNotNil(NextProfileNumericInput.validationError(for: .style, value: 1),
@@ -24,6 +37,66 @@ final class NextCoreTests: XCTestCase {
     }
     func etfRules(_ code: String = "159941", settlement: NextSettlementRule = .t0, assetClass: NextAssetClass = .etf) -> NextInstrumentRules {
         NextInstrumentRules(code: code, market: "SZ", assetClass: assetClass, settlement: settlement, lotSize: 100, feePerTrade: Decimal(string: "0.10"), source: "verified test fixture", verifiedAt: now)
+    }
+    func testOrderBookFreshnessRejectsStaleFutureAndMalformedEvidence() throws {
+        let levels = (0..<5).map { index in
+            NextBookLevel(price: Decimal(string: "\(1.00 - Double(index) * 0.001)")!, units: 100 * (index + 1))
+        }
+        let asks = (0..<5).map { index in
+            NextBookLevel(price: Decimal(string: "\(1.002 + Double(index) * 0.001)")!, units: 100 * (index + 1))
+        }
+        func book(age: TimeInterval, bids: [NextBookLevel]? = nil) -> NextOrderBookSnapshot {
+            NextOrderBookSnapshot(code: "159941", observedAt: now.addingTimeInterval(-age), source: "fixture", bids: bids ?? levels, asks: asks)
+        }
+        XCTAssertTrue(book(age: 0).isFresh(at: now))
+        XCTAssertTrue(book(age: 30).isFresh(at: now), "30秒边界仍有效")
+        XCTAssertFalse(book(age: 30.001).isFresh(at: now), "超过30秒的盘口不能支撑精确流动性估计")
+        XCTAssertFalse(book(age: -0.001).isFresh(at: now), "未来时间戳必须拒绝")
+        XCTAssertFalse(book(age: 0, bids: Array(levels.prefix(4))).isFresh(at: now), "结构不完整的数据必须拒绝")
+        XCTAssertNil(NextOrderBookEvidence.assess(book(age: 31), lotSize: 100, now: now))
+        XCTAssertNotNil(NextOrderBookEvidence.assess(book(age: 30), lotSize: 100, now: now))
+    }
+    func testDailySourceFreshnessRejectsStaleAndFutureBarsBeforeFallbackSelection() throws {
+        func dataset(age: TimeInterval) -> NextChartDataset {
+            let sample = NextChartSample(timestamp: now.addingTimeInterval(-age), open: 1.1, high: 1.2,
+                                         low: 1.0, close: 1.15, iopv: nil, volume: 100)
+            return NextChartDataset(code: "159941", interval: .day, samples: [sample], costPerUnit: nil,
+                                    costObservedAt: nil, priceSource: "fixture", iopvSource: nil, observedAt: now)
+        }
+        XCTAssertNoThrow(try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: 0), now: now))
+        XCTAssertNoThrow(try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: 15 * 86_400), now: now),
+                         "15天边界允许容纳长假")
+        XCTAssertThrowsError(try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: 15 * 86_400 + 1), now: now),
+                             "陈旧主源应在选择前失败以继续尝试备用")
+        XCTAssertThrowsError(try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: -1), now: now),
+                             "即使只超前一秒，日K也不能进入当前历史区间")
+        XCTAssertThrowsError(try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: 0), now: now, maximumAge: -1),
+                             "调用方不能用负时效门槛放宽数据校验")
+    }
+    func testSameDayDailyFallbackCannotReplaceFullerCachedHistory() {
+        func dataset(count: Int, latestOffset: TimeInterval = 0) -> NextChartDataset {
+            let latest = now.addingTimeInterval(-latestOffset)
+            let samples = (0..<count).map { index in
+                NextChartSample(timestamp: latest.addingTimeInterval(TimeInterval(index - count + 1) * 86_400),
+                                open: 1, high: 1.2, low: 0.8, close: Decimal(string: "1.0")!, iopv: nil, volume: 100)
+            }
+            return NextChartDataset(code: "159941", interval: .day, samples: samples, costPerUnit: nil,
+                                    costObservedAt: nil, priceSource: "fixture", iopvSource: nil, observedAt: now)
+        }
+        let full = dataset(count: 120)
+        XCTAssertFalse(NextDailyDatasetGuard.shouldReplaceCached(full, with: dataset(count: 80)),
+                       "最新日期相同但历史更短的备用源不能削弱缓存")
+        XCTAssertTrue(NextDailyDatasetGuard.shouldReplaceCached(full, with: dataset(count: 140)))
+        XCTAssertTrue(NextDailyDatasetGuard.shouldReplaceCached(full, with: dataset(count: 120)),
+                      "同长度允许修正仍在形成中的末根K线")
+        XCTAssertFalse(NextDailyDatasetGuard.shouldReplaceCached(full, with: dataset(count: 120, latestOffset: 86_400)))
+    }
+    func testMarketWireRejectsLenientlyNormalizedInvalidDates() {
+        XCTAssertNotNil(NextMarketWire.day("2026-02-28"))
+        XCTAssertNil(NextMarketWire.day("2026-02-30"), "不存在的日期不能被DateFormatter自动滚入3月")
+        XCTAssertNil(NextMarketWire.day("2026-2-28"), "格式不规范的日期不能混入日K")
+        XCTAssertNotNil(NextMarketWire.minute("2026-10-20 10:05"))
+        XCTAssertNil(NextMarketWire.minute("2026-10-20 10:65"), "无效分钟不能被自动归一化")
     }
     func testProfileLearnsExpectedThresholdWithoutCallingItRealizedProfit() {
         func suggestion(kind: NextPlanKind = .reverseT, gain: Decimal?, outcome: NextSuggestionOutcome = .executed) -> NextSuggestionRecord {
@@ -60,6 +133,13 @@ final class NextCoreTests: XCTestCase {
         XCTAssertNil(NextGridPlanner.pairedExpectedNetGain(
             price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.010")!,
             units: 0, feePerTrade: Decimal(string: "0.10")!))
+        XCTAssertEqual(NextGridPlanner.pairedExpectedNetGain(
+            price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.010")!,
+            units: 100, feePerTrade: Decimal(string: "0.35")!), Decimal(string: "0.30"),
+            "自定义手续费必须分别从买卖两边扣除")
+        XCTAssertNil(NextGridPlanner.pairedExpectedNetGain(
+            price: Decimal(string: "1.000")!, oppositePrice: Decimal(string: "1.010")!,
+            units: 100, feePerTrade: Decimal(string: "0.001")!), "小数精度无效时不能生成净收益")
     }
     func testPortfolioCapWithdrawsActionableGridPlan() {
         let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
@@ -747,7 +827,33 @@ final class NextCoreTests: XCTestCase {
         let confirmed = NextInstrumentRules(code: "159941", market: "SZ", assetClass: .etf, settlement: .t0, lotSize: 100, feePerTrade: Decimal(string: "0.10"), source: "official", verifiedAt: now)
         XCTAssertTrue(confirmed.isVerified)
     }
-    func testOfficialETFRuleKeepsSettlementUnknownAndFixedFee() {
+    func testTradingRulesExpireAndRejectFutureVerificationTime() {
+        let current = NextInstrumentRules(code: "159941", market: "SZSE", assetClass: .etf, settlement: .t0,
+            lotSize: 100, feePerTrade: Decimal(string: "0.10"), source: "verified test fixture", verifiedAt: now)
+        XCTAssertTrue(current.isVerified(at: now))
+        XCTAssertFalse(current.isVerified(at: now.addingTimeInterval(366 * 86_400)))
+        XCTAssertFalse(current.isVerified(at: now.addingTimeInterval(-1)), "未来核验时间必须拒绝")
+        XCTAssertFalse(current.isVerified(at: now, maximumAge: -1))
+    }
+    func testQuoteETFMetadataDoesNotOverwriteCurrentSettlementRule() throws {
+        let verified = NextInstrumentRules(code: "159941", market: "SZSE", assetClass: .etf, settlement: .t0,
+            lotSize: 100, feePerTrade: Decimal(string: "0.35"), source: "official verified rule", verifiedAt: now)
+        let fallback = try XCTUnwrap(NextInstrumentRules.verifiedETFMarketRule(code: "159941", market: "SZSE", at: now))
+        XCTAssertEqual(NextInstrumentRules.preserveCurrentRule(existing: verified, fallback: fallback, at: now), verified)
+        let expired = NextInstrumentRules(code: "159941", market: "SZSE", assetClass: .etf, settlement: .t0,
+            lotSize: 100, feePerTrade: Decimal(string: "0.35"), source: "old rule", verifiedAt: now.addingTimeInterval(-366 * 86_400))
+        XCTAssertEqual(NextInstrumentRules.preserveCurrentRule(existing: expired, fallback: fallback, at: now), fallback)
+    }
+    func testSellableUnitsFollowVerifiedSettlementAndUnknownIsConservative() {
+        let fill = NextFill(date: now, code: "159941", side: "buy", units: 100, price: 1, fee: 0.10, realized: 0)
+        let book = NextBook(positions: [NextPosition(code: "159941", name: "ETF", units: 300, bookCost: 300)], fills: [fill])
+        XCTAssertEqual(book.lockedUnits(for: "159941", at: now, settlement: .t1), 100)
+        XCTAssertEqual(book.availableUnits(for: "159941", at: now, settlement: .t1), 200)
+        XCTAssertEqual(book.lockedUnits(for: "159941", at: now, settlement: .t0), 0)
+        XCTAssertEqual(book.availableUnits(for: "159941", at: now, settlement: .t0), 300)
+        XCTAssertEqual(book.availableUnits(for: "159941", at: now, settlement: .unknown), 200)
+    }
+    func testOfficialETFRuleKeepsSettlementUnknownAndDefaultFee() {
         let sz = NextInstrumentRules.verifiedETFMarketRule(code: "159941", market: "SZSE", at: now)
         let sh = NextInstrumentRules.verifiedETFMarketRule(code: "563020", market: "SSE", at: now)
         XCTAssertEqual(sz?.lotSize, 100)
@@ -756,6 +862,30 @@ final class NextCoreTests: XCTestCase {
         XCTAssertFalse(sz?.isVerified ?? true)
         XCTAssertEqual(sz?.settlement, .unknown)
         XCTAssertNil(NextInstrumentRules.verifiedETFMarketRule(code: "123456", market: "SZSE", at: now))
+    }
+    func testETFCommissionIsConfigurableValidatedAndBackwardCompatible() throws {
+        let configured = Decimal(string: "0.35")!
+        let rule = try XCTUnwrap(NextInstrumentRules.verifiedETFMarketRule(code: "159941", market: "SZSE", at: now, feePerTrade: configured))
+        XCTAssertEqual(rule.feePerTrade, configured)
+        XCTAssertTrue(rule.source.contains("¥0.35/笔"))
+        let resetRule = rule.withETFCommission(NextTradeFees.etfPerTrade)
+        XCTAssertEqual(resetRule.feePerTrade, NextTradeFees.etfPerTrade)
+        XCTAssertTrue(resetRule.source.contains("¥0.10/笔"))
+        let legacyRule = NextInstrumentRules(code: "159941", market: "SZSE", assetClass: .etf, settlement: .unknown,
+            lotSize: 100, feePerTrade: NextTradeFees.etfPerTrade, source: "legacy · 用户指定费率¥0.10；交收未知", verifiedAt: now)
+        XCTAssertTrue(legacyRule.withETFCommission(configured).source.contains("用户估算费率¥0.35/笔"))
+        XCTAssertNil(NextInstrumentRules.verifiedETFMarketRule(code: "159941", market: "SZSE", at: now, feePerTrade: Decimal(string: "0.001")!))
+        XCTAssertTrue(NextTradeFees.isValid(NextTradeFees.etfPerTrade))
+        XCTAssertTrue(NextTradeFees.isValid(0))
+        XCTAssertFalse(NextTradeFees.isValid(-0.01))
+        XCTAssertFalse(NextTradeFees.isValid(100.01))
+        XCTAssertFalse(NextTradeFees.isValid(Decimal(string: "0.001")!))
+
+        var archive = NextAppArchive()
+        archive.etfFeePerTrade = configured
+        XCTAssertEqual(try NextArchiveEnvelope(archive: archive).archive().etfFeePerTrade, configured)
+        let oldArchive = try JSONDecoder().decode(NextAppArchive.self, from: Data("{}".utf8))
+        XCTAssertEqual(oldArchive.etfFeePerTrade, NextTradeFees.etfPerTrade)
     }
     func testForegroundMarketClockUsesChinaSessionsAndWeekdays() {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -887,8 +1017,13 @@ final class NextCoreTests: XCTestCase {
                                     observedAt: now)
         }
         XCTAssertTrue(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-20 10:04:00"), now: now, marketOpen: true))
+        XCTAssertNoThrow(try NextIntradayDatasetGuard.currentSessionOrThrow(
+            dataset("2026-10-20 10:04:00"), now: now, marketOpen: true))
         XCTAssertFalse(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-19 15:00:00"), now: now, marketOpen: false),
                        "A response received now must not make yesterday's minute bars look current")
+        XCTAssertThrowsError(try NextIntradayDatasetGuard.currentSessionOrThrow(
+            dataset("2026-10-19 15:00:00"), now: now, marketOpen: false),
+            "primary stale result must be rejected inside the source chain so fallback can run")
         XCTAssertFalse(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-20 09:59:00"), now: now, marketOpen: true),
                        "During the session, minute samples older than five minutes are rejected")
         XCTAssertFalse(NextIntradayDatasetGuard.isCurrentSessionData(try dataset("2026-10-20 10:06:30"), now: now, marketOpen: true),
@@ -907,6 +1042,33 @@ final class NextCoreTests: XCTestCase {
         XCTAssertTrue(NextIntradayDatasetGuard.shouldReplace(dataset(60), with: dataset(120)))
         XCTAssertTrue(NextIntradayDatasetGuard.shouldReplace(dataset(120), with: dataset(120)),
                       "Equal-minute samples may refresh a forming candle")
+    }
+    func testHistoricalMinuteArchiveIsBoundToRequestedSessionAndSeparateCacheKey() throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let selectedDay = try XCTUnwrap(formatter.date(from: "2026-10-16 00:00:00"))
+        let sampleAt = try XCTUnwrap(formatter.date(from: "2026-10-16 10:30:00"))
+        func dataset(code: String = "159941", times: [Date]? = nil, observedAt: Date? = nil) -> NextChartDataset {
+            let times = times ?? [sampleAt]
+            NextChartDataset(code: code, interval: .intraday,
+                             samples: times.map { NextChartSample(timestamp: $0, open: nil, high: nil, low: nil,
+                                                                   close: Decimal(string: "1.2")!, iopv: nil, volume: 100) },
+                             costPerUnit: nil, costObservedAt: nil, priceSource: "NAS archive", iopvSource: nil,
+                             observedAt: observedAt ?? now)
+        }
+        XCTAssertNoThrow(try NextIntradayDatasetGuard.archivedSessionOrThrow(dataset(), code: "159941", day: selectedDay, now: now))
+        XCTAssertEqual(NextIntradayDatasetGuard.archiveKey(code: "159941", day: selectedDay), "159941:minute:2026-10-16")
+        XCTAssertNotEqual(NextIntradayDatasetGuard.archiveKey(code: "159941", day: selectedDay), "159941",
+                          "历史浏览数据必须与实时分时缓存使用不同键")
+        XCTAssertThrowsError(try NextIntradayDatasetGuard.archivedSessionOrThrow(dataset(code: "513100"), code: "159941", day: selectedDay, now: now))
+        let nextDay = try XCTUnwrap(formatter.date(from: "2026-10-19 10:30:00"))
+        XCTAssertThrowsError(try NextIntradayDatasetGuard.archivedSessionOrThrow(dataset(times: [sampleAt, nextDay]), code: "159941", day: selectedDay, now: now),
+                             "归档响应混入其他交易日时必须整体拒绝")
+        let future = try XCTUnwrap(formatter.date(from: "2026-10-26 10:30:00"))
+        XCTAssertThrowsError(try NextIntradayDatasetGuard.archivedSessionOrThrow(dataset(times: [future]), code: "159941", day: selectedDay, now: now),
+                             "未来分钟样本不得通过历史档案入口")
     }
     func testCrossMarketResearchDecodesStatusFreshnessAndOlderServerPayloads() throws {
         let current = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"no_stable_relationship","reason":"没有稳定领先关系","source":"Eastmoney trends","asOf":"2026-10-23T09:30:00+09:00","sampleCount":120,"bestLagMinutes":null,"conditionalWinRate":null,"bestMarket":"KR_KOSPI","currentMarketStatus":"closed","ageSeconds":7200,"liveDivergences":[{"market":"JP_N225","state":"observed_divergence","reason":null,"windowMinutes":15,"leaderReturnPercent":-0.6,"assetReturnPercent":0.4,"leaderAgeSeconds":0,"assetAgeSeconds":0,"eligibleForTradingSignal":false,"expiresAt":"2026-10-23T10:00:00+09:00"}],"overnightAbsorption":[{"market":"US_NDX","state":"descriptive_only","sampleCount":42,"minimumSessions":30,"leaderOpenGapCorrelation":0.25,"meanLeaderReturnPercent":0.7,"meanOpeningGapPercent":0.4,"meanFirstThirtyMinuteReturnPercent":-0.1,"meanGapAbsorptionFraction":0.25,"absorptionSampleCount":36,"eligibleForTradingSignal":false,"note":"仅描述历史关系"}],"tailToNextDay":{"state":"descriptive_only","sampleCount":40,"minimumSessions":30,"tailToOpenGapCorrelation":0.1,"tailToFirstThirtyMinuteCorrelation":-0.2,"meanTailReturnPercent":0.15,"meanNextOpeningGapPercent":0.05,"meanFirstThirtyMinuteReturnPercent":-0.03,"eligibleForTradingSignal":false,"note":"仅描述历史路径"},"rollingValidity":[{"market":"KR_KOSPI","lagMinutes":0,"horizonMinutes":15,"windows":[{"windowSessions":20,"sampleCount":20,"state":"descriptive_only","correlation":0.2,"conditionalDirectionRate":0.55,"eligibleForTradingSignal":false}],"eligibleForTradingSignal":false,"note":"研究用途"}],"timeProfiles":[{"market":"KR_KOSPI","lagMinutes":0,"horizonMinutes":15,"bucketMinutes":30,"minimumSessions":20,"profiles":[{"startMinute":570,"endMinute":600,"sampleCount":20,"state":"descriptive_only","correlation":0.1,"conditionalDirectionRate":0.5,"eligibleForTradingSignal":false}],"eligibleForTradingSignal":false,"note":"研究用途"}],"currencyContext":{"pair":"USD/CNY","source":"Sina FX fixture","state":"observed_context","reason":null,"asOf":"2026-10-23T09:30:00+08:00","ageSeconds":0,"windowMinutes":60,"fxReturnPercent":0.12,"assetReturnPercent":0.2,"assetLatestAt":"2026-10-23T09:30:00+08:00","eligibleForTradingSignal":false,"note":"上下文"}}}"#.utf8)
@@ -939,7 +1101,7 @@ final class NextCoreTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(NextNASResearch.self, from: older).crossMarket?.currentMarketStatus)
     }
     func testCrossMarketRiskGuardOnlyBlocksFreshProspectivelyReplicatedEvidence() throws {
-        let payload = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)
+        let payload = Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","leaderReturnPercent":-0.4,"assetReturnPercent":0.3,"leaderAgeSeconds":10,"assetAgeSeconds":15,"eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)
         let evidence = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self, from: payload).crossMarket)
         let formatter = ISO8601DateFormatter()
         let freshAt = try XCTUnwrap(formatter.date(from: "2026-10-23T09:59:00Z"))
@@ -952,6 +1114,31 @@ final class NextCoreTests: XCTestCase {
             from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":false,"validationState":"historical_candidate","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)).crossMarket)
         XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: historicalOnly, now: freshAt),
                      "仅历史候选绝不能改变做T或网格计划")
+
+        let missingAges = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,
+            from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","leaderReturnPercent":-0.4,"assetReturnPercent":0.3,"eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)).crossMarket)
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: missingAges, now: freshAt),
+                     "缺少两边行情年龄的旧或损坏响应必须fail closed，不得拦截真实计划")
+
+        let overAge = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,
+            from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","leaderReturnPercent":-0.4,"assetReturnPercent":0.3,"leaderAgeSeconds":601,"assetAgeSeconds":15,"eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)).crossMarket)
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: overAge, now: freshAt),
+                     "任一来源超过600秒新鲜度门槛时必须fail closed")
+
+        let negativeAge = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,
+            from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","leaderReturnPercent":-0.4,"assetReturnPercent":0.3,"leaderAgeSeconds":-1,"assetAgeSeconds":15,"eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)).crossMarket)
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: negativeAge, now: freshAt),
+                     "负行情年龄属于损坏/未来时间证据，不能拦截交易计划")
+
+        let missingReturns = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,
+            from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","leaderAgeSeconds":10,"assetAgeSeconds":15,"eligibleForTradingSignal":true,"expiresAt":"2026-10-23T10:00:00Z"}]}}"#.utf8)).crossMarket)
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: missingReturns, now: freshAt),
+                     "没有双方实际收益值的响应不得被当作实时背离")
+
+        let farFutureExpiry = try XCTUnwrap(JSONDecoder().decode(NextNASResearch.self,
+            from: Data(#"{"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{"state":"validated","currentMarketStatus":"open","eligibleForTradingSignal":true,"validationState":"prospectively_replicated","liveDivergences":[{"market":"KR_KOSPI","state":"observed_divergence","leaderReturnPercent":-0.4,"assetReturnPercent":0.3,"leaderAgeSeconds":10,"assetAgeSeconds":15,"eligibleForTradingSignal":true,"expiresAt":"2026-10-23T12:00:00Z"}]}}"#.utf8)).crossMarket)
+        XCTAssertNil(NextCrossMarketRiskGuard.blockingReason(evidence: farFutureExpiry, now: freshAt),
+                     "异常远期失效时间不能让行情观察无限期有效")
     }
     func testFixedIntradayAxisCoversFullSessionAndCompressesLunch() throws {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -1170,6 +1357,19 @@ final class NextCoreTests: XCTestCase {
                                                    minuteSampleCount: 0, intradayRequired: false,
                                                    dailyLatestAt: now.addingTimeInterval(-10 * 86_400))
         XCTAssertFalse(longHoliday.missing.contains { $0.contains("日K最新记录超过15天") })
+
+        let slightlyFutureQuote = NextDataConfidence.assess(quote: quote(time: now.addingTimeInterval(30)), now: now,
+            dailyBarCount: 120, minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(-30), dailyLatestAt: now.addingTimeInterval(-3_600))
+        XCTAssertEqual(slightlyFutureQuote.level, .blocked, "即使只超前30秒，也不能把未来行情用于当前建议")
+        XCTAssertTrue(slightlyFutureQuote.missing.contains { $0.contains("未来报价") })
+        let futureMinute = NextDataConfidence.assess(quote: quote(time: now), now: now,
+            dailyBarCount: 120, minuteSampleCount: 240, intradayLatestAt: now.addingTimeInterval(1), dailyLatestAt: now.addingTimeInterval(-3_600))
+        XCTAssertEqual(futureMinute.level, .blocked)
+        XCTAssertTrue(futureMinute.missing.contains { $0.contains("拒绝未来样本") })
+        let futureDay = NextDataConfidence.assess(quote: quote(time: now), now: now, dailyBarCount: 120,
+            minuteSampleCount: 0, intradayRequired: false, dailyLatestAt: now.addingTimeInterval(60))
+        XCTAssertEqual(futureDay.level, .blocked, "未来日K时间戳不得因小于一天而放行")
+        XCTAssertTrue(futureDay.missing.contains { $0.contains("拒绝未来样本") })
     }
 
     func testMACDSeriesWarmsUpBeforeReturningValues() {
@@ -1407,7 +1607,7 @@ final class NextCoreTests: XCTestCase {
             NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: Decimal(string: "0.012")!)
         ]
         // 窗口低 1.0 高 2.0；现价 1.0（贴区间下沿）→ 位置 35；回撤 50% → 回撤 15。
-        let samples = (-179...0).map { bar($0, low: 1, high: 2, close: 1) }
+        let samples = (-180...(-1)).map { bar($0, low: 1, high: 2, close: 1) }
         // 每份 0.05、现价 1.0 → 股息率 5%，目标 4% → 拿满 40。
         let score = try? XCTUnwrap(DividendBuyScoreEngine.evaluate(code: "563020", perShare: Decimal(string: "0.05")!,
             price: 1, iopv: nil, samples: samples, dividendEvents: events, today: "2026-10-20", targetYieldPercent: 4))
@@ -1418,6 +1618,21 @@ final class NextCoreTests: XCTestCase {
         XCTAssertEqual(score?.total, 100)
         XCTAssertEqual(score?.tier, .attention)
         XCTAssertTrue(score?.missing.isEmpty ?? false)
+    }
+
+    func testDividendScoreExcludesTodayFormingBarAndAllFutureDailySamples() {
+        let historical = (-180...(-1)).map { bar($0, low: 1, high: 2, close: 1) }
+        let baseline = DividendBuyScoreEngine.evaluate(code: "563020", perShare: 0.05, price: 1,
+            iopv: nil, samples: historical, dividendEvents: [], today: "2026-10-20", targetYieldPercent: 4)
+        let poisonedWithFuture = historical + [bar(0, low: 1, high: 50, close: 50),
+                                                bar(1, low: 1, high: 100, close: 100),
+                                                bar(2, low: 1, high: 200, close: 200)]
+        let guarded = DividendBuyScoreEngine.evaluate(code: "563020", perShare: 0.05, price: 1,
+            iopv: nil, samples: poisonedWithFuture, dividendEvents: [], today: "2026-10-20", targetYieldPercent: 4)
+        XCTAssertEqual(guarded?.total, baseline?.total)
+        XCTAssertEqual(guarded?.windowHigh, baseline?.windowHigh)
+        XCTAssertEqual(guarded?.positionPoints, baseline?.positionPoints)
+        XCTAssertEqual(guarded?.drawdownPoints, baseline?.drawdownPoints)
     }
 
     func testDividendBuyScoreScalesYieldPositionDrawdownAndStability() {
@@ -1434,7 +1649,7 @@ final class NextCoreTests: XCTestCase {
         XCTAssertEqual(halfYield?.stabilityPoints, 0)
 
         // 现价贴区间上沿 → 位置 0；回撤 0 → 回撤分 0。
-        let samples = [bar(0, low: 1, high: 2, close: 2), bar(1, low: 1, high: 2, close: 2)]
+        let samples = [bar(-1, low: 1, high: 2, close: 2), bar(-2, low: 1, high: 2, close: 2)]
         let atHigh = try? XCTUnwrap(DividendBuyScoreEngine.evaluate(code: "563020", perShare: Decimal(string: "0.02")!,
             price: 2, iopv: nil, samples: samples, dividendEvents: [], today: "2026-10-20", targetYieldPercent: 4))
         XCTAssertEqual(atHigh?.positionPoints, 0)
@@ -1477,7 +1692,7 @@ final class NextCoreTests: XCTestCase {
             NextETFDividendEvent(code: "563020", date: "2025-06-10", amountPerShare: Decimal(string: "0.012")!),
             NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: Decimal(string: "0.012")!)
         ]
-        let samples = (-179...0).map { bar($0, low: 1, high: 2, close: 1) }
+        let samples = (-180...(-1)).map { bar($0, low: 1, high: 2, close: 1) }
         // 全拿满：40 + 35 + 15 + 10 = 100 → 值得关注。
         let high = try? XCTUnwrap(DividendBuyScoreEngine.evaluate(code: "563020", perShare: Decimal(string: "0.05")!,
             price: 1, iopv: nil, samples: samples, dividendEvents: events, today: "2026-10-20", targetYieldPercent: 4))

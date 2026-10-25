@@ -93,7 +93,11 @@ struct DividendBuyScoreCard: View {
         refreshing = true
         Task {
             for security in codes {
-                await model.refreshInstrument(security)
+                // Dividend scoring needs prices, daily bars and verified
+                // distributions only. Avoid registering minute archives or
+                // downloading intraday samples for every watchlist item.
+                await model.refreshQuotes(codes: [security])
+                await model.refreshDaily(security)
                 await model.refreshDividendHistory(security)
             }
             refreshing = false

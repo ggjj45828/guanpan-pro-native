@@ -116,20 +116,26 @@ enum NextMarketWire {
 
     /// "yyyy-MM-dd" → 东八区当日零点。上游返回未来日期一律视为脏数据。
     static func day(_ raw: String) -> Date? {
+        guard raw.count == 10 else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: raw)
+        formatter.isLenient = false
+        guard let date = formatter.date(from: raw), formatter.string(from: date) == raw else { return nil }
+        return date
     }
 
     /// "yyyy-MM-dd HH:mm" → 东八区时刻，用于东财 1 分钟 K 线。
     static func minute(_ raw: String) -> Date? {
+        guard raw.count == 16 else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.date(from: raw)
+        formatter.isLenient = false
+        guard let date = formatter.date(from: raw), formatter.string(from: date) == raw else { return nil }
+        return date
     }
 
     static func today() -> Date {

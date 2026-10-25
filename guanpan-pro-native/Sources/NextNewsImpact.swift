@@ -98,7 +98,13 @@ enum NextNewsImpactEngine {
 
     static func severity(of title: String) -> (NextNewsSeverity, [String]) {
         let upper = title.uppercased()
-        let majorHits = majorWords.filter { upper.contains($0.uppercased()) }
+        // `ST` is a security-risk label, not a substring. Matching it inside
+        // ordinary English words such as "investment" would falsely turn a
+        // neutral headline into a major event and revoke valid plans.
+        var majorHits = majorWords.filter { $0 != "ST" && upper.contains($0.uppercased()) }
+        if upper.range(of: #"(?<![A-Z0-9])\*?ST(?![A-Z0-9])"#, options: .regularExpression) != nil {
+            majorHits.append("ST")
+        }
         if !majorHits.isEmpty { return (.major, majorHits) }
         let watchHits = watchWords.filter { upper.contains($0.uppercased()) }
         if !watchHits.isEmpty { return (.watch, watchHits) }
@@ -119,12 +125,20 @@ enum NextNewsImpactEngine {
         return industryWords.contains { !$0.isEmpty && title.contains($0) }
     }
 
+    static func relevantHeadlines(code: String, name: String, titles: [NextNewsInput], now: Date,
+                                  industryWords: [String] = []) -> [NextNewsInput] {
+        let keywords = Array(Set(industryWords + InstrumentCatalog.newsKeywords(for: code, name: name)))
+        titles.filter { item in
+            isFreshPublishedAt(item.publishedAt, now: now)
+                && belongs(item.title, code: code, name: name, industryWords: keywords)
+        }
+    }
+
     /// 单只持仓的新闻影响。titles 必须已经属于这只（按代码抓取的新闻天然属于它）。
     static func evaluate(code: String, name: String, titles: [NextNewsInput],
                          hasTPlan: Bool, hasGridPlan: Bool, now: Date) -> NextNewsImpact {
         var hits: [NextNewsHit] = []
-        for item in titles {
-            guard isFreshPublishedAt(item.publishedAt, now: now) else { continue }
+        for item in relevantHeadlines(code: code, name: name, titles: titles, now: now) {
             let (severity, keywords) = severity(of: item.title)
             guard severity != .neutral else { continue }
             hits.append(NextNewsHit(title: item.title, source: item.source,

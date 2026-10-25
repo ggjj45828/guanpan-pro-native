@@ -616,6 +616,27 @@ class CrossMarketEvidenceTests(unittest.TestCase):
             ("US_NDX", "2026-07-06T09:30:00-04:00", True),
             ("US_SPX", "2026-01-05T09:30:00-05:00", True),
             ("US_SPX", "2026-01-03T10:00:00-05:00", False),
+            ("JP_N225", "2026-09-22T10:00:00+09:00", False),
+            ("JP_N225", "2026-09-24T10:00:00+09:00", True),
+            ("KR_KOSPI", "2026-02-17T10:00:00+09:00", False),
+            ("KR_KOSPI", "2026-01-02T09:30:00+09:00", False),
+            ("KR_KOSPI", "2026-01-02T10:00:00+09:00", True),
+            ("HK_HSI", "2026-04-06T10:00:00+08:00", False),
+            ("US_NDX", "2026-01-19T10:00:00-05:00", False),
+            ("US_NDX", "2026-11-27T12:59:00-05:00", True),
+            ("US_NDX", "2026-11-27T13:01:00-05:00", False),
+            ("US_SPX", "2026-12-24T12:59:00-05:00", True),
+            ("US_SPX", "2026-12-24T13:01:00-05:00", False),
+            ("HK_HSI", "2026-02-16T11:59:00+08:00", True),
+            ("HK_HSI", "2026-02-16T12:01:00+08:00", False),
+            ("HK_HSI", "2026-12-24T11:59:00+08:00", True),
+            ("HK_HSI", "2026-12-24T12:01:00+08:00", False),
+            ("HK_HSI", "2026-12-31T11:59:00+08:00", True),
+            ("HK_HSI", "2026-12-31T12:01:00+08:00", False),
+            ("JP_N225", "2027-01-04T10:00:00+09:00", True),
+            ("JP_N225", "2027-03-22T10:00:00+09:00", False),
+            ("JP_N225", "2027-03-23T10:00:00+09:00", True),
+            ("JP_N225", "2027-12-31T10:00:00+09:00", False),
             ("CN_SSE", "2026-10-01T10:00:00+08:00", False),
             ("CN_SSE", "2026-10-08T10:00:00+08:00", True),
             ("CN_SSE", "2027-01-04T10:00:00+08:00", False),
@@ -658,6 +679,44 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(result["state"], "idle")
         self.assertEqual(result["active"], [])
         self.assertEqual(calls, [], "没有新年度官方日历时不应为可能休市的A股指数请求上游")
+
+    def test_external_holidays_and_unknown_years_never_call_market_providers(self):
+        class Database:
+            def put_cross_market_minute(self, *args):
+                raise AssertionError("holiday or unknown-year data must not be archived")
+
+        calls = []
+        for market_id, stamp in (("KR_KOSPI", "2026-02-17T02:00:00+00:00"),
+                                 ("HK_HSI", "2026-04-06T02:00:00+00:00"),
+                                 ("US_NDX", "2027-01-04T15:00:00+00:00")):
+            with self.subTest(market_id=market_id, stamp=stamp):
+                result = workers.collect_cross_market_once(
+                    Database(), now=datetime.fromisoformat(stamp),
+                    series_ids=(market_id,), fetcher=lambda code: calls.append(code))
+                self.assertEqual(result["state"], "idle")
+                self.assertEqual(result["active"], [])
+        self.assertEqual(calls, [])
+
+    def test_every_configured_external_2026_closure_is_non_session(self):
+        from zoneinfo import ZoneInfo
+        for market_id, closed_days in workers.EXTERNAL_MARKET_CLOSURES_2026.items():
+            timezone_name, _ = workers.EXTERNAL_MARKET_SESSIONS[market_id]
+            for day in closed_days:
+                with self.subTest(market_id=market_id, day=day):
+                    at_open = datetime.fromisoformat(day + "T10:00:00").replace(
+                        tzinfo=ZoneInfo(timezone_name))
+                    self.assertFalse(workers.market_session_open(market_id, at_open))
+
+    def test_only_published_jpx_2027_calendar_is_enabled(self):
+        from zoneinfo import ZoneInfo
+        for day in workers.EXTERNAL_MARKET_CLOSURES_2027["JP_N225"]:
+            with self.subTest(day=day):
+                at_open = datetime.fromisoformat(day + "T10:00:00").replace(
+                    tzinfo=ZoneInfo("Asia/Tokyo"))
+                self.assertFalse(workers.market_session_open("JP_N225", at_open))
+        unsupported = datetime.fromisoformat("2027-01-04T10:00:00+09:00")
+        self.assertFalse(workers.market_session_open("KR_KOSPI", unsupported),
+                         "不得把JPX已公布的日历误用于尚未配置的KRX")
 
     def test_repeated_stale_provider_pauses_only_current_market_session(self):
         class Database:
@@ -1254,6 +1313,31 @@ class RetiredRoutesTests(unittest.TestCase):
             self.assertNotIn("quote", fallback["data"]["quality"]["researchSnapshot"]["instruments"][0])
             del database
             gc.collect()
+
+    def test_daily_volatility_uses_adjacent_daily_bars_not_sparse_minute_sessions(self):
+        daily = {
+            "2026-10-19": {"close": "100"},
+            "2026-10-20": {"close": "110"},  # minute session may be unverified
+            "2026-10-21": {"close": "99"},
+        }
+        returns = mobile_research._daily_close_returns(daily, "2026-10-19", "2026-10-21")
+        self.assertEqual(len(returns), 2,
+                         "稀疏分钟样本不能把周二到周四的两日涨跌伪装成一个日收益")
+        self.assertAlmostEqual(returns[0], 0.10)
+        self.assertAlmostEqual(returns[1], -0.10)
+
+    def test_daily_volatility_breaks_on_invalid_close_instead_of_bridging(self):
+        daily = {
+            "2026-10-19": {"close": "100"},
+            "2026-10-20": {"close": "NaN"},
+            "2026-10-21": {"close": "110"},
+        }
+        self.assertEqual(mobile_research._daily_close_returns(daily, "2026-10-19", "2026-10-21"), [])
+
+    def test_daily_volatility_does_not_treat_extended_missing_period_as_one_session(self):
+        daily = {"2026-10-19": {"close": "100"}, "2026-10-23": {"close": "110"}}
+        self.assertEqual(mobile_research._daily_close_returns(daily, "2026-10-19", "2026-10-23"), [],
+                         "超过长周末的缺失交易日区间不应被当成一个日收益")
 
     def test_minute_stats_require_daily_volume_crosscheck_and_match_ios_schema(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as root:

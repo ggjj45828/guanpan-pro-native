@@ -84,6 +84,39 @@ enum InstrumentCatalog {
     static func name(for code: String) -> String? {
         all.first { $0.code == code }?.name
     }
+
+    /// Conservative, offline topic vocabulary for mapping news headlines to
+    /// held ETFs. This is a relevance filter, not a claim about causal impact.
+    static func newsKeywords(for code: String, name: String = "") -> [String] {
+        let label = name + (self.name(for: code) ?? "")
+        if ["512480", "512760", "159995"].contains(code) || label.contains("半导体") || label.contains("芯片") {
+            return ["半导体", "芯片", "集成电路", "晶圆", "存储芯片", "先进制程"]
+        }
+        if code == "513520" || label.contains("日经") || label.contains("日本") {
+            return ["日经", "日本股市", "日本央行", "日元", "日本经济"]
+        }
+        if ["513130", "513180", "159920", "159545"].contains(code) || label.contains("恒生") || label.contains("港股") {
+            return ["恒生", "港股", "香港股市", "港股通", "南向资金"]
+        }
+        if ["159941", "513100", "513500"].contains(code) || label.contains("纳指") || label.contains("标普") {
+            return ["纳斯达克", "纳指", "标普500", "美股", "美联储", "美国利率", "美元"]
+        }
+        if code == "513050" || label.contains("中概") {
+            return ["中概股", "中国互联网", "港股互联网", "纳斯达克中国"]
+        }
+        if label.contains("银行") { return ["银行", "存款利率", "净息差", "央行"] }
+        if label.contains("证券") { return ["券商", "证券行业", "融资融券", "成交额"] }
+        if label.contains("医药") { return ["医药", "医疗", "创新药", "集采"] }
+        if label.contains("光伏") { return ["光伏", "硅料", "硅片", "组件"] }
+        if label.contains("新能源") { return ["新能源汽车", "新能源车", "动力电池", "锂电"] }
+        if label.contains("军工") { return ["军工", "国防", "航天航空"] }
+        if label.contains("黄金") { return ["黄金", "金价", "贵金属"] }
+        if label.contains("红利") { return ["红利", "高股息", "股息", "分红"] }
+        if label.contains("A500") || label.contains("沪深300") || label.contains("中证500") || label.contains("上证50") {
+            return ["A股", "沪深", "中证", "上证", "大盘"]
+        }
+        return []
+    }
 }
 
 // MARK: - 持仓分组（自动分类，不需要用户维护标签）

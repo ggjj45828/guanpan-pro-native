@@ -22,11 +22,15 @@ struct NextDataConfidence: Equatable {
 
     /// 做 T 出价门槛：行情 2 分钟内、日 K ≥20 根、分时 ≥30 点。
     var canPriceTPlan: Bool {
-        level != .blocked && dailyBarCount >= 20 && minuteSampleCount >= 30 && (quoteAgeSeconds ?? 9_999) <= 120
+        level != .blocked && dailyBarCount >= 20 && minuteSampleCount >= 30 && (quoteAgeSeconds ?? 9_999) >= 0 && (quoteAgeSeconds ?? 9_999) <= 120
     }
     /// 网格出价门槛：行情 2 分钟内、日 K ≥60 根（与网格适合度引擎的样本要求一致）。
     var canPriceGridPlan: Bool {
-        level != .blocked && dailyBarCount >= 60 && (quoteAgeSeconds ?? 9_999) <= 120
+        level != .blocked && dailyBarCount >= 60 && (quoteAgeSeconds ?? 9_999) >= 0 && (quoteAgeSeconds ?? 9_999) <= 120
+    }
+    var quoteAgeLabel: String {
+        guard let quoteAgeSeconds else { return "行情时间未知" }
+        return quoteAgeSeconds < 0 ? "行情时间戳超前 \(-quoteAgeSeconds) 秒" : "行情 \(quoteAgeSeconds) 秒前"
     }
 
     /// `intradayRequired` 默认 true（做 T 需要分时点估算价位）。
@@ -39,10 +43,10 @@ struct NextDataConfidence: Equatable {
         let age: Int?
         let source: String
         if let quote {
-            age = max(0, Int(now.timeIntervalSince(quote.time)))
+            age = Int(now.timeIntervalSince(quote.time))
             source = quote.source
             if !quote.hasReliableMarketTime { missing.append("该行情源没有可核验的供应商时间戳，仅记录接收时间；不能据此生成具体挂单价") }
-            if quote.time > now.addingTimeInterval(60) { missing.append("行情时间戳超前超过 60 秒，数据时钟异常") }
+            if quote.time > now { missing.append("行情时间戳超前，拒绝使用未来报价") }
             if let age, age > 120 { missing.append("行情时间已过 \(age / 60) 分钟，超过 2 分钟新鲜度门槛") }
         } else {
             age = nil
@@ -53,8 +57,8 @@ struct NextDataConfidence: Equatable {
         let dailyAge = dailyLatestAt.map { now.timeIntervalSince($0) }
         if dailyBarCount >= 20, dailyLatestAt == nil {
             missing.append("缺少日K最新日期，不能核验历史行情是否陈旧")
-        } else if let dailyAge, dailyAge < -86_400 {
-            missing.append("日K最新日期超前超过1天，行情时间异常")
+        } else if let dailyAge, dailyAge < 0 {
+            missing.append("日K最新时间晚于当前决策时点，拒绝未来样本")
         } else if let dailyAge, dailyAge > 15 * 86_400 {
             missing.append("日K最新记录超过15天，可能未覆盖最近交易日；拒绝按旧区间出价")
         }
@@ -68,16 +72,16 @@ struct NextDataConfidence: Equatable {
         let minuteAge = intradayLatestAt.map { now.timeIntervalSince($0) }
         if intradayRequired && !sameTradingDate {
             missing.append("今日分时缺少当天样本；不使用上个交易日缓存生成做T价格")
-        } else if intradayRequired, let minuteAge, minuteAge < -60 {
-            missing.append("最新分时样本时间超前超过60秒，数据时钟异常")
+        } else if intradayRequired, let minuteAge, minuteAge < 0 {
+            missing.append("最新分时样本时间晚于当前决策时点，拒绝未来样本")
         } else if intradayRequired, let minuteAge, minuteAge > 300 {
             missing.append("最新分时样本已超过5分钟，刷新后再评估做T")
         }
         let completeness = min(1.0, Double(minuteSampleCount) / 240.0) * 100
         let staleQuote = (age ?? 9_999) > 120
-        let futureQuote = quote.map { $0.time > now.addingTimeInterval(60) } ?? false
-        let staleDaily = dailyBarCount >= 20 && (dailyAge.map { $0 < -86_400 || $0 > 15 * 86_400 } ?? true)
-        let staleMinute = intradayRequired && (!sameTradingDate || (minuteAge.map { $0 < -60 || $0 > 300 } ?? true))
+        let futureQuote = quote.map { $0.time > now } ?? false
+        let staleDaily = dailyBarCount >= 20 && (dailyAge.map { $0 < 0 || $0 > 15 * 86_400 } ?? true)
+        let staleMinute = intradayRequired && (!sameTradingDate || (minuteAge.map { $0 < 0 || $0 > 300 } ?? true))
         let blocked = staleQuote || futureQuote || quote?.hasReliableMarketTime != true || dailyBarCount < 20 || staleDaily || (intradayRequired && minuteSampleCount < 30) || staleMinute
         let level: Level
         if blocked { level = .blocked }
@@ -85,10 +89,11 @@ struct NextDataConfidence: Equatable {
         else if dailyBarCount >= 40 && minuteSampleCount >= 60 { level = .medium }
         else { level = .low }
         let summary: String
+        let ageLabel = age.map { $0 < 0 ? "行情时间戳超前 \(-$0) 秒" : "行情 \($0) 秒前" } ?? "行情时间未知"
         switch level {
-        case .high: summary = "行情 \(age ?? 0) 秒前 · 日 K \(dailyBarCount) 根 · 分时 \(minuteSampleCount) 点（\(Int(completeness.rounded()))%）· \(source)"
-        case .medium: summary = "行情 \(age ?? 0) 秒前 · 日 K \(dailyBarCount) 根 · 分时 \(minuteSampleCount) 点 · \(source)"
-        case .low: summary = "行情 \(age ?? 0) 秒前 · 样本偏少（日 K \(dailyBarCount) 根 / 分时 \(minuteSampleCount) 点）· \(source)"
+        case .high: summary = "\(ageLabel) · 日 K \(dailyBarCount) 根 · 分时 \(minuteSampleCount) 点（\(Int(completeness.rounded()))%）· \(source)"
+        case .medium: summary = "\(ageLabel) · 日 K \(dailyBarCount) 根 · 分时 \(minuteSampleCount) 点 · \(source)"
+        case .low: summary = "\(ageLabel) · 样本偏少（日 K \(dailyBarCount) 根 / 分时 \(minuteSampleCount) 点）· \(source)"
         case .blocked: summary = missing.isEmpty ? "数据不足" : "数据不足：\(missing.joined(separator: "；"))"
         }
         return NextDataConfidence(level: level, quoteAgeSeconds: age, quoteSource: source,
@@ -257,7 +262,7 @@ enum NextMarketStateEngine {
                 reasons.append("日均振幅 \(String(format: "%.3f", amplitudeValue))%")
             }
             if amplitude < 0.8 {
-                warnings.append("日均振幅不足 0.8%，扣除手续费后可操作空间有限")
+                warnings.append("日均振幅不足 0.8%；该状态标签只描述历史波动，是否有净收益仍须由具体计划按双边手续费计算")
                 return reading(.narrowRange, reasons: reasons, warnings: warnings, bars: bars.count, minute: minuteCount, signal: signal, metrics: metrics, r20: return20, vs: priceVsMA20, change: todayChange)
             }
             return reading(.wideRange, reasons: reasons, warnings: warnings, bars: bars.count, minute: minuteCount, signal: signal, metrics: metrics, r20: return20, vs: priceVsMA20, change: todayChange)
@@ -400,8 +405,8 @@ enum NextStrategySelector {
                                        warnings: [], referencePrice: nil)
         case .narrowRange:
             let amplitude = reading.gridMetrics.avgAmplitudePercent ?? 0
-            return NextStrategyReading(kind: .noTrade, reasons: reading.reasons + ["日均振幅仅 \(String(format: "%.3f", amplitude))%，扣除手续费后做T和网格都没有足够空间"],
-                                       warnings: [], referencePrice: nil)
+            return NextStrategyReading(kind: .noTrade, reasons: reading.reasons + ["历史日均振幅仅 \(String(format: "%.3f", amplitude))%，当前先不生成计划；具体费用优势以候选计划的双边手续费计算为准"],
+                                       warnings: ["市场状态分类本身没有估算净收益"], referencePrice: nil)
         case .wideRange:
             // 日内反复震荡（价格多次穿越 VWAP）优先做T；多日区间稳定则网格。
             if oscillating, hasPosition {
@@ -466,7 +471,8 @@ struct NextPlanCaps: Equatable {
     static let none = NextPlanCaps()
 
     static func make(profile: NextInvestorProfile?, nasStats: NextNASMinuteStats?,
-                     book: NextBook, code: String, lotSize: Int, now: Date) -> NextPlanCaps {
+                     book: NextBook, code: String, lotSize: Int, now: Date,
+                     settlement: NextSettlementRule = .unknown) -> NextPlanCaps {
         var caps = NextPlanCaps()
         if let profile {
             let role = profile.role(for: code)
@@ -476,7 +482,7 @@ struct NextPlanCaps: Equatable {
                 caps.tacticalTradingBlockReason = "该持仓在投资者画像中标记为长期核心仓；当前仅提供持有/组合风险指导，不生成做T或网格计划（可在画像中改为机动仓后重新评估）"
             }
             if profile.trait(.tAppetite)?.value != "none" || profile.trait(.tAppetite)?.isKnown != true {
-                let available = book.availableUnits(for: code, at: now)
+                let available = book.availableUnits(for: code, at: now, settlement: settlement)
                 if available > 0 {
                     let ratio = max(0.1, min(1.0, profile.thresholds.maxTUnitsRatio))
                     let capUnits = max(lotSize, (Int(Double(available) * ratio) / lotSize) * lotSize)
@@ -553,9 +559,7 @@ struct NextOrderBookLiquidity: Equatable {
 
 enum NextOrderBookEvidence {
     static func assess(_ snapshot: NextOrderBookSnapshot, lotSize: Int, now: Date) -> NextOrderBookLiquidity? {
-        guard lotSize > 0, (try? snapshot.validate()) != nil,
-              now.timeIntervalSince(snapshot.observedAt) >= 0,
-              now.timeIntervalSince(snapshot.observedAt) <= 30,
+        guard lotSize > 0, snapshot.isFresh(at: now),
               snapshot.bids.count == 5, snapshot.asks.count == 5,
               let bid = snapshot.bids.first?.price, let ask = snapshot.asks.first?.price,
               bid > 0, ask >= bid else { return nil }
@@ -616,10 +620,10 @@ enum NextTradeTPlanner {
         guard confidence.canPriceTPlan, let quote else {
             return .insufficientData(confidence, confidence.missing.isEmpty ? ["当前无法评估做T机会"] : confidence.missing)
         }
-        // 交易规则必须已核实：场内 ETF、100 份一手、每笔 ¥0.10。规则不确定就拒绝出价。
-        guard let rules, rules.isVerified, rules.assetClass == .etf, rules.settlement != .unknown,
+        // 交易规则必须已核实：场内 ETF、交易单位和有效手续费。规则不确定就拒绝出价。
+        guard let rules, rules.isVerified(at: now), rules.assetClass == .etf, rules.settlement != .unknown,
               let lotSize = rules.lotSize, lotSize > 0,
-              let feePerTrade = rules.feePerTrade, feePerTrade >= 0 else {
+              let feePerTrade = rules.feePerTrade, NextTradeFees.isValid(feePerTrade) else {
             return .insufficientData(confidence, ["该证券的交易规则未核实（份额单位/手续费），为避免错误委托拒绝生成价格"])
         }
         if let reason = NextETFPremiumExecutionGuard.rejectionReason(quote: quote, now: now) {
@@ -652,10 +656,10 @@ enum NextTradeTPlanner {
         var units: Int
         switch kind {
         case .reverse:
-            let available = book.availableUnits(for: quote.code, at: now)
+            let available = book.availableUnits(for: quote.code, at: now, settlement: rules.settlement)
             let lots = available / lotSize
             guard lots >= 1 else {
-                return .insufficientData(confidence, ["可卖份额不足一手：持有 \(position.units) 份，今日买入锁定 \(book.lockedUnits(for: quote.code, at: now)) 份，可卖 \(available) 份"])
+                return .insufficientData(confidence, ["可卖份额不足一手：持有 \(position.units) 份，按\(rules.settlement.rawValue.uppercased())规则今日锁定 \(book.lockedUnits(for: quote.code, at: now, settlement: rules.settlement)) 份，可卖 \(available) 份"])
             }
             units = lots * lotSize
         case .forward:
@@ -756,7 +760,7 @@ enum NextTradeTPlanner {
         if let rsi = NextSignalEngine.evaluate(bars)?.rsi {
             evidence.append("RSI14 \(String(format: "%.1f", rsi))")
         }
-        evidence.append("现价 ¥\(NextMoney.text(quote.price, digits: 3))（\(quote.source)，\(confidence.quoteAgeSeconds ?? 0) 秒前）")
+        evidence.append("现价 ¥\(NextMoney.text(quote.price, digits: 3))（\(quote.source)，\(confidence.quoteAgeLabel)）")
         if let iopvEvidence = NextETFPremiumExecutionGuard.evidence(quote: quote, now: now) {
             evidence.append(iopvEvidence)
         }
@@ -821,7 +825,7 @@ enum NextGridPlannerResult: Equatable {
 enum NextGridPlanner {
     static func pairedExpectedNetGain(price: Decimal, oppositePrice: Decimal, units: Int,
                                       feePerTrade: Decimal) -> Decimal? {
-        guard price > 0, oppositePrice > 0, units > 0, feePerTrade >= 0,
+        guard price > 0, oppositePrice > 0, units > 0, NextTradeFees.isValid(feePerTrade),
               price != oppositePrice else { return nil }
         let spread = oppositePrice >= price ? oppositePrice - price : price - oppositePrice
         let gain = spread * Decimal(units) - feePerTrade * 2
@@ -855,9 +859,9 @@ enum NextGridPlanner {
         guard confidence.canPriceGridPlan, let quote else {
             return .insufficientData(confidence, confidence.missing)
         }
-        guard let rules, rules.isVerified, rules.assetClass == .etf, rules.settlement != .unknown,
+        guard let rules, rules.isVerified(at: now), rules.assetClass == .etf, rules.settlement != .unknown,
               let lotSize = rules.lotSize, lotSize > 0,
-              let feePerTrade = rules.feePerTrade else {
+              let feePerTrade = rules.feePerTrade, NextTradeFees.isValid(feePerTrade) else {
             return .insufficientData(confidence, ["该证券的交易规则未核实（份额单位/手续费），拒绝生成网格档位"])
         }
         if let reason = NextETFPremiumExecutionGuard.rejectionReason(quote: quote, now: now) {
@@ -921,7 +925,7 @@ enum NextGridPlanner {
         var tiers: [NextGridTier] = []
         var sellUnitsPerTier = 0
         if let position = book.positions.first(where: { $0.code == quote.code }), position.units > 0 {
-            let available = book.availableUnits(for: quote.code, at: now)
+            let available = book.availableUnits(for: quote.code, at: now, settlement: rules.settlement)
             let sellTierCount = max(1, tierCount / 2)
             sellUnitsPerTier = (available / sellTierCount / lotSize) * lotSize
         }
@@ -1043,10 +1047,10 @@ enum NextRecoveryAnalyzer {
         }
         // 补仓份额、手续费和新成本按实际交易单位计算；规则不确定时不提供带份额的选项。
         var addOption: NextRecoveryAddOption?
-        let verifiedRules = rules.flatMap { $0.isVerified && $0.assetClass == .etf ? $0 : nil }
+        let verifiedRules = rules.flatMap { $0.isVerified(at: now) && $0.assetClass == .etf ? $0 : nil }
         let lotSize = verifiedRules?.lotSize ?? 0
         let fee = verifiedRules?.feePerTrade
-        if lotSize > 0, let fee, fee >= 0 {
+        if lotSize > 0, let fee, NextTradeFees.isValid(fee) {
             let doubleUnits = (position.units / lotSize) * lotSize
             if doubleUnits < lotSize {
                 warnings.append("真实持仓不足一个已核实交易单位；不生成补仓份额")
@@ -1080,7 +1084,7 @@ enum NextRecoveryAnalyzer {
         // 减仓选项：卖出一半（向下取整到整手），说明风险变化。
         var reduceOption: NextRecoveryReduceOption?
         if lotSize > 0, let fee, fee >= 0 {
-            let available = book.availableUnits(for: quote.code, at: now)
+            let available = book.availableUnits(for: quote.code, at: now, settlement: verifiedRules?.settlement ?? .unknown)
             let halfUnits = (available / 2 / lotSize) * lotSize
             if halfUnits >= lotSize {
                 let freed = quote.price * Decimal(halfUnits) - fee

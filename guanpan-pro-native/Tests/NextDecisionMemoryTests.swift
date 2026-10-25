@@ -503,12 +503,21 @@ final class NextDecisionMemoryTests: XCTestCase {
     func testDelistingHeadlineInvalidatesTPlan() {
         let impact = NextNewsImpactEngine.evaluate(
             code: "159941", name: "纳指ETF",
-            titles: [NextNewsInput(title: "某基金发布退市风险提示", publishedAt: currentNewsDate)],
+            titles: [NextNewsInput(title: "纳指ETF发布退市风险提示", publishedAt: currentNewsDate)],
             hasTPlan: true, hasGridPlan: true, now: now)
         XCTAssertEqual(impact.action, .invalidateT)
         let applied = NextNewsImpactEngine.apply(impact, to: guidanceItem(tPlan: .ready(tPlan()), gridPlan: nil))
         XCTAssertFalse(applied.tPlan?.isReady == true)
         XCTAssertFalse(applied.isActionable)
+    }
+
+    func testUnmatchedMajorHeadlineCannotInvalidateAnotherHolding() {
+        let impact = NextNewsImpactEngine.evaluate(
+            code: "159941", name: "纳指ETF",
+            titles: [NextNewsInput(title: "某基金发布退市风险提示", publishedAt: currentNewsDate)],
+            hasTPlan: true, hasGridPlan: true, now: now)
+        XCTAssertTrue(impact.isEmpty)
+        XCTAssertEqual(impact.action, .none)
     }
 
     func testUnrelatedOrNeutralHeadlinesChangeNothing() {
@@ -543,6 +552,35 @@ final class NextDecisionMemoryTests: XCTestCase {
                                                    industryWords: ["半导体"]))
         XCTAssertFalse(NextNewsImpactEngine.belongs("白酒板块走强", code: "512480", name: "半导体ETF",
                                                     industryWords: ["半导体"]))
+    }
+
+    func testDecisionNewsSnapshotKeepsOnlyFreshHeadlinesMappedToItsHolding() {
+        let relevant = NextNewsImpactEngine.relevantHeadlines(code: "159941", name: "纳指ETF", titles: [
+            NextNewsInput(title: "纳指ETF公告停牌", publishedAt: currentNewsDate),
+            NextNewsInput(title: "某基金发布退市风险提示", publishedAt: currentNewsDate),
+            NextNewsInput(title: "纳指ETF旧公告停牌", publishedAt: "2025-01-01T00:00:00Z")
+        ], now: now)
+        XCTAssertEqual(relevant.map(\.title), ["纳指ETF公告停牌"])
+    }
+
+    func testIndustryNewsMapsToETFWithoutRequiringFundNameInHeadline() {
+        let impact = NextNewsImpactEngine.evaluate(code: "512480", name: "半导体设备ETF", titles: [
+            NextNewsInput(title: "先进制程产业链被立案调查", publishedAt: currentNewsDate),
+            NextNewsInput(title: "白酒行业经营数据发布", publishedAt: currentNewsDate)
+        ], hasTPlan: true, hasGridPlan: false, now: now)
+        XCTAssertEqual(impact.severity, .major)
+        XCTAssertEqual(impact.action, .invalidateT)
+        XCTAssertEqual(impact.hits.map(\.title), ["先进制程产业链被立案调查"],
+                       "行业新闻可关联持仓；无关行业消息不能误废计划")
+    }
+
+    func testSTMajorNewsKeywordDoesNotMatchInsideOrdinaryEnglishWords() {
+        let ordinary = NextNewsImpactEngine.severity(of: "Investment strategy outlook for semiconductor ETFs")
+        XCTAssertEqual(ordinary.0, .neutral, "investment / strategy 内部的 st 不能触发证券风险标记")
+        XCTAssertFalse(ordinary.1.contains("ST"))
+
+        XCTAssertEqual(NextNewsImpactEngine.severity(of: "159941被实施ST风险警示").0, .major)
+        XCTAssertEqual(NextNewsImpactEngine.severity(of: "*ST公司公告：暂停上市").0, .major)
     }
 
     // MARK: - 画像硬约束

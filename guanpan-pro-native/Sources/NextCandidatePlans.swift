@@ -566,7 +566,8 @@ enum NextOpportunityScanner {
             // 画像上限与 NAS 长期统计一起进计划：这是硬约束，不是提示。
             let caps = NextPlanCaps.make(profile: profile, nasStats: nasStats, book: book,
                                          code: position.code,
-                                         lotSize: rules[position.code]?.lotSize ?? 100, now: now)
+                                         lotSize: rules[position.code]?.lotSize ?? 100, now: now,
+                                         settlement: rules[position.code]?.settlement ?? .unknown)
             let tacticalRoleNote = caps.tacticalTradingBlockReason
             if let reason = tacticalRoleNote, (strategy.kind == .tTrade || strategy.kind == .grid) {
                 strategy = NextStrategyReading(kind: .hold,

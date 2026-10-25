@@ -743,3 +743,22 @@
 - 已在`nas-advisor-compat/server/workers.py`让大陆指数采集仅在有官方日历的2026年运行；未知年份视为未确认且不发上游请求。新增`nas-advisor-compat/tests/test_research_only.py`用例，验证`market_session_open`拒绝未知年份、采集周期不调用fetcher也不保存数据。
 - 研究兼容测试当前59/59通过（完整NAS同步套件58/58此前本轮通过）。没有修改数据统计口径，也不影响2026已公布交易日的采集。Matrix第137保持🟠：境外官方节假日、提前收盘、临时停市以及未来年度日历仍需接入。
 - 这些源与测试、Matrix和本续记更新尚未推送；下一步检查完整Validate #123/截图并修复其失败，再把当前所有代码/记录整理成一个B验证提交，运行完整macOS XCTest与IPA构建。B独立和无虚拟交易等红线不变。
+
+## 2026-10-25 06:33 UTC 本轮断点续验
+
+- 保持B路线独立；未合并/摘取A版代码，未引入模拟账户、虚拟成交或自动下单。
+- 在当前源码树本机重跑NAS研究兼容套件：59/59通过；NAS同步套件：58/58通过。`server/tests`完整HTTP集成套件本轮未能在当前执行沙箱内复验：84项中19项由于Windows拒绝本机回环套接字（WinError 10013）报错，另外65项通过；这不是业务断言失败，也不能把整套标绿。之前允许回环的执行环境曾验证84/84，但本轮不重用该历史结果声称当前通过。
+- 目标版CI状态读取受阻：匿名GitHub API返回公共API rate limit exceeded；当前会话Git Credential Manager未向命令行提供凭据；浏览器动作页面读取多次超时。#123（主题新布局模拟器验收）、#124、#125、NAS foundation #59的终态和工件均未取得，因此保持未验证；不要推断成功或失败。
+- 本轮业务源码未改动；只更新了本矩阵和续接记录。HEAD `8153c67c7108807271f288599add4c48100d6baa`，业务源码tree `207509981b2319133273f89e69dba1239a6505d9`；此tree对应续接前已推送的B验证源码。#191 unsigned IPA此前成功只证明Release编译/打包，不证明签名/安装。
+- 当前首要续接：恢复只读读取GitHub Actions的授权通道（检查Credential Manager的正确凭据上下文或用户已登录的浏览器会话，不输出/暴露密钥），先读取#123/#125/#59终态和工件；随后修复真实CI失败、审阅五主题模拟器截图；再逐项推进矩阵中可在当前环境验证的Partial。HTTP集成测试需在可绑定localhost的受控执行环境重跑。不要降低阈值、放宽fail-closed或防未来约束。
+- 状态仍按Master Acceptance Matrix：145项，✅1、🟡18、🟠126、❌0、⚠️0。代码实现和本轮NAS测试不能替代真实NAS长期档案、真实iPhone/在线Key联调。
+
+## 2026-10-25 持续开发：跨市场风险证据与官方交易日历
+
+- 严格沿B版继续；未合并或摘取A版实现。Matrix状态不升级，仍145项：✅1、🟡18、🟠126、❌0、⚠️0。
+- `NextCore.swift`收紧NAS跨市场风险证据：必须同时具有有限的领先/本地年龄与收益，年龄均为0–600秒，失效时点必须在当前至未来600秒内。`NextCoreTests.swift`新增缺字段、超龄与异常远期失效测试；Swift/XCTest本机不可运行，这些用例保持未验证。
+- `nas-advisor-compat/server/workers.py`增加JPX、KRX/BOK、HKEX、Nasdaq已公布的2026休市日历；保留未配置市场/年度fail-closed，新增美国提前收市、KRX 2026-01-02延迟开市，并补齐HKEX 2026-02-16、12-24、12-31半日市至12:00。核对JPX官方2027市场日历后，仅启用JPX 2027休市日，KRX/HKEX/Nasdaq的2027日历继续fail-closed。HKEX半日市依据官方Circular CT/075/25。NAS测试`test_research_only.py`现为62/62通过；`git diff --check`通过。同步/市场数据/研究输入的非HTTP测试51/51通过；7个localhost HTTP测试因WinError 10013仍属External Verification Pending，不计作通过。
+- 矩阵第137行已记录海外半日市与61/61测试；顶部状态说明也更新为不等Actions、模拟器截图或localhost复验。第122/129/145仍保持Partial，未将Swift用例或外部验证虚报为完成。
+- 当前改动尚未推送：`NextCore.swift`、`NextCoreTests.swift`、`workers.py`、`test_research_only.py`及矩阵/续记。无Swift/Xcode的本机验证通道；按用户要求继续可以本地完成的其他Partial，不因CI或截图等待而停。
+- 下一步从Matrix剩余核心Partial中挑可本地实现/测的风险与数据链项目，先检查现有实现和用例避免重复；随后运行相关NAS Python单测、语法检查、Compose检查及`git diff --check`。B版红线：真实账本唯一、无模拟资金/持仓/成交、不自动下单、不降低统计门槛或防未来规则。
+- 后续本地校验补记：仓库`tests/`中存储16/16、市场数据25/25、研究输入10/10分别通过，共51项非HTTP回归通过；剩余7项localhost HTTP用例明确因WinError 10013无法绑定/访问回环，按External Verification Pending，不计绿。修改NAS兼容研究代码和测试通过`compileall`，`git diff --check`通过。不要把先前全量discover的HTTP报错说成业务断言失败，也不要写成全套58/58通过。

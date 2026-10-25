@@ -654,7 +654,7 @@ struct AIGuidanceDetailSheet: View {
                     GPStatTile(label: "预计净收益", value: "¥\(NextMoney.text(plan.netGain))", footnote: "已扣两笔手续费 ¥\(NextMoney.text(plan.feeTotal))", emphasis: p.forest)
                 }
                 GPDataRow(title: "等效成本降低", value: "¥\(NextMoney.text(plan.costReductionPerUnit, digits: 3))/份")
-                GPDataRow(title: "需扣除手续费", value: "¥\(NextMoney.text(plan.feeTotal))", note: "ETF 每笔 ¥0.10，两笔")
+                GPDataRow(title: "需扣除手续费", value: "¥\(NextMoney.text(plan.feeTotal))", note: "按当前设置费率双边计费")
                 Text(plan.volumeSupport).font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                 Text(plan.trampleRisk).font(.caption2).foregroundStyle(p.terracotta).fixedSize(horizontal: false, vertical: true)
                 Text(plan.continuedDropRisk).font(.caption2).foregroundStyle(p.terracotta).fixedSize(horizontal: false, vertical: true)

@@ -142,8 +142,9 @@ struct RootView: View {
         }
     }
     private var tabSelection: Binding<NextTab> { Binding(get: { activeTab }, set: { model.preferences.navigation.selectedTab = $0; model.preferences = model.preferences }) }
-    /// 保留当前页面场景作为语义信息；主题解析固定使用同一主题，避免跨页面忽明忽暗。
+    /// 固定主题时全 App 一致；自动主题按当前主页面/详情场景解析。
     private var activeScene: ThemeScene {
+        if model.detailSceneTab == activeTab { return .detail }
         switch activeTab {
         case .decision: return .home
         case .market: return .market
@@ -186,8 +187,8 @@ struct RootView: View {
         return model.preferences.themeStyle.map { ThemeSelection.fixed($0) } ?? .auto
     }
     private var resolvedTheme: AppTheme {
-        // 自动主题采用编辑室作为全 App 的一致默认；用户选定任一主题后，所有页面共享它。
-        ThemeManager.resolve(selection: themeSelection, scene: .home)
+        // 自动模式按主场景选主题；固定主题仍然作用于所有页面，避免同一主题内部跳色。
+        ThemeManager.resolve(selection: themeSelection, scene: activeScene)
     }
     private var palette: GPPalette {
         GPPalette(scheme: effectiveScheme, comfort: model.theme == .comfort && !resolvedTheme.forcesDark,
@@ -284,6 +285,14 @@ private struct PrimaryNavigation<Content: View>: View {
     var showsHeader = true
     @State private var path: [GPRoute] = []
     @ViewBuilder var content: Content
+    private func normalizedTab(_ selected: NextTab) -> NextTab {
+        switch selected {
+        case .overview: return .decision
+        case .laboratory: return .ai
+        case .income: return .assets
+        default: return selected
+        }
+    }
     var body: some View {
         NavigationStack(path: $path) {
             content
@@ -339,8 +348,17 @@ private struct PrimaryNavigation<Content: View>: View {
         .toolbarBackground(p.canvas, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(p.scheme, for: .navigationBar)
-        .onAppear { path = (model.preferences.navigation.tabRoutes[tab.rawValue] ?? []).compactMap(GPRoute.restore) }
-        .onChange(of: path) { _, value in model.saveNavigationPath(value.map(\.persisted), for: tab) }
+        .onAppear {
+            path = (model.preferences.navigation.tabRoutes[tab.rawValue] ?? []).compactMap(GPRoute.restore)
+            if normalizedTab(model.preferences.navigation.selectedTab) == tab { model.detailSceneTab = path.isEmpty ? nil : tab }
+        }
+        .onChange(of: path) { _, value in
+            model.saveNavigationPath(value.map(\.persisted), for: tab)
+            if normalizedTab(model.preferences.navigation.selectedTab) == tab { model.detailSceneTab = value.isEmpty ? nil : tab }
+        }
+        .onChange(of: model.preferences.navigation.selectedTab) { _, selected in
+            if normalizedTab(selected) == tab { model.detailSceneTab = path.isEmpty ? nil : tab }
+        }
         .onChange(of: model.routeRequestID) { _, _ in
             guard model.requestedTab == tab, let route = model.requestedRoute else { return }
             path.append(route)
@@ -988,7 +1006,9 @@ private struct InstrumentDetailScreen: View {
                 WorthBuyPanel(code: code)
                 EditorialSection(title: "交易盘口", trailing: model.rules[code]?.isVerified == true ? "规则已验证" : "规则待验证", accent: p.chartViolet) {
                     if let snapshot = model.orderBooks[code] {
-                        if model.rules[code]?.isVerified != true {
+                        if !snapshot.isFresh(at: Date()) {
+                            GPStatus(title: "盘口数据已过期", detail: "最后更新时间：\(snapshot.observedAt.formatted(date: .omitted, time: .standard))。旧五档价格不再展示，也不会参与交易指导。", symbol: "clock.badge.exclamationmark")
+                        } else if model.rules[code]?.isVerified != true {
                             GPStatus(title: "交易规则尚未验证", detail: "不会假设 ETF 是 T+0，也不会固定推断手数或费用。", symbol: "checkmark.shield")
                         } else {
                             OrderBookView(snapshot: snapshot)
@@ -1070,29 +1090,36 @@ private struct InstrumentDetailScreen: View {
 private struct OrderBookView: View {
     @Environment(\.gp) private var p
     let snapshot: NextOrderBookSnapshot
-    private var isFresh: Bool { snapshot.observedAt <= Date() && Date().timeIntervalSince(snapshot.observedAt) <= 5 }
     private var maxAskUnits: Int { max(snapshot.asks.map(\.units).max() ?? 1, 1) }
     private var maxBidUnits: Int { max(snapshot.bids.map(\.units).max() ?? 1, 1) }
     var body: some View {
-        VStack(spacing: 8) {
-            // 参考设计稿「五档盘口」：左卖出（绿）/ 右买入（红），每档 价格 + 比例条 + 数量。
-            HStack(spacing: 12) {
-                VStack(spacing: 7) {
-                    Text("卖出").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.gpDown).frame(maxWidth: .infinity, alignment: .leading)
-                    ForEach(Array(snapshot.asks.reversed().enumerated()), id: \.offset) { index, level in
-                        bookRow(label: "卖\(5 - index)", level: level, color: p.gpDown, maxUnits: maxAskUnits)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if snapshot.isFresh(at: context.date) {
+                VStack(spacing: 8) {
+                    // 参考设计稿「五档盘口」：左卖出（绿）/ 右买入（红），每档价格、比例条与数量。
+                    HStack(spacing: 12) {
+                        VStack(spacing: 7) {
+                            Text("卖出").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.gpDown).frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(Array(snapshot.asks.reversed().enumerated()), id: \.offset) { index, level in
+                                bookRow(label: "卖\(5 - index)", level: level, color: p.gpDown, maxUnits: maxAskUnits)
+                            }
+                        }
+                        VStack(spacing: 7) {
+                            Text("买入").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.gpUp).frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(Array(snapshot.bids.enumerated()), id: \.offset) { index, level in
+                                bookRow(label: "买\(index + 1)", level: level, color: p.gpUp, maxUnits: maxBidUnits)
+                            }
+                        }
                     }
+                    Text("\(snapshot.source) · \(snapshot.observedAt.formatted(date: .omitted, time: .standard)) · 数据新鲜")
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(p.muted).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                VStack(spacing: 7) {
-                    Text("买入").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.gpUp).frame(maxWidth: .infinity, alignment: .leading)
-                    ForEach(Array(snapshot.bids.enumerated()), id: \.offset) { index, level in
-                        bookRow(label: "买\(index + 1)", level: level, color: p.gpUp, maxUnits: maxBidUnits)
-                    }
-                }
+                .accessibilityElement(children: .combine).accessibilityLabel("\(snapshot.code) 五档买卖盘口，数据新鲜")
+            } else {
+                GPStatus(title: "盘口数据已过期", detail: "最后更新时间：\(snapshot.observedAt.formatted(date: .omitted, time: .standard))。旧五档价格不再展示，也不会参与交易指导。", symbol: "clock.badge.exclamationmark")
+                    .accessibilityLabel("\(snapshot.code) 五档盘口数据已过期")
             }
-            Text("\(snapshot.source) · \(snapshot.observedAt.formatted(date: .omitted, time: .standard)) · \(isFresh ? "数据新鲜" : "数据已过期")").font(.system(size: 9, design: .monospaced)).foregroundStyle(isFresh ? p.muted : p.terracotta).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .accessibilityElement(children: .combine).accessibilityLabel("\(snapshot.code) 五档买卖盘口，\(isFresh ? "数据新鲜" : "数据已过期")")
     }
     private func bookRow(label: String, level: NextBookLevel, color: Color, maxUnits: Int) -> some View {
         HStack(spacing: 6) {
@@ -2041,7 +2068,7 @@ struct TradeEntrySheet: View {
     let request: GPTradeRequest
     @State private var units = ""
     @State private var price = ""
-    @State private var fee = ""
+    @State private var fee = "0.10"
     @State private var confirm = false
     @State private var confirmImport = false
     @State private var linkedDecisionID: UUID?
@@ -2067,18 +2094,23 @@ struct TradeEntrySheet: View {
                     TextField("成交价格", text: $price).keyboardType(.decimalPad)
                     TextField("成交份额", text: $units).keyboardType(.numberPad)
                     TextField("本笔手续费", text: $fee).keyboardType(.decimalPad)
-                    Text(verifiedETF ? "ETF 手续费默认每笔 ¥0.10" : "证券类别或费率尚未核实，请按券商成交记录填写手续费。")
+                    Text(verifiedETF ? "AI估算每笔 ¥\(NextMoney.text(model.preferences.etfFeePerTrade))；真实成交请按券商记录填写。" : "证券类别或费率尚未核实，请按券商成交记录填写手续费。")
                     Text("仅记录已在券商完成的交易，不会发出委托。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("真实账本") {
                     Text("可用现金 ¥\(NextMoney.text(model.book.cash))")
                     let held = model.book.positions.first(where: { $0.code == request.code })?.units ?? 0
-                    let sellsAvailable = model.book.availableUnits(for: request.code, at: Date())
-                    let locked = model.book.lockedUnits(for: request.code, at: Date())
+                    let settlement = model.rules[request.code]?.settlement ?? .unknown
+                    let sellsAvailable = model.book.availableUnits(for: request.code, at: Date(), settlement: settlement)
+                    let locked = model.book.lockedUnits(for: request.code, at: Date(), settlement: settlement)
                     Text("持有 \(held) 份 · 可卖 \(sellsAvailable) 份")
-                    if locked > 0 {
-                        Text("其中 \(locked) 份是今天买入的，T+1 才能卖").font(.caption).foregroundStyle(p.terracotta)
+                    if settlement == .unknown {
+                        Text("交易结算规则未验证；今日买入 \(locked) 份按T+1保守估算，可卖数量请以券商为准。已确认的真实成交仍可记录。")
+                            .font(.caption).foregroundStyle(p.terracotta)
+                    } else if locked > 0 {
+                        Text("其中 \(locked) 份是今日买入；按\(settlement.rawValue.uppercased())规则暂不可卖")
+                            .font(.caption).foregroundStyle(p.terracotta)
                     }
                     if request.side == "sell", let count = Int(units), count > sellsAvailable {
                         Text("卖出 \(count) 份超过可卖 \(sellsAvailable) 份").font(.caption).foregroundStyle(p.risk)
@@ -2159,7 +2191,7 @@ struct TradeEntrySheet: View {
             } message: { Text("\(request.side == "buy" ? "买入" : "卖出") \(name) \(units) 份，价格 ¥\(price)，另计手续费 ¥\(fee)。") }
         }.task {
             if !nameResolved { await model.refreshQuotes(codes: [request.code]) }
-            if verifiedETF { fee = "0.10" }
+            if verifiedETF { fee = NextMoney.text(model.preferences.etfFeePerTrade) }
         }
     }
 }
@@ -2210,6 +2242,7 @@ private struct SettingsScreen: View {
     @Environment(\.gp) private var p
     @State private var dynamicTypeNote = false
     @State private var nasURL = ""
+    @State private var etfFeeText = "0.10"
     @State private var confirmSync = false
     @State private var confirmDownload = false
     @State private var deepSeekKey = ""
@@ -2286,7 +2319,7 @@ private struct SettingsScreen: View {
                             .padding(.vertical, 2)
                         }
                         Text(model.preferences.themeStyle == nil
-                             ? "当前使用东方编辑室作为统一默认主题；你选择任一主题后，首页、持仓、行情和详情都会保持同一套视觉。"
+                             ? "当前为自动场景主题：首页用东方编辑室，行情用交易仪表盘，AI用杂志卡片，持仓用创意拼图，我的与详情用现代卡片。选定一套主题后，所有页面统一使用它。"
                              : "已固定为「\(model.preferences.themeStyle?.title ?? "")」：所有页面统一这一套外观，数据与 AI 结论不受影响。")
                             .font(.caption2).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
                         Picker("明暗", selection: Binding(get: { model.theme }, set: model.saveTheme)) { ForEach(GPTheme.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).accessibilityIdentifier("settings.theme")
@@ -2325,6 +2358,31 @@ private struct SettingsScreen: View {
                     GPCard {
                         NavigationLink(value: GPRoute.fills) { IntentRow(icon: "list.bullet.rectangle", title: "审计记录", detail: "真实资产修改、撤销和版本") }
                         NavigationLink(value: GPRoute.backups) { IntentRow(icon: "externaldrive", title: "备份与恢复", detail: "数据隔离、校验、确认恢复") }
+                    }
+                }
+                EditorialSection(title: "交易成本", accent: p.chartGold) {
+                    GPCard(accent: p.chartGold) {
+                        HStack(spacing: 8) {
+                            Text("ETF估算手续费").font(.subheadline.weight(.medium)).foregroundStyle(p.ink)
+                            Spacer()
+                            Text("¥/每笔").font(.caption).foregroundStyle(p.muted)
+                            TextField("0.10", text: $etfFeeText).keyboardType(.decimalPad)
+                                .textFieldStyle(.roundedBorder).frame(width: 92)
+                                .multilineTextAlignment(.trailing)
+                                .accessibilityIdentifier("settings.etf.fee")
+                        }
+                        Text("默认每笔 ¥0.10。用于做T、网格和限价计划的成本估算；买入和卖出分别计费。真实成交仍录入券商实际手续费。")
+                            .font(.caption).foregroundStyle(p.muted).fixedSize(horizontal: false, vertical: true)
+                        Button("保存手续费") {
+                            do {
+                                let value = try NextMoney.parse(etfFeeText)
+                                try model.setETFTradeFee(value)
+                                etfFeeText = NextMoney.text(value)
+                                model.notice = "ETF估算手续费已更新"
+                            } catch { model.errorMessage = error.localizedDescription }
+                        }
+                        .font(.caption.weight(.semibold)).tint(p.forest)
+                        .accessibilityIdentifier("settings.etf.fee.save")
                     }
                 }
                 EditorialSection(title: "连接状态", trailing: model.hasPendingUpload ? "有改动待上传" : "已同步") {
@@ -2467,7 +2525,7 @@ private struct SettingsScreen: View {
                 Text("观盘 Next · v\(appVer) (build \(appBuild))").font(.caption2).foregroundStyle(p.muted).padding(.vertical, 18)
             }
         }.navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
-            .onAppear { mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil; nasURL = model.preferences.nasBaseURL }
+            .onAppear { mobileAIKeyAvailable = DeepSeekMobile.loadKey() != nil; nasURL = model.preferences.nasBaseURL; etfFeeText = NextMoney.text(model.preferences.etfFeePerTrade) }
             .confirmationDialog("确认从 NAS 下载真实账本并替换本机账本？", isPresented: $confirmDownload, titleVisibility: .visible) {
                 Button("确认下载", role: .destructive) { Task { await model.downloadBookManually() } }
                 Button("取消", role: .cancel) { }
@@ -2877,7 +2935,11 @@ private struct DividendAdviceCard: View {
         code = target
         Task {
             await model.refreshDividendHistory(target)
-            await model.refreshInstrument(target)
+            // This lookup calculates a yield/price-range score; fetching or
+            // registering long-term intraday samples here needlessly uses
+            // NAS tunnel traffic. Keep the request to quote + daily history.
+            await model.refreshQuotes(codes: [target])
+            await model.refreshDaily(target)
             loading = false
         }
     }

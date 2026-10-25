@@ -43,15 +43,18 @@ struct LocalPreferences: Codable {
     var nasAutoUpload = true
     /// Explicitly controls where live quotes/charts come from. Long-term research remains NAS-only.
     var marketSourceMode: NextMarketSourceMode = .phoneDirect
+    /// User-configurable estimate for one ETF transaction; actual fills retain broker-reported fee.
+    var etfFeePerTrade: Decimal = NextTradeFees.etfPerTrade
     /// 五套视觉主题：nil = 跟随场景（首页编辑室 / 盘中仪表盘 / AI 日报杂志 / 持仓拼图 / 详情现代卡片）。
     /// 用户手动选一套后写成具体值，手动选择永远优先于场景推断。
     var themeStyle: AppTheme?
-    enum CodingKeys: String, CodingKey { case goal, watch, navigation, theme, appearance, notifications, nasBaseURL, legacyWebBaseURL, nasRevision, nasSyncedFingerprint, nasSyncedAt, nasAutoUpload, marketSourceMode, themeStyle }
-    init(goal: NextGoal = NextGoal(), watch: [String] = ["159941", "563020", "159545", "159352"], navigation: NextNavigationState = NextNavigationState(), theme: GPTheme = .light, appearance: GPAppearance = GPAppearance(), notifications: NextNotificationCenter = NextNotificationCenter(), nasBaseURL: String = "", legacyWebBaseURL: String = "", nasRevision: Int? = nil, nasSyncedFingerprint: String? = nil, nasSyncedAt: Date? = nil, nasAutoUpload: Bool = true, marketSourceMode: NextMarketSourceMode = .phoneDirect, themeStyle: AppTheme? = nil) {
+    enum CodingKeys: String, CodingKey { case goal, watch, navigation, theme, appearance, notifications, nasBaseURL, legacyWebBaseURL, nasRevision, nasSyncedFingerprint, nasSyncedAt, nasAutoUpload, marketSourceMode, etfFeePerTrade, themeStyle }
+    init(goal: NextGoal = NextGoal(), watch: [String] = ["159941", "563020", "159545", "159352"], navigation: NextNavigationState = NextNavigationState(), theme: GPTheme = .light, appearance: GPAppearance = GPAppearance(), notifications: NextNotificationCenter = NextNotificationCenter(), nasBaseURL: String = "", legacyWebBaseURL: String = "", nasRevision: Int? = nil, nasSyncedFingerprint: String? = nil, nasSyncedAt: Date? = nil, nasAutoUpload: Bool = true, marketSourceMode: NextMarketSourceMode = .phoneDirect, etfFeePerTrade: Decimal = NextTradeFees.etfPerTrade, themeStyle: AppTheme? = nil) {
         self.goal = goal; self.watch = watch; self.navigation = navigation; self.theme = theme; self.appearance = appearance; self.notifications = notifications
         self.nasBaseURL = nasBaseURL; self.legacyWebBaseURL = legacyWebBaseURL; self.nasRevision = nasRevision
         self.nasSyncedFingerprint = nasSyncedFingerprint; self.nasSyncedAt = nasSyncedAt; self.nasAutoUpload = nasAutoUpload
         self.marketSourceMode = marketSourceMode
+        self.etfFeePerTrade = etfFeePerTrade
         self.themeStyle = themeStyle
     }
     init(from decoder: Decoder) throws {
@@ -69,6 +72,8 @@ struct LocalPreferences: Codable {
         nasSyncedAt = try values.decodeIfPresent(Date.self, forKey: .nasSyncedAt)
         nasAutoUpload = try values.decodeIfPresent(Bool.self, forKey: .nasAutoUpload) ?? true
         marketSourceMode = try values.decodeIfPresent(NextMarketSourceMode.self, forKey: .marketSourceMode) ?? .phoneDirect
+        etfFeePerTrade = try values.decodeIfPresent(Decimal.self, forKey: .etfFeePerTrade) ?? NextTradeFees.etfPerTrade
+        guard NextTradeFees.isValid(etfFeePerTrade) else { throw NextError.invalid("备份中的 ETF 手续费无效") }
         themeStyle = try values.decodeIfPresent(AppTheme.self, forKey: .themeStyle)
     }
 }
@@ -143,6 +148,49 @@ final class NextLocalRepository {
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
             return nil
         } catch { return error.localizedDescription }
+    }
+    /// Writes a small set of related preference files as one recoverable
+    /// operation. If any write fails, previously written files are restored
+    /// to their exact pre-operation bytes (or removed if they did not exist).
+    func saveTransaction(_ files: [(filename: String, data: Data)]) -> String? {
+        if let integrityWarning { return integrityWarning }
+        guard Set(files.map { $0.filename }).count == files.count else { return "事务中出现重复文件名" }
+        if let blocked = files.first(where: { blockedFiles.contains($0.filename) }) {
+            return "\(blocked.filename) 校验失败；为避免覆盖原始数据，保存已停止"
+        }
+        let fileManager = FileManager.default
+        var originals: [String: Data] = [:]
+        for file in files {
+            let url = directory.appendingPathComponent(file.filename)
+            if fileManager.fileExists(atPath: url.path) {
+                do { originals[file.filename] = try Data(contentsOf: url) }
+                catch { return "无法读取 \(file.filename) 原文件；事务未开始：\(error.localizedDescription)" }
+            }
+        }
+        var written: [String] = []
+        do {
+            for file in files {
+                try file.data.write(to: directory.appendingPathComponent(file.filename), options: .atomic)
+                written.append(file.filename)
+                try fileManager.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                              ofItemAtPath: directory.appendingPathComponent(file.filename).path)
+            }
+            return nil
+        } catch {
+            var rollbackErrors: [String] = []
+            for filename in written.reversed() {
+                let url = directory.appendingPathComponent(filename)
+                do {
+                    if let original = originals[filename] {
+                        try original.write(to: url, options: .atomic)
+                    } else if fileManager.fileExists(atPath: url.path) {
+                        try fileManager.removeItem(at: url)
+                    }
+                } catch { rollbackErrors.append("\(filename): \(error.localizedDescription)") }
+            }
+            let rollback = rollbackErrors.isEmpty ? "" : "；回滚失败（\(rollbackErrors.joined(separator: "、"))），请立即检查本地设置文件"
+            return "多文件设置保存失败：\(error.localizedDescription)\(rollback)"
+        }
     }
     func writeSafetyCopy(_ archive: NextArchiveEnvelope) throws -> URL {
         try FileManager.default.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true)

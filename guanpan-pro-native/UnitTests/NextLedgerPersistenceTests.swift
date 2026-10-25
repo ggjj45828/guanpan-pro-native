@@ -113,6 +113,93 @@ final class NextLedgerPersistenceTests: XCTestCase {
         }
     }
 
+    func testETFCommissionChangePersistsBeforeInvalidatingOpenPlans() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-fee-plan-invalidation-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let model = NextAppModel(repository: repository)
+            let now = Date()
+            model.rules = ["159941": NextInstrumentRules(code: "159941", market: "SZSE", assetClass: .etf,
+                settlement: .t0, lotSize: 100, feePerTrade: Decimal(string: "0.10"),
+                source: "official verified rule", verifiedAt: now)]
+            model.candidatePlans = [NextCandidatePlan(kind: .reverseT, code: "159941", name: "纳指ETF",
+                limitPrice: 1.2, units: 100, createdAt: now, expiresAt: now.addingTimeInterval(3600),
+                triggerNote: "到价观察", cancelNote: "行情过期", quoteSource: "test", quoteTime: now,
+                dailyBarCount: 120, minuteSampleCount: 120, confidenceLevel: "high", rationale: "test",
+                expectedNetGain: 1, expectedCostReduction: 0.01, riskNote: "test", marketState: "震荡",
+                cancelAbove: nil, cancelBelow: nil)]
+
+            try model.setETFTradeFee(Decimal(string: "0.35")!)
+
+            XCTAssertEqual(model.preferences.etfFeePerTrade, Decimal(string: "0.35"))
+            XCTAssertEqual(model.rules["159941"]?.feePerTrade, Decimal(string: "0.35"))
+            XCTAssertEqual(model.candidatePlans.first?.state, .invalidated)
+            let restored = NextLocalRepository(directoryOverride: directory)
+                .load([NextCandidatePlan].self, filename: "candidate-plans-v1.json", fallback: [])
+            XCTAssertEqual(restored.first?.state, .invalidated,
+                           "设置费率前必须先持久化旧计划撤回，重启后不能复活旧费用的建议")
+            let restoredPreferences = NextLocalRepository(directoryOverride: directory)
+                .load(LocalPreferences.self, filename: "preferences-v1.json", fallback: LocalPreferences())
+            let restoredRules = NextLocalRepository(directoryOverride: directory)
+                .load([String: NextInstrumentRules].self, filename: "instrument-rules-v1.json", fallback: [:])
+            XCTAssertEqual(restoredPreferences.etfFeePerTrade, Decimal(string: "0.35"))
+            XCTAssertEqual(restoredRules["159941"]?.feePerTrade, Decimal(string: "0.35"))
+        }
+    }
+
+    func testFailedFeeTransactionLeavesInMemoryFeeAndRulesUnchanged() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-fee-transaction-failure-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("{broken".utf8).write(to: directory.appendingPathComponent("instrument-rules-v1.json"))
+            let model = NextAppModel(repository: NextLocalRepository(directoryOverride: directory))
+            let originalFee = model.preferences.etfFeePerTrade
+            let originalRules = model.rules
+
+            XCTAssertThrowsError(try model.setETFTradeFee(Decimal(string: "0.35")!))
+
+            XCTAssertEqual(model.preferences.etfFeePerTrade, originalFee)
+            XCTAssertEqual(model.rules, originalRules)
+        }
+    }
+
+    func testRepositoryTransactionRollsBackEarlierFilesWhenLaterWriteFails() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-settings-transaction-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let originalPreferences = Data("original-preferences".utf8)
+            let preferencesURL = directory.appendingPathComponent("preferences-v1.json")
+            try originalPreferences.write(to: preferencesURL, options: .atomic)
+
+            let failure = repository.saveTransaction([
+                ("preferences-v1.json", Data("new-preferences".utf8)),
+                // A parent path that does not exist forces the second write to fail.
+                ("missing/instrument-rules-v1.json", Data("new-rules".utf8))
+            ])
+
+            XCTAssertNotNil(failure)
+            XCTAssertEqual(try Data(contentsOf: preferencesURL), originalPreferences,
+                           "后续文件写入失败后，先前文件必须恢复原字节")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory
+                .appendingPathComponent("missing/instrument-rules-v1.json").path))
+
+            let newlyCreatedURL = directory.appendingPathComponent("newly-created.json")
+            let secondFailure = repository.saveTransaction([
+                ("newly-created.json", Data("temporary".utf8)),
+                ("still-missing/rules.json", Data("cannot-write".utf8))
+            ])
+            XCTAssertNotNil(secondFailure)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: newlyCreatedURL.path),
+                           "事务失败时必须删除本次新建的前置文件")
+        }
+    }
+
     func testRepositoryRejectsSemanticallyInvalidLedgerAndPreservesOriginalFile() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory

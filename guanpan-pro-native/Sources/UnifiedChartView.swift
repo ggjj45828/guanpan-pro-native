@@ -50,6 +50,14 @@ struct UnifiedChartView: View {
     @State private var adjustedPrices = true
     private var activeDataset: NextChartDataset? {
         guard let dataset else { return nil }
+        if interval.wrappedValue == .intraday, expanded, let code = securityCode {
+            if !NextIntradayAxis.sameTradingDay(intradaySessionDate, latestIntradaySessionDate) {
+                // Never leave today's line on screen under a selected historical date
+                // while that archive is loading or unavailable.
+                return model.historicalMinuteData[NextIntradayDatasetGuard.archiveKey(code: code, day: intradaySessionDate)]
+            }
+            return dataset.interval == .intraday ? dataset : nil
+        }
         return (interval.wrappedValue == .intraday ? dataset.interval == .intraday : dataset.interval == .day) ? dataset : nil
     }
 
@@ -171,7 +179,7 @@ struct UnifiedChartView: View {
                             .environment(\.calendar, marketCalendar).environment(\.timeZone, marketTimeZone)
                             .accessibilityLabel("选择历史分时日期")
                             .onChange(of: intradaySessionDate) { _, day in
-                                let previous = model.chartData[code]?.orderedSamples.last?.timestamp ?? latestIntradaySessionDate
+                                let previous = latestIntradaySessionDate
                                 selectedTime = nil
                                 Task {
                                     if await model.loadNASMinute(code: code, day: day) {

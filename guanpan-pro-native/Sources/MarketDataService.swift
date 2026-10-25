@@ -53,19 +53,35 @@ enum NextMarketDataService {
         return (result.value, result.source)
     }
 
-    static func fetchIntraday(code: String, session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
+    static func fetchIntraday(code: String, now: Date = Date(), session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
+        let marketOpen = NextMarketClock.isRegularSession(now)
         let attempts: [(source: String, run: () async throws -> NextChartDataset)] = [
-            ("腾讯分时", { try await tencentMinute(code: code, session: session) }),
-            ("东财分时", { try await eastMoneyMinute(code: code, session: session) })
+            ("腾讯分时", {
+                let data = try await tencentMinute(code: code, session: session)
+                return try NextIntradayDatasetGuard.currentSessionOrThrow(data, now: now, marketOpen: marketOpen)
+            }),
+            ("东财分时", {
+                let data = try await eastMoneyMinute(code: code, session: session)
+                return try NextIntradayDatasetGuard.currentSessionOrThrow(data, now: now, marketOpen: marketOpen)
+            })
         ]
         return try await NextMarketChain.richest(attempts, minimumSamples: 30) { $0.samples.count }
     }
 
-    static func fetchDaily(code: String, session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
+    static func fetchDaily(code: String, now: Date = Date(), session: URLSession = .shared) async throws -> (value: NextChartDataset, source: String) {
         let attempts: [(source: String, run: () async throws -> NextChartDataset)] = [
-            ("腾讯日K", { try await tencentDaily(code: code, session: session) }),
-            ("东财日K", { try await eastMoneyDaily(code: code, session: session) }),
-            ("新浪日K", { try await sinaDaily(code: code, session: session) })
+            ("腾讯日K", {
+                let data = try await tencentDaily(code: code, session: session)
+                return try NextDailyDatasetGuard.currentHistoryOrThrow(data, now: now)
+            }),
+            ("东财日K", {
+                let data = try await eastMoneyDaily(code: code, session: session)
+                return try NextDailyDatasetGuard.currentHistoryOrThrow(data, now: now)
+            }),
+            ("新浪日K", {
+                let data = try await sinaDaily(code: code, session: session)
+                return try NextDailyDatasetGuard.currentHistoryOrThrow(data, now: now)
+            })
         ]
         return try await NextMarketChain.richest(attempts, minimumSamples: 120) { $0.samples.count }
     }

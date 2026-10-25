@@ -416,6 +416,58 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(limited.source.contains("样本最多"))
     }
 
+    func testIntradaySourceChainSkipsStalePrimaryAndUsesFreshFallback() async throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let current = try XCTUnwrap(formatter.date(from: "2026-10-19 10:05:00"))
+        func dataset(_ stamp: String) throws -> NextChartDataset {
+            let time = try XCTUnwrap(formatter.date(from: stamp))
+            return NextChartDataset(code: code, interval: .intraday,
+                samples: [NextChartSample(timestamp: time, open: nil, high: nil, low: nil,
+                                          close: Decimal(string: "1.2")!, iopv: nil, volume: 100)],
+                costPerUnit: nil, costObservedAt: nil, priceSource: "fixture", iopvSource: nil,
+                observedAt: current)
+        }
+        var fallbackWasCalled = false
+        let selected = try await NextMarketChain.richest([
+            ("Tencent", {
+                try NextIntradayDatasetGuard.currentSessionOrThrow(
+                    dataset("2026-10-16 15:00:00"), now: current, marketOpen: true)
+            }),
+            ("Eastmoney", {
+                fallbackWasCalled = true
+                return try NextIntradayDatasetGuard.currentSessionOrThrow(
+                    dataset("2026-10-19 10:04:00"), now: current, marketOpen: true)
+            })
+        ], minimumSamples: 1, sampleCount: { $0.samples.count })
+        XCTAssertTrue(fallbackWasCalled)
+        XCTAssertEqual(selected.source, "Eastmoney")
+        XCTAssertTrue(NextIntradayDatasetGuard.isCurrentSessionData(selected.value, now: current, marketOpen: true))
+    }
+
+    func testDailySourceChainSkipsStalePrimaryAndUsesCurrentFallback() async throws {
+        func dataset(age: TimeInterval) -> NextChartDataset {
+            let sample = NextChartSample(timestamp: now.addingTimeInterval(-age), open: 1.1, high: 1.2,
+                                         low: 1.0, close: 1.15, iopv: nil, volume: 100)
+            return NextChartDataset(code: code, interval: .day, samples: [sample], costPerUnit: nil,
+                                    costObservedAt: nil, priceSource: "fixture", iopvSource: nil, observedAt: now)
+        }
+        var fallbackWasCalled = false
+        let selected = try await NextMarketChain.richest([
+            ("stale primary", {
+                try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: 16 * 86_400), now: now)
+            }),
+            ("current fallback", {
+                fallbackWasCalled = true
+                return try NextDailyDatasetGuard.currentHistoryOrThrow(dataset(age: 0), now: now)
+            })
+        ], minimumSamples: 1, sampleCount: { $0.samples.count })
+        XCTAssertTrue(fallbackWasCalled)
+        XCTAssertEqual(selected.source, "current fallback")
+    }
+
     func testHistoricalCrossMarketCandidateDecodesAsNonTradingEvidence() throws {
         let payload = """
         {"factors":null,"ai":null,"providerConfigured":false,"crossMarket":{
