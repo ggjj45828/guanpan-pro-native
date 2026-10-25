@@ -254,8 +254,25 @@ final class NativeNavigationTests: XCTestCase {
         amount.tap()
         amount.typeText("10000")
 
+        // The decimal keyboard covers the lower cash controls. Dismiss it through
+        // the app's keyboard toolbar before scrolling the actual assets list.
+        let keyboardDone = byId(app, "keyboard.done")
+        let keyboardDoneButton = keyboardDone.waitForExistence(timeout: 5)
+            ? keyboardDone
+            : app.buttons["完成"].firstMatch
+        XCTAssertTrue(keyboardDoneButton.waitForExistence(timeout: 5), "金额输入后应显示键盘收起按钮")
+        XCTAssertTrue(keyboardDoneButton.isHittable, "键盘收起按钮应可点击")
+        keyboardDoneButton.tap()
+
         let record = byId(app, "assets.cash.record")
-        revealAndTap(record, in: app)
+        XCTAssertTrue(record.waitForExistence(timeout: 5))
+        let assetsScroll = app.scrollViews.firstMatch
+        for _ in 0..<30 where !record.isHittable {
+            assetsScroll.swipeUp(velocity: .slow)
+        }
+        attach(app, "cash-ledger-record-control")
+        XCTAssertTrue(record.isHittable, "现金变动按钮应能在收起键盘后滚动到可见区域")
+        record.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         let confirm = app.buttons["确认记录"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
