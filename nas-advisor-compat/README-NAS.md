@@ -2,6 +2,15 @@
 
 版本：3.6.0-r29-fx-context-pipeline。保留 Compose 项目 `guanpan-advisor`、默认端口 8789、数据卷 `guanpan_advisor_data` 和真实账本兼容；NAS 只做长期行情研究，不启动虚拟策略 worker，也不提供第二套 AI 交易建议。大模型 API Key 只保存在手机钥匙串，由手机调用；NAS Compose 不接收该密钥。旧 NAS 网页入口已停用，网页文件不会进入镜像。此包不包含 `.env`、API Key 或数据库。
 
+## B版部署标识
+
+- iOS Bundle ID：`com.guanpan.pro.native`；产品可执行名：`GuanpanPro`；显示名：`观盘Max`。
+- NAS Compose 项目：`guanpan-advisor`；服务：`advisor`；Compose 未写死 `container_name`，默认生成容器名 `guanpan-advisor-advisor-1`。
+- NAS API 默认宿主机/容器端口：`8789`，由 `GUANPAN_ADVISOR_PORT` 同步控制；数据卷：`guanpan_advisor_data`，容器目录：`/data`，SQLite 文件：`/data/guanpan-advisor.sqlite3`。
+- 手机真实账本同步：`/v1/real/books/main`；协议健康版本与 `NextBook` 账本 `schemaVersion` 当前均为 `1`。研究走 `/v1/research/{code}` 和 `/v1/mobile/research`，不与真实账本同步混用。
+- iOS 本地同步源文件保存在 `Application Support/GuanpanProNative/` 私有目录，恢复副本在 `Application Support/GuanpanProNative-Recovery/`；真实账本文件为 `real-ledger-v1.json`。持仓、资金、成交与收入的事实来源是手机本地账本。NAS SQLite 是同步副本和长期研究存储，不得据其旧快照覆盖更新的手机账本。
+- 本仓库的 `nas-sync-server/` 是旧协议兼容/历史目录，不属于当前 B 版安装包。当前 NAS 包格式是 `nas-advisor-compat/compose.yml`、`.env.example`、`README-NAS.md`、`update.sh` 与 `server/`。
+
 本版在 `/v1/research/{代码}` 的 `crossMarket.liveDivergences` 中增加最近15分钟跨市场与该ETF的同窗价格观察。必须有两端新鲜、时间端点相近的真实分钟点；数据过期或时间不齐就标为 `stale` / `insufficient_data`。方向相反只标记为 `observed_divergence`，明确 `eligibleForTradingSignal=false`，不产生预测、策略或交易价格。每条观察含 `expiresAt`；手机在离线使用研究缓存时再次检查到期时间，过期的背离不得进入当次在线AI决策文字。
 
 分钟归档保留每个价格点第一次被 NAS 获取时的快照、来源和时间，同时继续维护最新归档供实时研究使用。历史假设回放只允许使用冻结时点之前首次采到的输入；结果行情按交易所时间戳作为后验标签，不受采集延迟影响。旧数据库无法还原初次采集记录，迁移时按可知的最后采集时间保守标注，较早冻结点会被拒绝使用，从而避免把收盘后补齐的旧行情伪装成当时已知信息。

@@ -1555,8 +1555,14 @@ private struct AssetsScreen: View {
                 // 收息通过持仓明细进入，共用同一真实账本，不再占一个主导航位。
                 EditorialSection(title: "现金变动", trailing: "可用 ¥\(NextMoney.text(model.book.cash))") {
                     HStack { Button("转入") { cashDirection = 1 }; Button("转出") { cashDirection = -1 }.foregroundStyle(p.risk) }.buttonStyle(.bordered)
-                    compactField("金额", text: $cashAmount); compactField("用途/备注", text: $cashReason)
+                    Text("金额").font(.caption2).foregroundStyle(.secondary)
+                    TextField("金额", text: $cashAmount).font(.subheadline).textFieldStyle(.roundedBorder)
+                        .keyboardType(.decimalPad).submitLabel(.done).accessibilityIdentifier("assets.cash.amount")
+                    Text("用途/备注").font(.caption2).foregroundStyle(.secondary)
+                    TextField("用途/备注", text: $cashReason).font(.subheadline).textFieldStyle(.roundedBorder)
+                        .submitLabel(.done).accessibilityIdentifier("assets.cash.reason")
                     GPActionButton(title: "审核并记录现金变动", secondary: true) { assetsConfirm = .cash }
+                        .accessibilityIdentifier("assets.cash.record")
                     Divider().overlay(p.line.opacity(0.7)).padding(.vertical, 2)
                     // 券商每天会有预扣、结息、佣金结算，逐个记太累；直接对余额校准一次。
                     Text("按券商余额校准").font(.caption.weight(.medium)).foregroundStyle(p.ink)

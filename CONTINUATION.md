@@ -478,5 +478,9 @@
 - 新增模拟器E2E `testRealCashLedgerSurvivesAppTerminationAndRelaunch`：从UI录入真实现金流水、确认金额/原因、强制终止App、正常重启并核对恢复。对应 Validate run `40152865822` 的 Core 136项已通过；截至本续记时模拟器步骤仍在运行，尚不能记为通过。先检查该运行最终结果及新用例日志。
 - 当前工作树另加B版AI基本面数字输出守卫：现有DecisionContext没有可信基本面数值输入，所以对LLM正文中的PE/PB/PS、ROE/ROA/EPS、营收/利润、资产负债率和股息率数字采取fail-closed；同一守卫用于统一指导与AI聊天。回归测试已加入但尚未由Swift/XCTest执行。差异格式检查已通过。
 - Master Acceptance Matrix只更新了第4项（自动Core/UI/集成通过，但新终止/重启UI与真实设备/ NAS验收仍未完成，保持🟠）以及第46项（旧交易数字守卫测试通过，新基本面数字测试待Actions，保持🟡）。总状态仍按145项统计：✅1、🟡16、🟠124、⚠️4。
-- 下一步第一项：读取run `40152865822` 最终状态及“确认现金流水→杀进程→重启”用例结果；然后提交并推送目前的基本面输出守卫、对应XCTest和矩阵/续记更新，重新跑完整Core XCTest、模拟器/UI、账本集成和IPA workflow。不能因旧版本136 Core/测试成功而误称新补丁已验证。
+- 下一步第一项：读取run `40152865822` 最终状态及“确认现金流水→杀进程→重启”用例结果；同时跟踪run `40153805941`的完整Swift/Core、UI和账本集成结果，以及IPA run `40153805848`。按失败逐项修复，不能因旧版本136 Core/测试成功而误称新补丁已验证。
 - 之后继续从B版矩阵现有Partial推进，不加146+新需求，不改变独立NAS/Bundle/Compose配置，不降低统计门槛、不把相关性升级成因果/交易信号、不使用模拟账户或虚拟成交。
+- 进度续记：新增基本面守卫已提交为本地 `8f46031`，并将完全匹配的本地Git tree `431e98e` 非强制发布到远端为 `1645ba6`；完整 Validate run `40153805941` 与 IPA build `40153805848` 已启动。旧UI恢复 E2E run `40152865822` 查询时仍在模拟器阶段。由于本机没有Swift/Xcode，基本面守卫仍等待本轮macOS完整测试结果。
+- Actions续验：run `40153805941` 的portable Core XCTest已通过136/136，其中包含新加的PE/ROE/营收/利润/PB/股息率及大小写绕过测试；应用模拟器阶段仍待结果。IPA run `40153805848` 已成功。
+- run `40152865822` 最终失败：新增 `testCashLedgerSurvivesForcedAppRestart` 在`NativeNavigationTests.swift`中无法从XCUITest无障碍树定位现金金额TextField，随后tap是级联失败；原有9项UI和Repository/AppModel集成5项通过。为此现金金额/备注/记录按钮增加明确无障碍标识，并让E2E通过显式ScrollView定位控件；修复还未提交、未复测。
+- 下一步第一项：让以上现金E2E无障碍修复进入独立B验证分支并触发完整Validate+IPA；确认新十项UI测试中强制终止后的金额与流水原因确实恢复。当前分支HEAD在新UI修改之前仍是`8f46031`，矩阵/续记和部署标识文档有未提交更新。

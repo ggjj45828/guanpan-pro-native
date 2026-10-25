@@ -246,13 +246,15 @@ final class NativeNavigationTests: XCTestCase {
         XCTAssertTrue(holdings.waitForExistence(timeout: 10))
         holdings.tap()
 
-        let amount = app.textFields.matching(NSPredicate(format: "label CONTAINS %@", "金额")).firstMatch
-        for _ in 0..<12 where !amount.isHittable { app.swipeUp() }
+        let scroll = app.scrollViews.firstMatch
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        let amount = byId(app, "assets.cash.amount")
+        for _ in 0..<24 where !amount.exists { scroll.swipeUp(velocity: .slow) }
         XCTAssertTrue(amount.waitForExistence(timeout: 5))
         amount.tap()
         amount.typeText("10000")
 
-        let record = byLabel(app, "审核并记录现金变动")
+        let record = byId(app, "assets.cash.record")
         revealAndTap(record, in: app)
         let confirm = app.buttons["确认记录"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
@@ -267,10 +269,11 @@ final class NativeNavigationTests: XCTestCase {
         app.launchEnvironment["GUANPAN_TESTING"] = "1"
         app.launch()
         XCTAssertTrue(byId(app, "tab.assets").waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "用户记录的场内现金变动"))
-            .firstMatch.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "10,000.000"))
-            .firstMatch.exists, "强制终止并重启后现金余额应仍是 ¥10,000")
+        let restoredReason = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "用户记录的场内现金变动")).firstMatch
+        for _ in 0..<24 where !restoredReason.isHittable { app.scrollViews.firstMatch.swipeUp(velocity: .slow) }
+        XCTAssertTrue(restoredReason.waitForExistence(timeout: 10))
+        let restoredCash = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "10,000.000")).firstMatch
+        XCTAssertTrue(restoredCash.exists, "强制终止并重启后现金余额应仍是 ¥10,000")
         attach(app, "ledger-after-forced-restart")
     }
 }
