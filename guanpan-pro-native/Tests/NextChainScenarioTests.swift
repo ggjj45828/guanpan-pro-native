@@ -553,6 +553,19 @@ final class NextChainScenarioTests: XCTestCase {
                          research: [code: research(stale: true)], nasConfigured: true, nasReachable: true)
         XCTAssertTrue(stale.dataState.contains("NAS 在线"), stale.dataState)
         XCTAssertTrue(stale.dataState.contains("已过期或质量不足"), stale.dataState)
+
+        let offlineStale = scan(book(), quote: q, daily: bars(closes), intraday: intraday,
+                                research: [code: research(stale: true)], nasConfigured: true, nasReachable: false)
+        XCTAssertTrue(offlineStale.dataState.contains("NAS 当前不可达"), offlineStale.dataState)
+        XCTAssertTrue(offlineStale.dataState.contains("本机研究缓存已过期"), offlineStale.dataState)
+        let staleItem = try XCTUnwrap(offlineStale.items.first)
+        XCTAssertFalse(staleItem.isActionable, "NAS离线且长期分时缓存已过期时，不能留下可执行候选")
+        if case .ready? = staleItem.tPlan {
+            XCTFail("过期长期研究不能支撑具体做T计划")
+        }
+        if case .ready? = staleItem.gridPlan {
+            XCTFail("过期长期研究不能支撑具体网格计划")
+        }
     }
 
     func testFreshMajorNewsInvalidatesSavedPlanButStaleNewsDoesNot() throws {
