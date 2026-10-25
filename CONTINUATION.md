@@ -668,6 +668,15 @@
 - 下一步：运行`git diff --check`并检查SwiftUI与测试差异；保持#120等待结果。随后将当前源码、测试、矩阵、续记提交到B验证分支并推送，触发新的完整Validate和IPA构建；获取完整XCTest摘要及五主题截图，修复任何构建/运行/视觉失败。继续从Master Acceptance Matrix的可推进Partial处理，不能因为CI全绿停止。
 - 产品红线：B完全独立，不合并/拣选A代码；只使用唯一真实账本，无虚拟资金/持仓/成交，不自动下单；历史相关只描述相关，不称因果；不降低最小独立交易日样本、fail-closed或防未来数据门槛。
 
+## 2026-10-25 主题布局提交与云端复验
+
+- 上一节记录中的“当前未提交”已更正：主题布局与UI标记测试已提交本地`747faae`，按已授权的B版验证分支流程推送为远端commit`b604d9e90f338074745be15c4c32a719f8cd93d5`。远端tree `024007e6ff34441b2c475ffaf4811b919438cac1`与本地提交tree一致，父提交为远端原HEAD `1a7c323f280d1330c7af0f2a5461a3d6bb3d7940`，以`force=false`推进。
+- 新Validate #121 `40168515138`和Build IPA #190 `40168515065`已触发，检查时都在运行。#120 `40167639891`仍在运行；其Portable Swift Core已通过，Xcode XCTest尚无终态。不得以IPA成功或Core通过替代完整XCTest。
+- 当前新提交代码：AI Hub的5种专属排版、持仓页的5种专属摘要/模块顺序、UI测试对每主题持仓和AI标识的断言及截图。矩阵54、56、60、61保持🟠，等待#121完整XCTest和截图审阅。
+- 本地实际通过：`nas-advisor-compat/tests/test_research_only.py` 58/58；仓库`tests/` unittest同步/行情套件58/58。此前NAS兼容服务之外的旧服务84/84仅作为历史验证，本轮未重跑。`git diff --check`通过。当前没有本机Swift/Xcode。
+- 下一步第一件事：读取#120与#121的run/job终态；下载#121 `ios-validation-results`和主题截图，核对完整XCTest结果、五主题专属布局断言、实际卡片间距/文字遮挡。修复真实编译、测试或视觉失败后继续推送B分支并复验；然后依Master Acceptance Matrix处理其余可推进Partial，不因本批CI通过而结束。
+- 红线不变：B独立于A，唯一真实账本，无模拟交易或自动下单；统计关系不解释为因果，不降低minimum sessions、fail-closed或防未来数据限制。
+
 ## 2026-10-25 Validate #116成功与继续的UI/时效修复
 
 - 修复后的验证提交`fe36150b769a95e15c1468e850e34e5e9c294460`触发Validate #116 `40164683820`和Build IPA #185 `40164683817`。完整Portable Swift Core、Xcode编译、Unit/Integration/UI XCTest全部成功；UI截图artifact验证为可读ZIP，共24张iPhone 16 Pro截图，覆盖主导航、设置、图表、AI问答、账本强制重启和当前默认主题。IPA构建成功但为unsigned，不能推导签名/安装成功。
