@@ -1061,7 +1061,9 @@ struct NextPatientLimitPlan: Codable, Identifiable, Equatable {
     var state = "等待价格提醒"
     var triggeredAt: Date?
     func shouldTrigger(with quote: NextQuote, at now: Date) -> Bool {
-        state == "等待价格提醒" && quote.code == code && quote.isFresh(at: now) && quote.price <= limitPrice && now < expiresAt
+        state == "等待价格提醒" && quote.code == code && quote.isFreshForPricePlan(at: now) &&
+            NextPortfolioCalculator.anomalyReason(quote: quote, storedCostPerUnit: 0) == nil &&
+            quote.price <= limitPrice && now < expiresAt
     }
     func validate() throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), !name.isEmpty,

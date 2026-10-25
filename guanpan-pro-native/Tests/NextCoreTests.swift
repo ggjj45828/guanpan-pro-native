@@ -725,6 +725,11 @@ final class NextCoreTests: XCTestCase {
         XCTAssertFalse(plan.shouldTrigger(with: quote(time: now, price: Decimal(string: "1.36")!), at: now))
         XCTAssertFalse(plan.shouldTrigger(with: quote(time: now.addingTimeInterval(-121), price: 1.2), at: now))
         XCTAssertFalse(plan.shouldTrigger(with: NextQuote(code: "563020", name: "其他ETF", price: 1, previousClose: 1, time: now, source: "test"), at: now))
+        XCTAssertFalse(plan.shouldTrigger(with: NextQuote(code: "159941", name: "纳指ETF",
+            price: 1.2, previousClose: 1.4, time: now, source: "fixture",
+            timeQuality: "receipt_only"), at: now), "仅有收包时间的报价不能触发限价提醒")
+        XCTAssertFalse(plan.shouldTrigger(with: quote(time: now, price: Decimal(string: "1.040")!), at: now),
+            "新鲜但相对昨收异常的价格不能触发限价提醒")
         var paused = plan; paused.state = "已暂停"
         try paused.validate()
         XCTAssertFalse(paused.shouldTrigger(with: quote(time: now, price: 1.2), at: now))
