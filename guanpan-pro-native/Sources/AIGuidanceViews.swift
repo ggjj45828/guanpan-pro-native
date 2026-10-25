@@ -577,9 +577,7 @@ struct CandidatePlanRow: View {
     }
 
     private func cancel() {
-        guard let index = model.candidatePlans.firstIndex(where: { $0.id == plan.id }) else { return }
-        model.candidatePlans[index].state = .withdrawn
-        model.candidatePlans[index].stateChangedAt = Date()
+        model.withdrawCandidatePlan(plan.id)
     }
 }
 

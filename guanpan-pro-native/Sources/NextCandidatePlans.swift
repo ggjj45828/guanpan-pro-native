@@ -122,6 +122,53 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
         }
     }
 
+    /// Rebuild plan progress from real ledger fills after an interrupted multi-file save.
+    /// The ledger is the account source of truth; this never creates or changes a fill.
+    func hasValidLedgerFillEvidence(_ fills: [NextFill], now: Date = Date()) -> Bool {
+        let linked = fills.filter { $0.candidatePlanID == id }
+        return !linked.isEmpty && Set(linked.map(\.id)).count == linked.count && linked.allSatisfy {
+            $0.code == code && $0.side == kind.side && $0.units > 0
+                && $0.price > 0 && !$0.price.isNaN && $0.fee >= 0 && !$0.fee.isNaN
+                && $0.date >= createdAt && $0.date <= now.addingTimeInterval(60)
+                && $0.date.timeIntervalSince1970.isFinite
+        }
+    }
+
+    @discardableResult
+    mutating func reconcileLedgerFills(_ fills: [NextFill]) -> Bool {
+        let linked = fills.filter { $0.candidatePlanID == id }
+        guard hasValidLedgerFillEvidence(fills) else { return false }
+
+        var totalUnits = 0
+        var weightedValue: Decimal = 0
+        var totalFee: Decimal = 0
+        var latestFill: Date?
+        for fill in linked {
+            let (nextUnits, overflow) = totalUnits.addingReportingOverflow(fill.units)
+            guard !overflow else { return false }
+            totalUnits = nextUnits
+            weightedValue += fill.price * Decimal(fill.units)
+            totalFee += fill.fee
+            latestFill = max(latestFill ?? fill.date, fill.date)
+        }
+        guard totalUnits > 0, let latestFill else { return false }
+
+        let averagePrice = weightedValue / Decimal(totalUnits)
+        guard averagePrice > 0, !averagePrice.isNaN, totalFee >= 0, !totalFee.isNaN else { return false }
+        let nextState: NextPlanState = totalUnits >= units ? .confirmed : (state.isOpen ? .partiallyConfirmed : state)
+        let nextStateChangedAt = nextState == state ? stateChangedAt : latestFill
+        let changed = confirmedUnits != totalUnits || confirmedPrice != averagePrice || confirmedFee != totalFee
+            || confirmedAt != latestFill || state != nextState || stateChangedAt != nextStateChangedAt
+        guard changed else { return false }
+        confirmedUnits = totalUnits
+        confirmedPrice = averagePrice
+        confirmedFee = totalFee
+        confirmedAt = latestFill
+        state = nextState
+        stateChangedAt = nextStateChangedAt
+        return true
+    }
+
     mutating func invalidate(reason: String, at now: Date) -> String? {
         guard state.isOpen else { return nil }
         state = .invalidated

@@ -340,6 +340,18 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertEqual(filled, confirmed)
     }
 
+    func testRepeatedLedgerReconciliationDoesNotEraseLaterDecisionReview() {
+        var filled = record(snapshot())
+        XCTAssertTrue(NextDecisionMemory.confirmFill(&filled, price: Decimal(string: "1.400")!,
+                                                     units: 100, at: now.addingTimeInterval(5)))
+        filled.review.reviewedAt = now.addingTimeInterval(300)
+        filled.review.note = "已核对真实成交后的走势"
+        let reviewed = filled
+        XCTAssertFalse(NextDecisionMemory.confirmFill(&filled, price: Decimal(string: "1.400")!,
+                                                      units: 100, at: now.addingTimeInterval(5)))
+        XCTAssertEqual(filled, reviewed, "启动恢复重复执行时不得覆盖后续复盘")
+    }
+
     func testNoTradeMemoryExpiresAfterShanghaiCalendarDayWithoutInventingFill() throws {
         let noTradeSnapshot = NextDecisionSnapshot(state: "数据不足", strategy: "不交易",
                                                    headline: "今天不交易",

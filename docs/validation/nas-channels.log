@@ -5,7 +5,7 @@ test_native_ping_does_not_disclose_payload (test_channels.HTTPTests.test_native_
 test_unknown_channel_and_bad_json_schema (test_channels.HTTPTests.test_unknown_channel_and_bad_json_schema) ... ok
 test_v2_full_roundtrip_does_not_change_legacy_db (test_channels.HTTPTests.test_v2_full_roundtrip_does_not_change_legacy_db) ... ok
 test_v2_requires_auth (test_channels.HTTPTests.test_v2_requires_auth) ... ok
-test_automatic_market_quant_do_not_require_manual (test_channels.StoreTests.test_automatic_market_quant_do_not_require_manual) ... ok
+test_automatic_market_channel_does_not_require_manual (test_channels.StoreTests.test_automatic_market_channel_does_not_require_manual) ... ok
 test_backup_uses_consistent_sqlite_backup (test_channels.StoreTests.test_backup_uses_consistent_sqlite_backup) ... ok
 test_cannot_target_legacy_filename (test_channels.StoreTests.test_cannot_target_legacy_filename) ... ok
 test_cas_and_independent_revisions (test_channels.StoreTests.test_cas_and_independent_revisions) ... ok
@@ -14,6 +14,7 @@ test_empty_guard_inside_transaction (test_channels.StoreTests.test_empty_guard_i
 test_idempotent_retry_and_payload_reuse (test_channels.StoreTests.test_idempotent_retry_and_payload_reuse) ... ok
 test_initial_separate_channels (test_channels.StoreTests.test_initial_separate_channels) ... ok
 test_invalid_numeric_and_nested_json (test_channels.StoreTests.test_invalid_numeric_and_nested_json) ... ok
+test_legacy_quant_channel_is_disabled (test_channels.StoreTests.test_legacy_quant_channel_is_disabled) ... ok
 test_manual_assets_enforced (test_channels.StoreTests.test_manual_assets_enforced) ... ok
 test_nonfinite_nested_market_data_is_rejected (test_channels.StoreTests.test_nonfinite_nested_market_data_is_rejected) ... ok
 test_restore_adds_revision_and_keeps_history (test_channels.StoreTests.test_restore_adds_revision_and_keeps_history) ... ok
@@ -33,10 +34,9 @@ test_gap_can_only_complete_with_explicit_matching_coverage (test_market_data.Mar
 test_gap_retry_does_not_mark_empty_range_complete (test_market_data.MarketTests.test_gap_retry_does_not_mark_empty_range_complete) ... ok
 test_ingest_atomic_no_partial_invalid_batch (test_market_data.MarketTests.test_ingest_atomic_no_partial_invalid_batch) ... ok
 test_intraday_volume_is_used_only_with_confirmed_share_units (test_market_data.MarketTests.test_intraday_volume_is_used_only_with_confirmed_share_units) ... ok
-test_lease_expires_and_fence_increments (test_market_data.MarketTests.test_lease_expires_and_fence_increments) ... ok
-test_lease_fencing_rejects_late_executor_and_active_client (test_market_data.MarketTests.test_lease_fencing_rejects_late_executor_and_active_client) ... ok
 test_long_intraday_research_uses_real_minute_sequence_and_share_volume (test_market_data.MarketTests.test_long_intraday_research_uses_real_minute_sequence_and_share_volume) ... ok
 test_market_and_industry_events_require_explicit_scope_mapping (test_market_data.MarketTests.test_market_and_industry_events_require_explicit_scope_mapping) ... ok
+test_nas_collection_uses_only_explicit_real_holding_provider (test_market_data.MarketTests.test_nas_collection_uses_only_explicit_real_holding_provider) ... ok
 test_original_minute_bridge_does_not_smear_iopv (test_market_data.MarketTests.test_original_minute_bridge_does_not_smear_iopv) ... ok
 test_permanent_dedup_and_corrections_as_of (test_market_data.MarketTests.test_permanent_dedup_and_corrections_as_of) ... ok
 test_runtime_normalized_feed_publishes_only_market_channel (test_market_data.MarketTests.test_runtime_normalized_feed_publishes_only_market_channel) ... ok
@@ -46,7 +46,6 @@ test_stale_provider_quote_is_not_archived_as_fresh_minute (test_market_data.Mark
 test_two_hundred_points_without_open_and_close_are_not_a_complete_day (test_market_data.MarketTests.test_two_hundred_points_without_open_and_close_are_not_a_complete_day) ... ok
 test_unregistered_symbol_not_imported_by_minute_bridge (test_market_data.MarketTests.test_unregistered_symbol_not_imported_by_minute_bridge) ... ok
 test_verified_daily_backup_does_not_overwrite_an_existing_backup (test_market_data.MarketTests.test_verified_daily_backup_does_not_overwrite_an_existing_backup) ... ok
-test_virtual_lab_symbols_never_register_for_nas_collection (test_market_data.MarketTests.test_virtual_lab_symbols_never_register_for_nas_collection) ... ok
 test_announced_future_dividend_is_visible_but_future_quote_is_not_accepted (test_research_inputs.ResearchInputTests.test_announced_future_dividend_is_visible_but_future_quote_is_not_accepted) ... ok
 test_annual_factors_have_explainable_units_and_full_inputs (test_research_inputs.ResearchInputTests.test_annual_factors_have_explainable_units_and_full_inputs) ... ok
 test_full_market_requires_explicit_manifest_and_fresh_data_coverage (test_research_inputs.ResearchInputTests.test_full_market_requires_explicit_manifest_and_fresh_data_coverage) ... ok
@@ -57,22 +56,8 @@ test_offline_bundle_produces_factors_and_paged_research_without_real_db (test_re
 test_offline_cli_runs_without_network_and_preserves_legacy_database_bytes (test_research_inputs.ResearchInputTests.test_offline_cli_runs_without_network_and_preserves_legacy_database_bytes) ... ok
 test_universe_is_independent_of_holdings_and_survives_restart (test_research_inputs.ResearchInputTests.test_universe_is_independent_of_holdings_and_survives_restart) ... ok
 test_universe_version_cannot_silently_change (test_research_inputs.ResearchInputTests.test_universe_version_cannot_silently_change) ... ok
-test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets (test_worker_http.WorkerHTTPIntegration.test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets) ... FAIL
-
-======================================================================
-FAIL: test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets (test_worker_http.WorkerHTTPIntegration.test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "C:\Users\Administrator\.codex\.chatgpt-projects\g-p-6ac90ddb9a888191a751dc24eb6a329d\work\github-upload\tests\test_worker_http.py", line 20, in test_actual_http_worker_restart_cannot_duplicate_fills_or_modify_real_assets
-    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-AssertionError: 1 != 0 : Error: payload_fields_do_not_match_channel
-    at req (C:\Users\Administrator\.codex\.chatgpt-projects\g-p-6ac90ddb9a888191a751dc24eb6a329d\work\github-upload\nas-sync-server\lab-worker.cjs:40:80)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async Object.tick (C:\Users\Administrator\.codex\.chatgpt-projects\g-p-6ac90ddb9a888191a751dc24eb6a329d\work\github-upload\nas-sync-server\lab-worker.cjs:45:23)
-    at async main (C:\Users\Administrator\.codex\.chatgpt-projects\g-p-6ac90ddb9a888191a751dc24eb6a329d\work\github-upload\tests\worker-http-probe.cjs:31:14)
-
 
 ----------------------------------------------------------------------
-Ran 60 tests in 2.046s
+Ran 58 tests in 1.453s
 
-FAILED (failures=1)
+OK

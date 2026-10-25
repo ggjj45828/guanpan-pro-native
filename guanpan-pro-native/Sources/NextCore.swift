@@ -45,6 +45,12 @@ struct NextFill: Codable, Identifiable, Equatable {
     var price: Decimal
     var fee: Decimal
     var realized: Decimal
+    /// Stable link from an explicitly confirmed broker fill to its advisory plan.
+    /// Optional for compatibility with existing real-ledger files and manual fills.
+    var candidatePlanID: UUID? = nil
+    /// Optional link for a user-confirmed fill associated with an AI decision record.
+    /// Older real ledgers and unrelated manual fills remain unlinked.
+    var decisionMemoryID: UUID? = nil
 }
 struct NextAssetPoint: Codable, Identifiable, Equatable {
     var id = UUID()

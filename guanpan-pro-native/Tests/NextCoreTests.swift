@@ -478,6 +478,55 @@ final class NextCoreTests: XCTestCase {
         XCTAssertThrowsError(try plan.confirmRealFill(price: 0.86, units: 1, fee: 0.1,
             at: now.addingTimeInterval(30), now: now.addingTimeInterval(30)))
     }
+    func testCandidatePlanReconcilesProgressOnlyFromLinkedRealLedgerFills() {
+        let planID = UUID()
+        var plan = NextCandidatePlan(id: planID, kind: .reverseT, code: "512480", name: "半导体ETF",
+            limitPrice: Decimal(string: "0.850")!, units: 500,
+            createdAt: now, expiresAt: now.addingTimeInterval(3600),
+            triggerNote: "券商手工卖出", cancelNote: "突破区间时取消",
+            quoteSource: "test", quoteTime: now, dailyBarCount: 120, minuteSampleCount: 200,
+            confidenceLevel: "high", rationale: "账本恢复测试", expectedNetGain: 9,
+            expectedCostReduction: Decimal(string: "0.018")!, riskNote: "踏空",
+            marketState: "宽幅震荡", cancelAbove: nil, cancelBelow: nil)
+        plan.state = .invalidated
+        let fills = [
+            NextFill(date: now.addingTimeInterval(10), code: "512480", side: "sell", units: 200,
+                    price: Decimal(string: "0.850")!, fee: Decimal(string: "0.10")!, realized: 0,
+                    candidatePlanID: planID),
+            NextFill(date: now.addingTimeInterval(20), code: "512480", side: "sell", units: 300,
+                    price: Decimal(string: "0.860")!, fee: Decimal(string: "0.10")!, realized: 0,
+                    candidatePlanID: planID),
+            NextFill(date: now.addingTimeInterval(30), code: "159941", side: "sell", units: 100,
+                    price: 1, fee: Decimal(string: "0.10")!, realized: 0)
+        ]
+
+        XCTAssertTrue(plan.reconcileLedgerFills(fills))
+        XCTAssertEqual(plan.confirmedUnits, 500)
+        XCTAssertEqual(plan.confirmedPrice, Decimal(string: "0.856")!)
+        XCTAssertEqual(plan.confirmedFee, Decimal(string: "0.20")!)
+        XCTAssertEqual(plan.confirmedAt, now.addingTimeInterval(20))
+        XCTAssertEqual(plan.state, .confirmed)
+        XCTAssertFalse(plan.canConfirmRealFill)
+        XCTAssertFalse(plan.reconcileLedgerFills(fills), "relaunch reconciliation must be idempotent")
+
+        var untouched = plan
+        untouched.confirmedUnits = nil
+        untouched.confirmedPrice = nil
+        untouched.confirmedFee = nil
+        untouched.confirmedAt = nil
+        XCTAssertFalse(untouched.reconcileLedgerFills([
+            NextFill(date: now.addingTimeInterval(10), code: "512480", side: "buy", units: 200,
+                    price: 0.85, fee: 0.1, realized: 0, candidatePlanID: planID)
+        ]), "a linked but mismatched code/side is not valid fill evidence")
+        XCTAssertNil(untouched.confirmedUnits)
+    }
+    func testLegacyLedgerFillWithoutCandidatePlanIDStillDecodes() throws {
+        let json = #"{"id":"00000000-0000-0000-0000-000000000001","date":1792375200,"code":"159941","side":"buy","units":100,"price":1.4,"fee":0.1,"realized":0}"#.data(using: .utf8)!
+        let fill = try JSONDecoder().decode(NextFill.self, from: json)
+        XCTAssertNil(fill.candidatePlanID, "升级前的真实流水继续可读，且不会被猜测关联候选计划")
+        XCTAssertNil(fill.decisionMemoryID)
+        XCTAssertEqual(fill.code, "159941")
+    }
     func testCandidatePlanInvalidatesWhenQuoteCannotSafelyValidateIt() throws {
         func plan() -> NextCandidatePlan {
             NextCandidatePlan(kind: .reverseT, code: "159941", name: "纳指ETF",

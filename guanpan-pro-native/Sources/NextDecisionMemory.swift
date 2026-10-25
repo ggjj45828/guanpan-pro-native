@@ -359,9 +359,14 @@ enum NextDecisionMemory {
                             at time: Date) -> Bool {
         guard price > 0, !price.isNaN, units > 0,
               time.timeIntervalSince1970.isFinite, time >= record.createdAt else { return false }
+        let filledPrice = NextMoney.text(price, digits: 4)
+        if record.outcome == .filled, record.outcomeAt == time,
+           record.review.filledPrice == filledPrice, record.review.filledUnits == units {
+            return false
+        }
         record.outcome = .filled
         record.outcomeAt = time
-        record.review.filledPrice = NextMoney.text(price, digits: 4)
+        record.review.filledPrice = filledPrice
         record.review.filledUnits = units
         record.review.reviewedAt = nil
         record.review.note = "券商真实成交已由用户确认；后续行情到达后再复盘"

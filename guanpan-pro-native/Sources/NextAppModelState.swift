@@ -120,6 +120,8 @@ import Combine
         self.profile = repository.load(NextInvestorProfile.self, filename: "investor-profile-v1.json", fallback: NextInvestorProfile())
         self.suggestions = repository.load([NextSuggestionRecord].self, filename: "ai-suggestions-v1.json", fallback: [])
         self.errorMessage = repository.integrityWarning
+        reconcileCandidatePlanFillsFromLedger()
+        reconcileDecisionMemoryFillsFromLedger()
         // 启动时把「只有代码、没有名字」的标的补一次：账本里的旧数据、旧自选都能认出来。
         Task { await backfillNamesIfNeeded() }
     }
@@ -127,6 +129,11 @@ import Combine
         try updated.validate()
         var copy = ledger
         try copy.apply(updated, action: action, reason: reason, at: Date())
+        // Persist first: a failed local write must not make the in-memory UI claim a
+        // broker-confirmed fill or other account change that disappears on relaunch.
+        if let failure = repository.save(copy, filename: "real-ledger-v1.json") {
+            throw NextError.invalid("真实账本未能写入本机；本次修改未确认：\(failure)")
+        }
         ledger = copy
         scheduleAutoUpload()
     }
@@ -210,7 +217,8 @@ import Combine
     }
 
     func recordTrade(code: String, name: String, side: String, units: Int, price: Decimal, fee: Decimal,
-                     at tradedAt: Date = Date(), decisionMemoryID: UUID? = nil) throws {
+                     at tradedAt: Date = Date(), decisionMemoryID: UUID? = nil,
+                     candidatePlanID: UUID? = nil) throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), units > 0, price > 0,
               side == "buy" || side == "sell", fee >= 0, !fee.isNaN,
               tradedAt.timeIntervalSince1970.isFinite, tradedAt <= Date().addingTimeInterval(60) else {
@@ -263,10 +271,14 @@ import Combine
             if updated.positions[positionIndex].units == 0 { updated.positions.remove(at: positionIndex) }
             updated.cash += gross - fee
         }
-        updated.fills.append(NextFill(date: tradedAt, code: code, side: side, units: units, price: price, fee: fee, realized: realized))
+        updated.fills.append(NextFill(date: tradedAt, code: code, side: side, units: units, price: price, fee: fee,
+                                      realized: realized, candidatePlanID: candidatePlanID,
+                                      decisionMemoryID: decisionMemoryID))
         try commitRealLedger(updated, action: side == "buy" ? "记录成交买入" : "记录成交卖出", reason: "用户核对成交；本笔手续费 ¥\(NextMoney.text(fee))")
         if let linkedDecision, let index = decisionMemory.firstIndex(where: { $0.id == linkedDecision.id }) {
-            decisionMemory[index] = linkedDecision
+            var updatedMemory = decisionMemory
+            updatedMemory[index] = linkedDecision
+            decisionMemory = updatedMemory
         }
         // 真实成交是画像的主要证据来源：记完账立刻重算一次，界面上的「AI 对我的了解」同步变化。
         learnProfile()
@@ -391,36 +403,56 @@ import Combine
         var plan = NextPatientLimitPlan(id: UUID(), code: code, name: quotes[code]?.quote.name ?? code,
                                         limitPrice: price, units: units, createdAt: Date(), expiresAt: expiresAt)
         try plan.validate()
-        patientLimitPlans.insert(plan, at: 0)
+        var updatedPlans = patientLimitPlans
+        updatedPlans.insert(plan, at: 0)
+        patientLimitPlans = updatedPlans
         notice = "耐心限价计划已保存。它只是提醒和研究意图，不会占用现金、模拟成交或提交券商订单。"
     }
     func pausePatientLimitPlan(_ id: UUID) {
-        guard let index = patientLimitPlans.firstIndex(where: { $0.id == id && $0.state == "等待价格提醒" }) else { return }
-        patientLimitPlans[index].state = "已暂停"
+        var updatedPlans = patientLimitPlans
+        guard let index = updatedPlans.firstIndex(where: { $0.id == id && $0.state == "等待价格提醒" }) else { return }
+        var updated = updatedPlans[index]
+        updated.state = "已暂停"
+        updatedPlans[index] = updated
+        patientLimitPlans = updatedPlans
     }
     func resumePatientLimitPlan(_ id: UUID) {
-        guard let index = patientLimitPlans.firstIndex(where: { $0.id == id && $0.state == "已暂停" && $0.expiresAt > Date() }) else { return }
-        patientLimitPlans[index].state = "等待价格提醒"
+        var updatedPlans = patientLimitPlans
+        guard let index = updatedPlans.firstIndex(where: { $0.id == id && $0.state == "已暂停" && $0.expiresAt > Date() }) else { return }
+        var updated = updatedPlans[index]
+        updated.state = "等待价格提醒"
+        updatedPlans[index] = updated
+        patientLimitPlans = updatedPlans
     }
     func cancelPatientLimitPlan(_ id: UUID) {
-        guard let index = patientLimitPlans.firstIndex(where: { $0.id == id && ["等待价格提醒", "已暂停"].contains($0.state) }) else { return }
-        patientLimitPlans[index].state = "已撤销"
+        var updatedPlans = patientLimitPlans
+        guard let index = updatedPlans.firstIndex(where: { $0.id == id && ["等待价格提醒", "已暂停"].contains($0.state) }) else { return }
+        var updated = updatedPlans[index]
+        updated.state = "已撤销"
+        updatedPlans[index] = updated
+        patientLimitPlans = updatedPlans
     }
     private func evaluatePatientLimitPlans(_ values: [NextQuote], now: Date = Date()) {
         var triggered: [(NextPatientLimitPlan, NextQuote)] = []
         var expired: [NextPatientLimitPlan] = []
-        for index in patientLimitPlans.indices where patientLimitPlans[index].state == "等待价格提醒" {
-            if patientLimitPlans[index].expiresAt <= now {
-                patientLimitPlans[index].state = "已过期"
-                expired.append(patientLimitPlans[index])
+        var updatedPlans = patientLimitPlans
+        for index in updatedPlans.indices where updatedPlans[index].state == "等待价格提醒" {
+            if updatedPlans[index].expiresAt <= now {
+                var plan = updatedPlans[index]
+                plan.state = "已过期"
+                updatedPlans[index] = plan
+                expired.append(plan)
                 continue
             }
-            guard let quote = values.first(where: { $0.code == patientLimitPlans[index].code }),
-                  patientLimitPlans[index].shouldTrigger(with: quote, at: now) else { continue }
-            patientLimitPlans[index].state = "价格已触发"
-            patientLimitPlans[index].triggeredAt = now
-            triggered.append((patientLimitPlans[index], quote))
+            guard let quote = values.first(where: { $0.code == updatedPlans[index].code }),
+                  updatedPlans[index].shouldTrigger(with: quote, at: now) else { continue }
+            var plan = updatedPlans[index]
+            plan.state = "价格已触发"
+            plan.triggeredAt = now
+            updatedPlans[index] = plan
+            triggered.append((plan, quote))
         }
+        if updatedPlans != patientLimitPlans { patientLimitPlans = updatedPlans }
         for (plan, quote) in triggered {
             postLocalAlert(level: "限价计划", fingerprint: "patient-limit-\(plan.id.uuidString)", title: "\(plan.name) 达到你的观察价",
                            detail: "最新价 ¥\(NextMoney.text(quote.price, digits: 3))，目标 ¥\(NextMoney.text(plan.limitPrice, digits: 3))，计划数量 \(plan.units) 份。仅为提醒，未下单。",
@@ -500,7 +532,9 @@ import Combine
         guard let index = decisionMemory.firstIndex(where: { $0.id == id }) else { return }
         var updated = decisionMemory[index]
         guard NextDecisionMemory.markSkipped(&updated, at: now) else { return }
-        decisionMemory[index] = updated
+        var updatedMemory = decisionMemory
+        updatedMemory[index] = updated
+        decisionMemory = updatedMemory
     }
 
     private func buildGuidance(now: Date) -> NextDailyGuidance {
@@ -522,21 +556,23 @@ import Combine
     /// 计划永远不能凭旧价格继续挂着。
     func evaluateCandidatePlans(now: Date = Date()) {
         var updates: [String] = []
-        for index in candidatePlans.indices {
-            let quote = quotes[candidatePlans[index].code]?.quote
-            if let change = candidatePlans[index].refresh(quote: quote, now: now) {
+        var updatedPlans = candidatePlans
+        for index in updatedPlans.indices {
+            let quote = quotes[updatedPlans[index].code]?.quote
+            if let change = updatedPlans[index].refresh(quote: quote, now: now) {
                 updates.append(change)
                 continue
             }
-            guard candidatePlans[index].state.isOpen else { continue }
-            let plan = candidatePlans[index]
+            guard updatedPlans[index].state.isOpen else { continue }
+            let plan = updatedPlans[index]
             guard let reason = NextCandidatePlanNewsGuard.invalidationReason(
                 for: plan, headlines: nasNews[plan.code] ?? [], now: now) else { continue }
-            if let change = candidatePlans[index].invalidate(
+            if let change = updatedPlans[index].invalidate(
                 reason: reason, at: now) {
                 updates.append(change)
             }
         }
+        if updatedPlans != candidatePlans { candidatePlans = updatedPlans }
         for line in updates {
             postLocalAlert(level: "AI 候选计划", fingerprint: "candidate-plan-\(UUID().uuidString)", title: line,
                            detail: "计划只是建议：请在券商自行决定是否挂单；成交后回到 App 点「我已成交」再更新账本。",
@@ -604,7 +640,9 @@ import Combine
             evidence: nasResearch[plan.code]?.crossMarket, now: now) {
             throw NextError.invalid("最新跨市场风险观察已暂停原计划：\(reason)")
         }
-        candidatePlans.insert(plan, at: 0)
+        var updatedPlans = candidatePlans
+        updatedPlans.insert(plan, at: 0)
+        candidatePlans = updatedPlans
         linkSuggestionToPlan(plan)
         notice = "候选计划已保存：只是价格建议，未成交前不影响持仓与现金。"
     }
@@ -619,8 +657,12 @@ import Combine
         let plan = candidatePlans[index]
         var revised = plan
         try revised.confirmRealFill(price: price, units: units, fee: fee, at: tradedAt, now: Date())
-        try recordTrade(code: plan.code, name: plan.name, side: plan.kind.side, units: units, price: price, fee: fee, at: tradedAt)
-        candidatePlans[index] = revised
+        try recordTrade(code: plan.code, name: plan.name, side: plan.kind.side, units: units, price: price,
+                        fee: fee, at: tradedAt, decisionMemoryID: plan.decisionMemoryID,
+                        candidatePlanID: planID)
+        var updatedPlans = candidatePlans
+        updatedPlans[index] = revised
+        candidatePlans = updatedPlans
         markSuggestionExecuted(for: revised, price: revised.confirmedPrice ?? price, units: revised.confirmedUnits ?? units)
         markDecisionMemoryFilled(for: revised, at: tradedAt)
         notice = "已记录真实成交 \(units) 份；计划剩余 \(candidatePlans[index].remainingUnits) 份。真实持仓、现金与收益已重算。"
@@ -872,15 +914,16 @@ import Combine
     func logGuidanceSuggestions(_ guidance: NextDailyGuidance, now: Date = Date()) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        var updatedSuggestions = suggestions
         var added = 0
         for item in guidance.items where item.isActionable {
             if let tResult = item.tPlan, case let .ready(plan) = tResult {
                 let kind: NextPlanKind = plan.kind == .reverse ? .reverseT : .forwardT
-                let duplicated = suggestions.contains {
+                let duplicated = updatedSuggestions.contains {
                     $0.code == item.code && $0.kind == kind && calendar.isDate($0.createdAt, inSameDayAs: now)
                 }
                 if duplicated { continue }
-                suggestions.append(NextSuggestionRecord(code: item.code, name: item.name, kind: kind,
+                updatedSuggestions.append(NextSuggestionRecord(code: item.code, name: item.name, kind: kind,
                                                        expectedNetGain: plan.netGain,
                                                        expectedSpreadPercent: NextProfileEngine.spreadPercent(sell: plan.sellPrice, buy: plan.buyPrice),
                                                        expectedCostReduction: plan.costReductionPerUnit,
@@ -889,11 +932,11 @@ import Combine
                                                        expiresAt: plan.validUntil))
                 added += 1
             } else if let gResult = item.gridPlan, case let .ready(grid) = gResult {
-                let duplicated = suggestions.contains {
+                let duplicated = updatedSuggestions.contains {
                     $0.code == item.code && $0.kind == .gridBuy && calendar.isDate($0.createdAt, inSameDayAs: now)
                 }
                 if duplicated { continue }
-                suggestions.append(NextSuggestionRecord(code: item.code, name: item.name, kind: .gridBuy,
+                updatedSuggestions.append(NextSuggestionRecord(code: item.code, name: item.name, kind: .gridBuy,
                                                        expectedNetGain: nil,
                                                        expectedSpreadPercent: grid.spacingPercent,
                                                        expectedCostReduction: nil,
@@ -904,37 +947,67 @@ import Combine
             }
         }
         // 过了有效期、既没保存成计划也没成交 → 记「看了没做」，这是做 T 偏好最重要的一类样本。
-        for index in suggestions.indices where suggestions[index].outcome == .pending {
-            if now > suggestions[index].expiresAt, suggestions[index].savedPlanID == nil {
-                suggestions[index].outcome = .ignored
+        for index in updatedSuggestions.indices where updatedSuggestions[index].outcome == .pending {
+            if now > updatedSuggestions[index].expiresAt, updatedSuggestions[index].savedPlanID == nil {
+                updatedSuggestions[index].outcome = .ignored
             }
         }
         // 只保留近 180 天轨迹，避免文件无限增长
         let cutoff = now.addingTimeInterval(-180 * 86_400)
-        if suggestions.contains(where: { $0.createdAt < cutoff }) {
-            suggestions = suggestions.filter { $0.createdAt >= cutoff }
+        if updatedSuggestions.contains(where: { $0.createdAt < cutoff }) {
+            updatedSuggestions = updatedSuggestions.filter { $0.createdAt >= cutoff }
         }
+        if updatedSuggestions != suggestions { suggestions = updatedSuggestions }
         if added > 0 { notice = "今日新增 \(added) 条机会记录（只用于让 AI 越来越懂你，不构成下单）" }
     }
 
     /// 用户打开过计划详情 → 之后没做才算「看了没做」，不能把没看到也算成不感兴趣。
     func markPlanViewed(_ planID: UUID, now: Date = Date()) {
-        guard let index = candidatePlans.firstIndex(where: { $0.id == planID }) else { return }
-        if candidatePlans[index].viewedAt == nil { candidatePlans[index].viewedAt = now }
-        if let sIndex = suggestions.firstIndex(where: { $0.savedPlanID == planID }) {
-            if suggestions[sIndex].viewedAt == nil { suggestions[sIndex].viewedAt = now }
+        var updatedPlans = candidatePlans
+        guard let index = updatedPlans.firstIndex(where: { $0.id == planID }) else { return }
+        if updatedPlans[index].viewedAt == nil {
+            var updated = updatedPlans[index]
+            updated.viewedAt = now
+            updatedPlans[index] = updated
+            candidatePlans = updatedPlans
         }
+        var updatedSuggestions = suggestions
+        if let sIndex = updatedSuggestions.firstIndex(where: { $0.savedPlanID == planID }) {
+            if updatedSuggestions[sIndex].viewedAt == nil {
+                var updated = updatedSuggestions[sIndex]
+                updated.viewedAt = now
+                updatedSuggestions[sIndex] = updated
+                suggestions = updatedSuggestions
+            }
+        }
+    }
+
+    /// Withdraw a candidate plan without treating it as an order or changing the real ledger.
+    func withdrawCandidatePlan(_ planID: UUID, now: Date = Date()) {
+        var updatedPlans = candidatePlans
+        guard let index = updatedPlans.firstIndex(where: { $0.id == planID }), updatedPlans[index].state.isOpen else { return }
+        updatedPlans[index].state = .withdrawn
+        updatedPlans[index].stateChangedAt = now
+        candidatePlans = updatedPlans
     }
 
     /// 一键反馈：进入画像学习，但不直接修改任何价格或计划。
     func recordPlanFeedback(_ planID: UUID, kind: NextPlanFeedbackKind, note: String? = nil, now: Date = Date()) {
-        guard let index = candidatePlans.firstIndex(where: { $0.id == planID }) else { return }
-        candidatePlans[index].feedback = NextPlanFeedback(kind: kind, note: note, createdAt: now)
-        if let sIndex = suggestions.firstIndex(where: { $0.savedPlanID == planID }) {
-            suggestions[sIndex].feedback = candidatePlans[index].feedback
-            if !kind.isPositive && suggestions[sIndex].outcome == .pending {
-                suggestions[sIndex].outcome = kind.impliesHoldPreference ? .ignored : .rejected
+        var updatedPlans = candidatePlans
+        guard let index = updatedPlans.firstIndex(where: { $0.id == planID }) else { return }
+        var updatedPlan = updatedPlans[index]
+        updatedPlan.feedback = NextPlanFeedback(kind: kind, note: note, createdAt: now)
+        updatedPlans[index] = updatedPlan
+        candidatePlans = updatedPlans
+        var updatedSuggestions = suggestions
+        if let sIndex = updatedSuggestions.firstIndex(where: { $0.savedPlanID == planID }) {
+            var updatedSuggestion = updatedSuggestions[sIndex]
+            updatedSuggestion.feedback = updatedPlan.feedback
+            if !kind.isPositive && updatedSuggestion.outcome == .pending {
+                updatedSuggestion.outcome = kind.impliesHoldPreference ? .ignored : .rejected
             }
+            updatedSuggestions[sIndex] = updatedSuggestion
+            suggestions = updatedSuggestions
         }
         notice = "已记录你的反馈：AI 会据此调整以后推荐什么、不推荐什么（不会改变行情判断）"
         learnProfile(now: now)
@@ -942,34 +1015,122 @@ import Combine
 
     /// 把保存下来的候选计划与建议轨迹连起来，画像才能判断「这条建议最后有没有被执行」。
     func linkSuggestionToPlan(_ plan: NextCandidatePlan, now: Date = Date()) {
-        if let index = suggestions.firstIndex(where: { $0.savedPlanID == nil && $0.code == plan.code && $0.kind == plan.kind }) {
-            suggestions[index].savedPlanID = plan.id
-            if suggestions[index].outcome == .pending { suggestions[index].outcome = .saved }
+        var updatedSuggestions = suggestions
+        if let index = updatedSuggestions.firstIndex(where: {
+            $0.savedPlanID == nil && $0.code == plan.code && $0.kind == plan.kind
+                && sameShanghaiDay($0.createdAt, plan.createdAt)
+        }) {
+            var updated = updatedSuggestions[index]
+            updated.savedPlanID = plan.id
+            if updated.outcome == .pending { updated.outcome = .saved }
+            updatedSuggestions[index] = updated
+            suggestions = updatedSuggestions
         }
     }
 
-    private func markSuggestionExecuted(for plan: NextCandidatePlan, price: Decimal, units: Int) {
-        guard let index = suggestions.firstIndex(where: { $0.savedPlanID == plan.id })
-                ?? suggestions.firstIndex(where: { $0.code == plan.code && $0.kind == plan.kind }) else { return }
-        suggestions[index].outcome = .executed
-        suggestions[index].executedAt = Date()
-        suggestions[index].executedPrice = price
-        suggestions[index].executedUnits = units
-        suggestions[index].savedPlanID = plan.id
-        suggestions[index].priceEdited = plan.priceWasEdited
-        suggestions[index].unitsEdited = plan.unitsWereEdited
+    @discardableResult
+    private func markSuggestionExecuted(for plan: NextCandidatePlan, price: Decimal, units: Int) -> Bool {
+        var updatedSuggestions = suggestions
+        guard let index = updatedSuggestions.firstIndex(where: { $0.savedPlanID == plan.id })
+                ?? updatedSuggestions.firstIndex(where: {
+                    $0.savedPlanID == nil && $0.code == plan.code && $0.kind == plan.kind
+                        && sameShanghaiDay($0.createdAt, plan.createdAt)
+                }) else { return false }
+        var updated = updatedSuggestions[index]
+        let executedAt = plan.confirmedAt ?? Date()
+        let changed = updated.outcome != .executed || updated.executedAt != executedAt
+            || updated.executedPrice != price || updated.executedUnits != units
+            || updated.savedPlanID != plan.id || updated.priceEdited != plan.priceWasEdited
+            || updated.unitsEdited != plan.unitsWereEdited
+        guard changed else { return false }
+        updated.outcome = .executed
+        updated.executedAt = executedAt
+        updated.executedPrice = price
+        updated.executedUnits = units
+        updated.savedPlanID = plan.id
+        updated.priceEdited = plan.priceWasEdited
+        updated.unitsEdited = plan.unitsWereEdited
+        updatedSuggestions[index] = updated
+        suggestions = updatedSuggestions
+        return true
+    }
+
+    private func sameShanghaiDay(_ lhs: Date, _ rhs: Date) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar.isDate(lhs, inSameDayAs: rhs)
     }
 
     /// A broker-confirmed fill updates the originating decision memory as well as the ledger.
     /// It never infers a fill from a touched price or an unconfirmed candidate.
-    private func markDecisionMemoryFilled(for plan: NextCandidatePlan, at time: Date) {
+    @discardableResult
+    private func markDecisionMemoryFilled(for plan: NextCandidatePlan, at time: Date) -> Bool {
         guard let price = plan.confirmedPrice, let units = plan.confirmedUnits, units > 0,
               let recordID = plan.decisionMemoryID
                 ?? NextDecisionMemory.matchingRecordID(for: plan, records: decisionMemory),
-              let index = decisionMemory.firstIndex(where: { $0.id == recordID }) else { return }
+              let index = decisionMemory.firstIndex(where: { $0.id == recordID }) else { return false }
         var updated = decisionMemory[index]
-        guard NextDecisionMemory.confirmFill(&updated, price: price, units: units, at: time) else { return }
-        decisionMemory[index] = updated
+        guard NextDecisionMemory.confirmFill(&updated, price: price, units: units, at: time) else { return false }
+        var updatedMemory = decisionMemory
+        updatedMemory[index] = updated
+        decisionMemory = updatedMemory
+        return true
+    }
+
+    /// Repairs plan/learning records from the durable real ledger if the app was
+    /// interrupted after saving a confirmed fill but before saving secondary files.
+    private func reconcileCandidatePlanFillsFromLedger() {
+        var updatedPlans = candidatePlans
+        var didChange = false
+        for index in updatedPlans.indices {
+            guard updatedPlans[index].hasValidLedgerFillEvidence(book.fills) else { continue }
+            if updatedPlans[index].reconcileLedgerFills(book.fills) { didChange = true }
+            let plan = updatedPlans[index]
+            if let price = plan.confirmedPrice, let units = plan.confirmedUnits, units > 0 {
+                linkSuggestionToPlan(plan, now: plan.createdAt)
+                if markSuggestionExecuted(for: plan, price: price, units: units) { didChange = true }
+                if markDecisionMemoryFilled(for: plan, at: plan.confirmedAt ?? plan.createdAt) { didChange = true }
+            }
+        }
+        if updatedPlans != candidatePlans { candidatePlans = updatedPlans }
+        if didChange { learnProfile() }
+    }
+
+    /// Reattach explicitly linked manual fills to decision memory after a crash between
+    /// saving the real ledger and saving the separate memory file.
+    private func reconcileDecisionMemoryFillsFromLedger() {
+        var updatedMemory = decisionMemory
+        var didChange = false
+        for index in updatedMemory.indices {
+            let linked = book.fills.filter { $0.decisionMemoryID == updatedMemory[index].id }
+            guard !linked.isEmpty, Set(linked.map(\.id)).count == linked.count,
+                  linked.allSatisfy({ $0.code == updatedMemory[index].code && $0.units > 0
+                      && $0.price > 0 && !$0.price.isNaN && $0.date >= updatedMemory[index].createdAt
+                      && $0.date <= Date().addingTimeInterval(60)
+                      && $0.date.timeIntervalSince1970.isFinite }) else { continue }
+            var totalUnits = 0
+            var weightedValue: Decimal = 0
+            var overflowed = false
+            var latestFill: Date?
+            for fill in linked {
+                let (nextUnits, overflow) = totalUnits.addingReportingOverflow(fill.units)
+                guard !overflow else { overflowed = true; break }
+                totalUnits = nextUnits
+                weightedValue += fill.price * Decimal(fill.units)
+                latestFill = max(latestFill ?? fill.date, fill.date)
+            }
+            guard !overflowed, totalUnits > 0, let latestFill else { continue }
+            let averagePrice = weightedValue / Decimal(totalUnits)
+            guard averagePrice > 0, !averagePrice.isNaN else { continue }
+            if NextDecisionMemory.confirmFill(&updatedMemory[index], price: averagePrice,
+                                              units: totalUnits, at: latestFill) {
+                didChange = true
+            }
+        }
+        if didChange {
+            decisionMemory = updatedMemory
+            learnProfile()
+        }
     }
 
     // MARK: 画像的「用户最终控制权」
@@ -1288,23 +1449,29 @@ import Combine
         preferences = preferences
     }
     func recordDecision(_ decision: NextDecision) {
-        decisions.removeAll { $0.id == decision.id }
-        decisions.insert(decision, at: 0)
-        if decisions.count > 1000 { decisions.removeLast(decisions.count - 1000) }
+        var updatedDecisions = decisions
+        updatedDecisions.removeAll { $0.id == decision.id }
+        updatedDecisions.insert(decision, at: 0)
+        if updatedDecisions.count > 1000 { updatedDecisions.removeLast(updatedDecisions.count - 1000) }
+        decisions = updatedDecisions
     }
     func chooseDecision(_ decisionID: UUID, optionID: String) throws {
-        guard let index = decisions.firstIndex(where: { $0.id == decisionID }), decisions[index].options.contains(where: { $0.id == optionID }) else {
+        var updatedDecisions = decisions
+        guard let index = updatedDecisions.firstIndex(where: { $0.id == decisionID }), updatedDecisions[index].options.contains(where: { $0.id == optionID }) else {
             throw NextError.invalid("决策或方案已不存在；没有保存选择")
         }
-        decisions[index].selectedOption = optionID
-        decisions[index].status = "已记录选择"
+        updatedDecisions[index].selectedOption = optionID
+        updatedDecisions[index].status = "已记录选择"
+        decisions = updatedDecisions
     }
     func reviewDecision(_ decisionID: UUID, note: String) throws {
-        guard let index = decisions.firstIndex(where: { $0.id == decisionID }), !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        var updatedDecisions = decisions
+        guard let index = updatedDecisions.firstIndex(where: { $0.id == decisionID }), !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NextError.invalid("请选择一条决策并填写复盘记录")
         }
-        decisions[index].review = note
-        decisions[index].status = "已复盘"
+        updatedDecisions[index].review = note
+        updatedDecisions[index].status = "已复盘"
+        decisions = updatedDecisions
     }
     func acceptQuote(_ quote: NextCachedQuote) throws {
         try validateQuote(quote)
