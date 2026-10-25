@@ -283,6 +283,18 @@ final class NextChainScenarioTests: XCTestCase {
                       "大小写变化不能绕过基本面数字守卫")
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("股息率为4.2%，资产负债率为38%。"),
                       "股息率和资产负债率同样需要可信数据源")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("Estimated net profit: $9.80."),
+                      "英文模型输出不能重算计划收益")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("Commission is 0.10 yuan per trade."),
+                      "英文手续费仍由本地确定性规则提供")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("Basis reduction: 0.019 yuan/share."),
+                      "英文等效降本不能由模型重新计算")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("Revenue growth is 18%."),
+                      "缺少可信基本面时不得编造英文营收增速")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("Net income: 3.2 billion CNY."),
+                      "缺少可信基本面时不得编造英文利润")
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedFinancialClaim("Profitability depends on fresh market evidence."),
+                       "没有数值的普通说明可以通过")
         XCTAssertFalse(NextAIOutputGuard.containsUnverifiedFinancialClaim("当前没有可信基本面数据，暂不引用PE、ROE或营收。"),
                        "仅说明缺少数据、不附未经验证数字时允许输出")
         XCTAssertFalse(NextAIOutputGuard.containsUnverifiedFinancialClaim("今天先观察，主要风险是单边下跌。"))

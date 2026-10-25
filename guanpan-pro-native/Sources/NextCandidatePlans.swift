@@ -875,7 +875,9 @@ enum NextAIOutputGuard {
     private static let financialClaimPatterns = [
         #"(?:预计|预估|理论)?(?:净收益|毛收益|收益|毛价差|价差|等效降本|降本|成本降低|手续费|胜率|成功率|触达概率|资金占用|持仓占比|现金占比|回本涨幅)[^\n。；;]{0,20}?(?:¥|￥)?\s*\d+(?:\.\d+)?\s*(?:元|%|倍|/份)?"#,
         #"(?:¥|￥)\s*\d+(?:\.\d+)?\s*(?:元)?[^\n。；;]{0,20}?(?:净收益|毛收益|收益|价差|降本|成本降低|手续费|资金占用)"#,
-        #"\d+(?:\.\d+)?\s*(?:元/份|元每份|%|倍)?[^\n。；;]{0,12}?(?:净收益|毛收益|收益|降本|成本降低|手续费|胜率|成功率|触达概率)"#
+        #"\d+(?:\.\d+)?\s*(?:元/份|元每份|%|倍)?[^\n。；;]{0,12}?(?:净收益|毛收益|收益|降本|成本降低|手续费|胜率|成功率|触达概率)"#,
+        #"\b(?:(?:estimated|expected|gross|net)\s+)?(?:profit|gain|return|spread|fees?|commission|cost\s+reduction|basis\s+reduction|win\s+rate|success\s+rate|touch\s+probability|capital\s+usage|portfolio\s+weight|cash\s+weight|break[ -]?even(?:\s+(?:return|rise|gain))?)\b[^\n。；;]{0,24}?(?:[$¥￥])?\s*[-+]?\d[\d,]*(?:\.\d+)?\s*(?:USD|CNY|RMB|yuan|%|times|x|per\s+share|/share)?"#,
+        #"(?:[$¥￥]\s*[-+]?\d[\d,]*(?:\.\d+)?\s*(?:USD|CNY|RMB|yuan)?|[-+]?\d[\d,]*(?:\.\d+)?\s*(?:USD|CNY|RMB|yuan|%|times|x|per\s+share|/share))[^\n。；;]{0,24}?\b(?:profit|gain|return|spread|fees?|commission|cost\s+reduction|basis\s+reduction|win\s+rate|success\s+rate|touch\s+probability|capital\s+usage|portfolio\s+weight|cash\s+weight|break[ -]?even)\b"#
     ]
     // DecisionContext currently has no verified issuer/fundamental data feed.
     // Reject numeric fundamentals from an LLM until such evidence is explicitly
@@ -885,7 +887,9 @@ enum NextAIOutputGuard {
         #"(?:市净率|PB\s*\(?(?:MRQ)?\)?|P/B|市销率|PS\s*\(?(?:TTM)?\)?|P/S)[^\n。；;]{0,12}?\d+(?:\.\d+)?\s*(?:倍)?"#,
         #"(?:ROE|ROA|EPS|净资产收益率|资产回报率|每股收益|资产负债率|股息率|分红率)[^\n。；;]{0,12}?\d+(?:\.\d+)?\s*%?"#,
         #"(?:营收|营业收入|净利润|归母净利润|毛利率|净利率|营收增长|利润增长)[^\n。；;]{0,16}?(?:¥|￥)?\s*\d+(?:\.\d+)?\s*(?:亿元|万元|元|%)?"#,
-        #"\d+(?:\.\d+)?\s*(?:倍|亿元|万元|元|%)?[^\n。；;]{0,12}?(?:市盈率|动态市盈率|静态市盈率|PE\s*\(?(?:TTM)?\)?|P/E|市净率|PB\s*\(?(?:MRQ)?\)?|P/B|市销率|PS\s*\(?(?:TTM)?\)?|P/S|ROE|ROA|EPS|净资产收益率|资产回报率|每股收益|资产负债率|股息率|分红率|营收|营业收入|净利润|归母净利润|毛利率|净利率)"#
+        #"\d+(?:\.\d+)?\s*(?:倍|亿元|万元|元|%)?[^\n。；;]{0,12}?(?:市盈率|动态市盈率|静态市盈率|PE\s*\(?(?:TTM)?\)?|P/E|市净率|PB\s*\(?(?:MRQ)?\)?|P/B|市销率|PS\s*\(?(?:TTM)?\)?|P/S|ROE|ROA|EPS|净资产收益率|资产回报率|每股收益|资产负债率|股息率|分红率|营收|营业收入|净利润|归母净利润|毛利率|净利率)"#,
+        #"\b(?:revenue|net\s+income|earnings|gross\s+margin|net\s+margin|revenue\s+growth|earnings\s+growth|dividend\s+yield|payout\s+ratio|debt\s+ratio)\b[^\n。；;]{0,20}?[-+]?\d[\d,]*(?:\.\d+)?\s*(?:USD|CNY|RMB|yuan|billion|million|%|x)?"#,
+        #"[-+]?\d[\d,]*(?:\.\d+)?\s*(?:USD|CNY|RMB|yuan|billion|million|%|x)?[^\n。；;]{0,16}?\b(?:revenue|net\s+income|earnings|gross\s+margin|net\s+margin|revenue\s+growth|earnings\s+growth|dividend\s+yield|payout\s+ratio|debt\s+ratio)\b"#
     ]
 
     /// Numeric financial results belong to deterministic plan/account cards. The
@@ -951,6 +955,15 @@ enum NextAIOutputGuard {
         return false
     }
 
+    private static func strictActionDecimal(_ raw: String) -> Decimal? {
+        // Decimal(string:) accepts a valid numeric prefix on some Foundation
+        // implementations (for example, "1.100abc"). Require the whole token.
+        guard raw.range(of: #"^[-+]?\d+(?:\.\d+)?$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return Decimal(string: raw)
+    }
+
     static func containsUnverifiedAction(_ text: String, approvedPrices: Set<Decimal>, approvedUnits: Set<Int>) -> Bool {
         for pattern in actionPricePatterns {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
@@ -959,7 +972,7 @@ enum NextAIOutputGuard {
                 guard match.numberOfRanges > 1,
                       let valueRange = Range(match.range(at: 1), in: text) else { continue }
                 let raw = String(text[valueRange])
-                guard !raw.contains(","), let decimal = Decimal(string: raw),
+                guard let decimal = strictActionDecimal(raw),
                       approvedPrices.contains(where: { abs($0 - decimal) < Decimal(string: "0.000001")! }) else { return true }
             }
         }

@@ -624,3 +624,11 @@
 - 继续收紧AI交易数字守卫：匹配完整数字token，处理有符号数字、逗号分组、英文操作措辞；逗号格式明确拒绝；新增长小数前缀绕过、非法后缀、逗号份额/价格、负份额、英文价格和尾随零等回归断言。JavaScript捕获组烟测覆盖这些边界，`git diff --check`通过；不是Swift/XCTest执行结果。
 - Matrix第46项仍🟡，新回归未由Swift运行。总数维持✅1、🟡17、🟠123、⚠️4。
 - 下一步：提交并推送本批守卫及测试至独立B验证分支，观察CI诊断摘要；如果portable Swift测试通过，再继续完整Xcode测试的具体失败定位。若仍失败，按实际日志修复，不降低测试/统计/防未来门槛。此后从Matrix继续下一个可处理Partial。产品红线：B独立、真实账户唯一、无模拟交易、无自动下单。
+
+## 2026-10-25 AI守卫CI失败修复与可执行验证续记
+
+- 通过保存的Git Credential Manager凭据在内存中读取Validate #113公开日志（未打印/保存凭据），确认portable Swift core的唯一失败是`1.100abc`未被守卫拒绝。原因是Foundation `Decimal(string:)`可能接受合法数字前缀。已新增`strictActionDecimal`，要求整个捕获token先匹配`^[-+]?\d+(?:\.\d+)?$`再解析，并保留对应端到端回归；新增英文收益、手续费、降本、营收和净利润数值守卫与正反例。
+- Validate #113 `40162945683`：portable Swift core失败于上述断言；simulator/Xcode测试被跳过。Build IPA #183成功只说明该提交能打包，不代表Swift测试通过。修复后的严格解析尚未由Swift运行。
+- 本机可运行检查：NAS研究58/58、旧服务84/84、NAS同步58/58均通过；Python compileall通过；四份Docker Compose配置解析通过；本轮Python正则/英文财务正反例烟测通过。旧服务/同步HTTP测试先被沙箱回环端口限制，获准运行本地测试服务后通过；没有连接真实NAS或上游行情。
+- GitHub网络拆分结果：origin是`https://github.com/ggjj45828/guanpan-pro-native.git`，credential helper为Git Credential Manager；提升权限后`github.com` DNS解析成功，但对`github.com:443` TCP连接超时，SSH连通探测停在host-key验证。`api.github.com:443`可达（HTTP 200）；通过认证的Actions日志下载被GitHub返回403“Must have admin rights”，不等同于密码错误。没有读取或显示Token/私钥。后续可在API具备分支写权限时，通过Git Database API沿用B专属验证分支并触发Actions；先验证远端ref与本地父子关系，拒绝覆盖或强推。
+- 当前工作树尚有Swift守卫、Core测试、矩阵与本续记改动未提交；先执行`git diff --check`与正则静态检查，再提交。矩阵第46仍🟡；总计145项维持✅1、🟡17、🟠123、⚠️4。下一步优先用安全的API快进更新B验证分支，重新运行完整portable Swift Core与Xcode XCTest；按真实失败继续修复。若API权限不足，保留本地提交，继续其他本机可做Partial，不能声称测试通过。产品红线：B独立、真实账户唯一、无模拟账户/虚拟交易、无自动下单；历史相关不说成因果，样本和未来数据约束不放松。
