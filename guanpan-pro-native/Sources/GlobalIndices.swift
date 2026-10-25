@@ -33,13 +33,15 @@ enum NextIndexQuoteFreshness {
     static func label(observedAt: Date?, timeQuality: String? = nil, now: Date = Date()) -> String {
         guard let observedAt else { return "时间未知" }
         let age = now.timeIntervalSince(observedAt)
-        guard age >= -120 else { return "时间异常" }
+        guard age >= 0 else { return "时间异常" }
         let stamp = DateFormatter()
         stamp.locale = Locale(identifier: "en_US_POSIX")
         stamp.timeZone = TimeZone(identifier: "Asia/Shanghai")
         stamp.dateFormat = "MM-dd HH:mm"
         let text = stamp.string(from: observedAt)
-        if timeQuality == "receipt_only" { return "接收时间·\(text)" }
+        if timeQuality == "receipt_only" {
+            return age > 96 * 3600 ? "陈旧接收时间·\(text)" : "接收时间·\(text)"
+        }
         if age > 96 * 3600 { return "陈旧·\(text)" }
         if age <= 120 { return "刚更新" }
         return "最后更新·\(text)"

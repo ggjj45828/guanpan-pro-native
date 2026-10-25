@@ -666,3 +666,13 @@
 - Matrix第9项已记录指数报价时点提示；第99/102/103/104项状态依据最新完整CI和截图更新；统计为✅1、🟡18、🟠126、⚠️0，共145项。零External仅表示当前还有云端模拟器/构建可推进，不代表真实NAS/iPhone、在线AI Key、长期真实数据或最终五主题视觉验收已完成。
 - 当前本地HEAD为`2abf817`，它与远端验证分支`fe36150…`的树一致。工作树新增待CI源码为`Sources/GlobalIndices.swift`、`Sources/ThemeHome.swift`、`Tests/NextCoreTests.swift`、`UITests/NativeNavigationTests.swift`以及矩阵/续记。下一步先`git diff --check`、核对矩阵状态计数，再创建提交，沿B验证分支以非强制快进推送并等待Validate/IPA；读取新XCTest摘要和截图，修复失败及逐主题视觉偏差，继续从145矩阵的可推进Partial选下一批。
 - 本轮本地Python回归重新通过：NAS兼容研究58/58、旧NAS服务84/84、同步服务58/58；未连接用户真实NAS。不要合并A代码；真实账户唯一、无虚拟成交、不自动下单，统计与防未来约束不放松。
+- 后续截图复查补充发现：iPhone 16 Pro参考图中的系统状态栏安全区呈白底、与主题暖白页面不一致；RootView的ZStack现在使用`palette.canvas.ignoresSafeArea()`统一顶边背景。首页NAS卡第二行误重复显示与第一行完全相同的`nasText`，已改为“跨市场研究覆盖N只持仓/待同步”的非重复摘要。两处均在当前本地未提交工作树，尚未进入#117或通过XCTest，必须再推送运行完整CI和截图检查。
+
+## 2026-10-25 接续：状态栏主题统一、NAS卡去重和行情时点边界
+
+- 当前工作树HEAD为`6d35f76`（与远端验证分支提交`f156ece…`对应同一源码树`1c423cbe…`）；分支仍是`validation/acceptance-20261024`。之前已授权沿B验证分支安全快进提交并运行Actions。
+- Validate #117 `40165919424`对应`6d35f76`源码，最近可见Actions页面仍显示“In progress”，当前未读取到XCTest结束日志或截图工件；不能把五主题截图和行情时点测试写成已通过。Build IPA #186 `40165919398`已成功，产生7.21MB unsigned IPA，SHA-256为`c092504b64835f42cbc26015860f9a584f401545c51668f5aa844cf78ee08de7`；unsigned构建不能证明签名或安装。
+- 本轮按CI工作流实际运行了NAS兼容研究58/58、旧NAS服务84/84、NAS同步服务58/58；三套均通过。本地`compileall`和四个Compose配置检查均通过。当前受限环境下未运行Swift/Xcode，Swift改动的验证必须走macOS Validate。
+- 截图复查后，在`guanpan-pro-native/Sources/GuanpanAdvisorApp.swift`让主题Canvas覆盖状态栏安全区域，在`Sources/ThemeHome.swift`把首页NAS卡重复的连接状态行改为跨市场研究覆盖摘要；在`Sources/GlobalIndices.swift`把任何未来时间都标成时间异常，并对超过96小时的receipt-only时间额外标陈旧；`Tests/NextCoreTests.swift`新增+60秒未来时点和陈旧receipt-only边界测试。这些改动目前仍是本地未提交状态，未经Xcode验证。
+- Matrix统计保持✅1、🟡18、🟠126、⚠️0，共145项。下一步：`git diff --check`、确认矩阵未虚升状态；提交当前源码和记录，沿B分支以非强制快进方式推送；再次运行完整Portable Swift Core、所有XCTest及unsigned IPA构建；读取结果摘要和15张五主题模拟器页面截图，若失败或视觉不一致继续修复。随后按P0核心链从矩阵选择下一项可推进Partial，不因本批CI通过而停止。
+- 产品红线保持：B完全独立于A；唯一真实账本；没有虚拟账户/资金/持仓/成交；不自动下单；不降低最小样本、fail-closed或防未来数据约束；真实NAS长期积累、实机、外部密钥仍需诚实保留为未实测。

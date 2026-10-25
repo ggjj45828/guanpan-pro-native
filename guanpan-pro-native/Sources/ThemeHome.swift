@@ -610,7 +610,10 @@ private struct HomeIndexBoard: View {
             Text("NAS").font(.system(size: 9.5, weight: .medium)).foregroundStyle(p.muted).lineLimit(1)
             Text(snapshot.nasText).font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(snapshot.nasOnline ? p.jade : p.muted).lineLimit(1)
-            Text(snapshot.nasText).font(.system(size: 9)).foregroundStyle(p.muted).lineLimit(1)
+            Text(snapshot.crossMarketResearchCount == 0
+                 ? "跨市场研究待同步"
+                 : "跨市场研究覆盖 \(snapshot.crossMarketResearchCount) 只持仓")
+                .font(.system(size: 9)).foregroundStyle(p.muted).lineLimit(1)
         }
         .padding(.horizontal, 7).padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)

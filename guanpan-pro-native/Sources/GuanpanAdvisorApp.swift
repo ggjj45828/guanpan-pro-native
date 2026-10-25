@@ -196,6 +196,7 @@ struct RootView: View {
     var body: some View {
         // 五个主入口；隐藏页用透明度切换，保留各页导航状态。
         ZStack {
+            palette.canvas.ignoresSafeArea()
             PrimaryNavigation(title: "行情", tab: .market) { MarketScreen() }
                 .opacity(tabSelection.wrappedValue == .market ? 1 : 0)
                 .allowsHitTesting(tabSelection.wrappedValue == .market)

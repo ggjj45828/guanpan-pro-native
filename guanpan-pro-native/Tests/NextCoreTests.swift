@@ -1218,6 +1218,7 @@ final class NextCoreTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_792_351_800)
         XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: nil, now: now), "时间未知")
         XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: now, now: now), "刚更新")
+        XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(60), now: now), "时间异常")
         XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(300), now: now), "时间异常")
         XCTAssertTrue(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(-86_400), now: now)
             .hasPrefix("最后更新·"))
@@ -1225,6 +1226,8 @@ final class NextCoreTests: XCTestCase {
             .hasPrefix("陈旧·"))
         XCTAssertTrue(NextIndexQuoteFreshness.label(observedAt: now, timeQuality: "receipt_only", now: now)
             .hasPrefix("接收时间·"), "只知道收包时间时必须明确它不是供应商行情时间")
+        XCTAssertTrue(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(-97 * 3600),
+            timeQuality: "receipt_only", now: now).hasPrefix("陈旧接收时间·"))
     }
 
     func testCostBasisKeepsAverageCostAndComputesDilutedCost() {
