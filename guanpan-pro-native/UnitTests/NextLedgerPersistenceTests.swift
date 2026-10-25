@@ -22,6 +22,26 @@ final class NextLedgerPersistenceTests: XCTestCase {
         }
     }
 
+    func testRepositoryRejectsTruncatedLedgerJSONWithoutReplacingIt() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-ledger-truncated-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let url = directory.appendingPathComponent("real-ledger-v1.json")
+            let damaged = Data("{\"current\":{\"cash\":13100,\"fills\":[".utf8)
+            try damaged.write(to: url, options: .atomic)
+
+            let fallback = NextAuditedBook(current: NextBook())
+            let loaded = repository.loadValidated(NextAuditedBook.self, filename: "real-ledger-v1.json",
+                fallback: fallback, validate: { try $0.validate() })
+            XCTAssertEqual(loaded, fallback)
+            XCTAssertNotNil(repository.integrityWarning)
+            XCTAssertNotNil(repository.save(fallback, filename: "real-ledger-v1.json"))
+            XCTAssertEqual(try Data(contentsOf: url), damaged, "截断账本必须保留，不能静默改成空账户")
+        }
+    }
+
     func testFailedLedgerWriteDoesNotAdvanceTheInMemoryAccount() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory
@@ -81,6 +101,7 @@ final class NextLedgerPersistenceTests: XCTestCase {
                 XCTAssertEqual(model.book.cash, Decimal(13_100))
                 XCTAssertEqual(model.book.positions.first?.units, 2_000)
                 XCTAssertEqual(model.book.fills.count, 2)
+                XCTAssertEqual(model.book.fills.reduce(Decimal.zero) { $0 + $1.fee }, Decimal(string: "0.2"))
                 XCTAssertEqual(model.book.incomeEvents.count, 1)
                 XCTAssertEqual(model.book.cashMovements.count, 1)
                 XCTAssertEqual(model.book.dividendEvents.count, 1)
@@ -155,6 +176,9 @@ final class NextLedgerPersistenceTests: XCTestCase {
                 XCTAssertEqual(restarted.book.dividendEvents.count, 1)
                 XCTAssertEqual(restarted.book.history.count, 1)
                 XCTAssertEqual(restarted.book.fills.reduce(0) { $0 + $1.units }, 2_000)
+                XCTAssertEqual(restarted.book.fills.reduce(Decimal.zero) { $0 + $1.fee }, Decimal(string: "0.2"))
+                XCTAssertEqual(restarted.book.fills.reduce(Decimal.zero) { $0 + $1.realized }, 0,
+                               "分红到账和普通现金变动不能伪装成证券交易盈亏")
                 XCTAssertEqual(restarted.book.fills.reduce(Decimal.zero) { $0 + $1.price * Decimal($1.units) } / Decimal(2_000),
                                Decimal(string: "0.9999"))
                 XCTAssertEqual(restarted.decisionMemory.first?.review.note, "人工复盘已完成")
