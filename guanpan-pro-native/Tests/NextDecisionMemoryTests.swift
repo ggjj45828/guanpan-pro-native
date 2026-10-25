@@ -385,9 +385,9 @@ final class NextDecisionMemoryTests: XCTestCase {
     }
 
     func testExpiryAndFreshnessUseLatestRevisedPlanNotOriginalSnapshot() {
-        var memory = record(snapshot(validUntil: now.addingTimeInterval(-600), limitPrice: "1.390"))
-        let revised = snapshot(validUntil: now.addingTimeInterval(1800), limitPrice: "1.420",
-                               headline: "延长观察有效期")
+        var memory = record(snapshot(limitPrice: "1.390", validUntil: now.addingTimeInterval(-600)))
+        let revised = snapshot(headline: "延长观察有效期", limitPrice: "1.420",
+                               validUntil: now.addingTimeInterval(1800))
         XCTAssertNotNil(memory.revise(with: revised, at: now))
 
         let checkedAt = now.addingTimeInterval(300)
@@ -406,7 +406,7 @@ final class NextDecisionMemoryTests: XCTestCase {
         })
         XCTAssertEqual(stale[0].outcome, .pending, "三分钟前的缓存行情不得作废当前计划")
         let receiptOnly = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in
-            self.quote("1.500", source: "EastMoney", time: now)
+            self.quote("1.500", time: now, source: "EastMoney")
         })
         XCTAssertEqual(receiptOnly[0].outcome, .pending, "仅接收时间、无法核验的行情不得作废计划")
         let future = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in

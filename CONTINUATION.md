@@ -431,3 +431,9 @@
 - 已通过仓库现有GitHub凭据在内存中读取 run 165 日志，未显示或保存凭据。失败根因是 `NextCandidatePlans.swift:435` 的组合分配评估在目标比例缺失时返回二元组，而函数要求包含 `priorityBoost` 的三元组。
 - 现修正为 `(nil, nil, 0)`，并在 `NextCoreTests` 增加未设置目标比例时不拦截、不增加排序上下文、priority为0的用例。模拟器验证run 93由相同编译失败提前结束。
 - 该修复尚未推送及由macOS XCTest验证，矩阵统计和状态不升级。下一步推送后检查构建和模拟器验证，再继续现有核心链Partial。
+
+## 2026-10-25 Swift核心测试参数顺序修复续记
+
+- run 40149372016已通过项目生成并进入Swift core测试编译；日志指出 `NextDecisionMemoryTests.swift` 三处测试夹具参数顺序不符合Swift参数标签声明顺序，另外 `.pending` 推断错误由前述实参错误引发。
+- 已调整 `snapshot` 调用中 `headline/limitPrice/validUntil` 的标签顺序，以及 `quote` 调用的 `time/source` 顺序。当前补丁尚未推送；该修复仍未被Swift编译器验证。IPA构建run 40149371966的结果仍待检查。
+- 下一步：diff检查后提交并推送，再取新一轮iOS core tests、simulator tests和IPA构建状态。所有矩阵状态保持原值。
