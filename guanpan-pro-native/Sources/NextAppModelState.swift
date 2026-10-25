@@ -3,28 +3,65 @@ import SwiftUI
 import Combine
 
 @MainActor final class NextAppModel: ObservableObject {
-    @Published var ledger: NextAuditedBook = NextAuditedBook(current: NextBook()) { didSet { reportSave(repository.save(ledger, filename: "real-ledger-v1.json")) } }
-    @Published var preferences = LocalPreferences() { didSet { reportSave(repository.save(preferences, filename: "preferences-v1.json")) } }
-    @Published var quotes: [String: NextCachedQuote] = [:] { didSet { reportSave(repository.save(quotes, filename: "cached-quotes-v1.json")) } }
-    @Published var chartData: [String: NextChartDataset] = [:] { didSet { reportSave(repository.save(chartData, filename: "chart-history-v1.json")) } }
-    @Published var rules: [String: NextInstrumentRules] = [:] { didSet { reportSave(repository.save(rules, filename: "instrument-rules-v1.json")) } }
-    @Published var orderBooks: [String: NextOrderBookSnapshot] = [:] { didSet { reportSave(repository.save(orderBooks, filename: "order-books-v1.json")) } }
+    @Published var ledger: NextAuditedBook = NextAuditedBook(current: NextBook()) { didSet {
+        if ledger != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(ledger, filename: "real-ledger-v1.json"))
+    } }
+    @Published var preferences = LocalPreferences() { didSet {
+        if preferences.goal != oldValue.goal || preferences.marketSourceMode != oldValue.marketSourceMode || preferences.nasBaseURL != oldValue.nasBaseURL {
+            invalidateUnifiedAIAdviceForContextChange()
+        }
+        reportSave(repository.save(preferences, filename: "preferences-v1.json"))
+    } }
+    @Published var quotes: [String: NextCachedQuote] = [:] { didSet {
+        if quotes != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(quotes, filename: "cached-quotes-v1.json"))
+    } }
+    @Published var chartData: [String: NextChartDataset] = [:] { didSet {
+        if chartData != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(chartData, filename: "chart-history-v1.json"))
+    } }
+    @Published var rules: [String: NextInstrumentRules] = [:] { didSet {
+        if rules != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(rules, filename: "instrument-rules-v1.json"))
+    } }
+    @Published var orderBooks: [String: NextOrderBookSnapshot] = [:] { didSet {
+        if orderBooks != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(orderBooks, filename: "order-books-v1.json"))
+    } }
     @Published var decisions: [NextDecision] = [] { didSet { reportSave(repository.save(decisions, filename: "decision-history-v1.json")) } }
-    @Published var nasResearch: [String: NextNASResearch] = [:] { didSet { reportSave(repository.save(nasResearch, filename: "nas-research-v1.json")) } }
+    @Published var nasResearch: [String: NextNASResearch] = [:] { didSet {
+        if nasResearch != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(nasResearch, filename: "nas-research-v1.json"))
+    } }
     @Published var researchStatus: [String: String] = [:] { didSet {  } }
-    @Published var dividendEvents: [String: [NextETFDividendEvent]] = [:] { didSet { reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json")) } }
+    @Published var dividendEvents: [String: [NextETFDividendEvent]] = [:] { didSet {
+        if dividendEvents != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(dividendEvents, filename: "dividend-history-v1.json"))
+    } }
     @Published var patientLimitPlans: [NextPatientLimitPlan] = [] { didSet { reportSave(repository.save(patientLimitPlans, filename: "patient-limit-plans-v1.json")) } }
-    @Published var candidatePlans: [NextCandidatePlan] = [] { didSet { reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json")) } }
+    @Published var candidatePlans: [NextCandidatePlan] = [] { didSet {
+        if candidatePlans != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(candidatePlans, filename: "candidate-plans-v1.json"))
+    } }
     /// 动态投资者画像：只存结论与依据，不存原始成交流水（流水在账本里）。
-    @Published var profile = NextInvestorProfile() { didSet { reportSave(repository.save(profile, filename: "investor-profile-v1.json")) } }
+    @Published var profile = NextInvestorProfile() { didSet {
+        if profile != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(profile, filename: "investor-profile-v1.json"))
+    } }
     /// AI 给过的每一次具体机会：曝光 → 反馈 → 是否真实成交，画像学习只吃这条链。
     @Published var suggestions: [NextSuggestionRecord] = [] { didSet { reportSave(repository.save(suggestions, filename: "ai-suggestions-v1.json")) } }
     /// AI 决策记忆：每条建议「当时」的行情/持仓/NAS/新闻/画像/依据/风险/有效期，加上改判轨迹与复盘。
     @Published var decisionMemory: [NextDecisionRecord] = [] { didSet { reportSave(repository.save(decisionMemory, filename: "decision-memory-v1.json")) } }
     /// 每只持仓的最新新闻标题（只存标题与来源，不存正文）。新闻→持仓→计划的影响在扫描时统一计算。
-    @Published var nasNews: [String: [NextNewsInput]] = [:] { didSet { reportSave(repository.save(nasNews, filename: "nas-news-v1.json")) } }
+    @Published var nasNews: [String: [NextNewsInput]] = [:] { didSet {
+        if nasNews != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+        reportSave(repository.save(nasNews, filename: "nas-news-v1.json"))
+    } }
     @Published var newsStatus: [String: String] = [:] { didSet {  } }
-    @Published var dailyGuidance: NextDailyGuidance? { didSet {  } }
+    @Published var dailyGuidance: NextDailyGuidance? { didSet {
+        if dailyGuidance != oldValue { invalidateUnifiedAIAdviceForContextChange() }
+    } }
     private var dailyGuidanceLedgerFingerprint: String?
     @Published var guidanceStatus = "尚未生成今日指导" { didSet {  } }
     @Published var unifiedAIAdvice: String? { didSet {  } }
@@ -472,6 +509,17 @@ import Combine
         }
     }
     // MARK: - AI 今日指导（真实持仓 → 状态 → 策略 → 具体计划）
+
+    /// Once an online response is visible, any change to a decision input hides it
+    /// immediately. The in-flight response path separately rechecks the full context
+    /// before accepting network output.
+    func invalidateUnifiedAIAdviceForContextChange() {
+        guard unifiedAIAdvice != nil else { return }
+        unifiedAIAdvice = nil
+        if !unifiedAIIsRunning {
+            unifiedAIStatus = "真实账本、行情、交易规则、NAS研究、新闻或投资画像已更新；旧在线AI回答已清除，请重新分析。"
+        }
+    }
 
     /// 生成今日指导：补齐日 K 与分时后，扫描全部真实持仓。
     /// 只读真实账本；不创建模拟账户、不生成虚拟订单、不改变持仓与现金。
