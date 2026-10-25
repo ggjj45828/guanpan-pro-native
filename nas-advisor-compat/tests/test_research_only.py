@@ -457,6 +457,35 @@ class PointInTimeArchiveTests(unittest.TestCase):
         self.assertEqual(report["frozenHypothesis"]["reason"], "截止时点不满足假设条件或数据不足")
         self.assertTrue(report["confirmedAt5m"], "后验真实价格可晚几分钟被采集，不得反向进入冻结输入")
 
+    def test_historical_replays_reject_cutoff_rows_without_first_seen_time(self):
+        leader = [
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": "100"},
+            {"timestamp": "2026-10-23T12:50:00+08:00", "price": "101"},
+        ]
+        asset = [
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": "50"},
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": "49"},
+            {"timestamp": "2026-10-23T12:50:00+08:00", "price": "49"},
+            {"timestamp": "2026-10-23T13:00:00+08:00", "price": "49"},
+            {"timestamp": "2026-10-23T13:05:00+08:00", "price": "49.5"},
+            {"timestamp": "2026-10-23T13:15:00+08:00", "price": "49.6"},
+        ]
+        hypothesis = {"id": "legacy-no-first-seen", "cutoff": "12:50",
+            "conditions": [{"series": "leader", "from": "11:30", "to": "12:50",
+                            "operator": "gte", "threshold": 0.0}],
+            "expectedDirection": 1, "outcomeBaseline": "13:00", "confirmAt": "13:05",
+            "horizons": ["13:15"]}
+        replay = cross_market.replay_hypothesis_day(leader, asset, day="2026-10-23",
+            source="legacy-archive", hypothesis=hypothesis, minimum_samples=1)
+        self.assertFalse(replay["frozenHypothesis"]["dataComplete"])
+        self.assertEqual(replay["frozenHypothesis"]["state"], "no_hypothesis")
+
+        lunch = cross_market.replay_lunch_day(leader, asset, day="2026-10-23",
+            source="legacy-archive", rule={"leaderShockAtLeast": 0.0,
+            "assetMorningAtMost": 0.0, "expectedDirection": 1}, minimum_samples=1)
+        self.assertFalse(lunch["frozenHypothesis"]["dataComplete"])
+        self.assertEqual(lunch["frozenHypothesis"]["state"], "no_hypothesis")
+
     def test_legacy_schema_migrates_first_observed_metadata_conservatively(self):
         import sqlite3
         import shutil
@@ -1065,8 +1094,9 @@ class CrossMarketEvidenceTests(unittest.TestCase):
                              ("13:05", 101, 49.5), ("13:15", 101, 49.6),
                              ("13:30", 101, 49.7), ("14:00", 101, 49.8)):
             stamp = f"2026-10-23T{hhmm}:00+08:00"
-            leader.append({"timestamp": stamp, "price": lp})
-            asset.append({"timestamp": stamp, "price": ap})
+            available = stamp
+            leader.append({"timestamp": stamp, "price": lp, "availableAt": available})
+            asset.append({"timestamp": stamp, "price": ap, "availableAt": available})
         one = cross_market.replay_lunch_day(leader, asset, day="2026-10-23", source="fixture", rule=rule)
         changed_after_cutoff = [dict(r, price=999 if r["timestamp"].startswith("2026-10-23T13:") else r["price"])
                                 for r in asset]
@@ -1080,7 +1110,12 @@ class CrossMarketEvidenceTests(unittest.TestCase):
             if cursor.weekday() < 5:
                 day = cursor.isoformat()
                 def shift(rows):
-                    return [dict(row, timestamp=day + row["timestamp"][10:]) for row in rows]
+                    shifted = []
+                    for row in rows:
+                        stamp = day + row["timestamp"][10:]
+                        available = stamp
+                        shifted.append(dict(row, timestamp=stamp, availableAt=available))
+                    return shifted
                 days.append({"day": day, "leader": shift(leader), "asset": shift(asset)})
             cursor -= timedelta(days=1)
         days.append(days[0])  # Duplicate sessions must not inflate evidence.
@@ -1111,13 +1146,18 @@ class CrossMarketEvidenceTests(unittest.TestCase):
             "horizons": ["13:15", "13:30"],
         }
         leader = [
-            {"timestamp": "2026-10-23T09:00:00+09:00", "price": 100},
-            {"timestamp": "2026-10-23T11:30:00+09:00", "price": 101},
+            {"timestamp": "2026-10-23T09:00:00+09:00", "price": 100,
+             "availableAt": "2026-10-23T09:00:30+09:00"},
+            {"timestamp": "2026-10-23T11:30:00+09:00", "price": 101,
+             "availableAt": "2026-10-23T11:30:30+09:00"},
         ]
         asset = [
-            {"timestamp": "2026-10-23T09:30:00+08:00", "price": 50},
-            {"timestamp": "2026-10-23T11:30:00+08:00", "price": 49.7},
-            {"timestamp": "2026-10-23T12:50:00+08:00", "price": 49.8},
+            {"timestamp": "2026-10-23T09:30:00+08:00", "price": 50,
+             "availableAt": "2026-10-23T09:30:30+08:00"},
+            {"timestamp": "2026-10-23T11:30:00+08:00", "price": 49.7,
+             "availableAt": "2026-10-23T11:30:30+08:00"},
+            {"timestamp": "2026-10-23T12:50:00+08:00", "price": 49.8,
+             "availableAt": "2026-10-23T12:50:30+08:00"},
             {"timestamp": "2026-10-23T13:00:00+08:00", "price": 49.8},
             {"timestamp": "2026-10-23T13:05:00+08:00", "price": 49.9},
             {"timestamp": "2026-10-23T13:15:00+08:00", "price": 50.0},
@@ -1138,9 +1178,12 @@ class CrossMarketEvidenceTests(unittest.TestCase):
             "conditions": [{"series": "leader", "from": "11:30", "to": "12:50",
                             "operator": "gte", "threshold": 0.0}],
             "expectedDirection": 1, "outcomeBaseline": "13:00", "confirmAt": "13:05"}
-        leader = [{"timestamp": "2026-10-23T11:30:00+08:00", "price": 100},
-                  {"timestamp": "2026-10-23T12:50:00+08:00", "price": 101}]
-        asset = [{"timestamp": "2026-10-23T11:30:00+08:00", "price": 50},
+        leader = [{"timestamp": "2026-10-23T11:30:00+08:00", "price": 100,
+                   "availableAt": "2026-10-23T11:30:30+08:00"},
+                  {"timestamp": "2026-10-23T12:50:00+08:00", "price": 101,
+                   "availableAt": "2026-10-23T12:50:30+08:00"}]
+        asset = [{"timestamp": "2026-10-23T11:30:00+08:00", "price": 50,
+                  "availableAt": "2026-10-23T11:30:30+08:00"},
                  {"timestamp": "2026-10-23T12:59:00+08:00", "price": 40}]
         report = cross_market.replay_hypothesis_day(leader, asset, day="2026-10-23",
                                                      source="fixture", hypothesis=hypothesis)

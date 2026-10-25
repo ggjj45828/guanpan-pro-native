@@ -88,7 +88,7 @@ def _timestamp(value):
         return None
 
 
-def _series(rows, as_of, *, require_available=True):
+def _series(rows, as_of, *, require_available=True, require_availability_timestamp=False):
     """Normalize positive, timezone-aware points and enforce point-in-time data."""
     result = {}
     if not isinstance(rows, list):
@@ -109,6 +109,7 @@ def _series(rows, as_of, *, require_available=True):
         except (TypeError, ValueError, OverflowError):
             continue
         if (stamp is None or stamp > as_of or
+                (require_available and require_availability_timestamp and availability is None) or
                 (require_available and available_at is not None and
                  (availability is None or availability > as_of)) or
                 not (price > 0 and price < float("inf"))):
@@ -483,12 +484,13 @@ def detect_live_divergence(leader_rows, asset_rows, *, as_of, window_minutes=15,
             "leaderDirection": leader_direction, "assetDirection": asset_direction}
 
 
-def lunch_shock(rows, *, day, as_of):
+def lunch_shock(rows, *, day, as_of, require_availability_timestamp=False):
     """Compute 11:30→12:50 price shock only from observed, same-day points."""
     as_of = _timestamp(as_of) if isinstance(as_of, str) else as_of
     if as_of is None or as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
-    points = _series(rows, as_of.astimezone(timezone.utc))
+    points = _series(rows, as_of.astimezone(timezone.utc),
+                     require_availability_timestamp=require_availability_timestamp)
     start = _timestamp(day + "T11:30:00+08:00")
     end = _timestamp(day + "T12:50:00+08:00")
     p0, p1 = _nearest(points, start), _nearest(points, end)
@@ -701,8 +703,8 @@ def replay_hypothesis_day(leader_rows, asset_rows, *, day, source, hypothesis,
     horizons = [_session_time(day, clock, asset_zone) for clock in horizon_clocks]
     if any(item <= baseline for item in horizons):
         raise ValueError("outcome horizons must follow the baseline")
-    leader = _series(leader_rows, cutoff)
-    asset_pre = _series(asset_rows, cutoff)
+    leader = _series(leader_rows, cutoff, require_availability_timestamp=True)
+    asset_pre = _series(asset_rows, cutoff, require_availability_timestamp=True)
     evaluated, complete = [], True
     for condition in conditions:
         if not isinstance(condition, dict) or condition.get("series") not in ("leader", "asset"):
@@ -820,9 +822,10 @@ def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
     if not (-1 <= required_shock <= 1 and -1 <= max_morning <= 1 and direction_value in (-1, 1)
             and isinstance(minimum_samples, int) and minimum_samples > 0):
         raise ValueError("replay rule bounds are invalid")
-    leader = _series(leader_rows, cutoff)
-    asset_pre = _series(asset_rows, cutoff)
-    leader_shock = lunch_shock(leader_rows, day=day, as_of=cutoff.isoformat())
+    leader = _series(leader_rows, cutoff, require_availability_timestamp=True)
+    asset_pre = _series(asset_rows, cutoff, require_availability_timestamp=True)
+    leader_shock = lunch_shock(leader_rows, day=day, as_of=cutoff.isoformat(),
+                               require_availability_timestamp=True)
     morning_start = _timestamp(day + "T09:30:00+08:00")
     morning_end = _timestamp(day + "T11:30:00+08:00")
     morning_open = _nearest(asset_pre, morning_start)
