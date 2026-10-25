@@ -19,6 +19,16 @@ from domain import InvalidData, NextDatabase
 
 
 class LiveDivergenceTests(unittest.TestCase):
+    def test_series_rejects_boolean_prices_as_malformed_market_data(self):
+        as_of = datetime.fromisoformat("2026-10-23T10:00:00+08:00")
+        rows = [
+            {"timestamp": "2026-10-23T09:59:00+08:00", "price": True},
+            {"timestamp": "2026-10-23T10:00:00+08:00", "price": "1.25"},
+        ]
+        series = cross_market._series(rows, as_of.astimezone(timezone.utc))
+        self.assertEqual(len(series), 1)
+        self.assertEqual(next(iter(series.values())), 1.25)
+
     def test_divergence_is_time_aligned_fresh_and_observation_only(self):
         as_of = datetime.fromisoformat("2026-10-23T09:45:00+08:00")
         leader = [

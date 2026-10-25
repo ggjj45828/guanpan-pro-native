@@ -99,8 +99,13 @@ def _series(rows, as_of, *, require_available=True):
         stamp = _timestamp(row.get("timestamp"))
         available_at = row.get("availableAt")
         availability = _timestamp(available_at) if available_at is not None else None
+        raw_price = row.get("price")
+        # Python's bool is an int subclass: float(True) == 1.0. A JSON boolean
+        # is malformed market data, never a valid one-yuan observation.
+        if isinstance(raw_price, bool):
+            continue
         try:
-            price = float(row.get("price"))
+            price = float(raw_price)
         except (TypeError, ValueError, OverflowError):
             continue
         if (stamp is None or stamp > as_of or
