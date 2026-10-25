@@ -47,7 +47,12 @@ def market_session_open(market_id, now=None):
         raise ValueError("market session time must be timezone-aware")
     if market_id in CROSS_MARKET_TENCENT_SYMBOLS:
         local = now.astimezone(SHANGHAI)
-        if local.year == 2026 and local.date().isoformat() in MAINLAND_CLOSURES_2026:
+        # Do not spend provider requests on a future year until its official
+        # mainland schedule has been added. Mobile price plans use the same
+        # fail-closed policy when the annual calendar is unknown.
+        if local.year != 2026:
+            return False
+        if local.date().isoformat() in MAINLAND_CLOSURES_2026:
             return False
         minute = local.hour * 60 + local.minute
         return local.weekday() < 5 and ((570 <= minute <= 690) or (780 <= minute <= 900))

@@ -618,6 +618,7 @@ class CrossMarketEvidenceTests(unittest.TestCase):
             ("US_SPX", "2026-01-03T10:00:00-05:00", False),
             ("CN_SSE", "2026-10-01T10:00:00+08:00", False),
             ("CN_SSE", "2026-10-08T10:00:00+08:00", True),
+            ("CN_SSE", "2027-01-04T10:00:00+08:00", False),
         ]
         for market_id, stamp, expected in cases:
             with self.subTest(market_id=market_id, stamp=stamp):
@@ -645,6 +646,18 @@ class CrossMarketEvidenceTests(unittest.TestCase):
         self.assertEqual(result["failures"], ["KR_KOSPI:OSError"])
         self.assertEqual([row[0] for row in database.saved], ["JP_N225"])
         self.assertEqual(database.saved[0][3], "2026-10-23T00:00:00+00:00")
+
+    def test_unpublished_mainland_calendar_stops_nas_market_requests(self):
+        class Database:
+            def put_cross_market_minute(self, *args): raise AssertionError("unknown calendar must not archive")
+
+        calls = []
+        result = workers.collect_cross_market_once(Database(),
+            now=datetime.fromisoformat("2027-01-04T02:00:00+00:00"),
+            series_ids=("CN_SSE",), fetcher=lambda code: calls.append(code))
+        self.assertEqual(result["state"], "idle")
+        self.assertEqual(result["active"], [])
+        self.assertEqual(calls, [], "没有新年度官方日历时不应为可能休市的A股指数请求上游")
 
     def test_repeated_stale_provider_pauses_only_current_market_session(self):
         class Database:
