@@ -204,6 +204,8 @@ struct NextBook: Codable, Equatable {
               Set(positions.map(\.code)).count == positions.count,
               positions.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.units >= 0 && !$0.bookCost.isNaN && $0.bookCost >= 0 }),
               fills.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && ($0.side == "buy" || $0.side == "sell") && $0.units > 0 && $0.price > 0 && !$0.price.isNaN && $0.fee >= 0 && !$0.fee.isNaN && !$0.realized.isNaN }),
+              Set(fills.map(\.id)).count == fills.count,
+              fills.allSatisfy({ $0.date.timeIntervalSince1970.isFinite }),
               history.allSatisfy({ $0.total >= 0 && !$0.total.isNaN && !$0.externalFlow.isNaN }),
               cashMovements.allSatisfy({ !$0.amount.isNaN && !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             throw NextError.invalid("账本校验失败：现金、持仓或版本无效")

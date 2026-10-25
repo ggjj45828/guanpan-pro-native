@@ -437,3 +437,16 @@
 - run 40149372016已通过项目生成并进入Swift core测试编译；日志指出 `NextDecisionMemoryTests.swift` 三处测试夹具参数顺序不符合Swift参数标签声明顺序，另外 `.pending` 推断错误由前述实参错误引发。
 - 已调整 `snapshot` 调用中 `headline/limitPrice/validUntil` 的标签顺序，以及 `quote` 调用的 `time/source` 顺序。当前补丁尚未推送；该修复仍未被Swift编译器验证。IPA构建run 40149371966的结果仍待检查。
 - 下一步：diff检查后提交并推送，再取新一轮iOS core tests、simulator tests和IPA构建状态。所有矩阵状态保持原值。
+
+## 2026-10-25 真实流水唯一性校验续记
+
+- 静态审计发现真实账本验证只检查流水字段形态，没有拒绝重复流水UUID和非有限成交时间。重复ID会使幂等恢复与按流水归因产生歧义。
+- `NextBook.validate()`现在拒绝重复fill ID及NaN/无穷日期；新增Swift回归覆盖正常流水、重复UUID及无穷时间。Master Acceptance Matrix第4项补充了实现/测试状态但仍为🟠，因为Actions尚未验证、NAS/iPhone未联调。
+- 下一步：当前新CI先验证参数顺序修复；本次唯一性补丁合并到下一批验证提交，随后一起跑XCTest与iOS构建。
+
+## 2026-10-25 Swift core测试失败修正续记
+
+- `e6c6418` 的macOS Swift core XCTest已执行135项，3项失败。第一项是“收盘后不保存”场景沿用6小时前生成的指导，先被过期指导门槛拒绝，测试没真正到达交易时段判断；现将指导生成时间、行情时间与被测收盘时间统一到同一时间点，隔离验证闭市门槛。
+- 两项跨市场改判测试失败，根因是摘要排序后只显示前两条，`validation=`状态被asOf/资格字段挤掉。现让摘要优先保留validation、交易资格、liveDivergence，再按稳定顺序填充，最多展示3条。
+- 另增加真实账本拒绝重复流水UUID与无穷成交时间校验及回归测试（矩阵第4项保持🟠）。这些改动尚未经过Actions复验。
+- 下一步：提交并推送本批测试/账本修复，检查Swift core suite、simulator suite和IPA workflow的新结果；继续保留所有矩阵Partial。

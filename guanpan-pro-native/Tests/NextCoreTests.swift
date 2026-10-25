@@ -229,9 +229,10 @@ final class NextCoreTests: XCTestCase {
             guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
             quote: self.quote(time: now.addingTimeInterval(-121)), now: now)?
             .contains("过期") == true, "保存时必须复核当前行情，而不是只信任生成时的数据")
-        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+        let afterClose = now.addingTimeInterval(6 * 3600)
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: afterClose,
             guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
-            quote: self.quote(time: now.addingTimeInterval(6 * 3600)), now: now.addingTimeInterval(6 * 3600))?
+            quote: self.quote(time: afterClose), now: afterClose)?
             .contains("交易时段") == true, "收盘后不得保存为当日可执行计划")
         XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable,
             guidanceGeneratedAt: now.addingTimeInterval(-121), guidanceLedgerFingerprint: "account-v1",
@@ -310,6 +311,14 @@ final class NextCoreTests: XCTestCase {
         let validFill = NextFill(date: now, code: "159941", side: "buy", units: 100,
                                  price: 1.2, fee: 0.1, realized: 0)
         XCTAssertNoThrow(try NextBook(fills: [validFill]).validate())
+        var duplicateFill = validFill
+        duplicateFill.code = "563020"
+        XCTAssertThrowsError(try NextBook(fills: [validFill, duplicateFill]).validate(),
+                             "同一流水ID出现两次会破坏幂等恢复，账本必须拒绝")
+        let nonFiniteDate = NextFill(date: Date(timeIntervalSince1970: .infinity), code: "159941",
+                                     side: "buy", units: 100, price: 1.2, fee: 0.1, realized: 0)
+        XCTAssertThrowsError(try NextBook(fills: [nonFiniteDate]).validate(),
+                             "非法时间不能参与持仓与成交恢复")
     }
     func testDividendAnalyticsUsesSuppliedRecordsWithoutBundledHistory() {
         let events = NextDividendAnalytics.merged([

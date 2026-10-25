@@ -179,6 +179,21 @@ enum NextDecisionDiff {
     /// VWAP 偏离变动超过这个百分点才算「位置变了」。
     static let vwapDeviationThreshold = 0.5
 
+    /// Preserve the fields that determine whether cross-market evidence is
+    /// research-only or eligible to influence a risk guard when the summary is bounded.
+    private static func crossMarketSummary(_ values: Set<String>) -> String {
+        func priority(_ value: String) -> Int {
+            if value.hasPrefix("validation=") { return 0 }
+            if value.hasPrefix("eligibleForTradingSignal=") { return 1 }
+            if value.hasPrefix("liveDivergence=") { return 2 }
+            return 3
+        }
+        return values.sorted {
+            let left = priority($0), right = priority($1)
+            return left == right ? $0 < $1 : left < right
+        }.prefix(3).joined(separator: "；")
+    }
+
     /// 逐项比对两个快照，返回人类可读的变化说明。空数组表示「什么都没变」。
     static func compare(old: NextDecisionSnapshot, new: NextDecisionSnapshot) -> [String] {
         var changes: [String] = []
@@ -289,10 +304,10 @@ enum NextDecisionDiff {
         let addedCrossMarket = newCrossMarket.subtracting(oldCrossMarket).sorted()
         let removedCrossMarket = oldCrossMarket.subtracting(newCrossMarket).sorted()
         if !addedCrossMarket.isEmpty {
-            changes.append("跨市场证据新增：\(addedCrossMarket.prefix(2).joined(separator: "；"))")
+            changes.append("跨市场证据新增：\(crossMarketSummary(Set(addedCrossMarket)))")
         }
         if !removedCrossMarket.isEmpty {
-            changes.append("跨市场证据撤回或更新：\(removedCrossMarket.prefix(2).joined(separator: "；"))")
+            changes.append("跨市场证据撤回或更新：\(crossMarketSummary(Set(removedCrossMarket)))")
         }
         return changes
     }
