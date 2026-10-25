@@ -1145,6 +1145,10 @@ import Combine
     /// 用户明确改一项：立刻变成 Explicit Preference 并锁定，学习引擎不再覆盖。
     func setProfileTrait(_ id: NextProfileTraitID, value: String, label: String, detail: String,
                          numeric: Double? = nil, lock: Bool = true, now: Date = Date()) {
+        if let numeric, let error = NextProfileNumericInput.validationError(for: id, value: numeric) {
+            notice = error
+            return
+        }
         var trait = profile.trait(id) ?? NextProfileTrait(id: id, value: value, label: label, detail: detail,
                                                           confidence: 1, sampleCount: 1, windowDays: 0,
                                                           source: .explicit, locked: true, basis: [],

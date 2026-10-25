@@ -565,3 +565,29 @@
 - `e22f58b` Validate `40159190264`成功、IPA `40159190265`成功；当前新增候选计划代码和测试包含提交`8f205ea`、`3f1c933`、`0e1a66a`、`dfb12e2`。普通push DNS失败，授权提升网络后的push连接被重置；`ls-remote`也连接重置，尚不能确认`8f205ea`至当前HEAD `dfb12e2`到达远端，也没有该提交的Actions结果。不要把e22结果算到候选计划改动。
 - 当前验证：NAS研究套件58/58通过；候选计划Swift/XCTest尚未运行；本机没有Swift/Xcode。无新增交易模拟/虚拟账户，未改变统计标准和数据门槛。
 - 下一步：检查并提交当前验收文档差异（代码HEAD `dfb12e2`），等待网络恢复后快进推送`validation/acceptance-20261024`触发完整Validate和IPA；同时继续Master Acceptance Matrix中可本地推进的Partial，不因外部测试等待而停工。
+
+## 2026-10-25 推送恢复与候选计划CI
+
+- 最新代码HEAD `9c66bbf`（包含`8f205ea`、`3f1c933`、`0e1a66a`、`dfb12e2`及候选计划持久化校验）已成功快进推送到 `validation/acceptance-20261024`。此前DNS失败后，授权的提升网络推送成功。
+- GitHub Actions已启动：Validate run `40160691712`（Validate #109）与IPA run `40160691692`（Build IPA #180）；刚检查时两者均在运行。e22f58b的前一轮Validate `40159190264`与IPA `40159190265`已成功，但不覆盖9c66bbf候选计划变更。
+- 当前单元回归新增覆盖：候选计划文件语义无效/重复ID时隔离并保留原文件；不完整成交回填、异常未来状态时戳拒绝；有效计划未来expiresAt超过5分钟仍可校验（不误套账本时间容差）。
+- 本轮可执行NAS研究套件58/58通过；本地无Swift/Xcode，新增Swift测试以run `40160691712`为准。矩阵计数仍✅1、🟡17、🟠123、⚠️4，不因代码或IPA构建升级状态。
+- 下一步：等待两项Actions终态；Validate失败就按可见错误修复。期间继续静态审核决策链与本地可跑NAS测试，不等待CI而停止。网络诊断当前DNS解析被拒、git credential helper配置为Git Credential Manager但没有读取/暴露凭据；本轮提升网络的push成功，远端认证已由成功推送实际证明可用。
+
+## 2026-10-25 本机NAS全量HTTP回归解除
+
+- 通过允许本机回环接口的测试环境完成此前被普通沙箱阻止的测试：旧NAS服务完整84/84通过；NAS同步服务完整58/58通过；NAS研究兼容服务此前已58/58通过。HTTP项现在是实测通过，不再标成环境阻塞。
+- 独立运行旧服务时必须将工作目录设为 `server/`；从仓库根目录运行会产生模块导入失败，这属于测试启动路径错误，已用正确工作目录重跑并全绿。
+- NAS真实容器部署/升级、真实长期档案和iPhone/NAS联调仍未验证，因此矩阵相关Requirement保留Partial/External；不据此升级业务链状态。
+- B分支代码 `9c66bbf` 已推送。Validate `40160691712`现已终态失败：Portable Swift core tests步骤通过，`xcodebuild test`步骤exit code 65；公开注释只有泛化exit code，无具体XCTest错误，Actions日志接口要求GitHub认证，当前环境没有可用的CLI会话。IPA run `40160691692`终态仍未确认。不能将前一提交`e22f58b`通过结果视为覆盖`9c66bbf`。
+- 本轮继续修复画像数值输入：增加共享有限数/范围/字段类型校验；保护UI与模型层的gridTiers转Int前检查，避免NaN、Infinity、越界/分数值导致崩溃或污染阈值。新增Core及AppModel回归用例，尚未运行。
+- 本机无Swift/Xcode；新增画像用例和候选计划改动等待macOS XCTest。NAS服务本地全量测试仍为旧服务84/84、同步58/58、研究兼容58/58；Python语法、IPA校验结果保留此前记录。未降低统计门槛、未增加模拟账户或自动交易。
+- 下一步：检查Validate 40160691712失败的xcodebuild测试是否可通过登录态/Actions新结果获得失败用例详情；本轮画像防崩补丁连同矩阵提交并推送已授权的B验证分支，触发完整Validate/IPA；按真实CI结果修复，不升级矩阵状态。总计仍✅1、🟡17、🟠123、⚠️4。
+
+## 2026-10-25 画像数值输入防崩续记
+
+- 通过GitHub Actions页面确认：提交`9c66bbf`的Validate `40160691712`失败于“Run application compile and Apple runtime tests”（exit 65），portable Swift Core tests通过；公开注释没有具体XCTest名称。Actions详细日志与工件下载返回需认证，当前浏览器显示未登录，未尝试获取或暴露凭据。该提交的IPA `40160691692`成功，unsigned 7.21 MB；它不证明XCTest通过。
+- 新增`NextProfileNumericInput.validationError`共享校验：只允许数值型画像字段；拒绝NaN/Infinity；价差限定0–100%；最低净收益限定0–1,000,000,000元；动态网格最大档数偏好限定2–6整数。UI展示和`NextAppModel.setProfileTrait`写入前都验证，确保Int转换前拒绝危险值，实际网格仍由策略动态决定档数。
+- 新增Core XCTest覆盖非数值字段、非有限值、越界、网格分数档和合法上限；新增AppModel XCTest验证拒绝时画像/策略阈值不变、合法值能保存。本机无Swift/Xcode，这些新增测试尚未执行。`git diff --check`通过。
+- 矩阵第32项Implementation已记录数值输入防护，状态仍🟠；总计仍✅1、🟡17、🟠123、⚠️4。相关项不因新增源码/测试自动升级。
+- 下一步：检查代码和用例后提交当前画像修复及验收记录，推送至已授权的`validation/acceptance-20261024`，触发完整Validate与IPA；取得新run结论后继续修复CI/XCTest失败并从矩阵挑下一项可推进Partial。产品红线不变：B独立、真实账户唯一、无模拟交易、无自动下单、不放松统计/未来数据约束。

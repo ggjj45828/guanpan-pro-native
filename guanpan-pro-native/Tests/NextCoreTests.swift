@@ -3,6 +3,22 @@ import XCTest
 
 final class NextCoreTests: XCTestCase {
     let now = Date(timeIntervalSince1970: 1792375200)
+    func testProfileNumericInputRejectsNonFiniteAndUnsafeValues() {
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .style, value: 1),
+                        "非数值画像字段不得通过数字API写入")
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .minSpread, value: .nan))
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .minSpread, value: .infinity))
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .minSpread, value: -0.01))
+        XCTAssertNil(NextProfileNumericInput.validationError(for: .minSpread, value: 100))
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .minNetGain, value: 1_000_000_001))
+        XCTAssertNil(NextProfileNumericInput.validationError(for: .minNetGain, value: 500))
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .gridTiers, value: .infinity))
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .gridTiers, value: 2.5))
+        XCTAssertNotNil(NextProfileNumericInput.validationError(for: .gridTiers, value: 7))
+        XCTAssertNil(NextProfileNumericInput.validationError(for: .gridTiers, value: 6),
+                     "画像字段是用户允许的上限，网格规划器仍会按数据动态决定实际档数")
+    }
+
     func quote(time: Date, price: Decimal = 1.4) -> NextQuote {
         NextQuote(code: "159941", name: "纳指ETF", price: price, previousClose: 1.4, time: time, source: "test")
     }

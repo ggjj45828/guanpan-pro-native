@@ -2,6 +2,26 @@ import XCTest
 @testable import GuanpanProNative
 
 final class NextLedgerPersistenceTests: XCTestCase {
+    func testInvalidProfileNumericInputDoesNotMutateExplicitPreferenceOrGridThreshold() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-profile-numeric-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let model = NextAppModel(repository: NextLocalRepository(directoryOverride: directory))
+            let originalTiers = model.profile.thresholds.gridMaxTiers
+            model.setProfileTrait(.gridTiers, value: "7", label: "非法档数", detail: "不可保存",
+                                  numeric: .infinity)
+            XCTAssertEqual(model.profile.thresholds.gridMaxTiers, originalTiers)
+            XCTAssertNil(model.profile.trait(.gridTiers), "拒绝输入时不得创建或覆盖显式画像规则")
+            XCTAssertTrue(model.notice?.contains("有限") == true)
+
+            model.setProfileTrait(.gridTiers, value: "3", label: "最多三档", detail: "用户上限",
+                                  numeric: 3)
+            XCTAssertEqual(model.profile.thresholds.gridMaxTiers, 3)
+            XCTAssertEqual(model.profile.trait(.gridTiers)?.numeric, 3)
+        }
+    }
+
     func testRepositoryRejectsSemanticallyInvalidLedgerAndPreservesOriginalFile() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory

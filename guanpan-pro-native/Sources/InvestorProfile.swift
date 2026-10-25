@@ -217,6 +217,29 @@ struct NextProfileThresholds: Codable, Equatable {
     var tTradeFrequencyCap: Int = 4
 }
 
+enum NextProfileNumericInput {
+    /// Keep text-field input finite and inside the ranges the deterministic
+    /// strategy engine can represent safely. Grid plans themselves are dynamic
+    /// and currently produce at most six tiers.
+    static func validationError(for id: NextProfileTraitID, value: Double) -> String? {
+        guard NextProfileTraitID.isNumeric(id) else { return "该画像项目不接受数值输入" }
+        guard value.isFinite else { return "请输入有限的数字" }
+        switch id {
+        case .minSpread:
+            guard (0...100).contains(value) else { return "最低价差需在 0–100% 之间" }
+        case .minNetGain:
+            guard (0...1_000_000_000).contains(value) else { return "最低净收益需在 0–1,000,000,000 元之间" }
+        case .gridTiers:
+            guard value.rounded() == value, (2...6).contains(value) else {
+                return "网格上限需为 2–6 档的整数；策略按行情动态决定实际档数"
+            }
+        default:
+            break
+        }
+        return nil
+    }
+}
+
 /// 长期核心仓 / 行业机动仓。同一套画像不能套到所有标的：
 /// 核心仓允许波动、不因技术信号轻易卖；机动仓才可以做 T、网格、主动降本。
 struct NextInstrumentRole: Codable, Equatable {

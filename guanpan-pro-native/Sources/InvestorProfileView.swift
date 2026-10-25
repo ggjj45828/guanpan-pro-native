@@ -423,6 +423,10 @@ private struct ProfileTraitEditSheet: View {
             guard let value = Double(numericText.replacingOccurrences(of: ",", with: ".")) else {
                 errorText = "请输入有效数字"; return
             }
+            if let validationError = NextProfileNumericInput.validationError(for: traitID, value: value) {
+                errorText = validationError
+                return
+            }
             let detail: String
             switch traitID {
             case .minSpread: detail = "你设定的最低做 T 价差：低于 \(String(format: "%.2f", value))% 的机会不再主动推荐"
