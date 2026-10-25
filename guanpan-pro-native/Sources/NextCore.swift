@@ -1131,6 +1131,13 @@ struct NextPriceAlertRule: Codable, Identifiable, Equatable {
         }
     }
 
+    /// Alerts only evaluate verified exchange-time quotes that pass the same
+    /// anomaly guard used by candidate plans. Unknown data must not fire alerts.
+    func canEvaluate(_ quote: NextQuote, at now: Date) -> Bool {
+        quote.code == code && quote.isFreshForPricePlan(at: now) &&
+            NextPortfolioCalculator.anomalyReason(quote: quote, storedCostPerUnit: 0) == nil
+    }
+
     func validate() throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), !name.isEmpty, !price.isNaN else {
             throw NextError.invalid("提醒的代码、名称或阈值无效")

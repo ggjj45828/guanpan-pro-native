@@ -1322,8 +1322,10 @@ import Combine
     private func evaluatePriceAlerts(_ values: [NextQuote]) {
         var rules = preferences.notifications.priceRules
         var triggered: [(NextPriceAlertRule, NextQuote)] = []
-        for quote in values where quote.isFresh(at: Date()) {
+        let now = Date()
+        for quote in values {
             for index in rules.indices where rules[index].enabled && rules[index].code == quote.code {
+                guard rules[index].canEvaluate(quote, at: now) else { continue }
                 guard let current = rules[index].value(for: quote) else { continue }
                 let match = rules[index].direction == .atOrAbove ? current >= rules[index].price : current <= rules[index].price
                 if match && !rules[index].isInsideTrigger { triggered.append((rules[index], quote)) }

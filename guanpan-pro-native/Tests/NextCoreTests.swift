@@ -706,6 +706,14 @@ final class NextCoreTests: XCTestCase {
         let valid = NextPriceAlertRule(code: "159941", name: "纳指ETF", price: 1.2, direction: .atOrBelow)
         XCTAssertNoThrow(try valid.validate())
         XCTAssertThrowsError(try NextPriceAlertRule(code: "bad", name: "", price: 0, direction: .atOrAbove).validate())
+        XCTAssertTrue(valid.canEvaluate(quote(time: now, price: 1.2), at: now))
+        XCTAssertFalse(valid.canEvaluate(NextQuote(code: "159941", name: "纳指ETF", price: 1.2,
+            previousClose: 1.2, time: now, source: "fixture", timeQuality: "receipt_only"), at: now),
+            "仅有收包时间的数据不能触发提醒")
+        XCTAssertFalse(valid.canEvaluate(quote(time: now, price: Decimal(string: "0.89")!), at: now),
+            "相对昨收异常的报价不能触发提醒")
+        XCTAssertFalse(valid.canEvaluate(quote(time: now.addingTimeInterval(1), price: 1.2), at: now),
+            "未来时间戳不能触发提醒")
     }
     func testNavigationRestoresSecurityFiltersChartAndCrosshair() throws {
         var nav = NextNavigationState(); nav.listFilters["market"] = "ETF"; nav.scrollAnchors["watchlist"] = "159941"
