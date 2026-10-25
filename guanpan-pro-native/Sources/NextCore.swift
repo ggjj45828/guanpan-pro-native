@@ -1156,6 +1156,8 @@ struct NextQuietHours: Codable, Equatable {
     var endMinute = 8 * 60
     func isQuiet(_ date: Date, calendar: Calendar = .current) -> Bool {
         guard enabled else { return false }
+        // Corrupt or out-of-range persisted values must fail closed (stay quiet).
+        guard (0..<24 * 60).contains(startMinute), (0..<24 * 60).contains(endMinute) else { return true }
         let parts = calendar.dateComponents([.hour, .minute], from: date)
         let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
         if startMinute == endMinute { return true }
@@ -1177,7 +1179,8 @@ struct NextNotificationCenter: Codable, Equatable {
         dedupeMinutes = try values.decodeIfPresent(Int.self, forKey: .dedupeMinutes) ?? 30
     }
     mutating func append(_ alert: NextAlert, now: Date) -> Bool {
-        let duplicate = alerts.contains { $0.fingerprint == alert.fingerprint && now.timeIntervalSince($0.createdAt) >= 0 && now.timeIntervalSince($0.createdAt) < Double(max(0, dedupeMinutes) * 60) }
+        let dedupeWindow = Double(max(0, dedupeMinutes)) * 60
+        let duplicate = alerts.contains { $0.fingerprint == alert.fingerprint && now.timeIntervalSince($0.createdAt) >= 0 && now.timeIntervalSince($0.createdAt) < dedupeWindow }
         guard !duplicate else { return false }
         alerts.insert(alert, at: 0)
         return true
