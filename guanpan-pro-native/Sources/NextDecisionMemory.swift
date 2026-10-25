@@ -346,8 +346,9 @@ enum NextDecisionMemory {
             .filter { record in
                 guard record.code == plan.code, record.outcome == .pending,
                       calendar.isDate(record.createdAt, inSameDayAs: plan.createdAt) else { return false }
-                if isGrid { return record.snapshot.strategy.contains("网格") }
-                return record.snapshot.strategy.localizedCaseInsensitiveContains("t") || record.snapshot.strategy.contains("做T")
+                if isGrid { return record.currentSnapshot.strategy.contains("网格") }
+                return record.currentSnapshot.strategy.localizedCaseInsensitiveContains("t")
+                    || record.currentSnapshot.strategy.contains("做T")
             }
             .max(by: { $0.createdAt < $1.createdAt })?.id
     }
@@ -364,6 +365,17 @@ enum NextDecisionMemory {
         record.review.filledUnits = units
         record.review.reviewedAt = nil
         record.review.note = "券商真实成交已由用户确认；后续行情到达后再复盘"
+        return true
+    }
+
+    /// Explicitly dismiss a pending decision without changing any account fact.
+    @discardableResult
+    static func markSkipped(_ record: inout NextDecisionRecord, at time: Date) -> Bool {
+        guard record.outcome == .pending, time.timeIntervalSince1970.isFinite,
+              time >= record.createdAt else { return false }
+        record.outcome = .skipped
+        record.outcomeAt = time
+        record.review.note = "我放弃了这次计划，没有成交"
         return true
     }
 
@@ -531,14 +543,15 @@ enum NextDecisionMemory {
         return records.map { record in
             var copy = record
             guard copy.outcome == .pending else { return copy }
-            if copy.createdAt < now, copy.snapshot.validUntil == nil, copy.snapshot.limitPrice == nil,
+            let snapshot = copy.currentSnapshot
+            if copy.createdAt < now, snapshot.validUntil == nil, snapshot.limitPrice == nil,
                !calendar.isDate(copy.createdAt, inSameDayAs: now) {
                 copy.outcome = .expired
                 copy.outcomeAt = now
-                copy.review.note = "上一上海交易日的持有/不交易判断已过期；未记录真实成交"
+                copy.review.note = "上一日期的持有/不交易判断已过期；未记录真实成交"
                 return copy
             }
-            if let validUntil = copy.snapshot.validUntil, validUntil < now {
+            if let validUntil = snapshot.validUntil, validUntil < now {
                 copy.outcome = .expired
                 copy.outcomeAt = now
                 copy.review.note = "计划有效期已过（\(NextDecisionDiff.dateText(validUntil))），未记录到真实成交"
@@ -547,9 +560,9 @@ enum NextDecisionMemory {
             // 失效条件里写明「突破区间」的，用当时给的限价做一次事实核对。
             // A stale/cache-only quote cannot invalidate a plan: do not turn old data into a new event.
             if let quote = quoteFor(copy.code), quote.isFreshForPricePlan(at: now),
-               let limitText = copy.snapshot.limitPrice,
+               let limitText = snapshot.limitPrice,
                let limit = Decimal(string: limitText), limit > 0,
-               copy.snapshot.strategy.contains("做T") {
+               snapshot.strategy.contains("做T") {
                 let gap = NextNum.double((quote.price - limit) / limit * 100)
                 if abs(gap) > 5 {
                     copy.outcome = .invalidated
@@ -590,7 +603,7 @@ enum NextDecisionMemory {
     /// 待处理条目的「现在还能不能用」：过期 / 条件失效 / 仍有效。
     static func freshness(_ record: NextDecisionRecord, at now: Date) -> String {
         guard record.outcome == .pending else { return record.outcome.rawValue }
-        guard let validUntil = record.snapshot.validUntil else { return "待处理（无有效期）" }
+        guard let validUntil = record.currentSnapshot.validUntil else { return "待处理（无有效期）" }
         if validUntil < now { return "已过期（有效期 \(NextDecisionDiff.dateText(validUntil))）" }
         let minutes = Int(validUntil.timeIntervalSince(now) / 60)
         return "待处理（还有 \(max(1, minutes)) 分钟有效期）"

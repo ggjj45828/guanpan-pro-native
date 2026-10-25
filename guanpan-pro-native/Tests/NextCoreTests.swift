@@ -158,13 +158,17 @@ final class NextCoreTests: XCTestCase {
             dailyBarCount: 120, minuteSampleCount: 0, confidenceLevel: "high",
             rationale: "manual candidate", expectedNetGain: nil, expectedCostReduction: nil,
             riskNote: "波动风险", marketState: "震荡", cancelAbove: nil, cancelBelow: nil)
-        let original = NextDecisionSnapshot(state: "宽幅震荡", strategy: "网格", headline: "网格计划",
-            validUntil: now.addingTimeInterval(1800), limitPrice: "1.400", limitUnits: 100,
+        let original = NextDecisionSnapshot(state: "宽幅震荡", strategy: "做T", headline: "先观察做T",
+            validUntil: now.addingTimeInterval(-600), limitPrice: "1.400", limitUnits: 100,
             confidenceLevel: "high")
-        let record = NextDecisionRecord(code: plan.code, name: plan.name,
+        var record = NextDecisionRecord(code: plan.code, name: plan.name,
             createdAt: now.addingTimeInterval(-3_600), snapshot: original)
+        _ = record.revise(with: NextDecisionSnapshot(state: "宽幅震荡", strategy: "网格",
+            headline: "网格计划", validUntil: now.addingTimeInterval(1800),
+            limitPrice: "1.380", limitUnits: 200, confidenceLevel: "high"),
+            at: now.addingTimeInterval(-30))
         XCTAssertEqual(NextDecisionMemory.matchingRecordID(for: plan, records: [record]), record.id,
-            "同日已改判时仍需链接到保留初始快照、记录 revisions 的那条决策记忆")
+            "同日改判到网格后，网格候选应链接最新判断，同时保留最初做T快照")
         let otherDay = NextDecisionRecord(code: plan.code, name: plan.name,
             createdAt: now.addingTimeInterval(-86_400), snapshot: original)
         XCTAssertNil(NextDecisionMemory.matchingRecordID(for: plan, records: [otherDay]))

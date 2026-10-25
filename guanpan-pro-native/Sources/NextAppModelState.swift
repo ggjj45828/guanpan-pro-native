@@ -498,9 +498,9 @@ import Combine
 
     func markDecisionSkipped(id: UUID, at now: Date = Date()) {
         guard let index = decisionMemory.firstIndex(where: { $0.id == id }) else { return }
-        decisionMemory[index].outcome = .skipped
-        decisionMemory[index].outcomeAt = now
-        decisionMemory[index].review.note = "我放弃了这次计划，没有成交"
+        var updated = decisionMemory[index]
+        guard NextDecisionMemory.markSkipped(&updated, at: now) else { return }
+        decisionMemory[index] = updated
     }
 
     private func buildGuidance(now: Date) -> NextDailyGuidance {

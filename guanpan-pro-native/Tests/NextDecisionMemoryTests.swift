@@ -319,6 +319,27 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertTrue(result[0].review.note.contains("未记录到真实成交"))
     }
 
+    func testMarkSkippedIsOneWayAndRejectsPreDecisionTime() {
+        var pending = record(snapshot())
+        XCTAssertTrue(NextDecisionMemory.markSkipped(&pending, at: now.addingTimeInterval(30)))
+        XCTAssertEqual(pending.outcome, .skipped)
+        XCTAssertTrue(pending.review.note.contains("没有成交"))
+        XCTAssertFalse(NextDecisionMemory.markSkipped(&pending, at: now.addingTimeInterval(60)),
+                       "处理过的记忆不能被旧页面重复覆盖")
+
+        var futureDecision = record(snapshot())
+        XCTAssertFalse(NextDecisionMemory.markSkipped(&futureDecision, at: now.addingTimeInterval(-1)))
+        XCTAssertEqual(futureDecision.outcome, .pending)
+
+        var filled = record(snapshot())
+        XCTAssertTrue(NextDecisionMemory.confirmFill(&filled, price: Decimal(string: "1.400")!,
+                                                     units: 100, at: now.addingTimeInterval(5)))
+        let confirmed = filled
+        XCTAssertFalse(NextDecisionMemory.markSkipped(&filled, at: now.addingTimeInterval(10)),
+                       "跳过操作不能覆盖真实成交事实")
+        XCTAssertEqual(filled, confirmed)
+    }
+
     func testNoTradeMemoryExpiresAfterShanghaiCalendarDayWithoutInventingFill() throws {
         let noTradeSnapshot = NextDecisionSnapshot(state: "数据不足", strategy: "不交易",
                                                    headline: "今天不交易",
@@ -349,6 +370,21 @@ final class NextDecisionMemoryTests: XCTestCase {
         let result = NextDecisionMemory.expire([open], at: now, quoteFor: { _ in self.quote("1.500") })
         XCTAssertEqual(result[0].outcome, .invalidated)
         XCTAssertTrue(result[0].review.note.contains("原计划失效"))
+    }
+
+    func testExpiryAndFreshnessUseLatestRevisedPlanNotOriginalSnapshot() {
+        var memory = record(snapshot(validUntil: now.addingTimeInterval(-600), limitPrice: "1.390"))
+        let revised = snapshot(validUntil: now.addingTimeInterval(1800), limitPrice: "1.420",
+                               headline: "延长观察有效期")
+        XCTAssertNotNil(memory.revise(with: revised, at: now))
+
+        let checkedAt = now.addingTimeInterval(300)
+        let result = NextDecisionMemory.expire([memory], at: checkedAt, quoteFor: { _ in nil })
+        XCTAssertEqual(result[0].outcome, .pending,
+                       "原计划过期后，若当日已有新计划改判，应使用最新计划有效期")
+        XCTAssertTrue(NextDecisionMemory.freshness(result[0], at: checkedAt).contains("还有"))
+        XCTAssertEqual(result[0].snapshot.limitPrice, "1.390", "首条快照仍保持不可变")
+        XCTAssertEqual(result[0].currentSnapshot.limitPrice, "1.420")
     }
 
     func testStaleOrUnreliableQuoteCannotInvalidateDecisionMemory() {
