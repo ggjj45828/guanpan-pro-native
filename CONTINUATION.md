@@ -554,7 +554,7 @@
 ## 2026-10-25候选计划持久化校验续记
 
 - e22f58b 的 Validate run 40159190264 已整体成功，模拟器验证job完成并生成截图/验证工件；IPA run 40159190265 成功，产物为unsigned 7.21 MB，SHA-256 `fe4441ab048a80afa01fef2c4d042c69dc488652a9f4d7e828208a5e7afda77f`。没有提取精确XCTest计数，不记录未经确认的数量。
-- 新增本地未提交B版安全修复：App启动时对 `candidate-plans-v1.json` 使用 `loadValidated`，拒绝重复ID与语义无效计划，保留损坏原文件并阻止静默覆盖；计划校验增加份额上限、非负样本数、时间戳、来源/置信度/依据、失效边界、金额和真实成交回填字段一致性。新增Unit/Core XCTest；尚无Swift运行结果。
+- 新增本地B版安全修复（已提交，待推送/CI）：App启动时对 `candidate-plans-v1.json` 使用 `loadValidated`，拒绝重复ID与语义无效计划，保留损坏原文件并阻止静默覆盖；计划校验增加份额上限、非负样本数、时间戳、来源/置信度/依据、失效边界、金额和真实成交回填字段一致性。新增Unit/Core XCTest；尚无Swift运行结果。
 - 当前仍无模拟账户、虚拟资金/持仓或自动下单；未改统计门槛、独立交易日定义或未来数据过滤。矩阵总状态仍✅1、🟡17、🟠123、⚠️4；本次已通过的cash-reserve NaN回归更新在第86/87项，本轮候选计划改动仍待CI。
 - 下一步：静态检查候选计划验证兼容性与矩阵后提交并快进推送B验证分支，触发完整macOS Validate；依据真实结果修复或记录。之后继续Master Acceptance Matrix中当前环境可做的Partial。
 
@@ -562,6 +562,6 @@
 
 - 提交 `3f1c933` 又补充候选计划状态时间未来值拒绝与重复ID持久化加载回归；修正了过期时间校验：计划的expiresAt允许在创建时间后数小时，不能套用只容忍未来5分钟的账本事件时钟门槛。
 - 对所有现存NextCandidatePlan构造点进行了静态兼容核对：测试与生产路径均提供证券、价格、数量、来源、置信度、依据和有效期；quoteTime允许早于createdAt（行情通常先于计划生成），只拒绝不可信未来时间。
-- `e22f58b` Validate `40159190264`成功、IPA `40159190265`成功；当前新增候选计划代码和测试包含提交`8f205ea`与`3f1c933`。普通push DNS失败，授权提升网络后的push连接被重置；`ls-remote`也连接重置，尚不能确认8f205ea到达远端，也没有该提交的Actions结果。不要把e22结果算到候选计划改动。
+- `e22f58b` Validate `40159190264`成功、IPA `40159190265`成功；当前新增候选计划代码和测试包含提交`8f205ea`、`3f1c933`、`0e1a66a`。普通push DNS失败，授权提升网络后的push连接被重置；`ls-remote`也连接重置，尚不能确认`8f205ea`至当前HEAD `0e1a66a`到达远端，也没有该提交的Actions结果。不要把e22结果算到候选计划改动。
 - 当前验证：NAS研究套件58/58通过；候选计划Swift/XCTest尚未运行；本机没有Swift/Xcode。无新增交易模拟/虚拟账户，未改变统计标准和数据门槛。
-- 下一步：检查并提交`3f1c933`后的本地文档差异，等待网络恢复后快进推送`validation/acceptance-20261024`触发完整Validate和IPA；同时继续Master Acceptance Matrix中可本地推进的Partial，不因外部测试等待而停工。
+- 下一步：检查并提交当前验收文档差异（代码HEAD `0e1a66a`），等待网络恢复后快进推送`validation/acceptance-20261024`触发完整Validate和IPA；同时继续Master Acceptance Matrix中可本地推进的Partial，不因外部测试等待而停工。
