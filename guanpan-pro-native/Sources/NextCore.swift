@@ -58,6 +58,14 @@ struct NextAssetPoint: Codable, Identifiable, Equatable {
     let total: Decimal
     let externalFlow: Decimal
 }
+enum NextLedgerTimestamp {
+    /// Exchange fills, cash movements and account snapshots cannot legitimately be far in the future.
+    /// A small tolerance allows device clock skew without admitting future-dated account facts.
+    static func isPlausible(_ date: Date, now: Date = Date()) -> Bool {
+        let timestamp = date.timeIntervalSince1970
+        return timestamp.isFinite && timestamp <= now.addingTimeInterval(300).timeIntervalSince1970
+    }
+}
 struct NextCashMovement: Codable, Identifiable, Equatable {
     var id = UUID()
     let date: Date
@@ -204,16 +212,16 @@ struct NextBook: Codable, Equatable {
     }
     func validate() throws {
         guard schemaVersion == 1, !cash.isNaN, cash >= 0,
-              importedAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
+              importedAt.map({ NextLedgerTimestamp.isPlausible($0) }) ?? true,
               Set(positions.map(\.code)).count == positions.count,
-              positions.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.units >= 0 && !$0.bookCost.isNaN && $0.bookCost >= 0 && ($0.acquiredAt.map { $0.timeIntervalSince1970.isFinite } ?? true) }),
+              positions.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.units >= 0 && !$0.bookCost.isNaN && $0.bookCost >= 0 && ($0.acquiredAt.map { NextLedgerTimestamp.isPlausible($0) } ?? true) }),
               fills.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && ($0.side == "buy" || $0.side == "sell") && $0.units > 0 && $0.price > 0 && !$0.price.isNaN && $0.fee >= 0 && !$0.fee.isNaN && !$0.realized.isNaN }),
               Set(fills.map(\.id)).count == fills.count,
-              fills.allSatisfy({ $0.date.timeIntervalSince1970.isFinite }),
+              fills.allSatisfy({ NextLedgerTimestamp.isPlausible($0.date) }),
               Set(history.map(\.id)).count == history.count,
-              history.allSatisfy({ $0.total >= 0 && !$0.total.isNaN && !$0.externalFlow.isNaN && $0.date.timeIntervalSince1970.isFinite }),
+              history.allSatisfy({ $0.total >= 0 && !$0.total.isNaN && !$0.externalFlow.isNaN && NextLedgerTimestamp.isPlausible($0.date) }),
               Set(cashMovements.map(\.id)).count == cashMovements.count,
-              cashMovements.allSatisfy({ !$0.amount.isNaN && !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.date.timeIntervalSince1970.isFinite }),
+              cashMovements.allSatisfy({ !$0.amount.isNaN && !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && NextLedgerTimestamp.isPlausible($0.date) }),
               Set(incomeEvents.map(\.id)).count == incomeEvents.count,
               Set(dividendEvents.map(\.id)).count == dividendEvents.count else {
             throw NextError.invalid("账本校验失败：现金、持仓或版本无效")
@@ -1074,14 +1082,52 @@ struct NextAuditEvent: Codable, Identifiable, Equatable {
 struct NextAuditedBook: Codable, Equatable {
     var current: NextBook
     var events: [NextAuditEvent] = []
+    private enum CodingKeys: String, CodingKey { case current, events }
+    init(current: NextBook, events: [NextAuditEvent] = []) {
+        self.current = current
+        self.events = events
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        current = try values.decode(NextBook.self, forKey: .current)
+        events = try values.decodeIfPresent([NextAuditEvent].self, forKey: .events) ?? []
+    }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(current, forKey: .current)
+        try values.encode(events, forKey: .events)
+    }
+    func validate() throws {
+        try current.validate()
+        guard Set(events.map(\.id)).count == events.count,
+              events.allSatisfy({
+                  NextLedgerTimestamp.isPlausible($0.at) &&
+                  ($0.undoneAt.map { NextLedgerTimestamp.isPlausible($0) } ?? true) &&
+                  !$0.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                  !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              }) else {
+            throw NextError.invalid("账本审计记录编号、时间或说明无效")
+        }
+        for event in events {
+            try event.before.validate()
+            try event.after.validate()
+        }
+    }
     mutating func apply(_ updated: NextBook, action: String, reason: String, at: Date) throws {
+        try current.validate()
         try updated.validate()
+        guard NextLedgerTimestamp.isPlausible(at),
+              !action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NextError.invalid("账本审计动作的时间或说明无效")
+        }
         events.append(NextAuditEvent(at: at, action: action, reason: reason, before: current, after: updated))
         current = updated
     }
     mutating func undo(_ eventID: UUID, at: Date) throws {
+        try validate()
         guard let index = events.lastIndex(where: { $0.id == eventID }), events[index].undoneAt == nil,
-              events[index].after == current else { throw NextError.invalid("此变更已失效或账本已继续更新；请先核对版本") }
+              events[index].after == current, NextLedgerTimestamp.isPlausible(at) else { throw NextError.invalid("此变更已失效、时间无效或账本已继续更新；请先核对版本") }
         current = events[index].before
         events[index].undoneAt = at
     }
@@ -1405,7 +1451,8 @@ struct NextAppArchive: Codable, Equatable {
     }
     func validate() throws {
         guard schemaVersion == 1 else { throw NextError.invalid("本机数据版本不受支持") }
-        try book.validate(); try goal.validate()
+        try NextAuditedBook(current: book, events: audits).validate()
+        try goal.validate()
         guard Set(patientLimitPlans.map(\.id)).count == patientLimitPlans.count else { throw NextError.invalid("耐心限价计划存在重复编号") }
         for plan in patientLimitPlans { try plan.validate() }
         guard Set(candidatePlans.map(\.id)).count == candidatePlans.count else { throw NextError.invalid("候选计划存在重复编号") }

@@ -319,9 +319,16 @@ final class NextCoreTests: XCTestCase {
                                      side: "buy", units: 100, price: 1.2, fee: 0.1, realized: 0)
         XCTAssertThrowsError(try NextBook(fills: [nonFiniteDate]).validate(),
                              "非法时间不能参与持仓与成交恢复")
+        let futureFill = NextFill(date: Date().addingTimeInterval(86_400), code: "159941",
+                                  side: "buy", units: 100, price: 1.2, fee: 0.1, realized: 0)
+        XCTAssertThrowsError(try NextBook(fills: [futureFill]).validate(), "未来成交不能成为账户事实")
         let nonFiniteSnapshot = NextAssetPoint(date: Date(timeIntervalSince1970: .nan), total: 10, externalFlow: 0)
         XCTAssertThrowsError(try NextBook(history: [nonFiniteSnapshot]).validate(),
                              "非法资产快照时间不能进入收益率历史")
+        let snapshot = NextAssetPoint(date: now, total: 10, externalFlow: 0)
+        let duplicateSnapshot = snapshot
+        XCTAssertThrowsError(try NextBook(history: [snapshot, duplicateSnapshot]).validate(),
+                             "重复资产快照ID必须拒绝，避免恢复后资产历史重复")
         let movement = NextCashMovement(date: now, amount: 10, reason: "入金")
         let duplicateMovement = movement
         XCTAssertThrowsError(try NextBook(cashMovements: [movement, duplicateMovement]).validate(),
@@ -329,17 +336,173 @@ final class NextCoreTests: XCTestCase {
         let invalidMovementTime = NextCashMovement(date: Date(timeIntervalSince1970: .infinity), amount: 10, reason: "入金")
         XCTAssertThrowsError(try NextBook(cashMovements: [invalidMovementTime]).validate(),
                              "非法现金流水时间不能进入真实账本")
+        var duplicateIncome = NextIncomeEvent(kind: .cashInterest, code: nil, name: "现金利息", exDate: nil,
+            payDate: now, units: nil, perUnit: nil, grossAmount: 100, tax: 0,
+            status: .received, receivedAt: now)
+        let sameIncome = duplicateIncome
+        XCTAssertThrowsError(try NextBook(incomeEvents: [duplicateIncome, sameIncome]).validate(),
+                             "重复收息记录ID必须拒绝，避免恢复时重复记收益")
+        let dividend = NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: 0.01)
+        XCTAssertThrowsError(try NextBook(dividendEvents: [dividend, dividend]).validate(),
+                             "重复分红事件ID必须拒绝")
+        XCTAssertThrowsError(try NextBook(cash: Decimal.nan).validate(), "NaN现金必须拒绝")
+        let nanPrice = NextFill(date: now, code: "159941", side: "buy", units: 100,
+                               price: Decimal.nan, fee: 0.1, realized: 0)
+        XCTAssertThrowsError(try NextBook(fills: [nanPrice]).validate(), "NaN成交价必须拒绝")
+        let nanCost = NextPosition(code: "159941", name: "纳指ETF", units: 100, bookCost: Decimal.nan)
+        XCTAssertThrowsError(try NextBook(positions: [nanCost]).validate(), "NaN持仓成本必须拒绝")
+        let nanMovement = NextCashMovement(date: now, amount: Decimal.nan, reason: "入金")
+        XCTAssertThrowsError(try NextBook(cashMovements: [nanMovement]).validate(), "NaN现金流水必须拒绝")
+        duplicateIncome.payDate = Date(timeIntervalSince1970: .infinity)
+        XCTAssertThrowsError(try duplicateIncome.validate(), "非有限收息时间必须拒绝")
         let invalidPositionDate = NextPosition(code: "159941", name: "纳指ETF", units: 100, bookCost: 120,
                                                acquiredAt: Date(timeIntervalSince1970: .nan))
         XCTAssertThrowsError(try NextBook(positions: [invalidPositionDate]).validate(),
                              "非法建仓时间不能进入真实持仓")
         let invalidImportDate = NextBook(cash: 10, importedAt: Date(timeIntervalSince1970: .infinity))
         XCTAssertThrowsError(try invalidImportDate.validate(), "非法导入时间不能被当作账本来源时间")
-        let invalidIncomeDate = NextIncomeEvent(kind: .cashInterest, name: "现金利息", exDate: nil,
+        let invalidIncomeDate = NextIncomeEvent(kind: .cashInterest, code: nil, name: "现金利息", exDate: nil,
             payDate: Date(timeIntervalSince1970: .infinity), units: nil, perUnit: nil,
             grossAmount: 1, tax: 0)
         XCTAssertThrowsError(try NextBook(incomeEvents: [invalidIncomeDate]).validate(),
                              "非法收息时间不能进入真实账户收益记录")
+    }
+    func testAuditedBookRejectsInvalidAuditSnapshotsAndRepeatedAuditIDs() throws {
+        let auditDate = Date(timeIntervalSince1970: 1_792_375_200)
+        var valid = NextAuditedBook(current: NextBook(cash: 10))
+        try valid.apply(NextBook(cash: 20), action: "增加现金", reason: "用户确认", at: auditDate)
+        XCTAssertNoThrow(try valid.validate())
+        var duplicate = valid
+        duplicate.events.append(valid.events[0])
+        XCTAssertThrowsError(try duplicate.validate(), "审计事件重复ID必须拒绝")
+        var invalidSnapshot = valid
+        invalidSnapshot.events[0] = NextAuditEvent(id: valid.events[0].id, at: auditDate, action: "变更", reason: "测试",
+            before: NextBook(cash: -1), after: NextBook(cash: 20), undoneAt: nil)
+        XCTAssertThrowsError(try invalidSnapshot.validate(), "审计前后账本快照必须分别通过校验")
+        var futureAudit = valid
+        futureAudit.events[0] = NextAuditEvent(id: valid.events[0].id,
+            at: Date().addingTimeInterval(86_400), action: "变更", reason: "测试",
+            before: NextBook(cash: 10), after: NextBook(cash: 20), undoneAt: nil)
+        XCTAssertThrowsError(try futureAudit.validate(), "未来审计时间不能成为账本事实")
+        let legacy = "{\"current\":{\"schemaVersion\":1,\"cash\":10}}"
+        let decoded = try JSONDecoder().decode(NextAuditedBook.self, from: Data(legacy.utf8))
+        XCTAssertTrue(decoded.events.isEmpty, "旧版缺审计数组字段时安全迁移为空数组")
+        XCTAssertNoThrow(try decoded.validate())
+        var invalidArchive = NextAppArchive()
+        invalidArchive.audits = futureAudit.events
+        XCTAssertThrowsError(try NextArchiveEnvelope(archive: invalidArchive),
+                             "备份生成必须校验审计流水，不得把无效账本历史继续传播")
+    }
+    func testRepositoryFailsSafeOnSemanticallyInvalidLedgerAndPreservesOriginalFile() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-ledger-validation-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let url = directory.appendingPathComponent("real-ledger-v1.json")
+            let invalid = NextAuditedBook(current: NextBook(cash: -1))
+            let original = try JSONEncoder().encode(invalid)
+            try original.write(to: url, options: .atomic)
+            let fallback = NextAuditedBook(current: NextBook())
+            let loaded = repository.loadValidated(NextAuditedBook.self, filename: "real-ledger-v1.json",
+                fallback: fallback, validate: { try $0.validate() })
+            XCTAssertEqual(loaded, fallback, "语义校验失败时只给安全回退值")
+            XCTAssertNotNil(repository.integrityWarning)
+            XCTAssertNotNil(repository.save(fallback, filename: "real-ledger-v1.json"),
+                             "失败文件必须锁定，禁止静默覆盖")
+            XCTAssertEqual(try Data(contentsOf: url), original, "损坏账本必须原样保留供恢复")
+        }
+    }
+    func testFailedLedgerWriteDoesNotAdvanceTheInMemoryAccount() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-ledger-write-failure-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            var preferences = LocalPreferences()
+            preferences.watch = []
+            XCTAssertNil(repository.save(preferences, filename: "preferences-v1.json"))
+            let model = NextAppModel(repository: repository)
+            let before = model.book
+            try FileManager.default.removeItem(at: directory)
+            var attempted = before
+            attempted.cash += 1_000
+            XCTAssertThrowsError(try model.commitRealLedger(attempted, action: "增加现金", reason: "测试写盘失败"))
+            XCTAssertEqual(model.book, before, "本机落盘失败时内存账本必须保持原值")
+        }
+    }
+    func testRepeatedRepositoryReloadKeepsRealAccountAndReviewExactlyOnce() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-ledger-restart-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let stamp = Date()
+            let memory = NextDecisionRecord(code: "563020", name: "红利ETF", createdAt: stamp,
+                snapshot: NextDecisionSnapshot(state: "持有", strategy: "hold", headline: "继续持有", confidenceLevel: "medium"))
+            let partialFillA = NextFill(date: stamp, code: "563020", side: "buy", units: 1_000,
+                                        price: Decimal(string: "1.10")!, fee: 0.1, realized: 0,
+                                        decisionMemoryID: memory.id)
+            let partialFillB = NextFill(date: stamp.addingTimeInterval(20), code: "563020", side: "buy", units: 1_000,
+                                        price: Decimal(string: "0.90")!, fee: 0.1, realized: 0,
+                                        decisionMemoryID: memory.id)
+            let income = NextIncomeEvent(kind: .etfDistribution, code: "563020", name: "已到账分红", exDate: stamp,
+                payDate: stamp, units: 2_000, perUnit: Decimal(string: "0.05"), grossAmount: 100, tax: 0,
+                status: .received, receivedAt: stamp)
+            let book = NextBook(cash: 13_100,
+                positions: [NextPosition(code: "563020", name: "红利ETF", units: 2_000, bookCost: 2_000, acquiredAt: stamp)],
+                fills: [partialFillA, partialFillB],
+                cashMovements: [NextCashMovement(date: stamp, amount: 5_000, reason: "用户手工入金")],
+                incomeEvents: [income],
+                dividendEvents: [NextETFDividendEvent(code: "563020", date: "2026-06-10", amountPerShare: 0.05)],
+                history: [NextAssetPoint(date: stamp, total: 15_100, externalFlow: 5_000)])
+            let audited = NextAuditedBook(current: book)
+            var profile = NextInvestorProfile()
+            profile.summary.fillSampleCount = 2
+            profile.summary.suggestionSampleCount = 0
+            profile.summary.executedCount = 1
+            profile.updatedAt = stamp
+            var preferences = LocalPreferences()
+            preferences.watch = []
+            XCTAssertNil(repository.save(audited, filename: "real-ledger-v1.json"))
+            XCTAssertNil(repository.save(profile, filename: "investor-profile-v1.json"))
+            XCTAssertNil(repository.save([memory], filename: "decision-memory-v1.json"))
+            XCTAssertNil(repository.save(preferences, filename: "preferences-v1.json"))
+
+            for restart in 0..<10 {
+                let model = NextAppModel(repository: repository)
+                let restored = model.ledger
+                XCTAssertEqual(restored, audited)
+                XCTAssertEqual(restored.current.cash, Decimal(13_100))
+                XCTAssertEqual(restored.current.positions.first?.units, 2_000)
+                XCTAssertEqual(restored.current.fills.count, 2)
+                XCTAssertEqual(restored.current.incomeEvents.count, 1)
+                XCTAssertEqual(restored.current.cashMovements.count, 1)
+                XCTAssertEqual(restored.current.dividendEvents.count, 1)
+                XCTAssertEqual(restored.current.history.count, 1)
+                let restoredProfile = model.profile
+                if restart == 0 {
+                    XCTAssertEqual(model.decisionMemory.first?.outcome, .filled,
+                                   "首次启动应从明确关联的真实流水恢复成交状态")
+                    XCTAssertEqual(model.decisionMemory.first?.review.filledUnits, 2_000)
+                    XCTAssertEqual(model.decisionMemory.first?.review.filledPrice, "1.0000",
+                                   "分批成交应按份额加权计算均价")
+                    XCTAssertEqual(restoredProfile.summary.fillSampleCount, 2,
+                                   "两笔真实部分成交首次恢复后按两个唯一流水ID计样本")
+                    var reviewed = model.decisionMemory[0]
+                    reviewed.review = NextDecisionReview(note: "人工复盘已完成", filledPrice: "1.0000",
+                                                          filledUnits: 2_000, reviewedAt: stamp.addingTimeInterval(60))
+                    model.decisionMemory = [reviewed]
+                }
+                XCTAssertEqual(restoredProfile.summary.fillSampleCount, 2)
+                XCTAssertEqual(restoredProfile.summary.suggestionSampleCount, 0)
+                if restart > 0 {
+                    XCTAssertEqual(model.decisionMemory.first?.review.note, "人工复盘已完成",
+                                   "幂等恢复不能覆盖已完成的人工复盘")
+                    XCTAssertEqual(model.profile.summary.fillSampleCount, 2, "重启不能重复增加画像成交样本")
+                }
+            }
+        }
     }
     func testDividendAnalyticsUsesSuppliedRecordsWithoutBundledHistory() {
         let events = NextDividendAnalytics.merged([

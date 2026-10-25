@@ -458,3 +458,14 @@
 - Master Acceptance Matrix第4项更新，状态仍为🟠；总状态保持✅1、🟡16、🟠124、⚠️4。
 - 验证环境：本机`swift`、`xcodebuild`不可用；GitHub Actions浏览器/API在此会话不可访问；push DNS失败且无可读GitHub凭据。下一步一旦网络/凭据可用，先推送当前工作树并跑core XCTest、simulator tests与IPA workflow。其间仍可继续做本地静态审计和NAS已有测试，不可升级矩阵状态。
 - 后续追加的未提交本地变更覆盖位置建仓/账本导入/收息日期边界及测试；需要先做`git diff --check`和代码复核，再形成提交。测试尚未运行。
+
+## 2026-10-25 GitHub测试通道诊断与恢复幂等集成续记
+
+- 将DNS与凭据分开诊断：remote是`https://github.com/ggjj45828/guanpan-pro-native.git`；普通沙箱解析github.com失败、HTTPS套接字访问被限制；SSH未配置`.ssh`密钥。Git Credential Manager可执行文件存在，但普通沙箱`credential fill`无可用字段。用已授权的受限提升通道执行HTTPS push成功，证明GitHub凭据和该分支push权限有效，Actions push触发方式已恢复；无需改成SSH。
+- `95bac85`与后续账本测试提交`aba2914`均已推送至`validation/acceptance-20261024`。未认证GitHub Actions API遇IP速率限制，尚未读取新run结果；要用仓库凭据请求Actions API并只输出run元数据，不显示令牌。
+- 继续发现核心风险：`NextLocalRepository.load`只做JSON解码，不校验语义；能解码但现金为负、审计快照无效的真实账本会进入AppModel。新增`NextAuditedBook.validate`、向后兼容缺失events字段、`loadValidated`并在AppModel启动时先验证；无效文件保持原样并锁住覆盖。新增可注入临时目录以测试repository。
+- `NextBook.validate`现在拒绝重复成交/现金/资产快照/收息/分红ID，异常/未来账户时间及NaN现金/成本/价格/现金流水；`NextAuditedBook`验证当前账本和每个审计前后快照、动作说明与时间。
+- 新增测试：审计事件ID/快照/未来时间与旧格式解码；语义无效账本恢复fail-safe且原文件不覆盖；删除临时目录模拟写盘失败后`NextAppModel.commitRealLedger`不变内存；10次AppModel重建核对现金13,100、2笔部分成交加权价、持仓/流水/分红/收息/资产快照、真实流水驱动DecisionMemory成交恢复、画像成交样本不累加、人工复盘不被重置。
+- 跨市场和真实投资顾问状态不因此升级。现有候选计划部分成交测试已覆盖300+200份成交的加权价与累计手续费、超量成交拒绝及重复reconcile幂等；新增AppModel测试分别核对DecisionMemory加权恢复与10次启动不重置人工复盘。
+- 最新上述repository/AppModel集成测试批仍在工作树，未提交，尚未编译运行。当前只有`git diff --check`通过；无Swift/Xcode本机工具，不得称测试通过。先复核diff与测试构造，再提交并通过授权HTTPS push，然后通过认证Actions API读取完整macOS XCTest（包括135+项）、模拟器和IPA工作流结果，按失败逐项修复。
+- 状态仍为145项：✅1、🟡16、🟠124、⚠️4。禁止因为NAS测试通过或IPA曾构建通过升级整条决策链。真实账户红线仍然有效。

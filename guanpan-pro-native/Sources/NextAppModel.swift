@@ -81,11 +81,12 @@ final class NextLocalRepository {
     private let recoveryDirectory: URL
     private var blockedFiles = Set<String>()
     private(set) var integrityWarning: String?
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, directoryOverride: URL? = nil) {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         let base = appSupport ?? fileManager.temporaryDirectory
-        directory = base.appendingPathComponent("GuanpanProNative", isDirectory: true)
-        recoveryDirectory = base.appendingPathComponent("GuanpanProNative-Recovery", isDirectory: true)
+        directory = directoryOverride ?? base.appendingPathComponent("GuanpanProNative", isDirectory: true)
+        recoveryDirectory = directoryOverride?.appendingPathComponent("Recovery", isDirectory: true)
+            ?? base.appendingPathComponent("GuanpanProNative-Recovery", isDirectory: true)
         // UI tests run repeatedly in one simulator and otherwise inherit the
         // previous test's saved navigation stack/preferences. Reset only the
         // app's own sandbox when both the test scheme and explicit test flag
@@ -96,7 +97,7 @@ final class NextLocalRepository {
             try? fileManager.removeItem(at: directory)
             try? fileManager.removeItem(at: recoveryDirectory)
         }
-        guard appSupport != nil else {
+        guard appSupport != nil || directoryOverride != nil else {
             integrityWarning = "iOS 未提供持久化应用目录；真实账本写入已停止。"
             return
         }
@@ -113,6 +114,20 @@ final class NextLocalRepository {
         guard FileManager.default.fileExists(atPath: url.path) else { return fallback }
         do { return try JSONDecoder().decode(type, from: Data(contentsOf: url)) }
         catch {
+            blockedFiles.insert(filename)
+            integrityWarning = "本机数据文件 \(filename) 无法读取或校验；原文件已保留，相关写入已停止。请先导出/恢复经过验证的备份。"
+            return fallback
+        }
+    }
+    func loadValidated<T: Decodable>(_ type: T.Type, filename: String, fallback: T,
+                                     validate: (T) throws -> Void) -> T {
+        let url = directory.appendingPathComponent(filename)
+        guard FileManager.default.fileExists(atPath: url.path) else { return fallback }
+        do {
+            let value = try JSONDecoder().decode(type, from: Data(contentsOf: url))
+            try validate(value)
+            return value
+        } catch {
             blockedFiles.insert(filename)
             integrityWarning = "本机数据文件 \(filename) 无法读取或校验；原文件已保留，相关写入已停止。请先导出/恢复经过验证的备份。"
             return fallback

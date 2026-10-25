@@ -103,7 +103,8 @@ import Combine
     init(repository: NextLocalRepository? = nil) {
         let repository = repository ?? NextLocalRepository()
         self.repository = repository
-        let real = repository.load(NextAuditedBook.self, filename: "real-ledger-v1.json", fallback: NextAuditedBook(current: NextBook()))
+        let real = repository.loadValidated(NextAuditedBook.self, filename: "real-ledger-v1.json",
+            fallback: NextAuditedBook(current: NextBook()), validate: { try $0.validate() })
         self.ledger = real
         self.preferences = repository.load(LocalPreferences.self, filename: "preferences-v1.json", fallback: LocalPreferences())
         self.quotes = repository.load([String: NextCachedQuote].self, filename: "cached-quotes-v1.json", fallback: [:])
