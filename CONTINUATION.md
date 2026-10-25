@@ -498,3 +498,11 @@
 - 继续检查 Decision Memory 详情，发现证据行把标签、长值和说明固定排在一行，窄屏或长跨市场/新闻文本可能挤压。现改为优先横向呈现，空间不足时使用纵向布局；数据模型和决策逻辑不变。
 - 当前仅做静态差异检查，Windows环境没有Swift/Xcode，尚未编译或模拟器验证；不因此升级Matrix状态。
 - 下一步第一件事：检查矩阵和差异无误后提交并推送，触发完整Validate与IPA Actions。通过后再继续从Master Acceptance Matrix中当前可推进的Partial/Not Verified项目开发。
+
+## 2026-10-25 决策记忆窄屏改动远端验证续记
+
+- 提交d7ad61e已推送到独立B验证分支；Validate run 40156717343与IPA build run 40156717396均显示成功。IPA为unsigned构建，未签名安装验证。
+- SwiftUI证据行自适应改动已通过远端构建/现有模拟器验证工作流；没有专门填充真实DecisionMemory记录并截屏验收，Matrix第29仍🟠。
+- 本轮本地NAS兼容研究套件58/58通过，全部Python源文件32/32可在内存编译；本机旧服务和同步HTTP测试分别19与7个错误源自Windows沙箱阻止本地套接字（WinError 10013），不能当作代码测试失败或通过。Linux Actions已有三套NAS测试合计200/200通过的记录。
+- 当前矩阵统计仍为✅1、🟡17、🟠123、⚠️4。无统计阈值、独立交易日门槛或未来数据约束被放宽；无A代码合入。
+- 下一步：继续从P0核心Partial选可推进项；优先补组合风险/DecisionContext到真实决策链的集成覆盖，再继续市场数据与NAS同步异常处理。真实NAS长期档案、iPhone安装/体验、真实在线AI Key仍为外部验证项。
