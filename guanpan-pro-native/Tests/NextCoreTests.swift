@@ -178,6 +178,17 @@ final class NextCoreTests: XCTestCase {
         XCTAssertTrue(NextPortfolioRiskGuard.allocationAssessment(currentPercent: .infinity,
                                                                    concentrationLimit: 40,
                                                                    targetPercent: nil).blockingNote?.contains("无法可靠计算") == true)
+        XCTAssertTrue(NextPortfolioRiskGuard.allocationAssessment(currentPercent: 101,
+                                                                   concentrationLimit: 100,
+                                                                   targetPercent: nil).blockingNote?.contains("无法可靠计算") == true,
+                      "组合权重超过100%属于不可解释数据，必须拒绝新增买入")
+        XCTAssertTrue(NextPortfolioRiskGuard.allocationAssessment(currentPercent: 10,
+                                                                   concentrationLimit: 40,
+                                                                   targetPercent: .nan).blockingNote?.contains("目标权重无效") == true,
+                      "显式NaN目标不能被当成未设置偏好")
+        XCTAssertTrue(NextPortfolioRiskGuard.allocationAssessment(currentPercent: 10,
+                                                                   concentrationLimit: 40,
+                                                                   targetPercent: 101).blockingNote?.contains("目标权重无效") == true)
 
         let noTarget = NextPortfolioRiskGuard.allocationAssessment(currentPercent: 12,
                                                                      concentrationLimit: 40,

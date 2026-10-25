@@ -458,15 +458,19 @@ enum NextPortfolioRiskGuard {
     static func allocationAssessment(currentPercent: Double, concentrationLimit: Double,
                                      targetPercent: Double?) -> (blockingNote: String?, context: String?, priorityBoost: Double) {
         guard currentPercent.isFinite, concentrationLimit.isFinite,
-              currentPercent >= 0, concentrationLimit > 0 else {
+              currentPercent >= 0, currentPercent <= 100,
+              concentrationLimit > 0, concentrationLimit <= 100 else {
             return ("组合风险比例无法可靠计算；暂停新增买入计划", nil, 0)
         }
         if currentPercent > concentrationLimit {
             return ("该只占比 \(String(format: "%.1f", currentPercent))%，超过你设置的 \(String(format: "%.1f", concentrationLimit))% 组合上限", nil, 0)
         }
-        guard let targetPercent, targetPercent.isFinite, targetPercent >= 0, targetPercent <= 100 else {
+        guard let targetPercent else {
             // No configured target means no allocation preference signal.
             return (nil, nil, 0)
+        }
+        guard targetPercent.isFinite, targetPercent >= 0, targetPercent <= 100 else {
+            return ("显式目标权重无效；暂停新增买入计划，请先修正组合配置", nil, 0)
         }
         let gap = targetPercent - currentPercent
         if gap >= 0.5 {
