@@ -267,7 +267,9 @@ import Combine
             updated.cash -= gross - fill.fee
             let restoredCost = max(0, gross - fill.fee - fill.realized)
             if let index {
-                updated.positions[index].units += fill.units
+                let (restoredUnits, overflow) = updated.positions[index].units.addingReportingOverflow(fill.units)
+                guard !overflow else { throw NextError.invalid("恢复卖出流水后份额超出系统可表示范围；请先核对真实账本") }
+                updated.positions[index].units = restoredUnits
                 updated.positions[index].bookCost += restoredCost
             } else {
                 updated.positions.append(NextPosition(code: fill.code, name: fill.code, units: fill.units, bookCost: restoredCost))
@@ -334,7 +336,9 @@ import Combine
             }
             updated.cash -= gross + fee
             if let positionIndex {
-                updated.positions[positionIndex].units += units
+                let (newUnits, overflow) = updated.positions[positionIndex].units.addingReportingOverflow(units)
+                guard !overflow else { throw NextError.invalid("成交后持仓份额超出系统可表示范围；真实账本未修改") }
+                updated.positions[positionIndex].units = newUnits
                 updated.positions[positionIndex].bookCost += gross + fee
             } else {
                 updated.positions.append(NextPosition(code: code, name: name, units: units, bookCost: gross + fee, acquiredAt: tradedAt))

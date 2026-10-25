@@ -52,6 +52,15 @@ struct NextFill: Codable, Identifiable, Equatable {
     /// Older real ledgers and unrelated manual fills remain unlinked.
     var decisionMemoryID: UUID? = nil
 }
+private func checkedUnitSum(_ fills: [NextFill]) -> Int? {
+    var total = 0
+    for fill in fills {
+        let (next, overflow) = total.addingReportingOverflow(fill.units)
+        guard !overflow else { return nil }
+        total = next
+    }
+    return total
+}
 struct NextAssetPoint: Codable, Identifiable, Equatable {
     var id = UUID()
     let date: Date
@@ -847,9 +856,12 @@ extension NextBook {
         guard settlement != .t0 else { return 0 }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        return fills
+        let boughtToday = fills
             .filter { $0.code == code && $0.side == "buy" && calendar.isDate($0.date, inSameDayAs: now) }
-            .reduce(0) { $0 + $1.units }
+        // Corrupt/extreme history must fail closed. Lock the whole position rather
+        // than overflowing an Int or accidentally exposing shares as sellable.
+        guard let sum = checkedUnitSum(boughtToday) else { return positions.first(where: { $0.code == code })?.units ?? 0 }
+        return min(sum, positions.first(where: { $0.code == code })?.units ?? 0)
     }
 
     /// 计划侧可卖份额 = 持仓 − 规则锁定的今日买入。确认真实成交时以券商已成交事实为准。
@@ -867,9 +879,14 @@ extension NextBook {
         // 摊薄成本只有在「流水能解释当前份额」时才成立：
         // 买入份数 − 卖出份数 必须等于当前持仓。否则用残缺流水算出来的摊薄成本是错的
         // （极端情况会出现负成本或把成本算成一半），此时退回买入均价并在界面标注。
-        let boughtUnits = buys.reduce(0) { $0 + $1.units }
-        let soldUnits = sells.reduce(0) { $0 + $1.units }
-        let hasFullHistory = !buys.isEmpty && (boughtUnits - soldUnits) == position.units
+        let boughtUnits = checkedUnitSum(buys)
+        let soldUnits = checkedUnitSum(sells)
+        let hasFullHistory: Bool
+        if let boughtUnits, let soldUnits, boughtUnits >= soldUnits {
+            hasFullHistory = !buys.isEmpty && boughtUnits - soldUnits == position.units
+        } else {
+            hasFullHistory = false
+        }
         // 已到账的现金分红冲减成本：这是券商「成本价」随分红下降的原因。
         // 只算「已到账 + ETF 分红」，待到账的预估不提前扣。
         let dividendCredit = incomeEvents

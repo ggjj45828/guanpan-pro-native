@@ -158,6 +158,21 @@ final class NextCoreTests: XCTestCase {
             return XCTFail("没有超限时不应更改网格结果")
         }
     }
+
+    func testExtremeFillUnitSumsFailClosedWithoutIntegerOverflow() throws {
+        let stamp = Date()
+        let huge = NextFill(date: stamp, code: "159941", side: "buy", units: Int.max,
+                            price: 1, fee: 0, realized: 0)
+        let extra = NextFill(date: stamp, code: "159941", side: "buy", units: 1,
+                             price: 1, fee: 0, realized: 0)
+        let book = NextBook(positions: [NextPosition(code: "159941", name: "纳指ETF",
+            units: Int.max, bookCost: 1)], fills: [huge, extra])
+
+        XCTAssertEqual(book.lockedUnits(for: "159941", at: stamp, settlement: .t1), Int.max,
+                       "锁定份额合计溢出时按整仓不可卖处理，不能溢出为负数")
+        XCTAssertFalse(book.costBasis(for: "159941")?.hasFullHistory ?? true,
+                       "成交份额总和溢出时不能声称历史完整或生成摊薄成本")
+    }
     func testPortfolioAllocationTargetInformsOrBlocksWithoutCreatingAnOrder() {
         let under = NextPortfolioRiskGuard.allocationAssessment(currentPercent: 12, concentrationLimit: 40,
                                                                 targetPercent: 20)

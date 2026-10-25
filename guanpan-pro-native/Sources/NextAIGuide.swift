@@ -981,7 +981,14 @@ enum NextGridPlanner {
             return .notRecommended(["部分档位与最近对侧档配对后不能覆盖双边手续费；已暂停该网格，不显示虚假净收益"])
         }
         let maxCashUsage = pricedTiers.filter { $0.side == "buy" }.reduce(Decimal.zero) { $0 + $1.cashRequired }
-        let sellUnits = pricedTiers.filter { $0.side == "sell" }.reduce(0) { $0 + $1.units }
+        var sellUnits = 0
+        for tier in pricedTiers where tier.side == "sell" {
+            let (sum, overflow) = sellUnits.addingReportingOverflow(tier.units)
+            guard !overflow else {
+                return .notRecommended(["网格卖出档份额合计超出可表示范围；暂停生成计划"])
+            }
+            sellUnits = sum
+        }
         let positionUnits = book.positions.first(where: { $0.code == quote.code })?.units ?? 0
         let remaining = max(0, positionUnits - sellUnits)
 
@@ -1042,7 +1049,11 @@ enum NextRecoveryAnalyzer {
             let lossAmount = (cost - quote.price) * Decimal(position.units)
             if lossAmount > 0 {
                 let sessions = NextNum.double(lossAmount / Decimal(2) / tNetGain).rounded(.up)
-                tSessions = Int(sessions)
+                if sessions.isFinite, sessions >= 0, sessions < Double(Int.max) {
+                    tSessions = Int(sessions)
+                } else {
+                    warnings.append("理论回本次数超出可可靠表示范围；不显示伪精确次数")
+                }
             }
         }
         // 补仓份额、手续费和新成本按实际交易单位计算；规则不确定时不提供带份额的选项。
@@ -1051,10 +1062,17 @@ enum NextRecoveryAnalyzer {
         let lotSize = verifiedRules?.lotSize ?? 0
         let fee = verifiedRules?.feePerTrade
         if lotSize > 0, let fee, NextTradeFees.isValid(fee) {
-            let doubleUnits = (position.units / lotSize) * lotSize
+            let requestedUnits = (position.units / lotSize) * lotSize
+            let headroomUnits = Int.max - position.units
+            let doubleUnits = min(requestedUnits, (headroomUnits / lotSize) * lotSize)
             if doubleUnits < lotSize {
-                warnings.append("真实持仓不足一个已核实交易单位；不生成补仓份额")
+                warnings.append(position.units / lotSize > 0
+                    ? "补仓后份额会超出系统可表示范围；不生成补仓份额"
+                    : "真实持仓不足一个已核实交易单位；不生成补仓份额")
             } else {
+                if doubleUnits < requestedUnits {
+                    warnings.append("补仓份额已受系统整数上限约束；按可安全表示的交易单位计算")
+                }
                 let cashRequired = quote.price * Decimal(doubleUnits) + fee
                 let newCost = (position.bookCost + cashRequired) / Decimal(position.units + doubleUnits)
                 let total = book.total(using: quotes)

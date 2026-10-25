@@ -167,6 +167,28 @@ final class NextLedgerPersistenceTests: XCTestCase {
         }
     }
 
+    func testShareAdditionOverflowRejectsRealFillWithoutChangingLedger() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-ledger-units-overflow-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let initial = NextBook(cash: 10,
+                positions: [NextPosition(code: "159941", name: "纳指ETF", units: Int.max, bookCost: 1)])
+            let model = NextAppModel(repository: repository)
+            try model.commitRealLedger(initial, action: "建立测试账本", reason: "溢出保护")
+            let before = model.ledger
+
+            XCTAssertThrowsError(try model.recordTrade(code: "159941", name: "纳指ETF", side: "buy",
+                units: 1, price: 1, fee: 0))
+            XCTAssertEqual(model.ledger, before, "份额加法溢出时账本不能部分变化")
+            XCTAssertEqual(NextLocalRepository(directoryOverride: directory)
+                .loadValidated(NextAuditedBook.self, filename: "real-ledger-v1.json",
+                    fallback: NextAuditedBook(current: NextBook()), validate: { try $0.validate() }), before,
+                "拒绝异常成交后磁盘真实账本也必须保持原值")
+        }
+    }
+
     func testRepositoryTransactionRollsBackEarlierFilesWhenLaterWriteFails() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory
