@@ -486,6 +486,43 @@ class PointInTimeArchiveTests(unittest.TestCase):
         self.assertFalse(lunch["frozenHypothesis"]["dataComplete"])
         self.assertEqual(lunch["frozenHypothesis"]["state"], "no_hypothesis")
 
+    def test_replay_rejects_boolean_or_fractional_hypothesis_controls(self):
+        base = {"id": "typed-controls", "cutoff": "12:50",
+            "conditions": [{"series": "leader", "from": "11:30", "to": "12:50",
+                            "operator": "gte", "threshold": 0.0}],
+            "expectedDirection": 1, "outcomeBaseline": "13:00", "confirmAt": "13:05"}
+        invalid_hypotheses = [
+            dict(base, expectedDirection=True),
+            dict(base, conditions=[dict(base["conditions"][0], threshold=True)]),
+            dict(base, conditions=[dict(base["conditions"][0], operator="between",
+                                        threshold=0.0, upperThreshold=True)]),
+        ]
+        for hypothesis in invalid_hypotheses:
+            with self.subTest(hypothesis=hypothesis), self.assertRaises(ValueError):
+                cross_market.replay_hypothesis_day([], [], day="2026-10-23",
+                    source="fixture", hypothesis=hypothesis)
+        valid_rule = {"leaderShockAtLeast": 0.0, "assetMorningAtMost": 0.0,
+                      "expectedDirection": 1}
+        invalid_rules = [
+            dict(valid_rule, leaderShockAtLeast=True),
+            dict(valid_rule, assetMorningAtMost=True),
+            dict(valid_rule, expectedDirection=True),
+            dict(valid_rule, expectedDirection=1.5),
+        ]
+        for rule in invalid_rules:
+            with self.subTest(rule=rule), self.assertRaises(ValueError):
+                cross_market.replay_lunch_day([], [], day="2026-10-23",
+                    source="fixture", rule=rule)
+        with self.assertRaises(ValueError):
+            cross_market.replay_lunch_day([], [], day="2026-10-23",
+                source="fixture", rule=valid_rule, minimum_samples=True)
+        with self.assertRaises(ValueError):
+            cross_market.replay_hypothesis_days([], source="fixture", hypothesis=base,
+                minimum_samples=True)
+        with self.assertRaises(ValueError):
+            cross_market.replay_lunch_days([], source="fixture", rule=valid_rule,
+                minimum_samples=True)
+
     def test_legacy_schema_migrates_first_observed_metadata_conservatively(self):
         import sqlite3
         import shutil

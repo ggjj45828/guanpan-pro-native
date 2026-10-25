@@ -694,7 +694,8 @@ def replay_hypothesis_day(leader_rows, asset_rows, *, day, source, hypothesis,
     confirmation_clock = hypothesis.get("confirmAt")
     horizon_clocks = hypothesis.get("horizons", [])
     if (not isinstance(conditions, list) or not 1 <= len(conditions) <= 8 or
-            direction not in (-1, 1) or not isinstance(horizon_clocks, list) or len(horizon_clocks) > 8):
+            type(direction) is not int or direction not in (-1, 1) or
+            not isinstance(horizon_clocks, list) or len(horizon_clocks) > 8):
         raise ValueError("invalid hypothesis specification")
     baseline = _session_time(day, baseline_clock, asset_zone)
     confirmation = _session_time(day, confirmation_clock, asset_zone)
@@ -720,9 +721,13 @@ def replay_hypothesis_day(leader_rows, asset_rows, *, day, source, hypothesis,
         end_price = _nearest(series, end, stamps=stamps)
         observed = (end_price / start_price - 1.0) if start_price and end_price else None
         try:
-            threshold = float(condition["threshold"])
+            raw_threshold = condition["threshold"]
             operator = condition["operator"]
-            upper = float(condition["upperThreshold"]) if operator == "between" else None
+            raw_upper = condition["upperThreshold"] if operator == "between" else None
+            if isinstance(raw_threshold, bool) or isinstance(raw_upper, bool):
+                raise ValueError("boolean threshold")
+            threshold = float(raw_threshold)
+            upper = float(raw_upper) if operator == "between" else None
         except (KeyError, TypeError, ValueError, OverflowError):
             raise ValueError("invalid hypothesis threshold")
         if not (-1 <= threshold <= 1 and (upper is None or threshold <= upper <= 1) or
@@ -770,7 +775,7 @@ def replay_hypothesis_day(leader_rows, asset_rows, *, day, source, hypothesis,
 
 
 def replay_hypothesis_days(days, *, source, hypothesis, minimum_samples=100):
-    if not isinstance(minimum_samples, int) or minimum_samples < 1 or minimum_samples > 1000:
+    if type(minimum_samples) is not int or minimum_samples < 1 or minimum_samples > 1000:
         raise ValueError("minimum replay sample count must be from 1 to 1000")
     results, seen = [], set()
     for row in days:
@@ -814,13 +819,19 @@ def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
         raise ValueError("a named source and explicit research rule are required")
     _validate_replay_day(day)
     try:
-        required_shock = float(rule.get("leaderShockAtLeast", 0.0))
-        max_morning = float(rule.get("assetMorningAtMost", 1.0))
-        direction_value = int(rule.get("expectedDirection", 1))
+        raw_shock = rule.get("leaderShockAtLeast", 0.0)
+        raw_morning = rule.get("assetMorningAtMost", 1.0)
+        raw_direction = rule.get("expectedDirection", 1)
+        if (any(isinstance(value, bool) for value in (raw_shock, raw_morning, raw_direction)) or
+                type(raw_direction) is not int):
+            raise ValueError("boolean replay value")
+        required_shock = float(raw_shock)
+        max_morning = float(raw_morning)
+        direction_value = raw_direction
     except (TypeError, ValueError, OverflowError):
         raise ValueError("invalid replay rule")
     if not (-1 <= required_shock <= 1 and -1 <= max_morning <= 1 and direction_value in (-1, 1)
-            and isinstance(minimum_samples, int) and minimum_samples > 0):
+            and type(minimum_samples) is int and 0 < minimum_samples <= 1000):
         raise ValueError("replay rule bounds are invalid")
     leader = _series(leader_rows, cutoff, require_availability_timestamp=True)
     asset_pre = _series(asset_rows, cutoff, require_availability_timestamp=True)
@@ -867,7 +878,7 @@ def replay_lunch_day(leader_rows, asset_rows, *, day, source, rule,
 
 def replay_lunch_days(days, *, source, rule, minimum_samples=100):
     """Replay actual sessions independently; report no rate below the sample floor."""
-    if not isinstance(minimum_samples, int) or minimum_samples < 1 or minimum_samples > 1000:
+    if type(minimum_samples) is not int or minimum_samples < 1 or minimum_samples > 1000:
         raise ValueError("minimum replay sample count must be from 1 to 1000")
     results, seen_days = [], set()
     for row in days:
