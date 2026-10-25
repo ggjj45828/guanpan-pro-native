@@ -48,6 +48,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: "NO"
         CODE_SIGNING_ALLOWED: "NO"
+        ENABLE_TESTABILITY: "YES"
     scheme:
       gatherCoverageData: false
   GuanpanProExperienceTests:
@@ -75,6 +76,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.ledger-tests
         GENERATE_INFOPLIST_FILE: "YES"
         TEST_TARGET_NAME: GuanpanProNative
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/GuanpanPro.app/GuanpanPro"
+        BUNDLE_LOADER: "$(TEST_HOST)"
         CODE_SIGNING_ALLOWED: "NO"
 schemes:
   GuanpanProNative:
