@@ -197,8 +197,6 @@ import Combine
         }
         var updatedPreferences = preferences
         updatedPreferences.etfFeePerTrade = fee
-        preferences = updatedPreferences
-        rules = updatedRules
         var revisedPlans = candidatePlans
         let now = Date()
         for index in revisedPlans.indices where revisedPlans[index].state.isOpen && updatedRules[revisedPlans[index].code]?.assetClass == .etf {
@@ -219,8 +217,9 @@ import Combine
             throw NextError.invalid("手续费未更新：计划、交易规则和设置未能作为一组安全保存（\(failure)）")
         }
         // Publish the new context only after all persisted files have landed.
-        // The didSet saves below are idempotent; the transaction above ensures
-        // a failed write cannot leave memory and disk using different fee rules.
+        // In particular, do not assign @Published properties before saveTransaction:
+        // their didSet handlers update memory and trigger individual writes, which
+        // would leak a partial fee change if the grouped transaction failed.
         preferences = updatedPreferences
         rules = updatedRules
         candidatePlans = revisedPlans
