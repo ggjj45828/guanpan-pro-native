@@ -676,3 +676,19 @@
 - 截图复查后，在`guanpan-pro-native/Sources/GuanpanAdvisorApp.swift`让主题Canvas覆盖状态栏安全区域，在`Sources/ThemeHome.swift`把首页NAS卡重复的连接状态行改为跨市场研究覆盖摘要；在`Sources/GlobalIndices.swift`把任何未来时间都标成时间异常，并对超过96小时的receipt-only时间额外标陈旧；`Tests/NextCoreTests.swift`新增+60秒未来时点和陈旧receipt-only边界测试。这些改动目前仍是本地未提交状态，未经Xcode验证。
 - Matrix统计保持✅1、🟡18、🟠126、⚠️0，共145项。下一步：`git diff --check`、确认矩阵未虚升状态；提交当前源码和记录，沿B分支以非强制快进方式推送；再次运行完整Portable Swift Core、所有XCTest及unsigned IPA构建；读取结果摘要和15张五主题模拟器页面截图，若失败或视觉不一致继续修复。随后按P0核心链从矩阵选择下一项可推进Partial，不因本批CI通过而停止。
 - 产品红线保持：B完全独立于A；唯一真实账本；没有虚拟账户/资金/持仓/成交；不自动下单；不降低最小样本、fail-closed或防未来数据约束；真实NAS长期积累、实机、外部密钥仍需诚实保留为未实测。
+
+## 2026-10-25 已显示在线AI答复即时失效
+
+- B独立验证分支当前提交`366a8fc`（本地完整SHA `366a8fcca5a43ea0b9bc04f979f14a1a24cfcba0`），已通过授权的HTTPS Git push快进推送到`validation/acceptance-20261024`。最初普通沙箱因DNS失败；授权提升后的推送成功。
+- 新增AppModel失效路径：在线AI答复已经显示后，真实账本、行情、日K/分时、交易规则、盘口、NAS研究、新闻、分红、候选计划、画像、目标配置、行情来源或NAS地址发生改变时，立即清除旧在线答复。若没有正在进行的请求，会显示明确的过期提示；仍在途的网络回答继续依赖完整DecisionContext响应后复核。
+- 新增`testDisplayedOnlineAdviceIsClearedImmediatelyWhenDecisionInputsChange`，逐一覆盖这些决策输入，且每种变化前重置状态提示，避免断言被上一次变化误满足。测试还检查旧文案消失及提示内容。它目前仅已编码，等待macOS完整XCTest。
+- 本轮可执行NAS回归：研究兼容服务58/58、旧NAS服务84/84、同步服务58/58通过；Python compileall通过；四份Docker Compose配置解析通过。较早一次普通沙箱运行被Windows临时目录权限、localhost代理环境限制，随后把TMP/TEMP放在仓库测试暂存目录并清除HTTP代理环境，在授权执行下使用正确工作目录重跑全套，三组全部通过。未连接真实NAS、未证明长期真实行情积累。
+- 已提交并推送，但最新Actions读取工具显示公开列表缓存仍停留在`315cdaf`对应#118/#187，未取得`366a8fc`的Validate/IPA run id与终态。不得称Swift测试通过；Matrix第47保持🟡，总状态仍✅1、🟡18、🟠126、⚠️0。
+- 本机无Swift、Xcode或xcodebuild。下一步第一件事：重新读取GitHub Actions中`366a8fc`对应完整Validate结果和日志工件；修复编译/测试失败（不降低统计阈值、不放松fail-closed或未来数据限制），再取得完整XCTest与IPA结果。之后继续从Master Acceptance Matrix优先处理核心链可推进的Partial。产品红线：保持B独立，不merge/cherry-pick A；真实账户唯一，不创建虚拟账户/资金/持仓，不自动下单。
+
+## 2026-10-25 Validate #119 Actor隔离失败修复
+
+- 通过配置的GitHub凭据助手在内存中读取Actions run #119：commit`366a8fc`的Portable Swift Core 140/140通过；Xcode阶段在新测试编译时失败，尚未开始XCTest。诊断工件`ios-validation-results`确认4个错误均来自新测试辅助函数：MainActor模型属性在非隔离闭包中读写/被XCTAssert autoclosure访问。
+- 已把辅助断言提为`@MainActor` XCTest实例方法，并将变更闭包标成`@MainActor`；先将MainActor隔离属性取到局部值，再交给XCTAssert，避免非隔离断言autoclosure读模型属性。测试覆盖场景不变，不改产品代码、安全门槛或数据约束。
+- Build IPA #188成功；只证明unsigned IPA可打包。Matrix第47仍🟡；Portable Core通过不抵消Xcode测试编译失败。
+- 当前新修复及矩阵/续记待检查和提交，推送后触发下一次完整Validate/IPA。下一步读取新诊断工件；若测试已启动则修复真实XCTest失败，若编译仍失败继续根据摘要修正。之后继续可推进的Partial。

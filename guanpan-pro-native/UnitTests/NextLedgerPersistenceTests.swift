@@ -2,57 +2,62 @@ import XCTest
 @testable import GuanpanProNative
 
 final class NextLedgerPersistenceTests: XCTestCase {
+    @MainActor
+    private func assertAdviceCleared(_ model: NextAppModel, after update: @MainActor () -> Void,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        model.unifiedAIAdvice = "旧在线分析正文"
+        model.unifiedAIStatus = "在线 AI 分析已完成"
+        update()
+        let adviceAfterChange = model.unifiedAIAdvice
+        let statusAfterChange = model.unifiedAIStatus
+        XCTAssertNil(adviceAfterChange, "上下文发生变化时必须立即清除已显示的在线回答", file: file, line: line)
+        XCTAssertTrue(statusAfterChange?.contains("旧在线AI回答已清除") == true,
+                      "应明确告知用户旧回答已失效", file: file, line: line)
+    }
+
     func testDisplayedOnlineAdviceIsClearedImmediatelyWhenDecisionInputsChange() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("Guanpan-ai-context-invalidation-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: directory) }
             let model = NextAppModel(repository: NextLocalRepository(directoryOverride: directory))
-            func assertClearedAfter(_ update: () -> Void, file: StaticString = #filePath, line: UInt = #line) {
-                model.unifiedAIAdvice = "旧在线分析正文"
-                model.unifiedAIStatus = "在线 AI 分析已完成"
-                update()
-                XCTAssertNil(model.unifiedAIAdvice, "上下文发生变化时必须立即清除已显示的在线回答", file: file, line: line)
-                XCTAssertTrue(model.unifiedAIStatus?.contains("旧在线AI回答已清除") == true,
-                              "应明确告知用户旧回答已失效", file: file, line: line)
-            }
 
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.ledger = NextAuditedBook(current: NextBook(cash: 100))
             }
             let now = Date()
             let quote = NextQuote(code: "159941", name: "纳指ETF", price: 1.4, previousClose: 1.39,
                                   time: now, source: "licensed:test")
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.quotes = ["159941": NextCachedQuote(quote: quote,
                     stamp: NextDataStamp(source: "licensed:test", observedAt: now, quality: .live, detail: "test"))]
             }
             let sample = NextChartSample(timestamp: now, open: 1.39, high: 1.41, low: 1.38,
                                          close: 1.4, iopv: nil, volume: 100_000)
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.chartData = ["159941:day": NextChartDataset(code: "159941", interval: .day,
                     samples: [sample], costPerUnit: nil, costObservedAt: nil,
                     priceSource: "test", iopvSource: nil, observedAt: now)]
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.nasResearch = ["159941": NextNASResearch(factors: nil, ai: nil, providerConfigured: false)]
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.rules = ["159941": NextInstrumentRules.verifiedETFMarketRule(code: "159941", market: "SZSE", at: now)!]
             }
             let levels = Array(repeating: NextBookLevel(price: 1.39, units: 100), count: 5)
             let asks = [1.40, 1.41, 1.42, 1.43, 1.44].map { NextBookLevel(price: Decimal(string: "\($0)")!, units: 100) }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.orderBooks = ["159941": NextOrderBookSnapshot(code: "159941", observedAt: now,
                     source: "test", bids: levels, asks: asks)]
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.nasNews = ["159941": [NextNewsInput(title: "相关公告变化", source: "test")]]
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.dividendEvents = ["159941": [NextETFDividendEvent(code: "159941", date: "2026-10-24", amountPerShare: 0.01)]]
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 let plan = NextCandidatePlan(kind: .gridBuy, code: "159941", name: "纳指ETF",
                     limitPrice: 1.2, units: 100, createdAt: now, expiresAt: now.addingTimeInterval(3600),
                     triggerNote: "回落触发", cancelNote: "突破区间", quoteSource: "test", quoteTime: now,
@@ -61,27 +66,27 @@ final class NextLedgerPersistenceTests: XCTestCase {
                     riskNote: "价格波动", marketState: "震荡", cancelAbove: nil, cancelBelow: nil)
                 model.candidatePlans = [plan]
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 var changed = model.profile
                 changed.updatedAt = now.addingTimeInterval(1)
                 model.profile = changed
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 var preferences = model.preferences
                 preferences.goal.monthlyBudget += 1
                 model.preferences = preferences
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 var preferences = model.preferences
                 preferences.marketSourceMode = .nasPreferred
                 model.preferences = preferences
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 var preferences = model.preferences
                 preferences.nasBaseURL = "http://nas.example"
                 model.preferences = preferences
             }
-            assertClearedAfter {
+            self.assertAdviceCleared(model) {
                 model.dailyGuidance = NextDailyGuidance(generatedAt: now, items: [], summary: "新规则结论",
                     noActionSummary: "继续持有", dataState: "新上下文")
             }
