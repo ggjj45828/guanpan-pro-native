@@ -319,6 +319,27 @@ final class NextCoreTests: XCTestCase {
                                      side: "buy", units: 100, price: 1.2, fee: 0.1, realized: 0)
         XCTAssertThrowsError(try NextBook(fills: [nonFiniteDate]).validate(),
                              "非法时间不能参与持仓与成交恢复")
+        let nonFiniteSnapshot = NextAssetPoint(date: Date(timeIntervalSince1970: .nan), total: 10, externalFlow: 0)
+        XCTAssertThrowsError(try NextBook(history: [nonFiniteSnapshot]).validate(),
+                             "非法资产快照时间不能进入收益率历史")
+        let movement = NextCashMovement(date: now, amount: 10, reason: "入金")
+        let duplicateMovement = movement
+        XCTAssertThrowsError(try NextBook(cashMovements: [movement, duplicateMovement]).validate(),
+                             "重复现金流水ID必须拒绝，避免重复入金恢复")
+        let invalidMovementTime = NextCashMovement(date: Date(timeIntervalSince1970: .infinity), amount: 10, reason: "入金")
+        XCTAssertThrowsError(try NextBook(cashMovements: [invalidMovementTime]).validate(),
+                             "非法现金流水时间不能进入真实账本")
+        let invalidPositionDate = NextPosition(code: "159941", name: "纳指ETF", units: 100, bookCost: 120,
+                                               acquiredAt: Date(timeIntervalSince1970: .nan))
+        XCTAssertThrowsError(try NextBook(positions: [invalidPositionDate]).validate(),
+                             "非法建仓时间不能进入真实持仓")
+        let invalidImportDate = NextBook(cash: 10, importedAt: Date(timeIntervalSince1970: .infinity))
+        XCTAssertThrowsError(try invalidImportDate.validate(), "非法导入时间不能被当作账本来源时间")
+        let invalidIncomeDate = NextIncomeEvent(kind: .cashInterest, name: "现金利息", exDate: nil,
+            payDate: Date(timeIntervalSince1970: .infinity), units: nil, perUnit: nil,
+            grossAmount: 1, tax: 0)
+        XCTAssertThrowsError(try NextBook(incomeEvents: [invalidIncomeDate]).validate(),
+                             "非法收息时间不能进入真实账户收益记录")
     }
     func testDividendAnalyticsUsesSuppliedRecordsWithoutBundledHistory() {
         let events = NextDividendAnalytics.merged([

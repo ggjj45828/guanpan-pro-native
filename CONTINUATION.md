@@ -450,3 +450,11 @@
 - 两项跨市场改判测试失败，根因是摘要排序后只显示前两条，`validation=`状态被asOf/资格字段挤掉。现让摘要优先保留validation、交易资格、liveDivergence，再按稳定顺序填充，最多展示3条。
 - 另增加真实账本拒绝重复流水UUID与无穷成交时间校验及回归测试（矩阵第4项保持🟠）。这些改动尚未经过Actions复验。
 - 下一步：提交并推送本批测试/账本修复，检查Swift core suite、simulator suite和IPA workflow的新结果；继续保留所有矩阵Partial。
+
+## 2026-10-25 Actions发布受阻与账本边界续记
+
+- `95bac85` 已本地提交之前的3项XCTest修复及重复成交ID/非有限成交时间校验；提交后直接推送失败，当前环境无法解析`github.com`。尝试用Git credential查询也没有获得凭据，因此尚未发布至验证分支，不能声称该提交已通过Actions。
+- 继续对真实账本边界审计：现金流水和资产快照也参与收益及现金恢复，收入/分红事件以ID去重；现在校验这些集合的重复ID与非有限时间，并覆盖持仓建仓日、账本导入时间、收息事件日期。新增回归用例，但本机没有Swift/Xcode，尚未编译运行。
+- Master Acceptance Matrix第4项更新，状态仍为🟠；总状态保持✅1、🟡16、🟠124、⚠️4。
+- 验证环境：本机`swift`、`xcodebuild`不可用；GitHub Actions浏览器/API在此会话不可访问；push DNS失败且无可读GitHub凭据。下一步一旦网络/凭据可用，先推送当前工作树并跑core XCTest、simulator tests与IPA workflow。其间仍可继续做本地静态审计和NAS已有测试，不可升级矩阵状态。
+- 后续追加的未提交本地变更覆盖位置建仓/账本导入/收息日期边界及测试；需要先做`git diff --check`和代码复核，再形成提交。测试尚未运行。

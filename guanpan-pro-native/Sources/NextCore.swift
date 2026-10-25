@@ -171,8 +171,11 @@ struct NextIncomeEvent: Codable, Identifiable, Equatable {
     var note: String = ""
     var netAmount: Decimal { grossAmount - tax }
     func validate() throws {
+        let optionalDates = [exDate, receivedAt].compactMap { $0 }
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               grossAmount > 0, !grossAmount.isNaN, tax >= 0, !tax.isNaN, tax <= grossAmount,
+              payDate.timeIntervalSince1970.isFinite,
+              optionalDates.allSatisfy({ $0.timeIntervalSince1970.isFinite }),
               units.map({ $0 > 0 }) ?? true,
               perUnit.map({ $0 > 0 && !$0.isNaN }) ?? true,
               code.map({ $0.count == 6 && $0.allSatisfy(\.isNumber) }) ?? true,
@@ -201,13 +204,18 @@ struct NextBook: Codable, Equatable {
     }
     func validate() throws {
         guard schemaVersion == 1, !cash.isNaN, cash >= 0,
+              importedAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
               Set(positions.map(\.code)).count == positions.count,
-              positions.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.units >= 0 && !$0.bookCost.isNaN && $0.bookCost >= 0 }),
+              positions.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.units >= 0 && !$0.bookCost.isNaN && $0.bookCost >= 0 && ($0.acquiredAt.map { $0.timeIntervalSince1970.isFinite } ?? true) }),
               fills.allSatisfy({ $0.code.count == 6 && $0.code.allSatisfy(\.isNumber) && ($0.side == "buy" || $0.side == "sell") && $0.units > 0 && $0.price > 0 && !$0.price.isNaN && $0.fee >= 0 && !$0.fee.isNaN && !$0.realized.isNaN }),
               Set(fills.map(\.id)).count == fills.count,
               fills.allSatisfy({ $0.date.timeIntervalSince1970.isFinite }),
-              history.allSatisfy({ $0.total >= 0 && !$0.total.isNaN && !$0.externalFlow.isNaN }),
-              cashMovements.allSatisfy({ !$0.amount.isNaN && !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+              Set(history.map(\.id)).count == history.count,
+              history.allSatisfy({ $0.total >= 0 && !$0.total.isNaN && !$0.externalFlow.isNaN && $0.date.timeIntervalSince1970.isFinite }),
+              Set(cashMovements.map(\.id)).count == cashMovements.count,
+              cashMovements.allSatisfy({ !$0.amount.isNaN && !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.date.timeIntervalSince1970.isFinite }),
+              Set(incomeEvents.map(\.id)).count == incomeEvents.count,
+              Set(dividendEvents.map(\.id)).count == dividendEvents.count else {
             throw NextError.invalid("账本校验失败：现金、持仓或版本无效")
         }
         for event in incomeEvents { try event.validate() }

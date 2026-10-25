@@ -6,14 +6,14 @@
 
 本次复核统计：✅ 1项、🟡 16项（其中14项未在目标平台验证、2项未完全验证）、🟠 124项、⚠️ 4项，共145项。当前没有单独标成❌的行；🟠“部分链路”并不代表缺失部分已完成。跨市场分钟采集与持仓研究接口已接入源码，真实NAS持续档案和100–200日实证仍缺失。
 
-2026-10-25补充验证：NAS研究兼容服务58/58、旧NAS服务84/84、NAS同步服务器58/58通过；顶层Compose配置通过。`a72cf91` 的IPA构建通过，但 `e6c6418` 的Swift core XCTest已执行135项，3项失败：收盘计划测试未隔离过期指导、跨市场改判摘要截断验证状态。两处已修正并待新Actions复验；IPA构建结果与模拟器UI测试仍未验收。状态不升级，总计仍为145项：✅1、🟡16、🟠124、⚠️4。
+2026-10-25补充验证：NAS研究兼容服务58/58、旧NAS服务84/84、NAS同步服务器58/58通过；顶层Compose配置通过。`a72cf91` 的IPA构建通过，但 `e6c6418` 的Swift core XCTest已执行135项，3项失败：收盘计划测试未隔离过期指导、跨市场改判摘要截断验证状态。修正提交`95bac85`仅在本地；当前环境DNS无法解析GitHub且未取得GitHub凭据，故新Actions无法触发。随后追加真实账本现金流水、资产快照、收入事件等ID/时间校验与回归，尚未编译验证。IPA和模拟器UI仍未验收。状态不升级，总计仍为145项：✅1、🟡16、🟠124、⚠️4。
 
 | Requirement | Status | Files | Implementation | Test | Result | Remaining |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1. 产品最终定位 | 🟠 Partial | guanpan-pro-native/Sources/NextCore.swift; nas-advisor-compat/server/app.py | 真实账本已编码，旧入口部分清理；未完整联调；真实账本提交改为先通过本机原子写入再更新界面状态；NAS与手机仍共享真实账户边界。 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 核对仓库旧服务与所有账本写入路径 |
 | 2. 最重要的产品原则 | 🟠 Partial | guanpan-pro-native/Sources/NextCore.swift; nas-advisor-compat/server/app.py | 真实账本已编码，旧入口部分清理；未完整联调 | 静态审计；目标平台测试待执行 | 目标平台未实测；待按右列验收 | 核对仓库旧服务与所有账本写入路径 |
 | 3. 删除/停用旧方向 | 🟠 Partial | compose.yml; nas-advisor-compat/server/app.py; nas-advisor-compat/server/workers.py; nas-sync-server/channel_store.py; nas-sync-server/server.py; nas-sync-server/compose.yaml; nas-sync-server/docker-compose.yml | 默认NAS服务不再接收模型密钥、不调用大模型、不运行虚拟策略；旧模拟/网页/独立分析入口停用，历史数据结构保留以兼容升级 | NAS兼容服务58/58、legacy server 84/84、同步58/58、IPA校验4/4；四套Compose配置通过 | 当前本地回归已通过；仍需真实NAS升级验证 | macOS编译/模拟器与NAS升级后端到端验证，检查兼容包升级、旧卷兼容与端到端连接 |
-| 4. 整个系统的核心数据链 | 🟠 Partial | guanpan-pro-native/Sources/NextCore.swift; nas-advisor-compat/server/app.py | 真实账本已编码，旧入口部分清理；未完整联调；真实账本提交失败即拒绝更新内存状态；成交流水作为候选计划及决策记忆持久化恢复依据；账本拒绝重复流水ID与非有限成交时间，保护恢复幂等性。 | Swift回归用例已新增；macOS Actions待验证 | 目标平台未实测；待按右列验收 | 核对仓库旧服务和所有账本写入路径，并通过iOS CI及真机确认恢复链 |
+| 4. 整个系统的核心数据链 | 🟠 Partial | guanpan-pro-native/Sources/NextCore.swift; nas-advisor-compat/server/app.py | 真实账本提交失败即拒绝更新内存；真实成交回配计划/记忆后可幂等恢复。账本校验拒绝重复成交/现金流水/资产快照/收入/分红事件ID、非有限成交/现金/资产历史/持仓建仓/收入事件时间；避免恢复重复记账与异常时间污染。 | Swift回归用例新增；尚无本机Swift/Xcode；GitHub Actions待验证 | 目标平台未实测；新增校验未编译验证 | Actions通过后继续核对NAS契约、真实手机恢复链及其余账本写入路径 |
 | 5. NAS定位 | 🟠 Partial | nas-advisor-compat/server/workers.py; nas-advisor-compat/server/mobile_research.py; nas-advisor-compat/server/app.py; guanpan-pro-native/Sources/NextAppModelState.swift | NAS只采集、归档并计算可追溯统计；已删除NAS模型调用与密钥配置，手机自动取NAS研究并合并手机直连数据形成唯一指导 | NAS兼容服务58/58；代码路径核对；开发环境上游行情曾实测 | 接口与本地计算通过；NAS/iPhone实机同步未验证 | 升级NAS并在iPhone确认自动拉取和断网降级 |
 | 6. 分时数据库 | 🟠 Partial | nas-advisor-compat/server/workers.py; nas-advisor-compat/server/domain.py; nas-advisor-compat/server/mobile_research.py | 真实分钟价与供应商累计量差分已存；只有分钟量覆盖≥98%、每日至少200点且和日K量差≤1%的交易日参与VWAP/往返统计；不伪造成交额/IOPV | NAS兼容服务58/58通过；合成逐分钟路径核验VWAP、往返统计和量不匹配拒绝 | 算法及接口通过测试；实采长期档案不足 | 需在NAS积累足够交易日并核验异常行情/量价单位 |
 | 7. 行情源 | 🟡 Implemented / Not Fully Verified | nas-advisor-compat/server/market.py; nas-advisor-compat/server/app.py; guanpan-pro-native/Sources/MarketDataSources.swift | NAS 腾讯优先、东财备用；手机 NAS 失败回退直连；备用源强制上游时间戳 | 实测 Tencent 512480 报价与 640 根日 K；东财时间戳与全源失败有单测 | Tencent 可从本环境获取；NAS 未部署，东财实网未触发验证 | 验证东财真实回退、NAS部署与iPhone取数 |
