@@ -308,6 +308,16 @@ import Combine
     func recordTrade(code: String, name: String, side: String, units: Int, price: Decimal, fee: Decimal,
                      at tradedAt: Date = Date(), decisionMemoryID: UUID? = nil,
                      candidatePlanID: UUID? = nil) throws {
+        try recordTrade(code: code, name: name, side: side, units: units, price: price, fee: fee,
+                        at: tradedAt, decisionMemoryID: decisionMemoryID,
+                        candidatePlanID: candidatePlanID, learnAfterCommit: true)
+    }
+
+    /// Internal two-phase caller for candidate fills: commit the real ledger,
+    /// update plan/memory/suggestion state, then learn once from the complete state.
+    private func recordTrade(code: String, name: String, side: String, units: Int, price: Decimal, fee: Decimal,
+                             at tradedAt: Date, decisionMemoryID: UUID?, candidatePlanID: UUID?,
+                             learnAfterCommit: Bool) throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), units > 0, price > 0,
               side == "buy" || side == "sell", fee >= 0, !fee.isNaN,
               tradedAt.timeIntervalSince1970.isFinite, tradedAt <= Date().addingTimeInterval(60) else {
@@ -365,7 +375,7 @@ import Combine
             decisionMemory = updatedMemory
         }
         // 真实成交是画像的主要证据来源：记完账立刻重算一次，界面上的「AI 对我的了解」同步变化。
-        learnProfile()
+        if learnAfterCommit { learnProfile() }
     }
     func addIncomeEvent(_ event: NextIncomeEvent) throws {
         try event.validate()
@@ -754,7 +764,7 @@ import Combine
         try revised.confirmRealFill(price: price, units: units, fee: fee, at: tradedAt, now: Date())
         try recordTrade(code: plan.code, name: plan.name, side: plan.kind.side, units: units, price: price,
                         fee: fee, at: tradedAt, decisionMemoryID: plan.decisionMemoryID,
-                        candidatePlanID: planID)
+                        candidatePlanID: planID, learnAfterCommit: false)
         var updatedPlans = candidatePlans
         updatedPlans[index] = revised
         candidatePlans = updatedPlans
