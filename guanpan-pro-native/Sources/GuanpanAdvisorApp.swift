@@ -377,42 +377,208 @@ private struct AIHubScreen: View {
     @EnvironmentObject private var model: NextAppModel
     @Environment(\.gp) private var p
 
+    private var actions: [AIHubShortcut] {
+        [
+            AIHubShortcut(identifier: "ai.chat.open", title: "AI 持仓问答", detail: "基于真实持仓、最新行情和 NAS 研究继续追问", symbol: "bubble.left.and.bubble.right", route: .chat, accent: p.chartBlue),
+            AIHubShortcut(identifier: "ai.grid.open", title: "智能网格候选", detail: "只展示今日统一指导生成的网格计划", symbol: "square.grid.2x2", route: .grid, accent: p.chartViolet),
+            AIHubShortcut(identifier: "ai.news.open", title: "新闻与持仓影响", detail: "查看与真实持仓相关的事件", symbol: "newspaper", route: .news, accent: p.chartGold),
+            AIHubShortcut(identifier: "ai.history.open", title: "决策记忆与复盘", detail: "查看过去判断和真实成交反馈", symbol: "clock.arrow.circlepath", route: .history, accent: p.jade)
+        ]
+    }
+
+    private var guidanceSummary: String { model.dailyGuidance?.summary ?? model.guidanceStatus }
+    private var guidanceMeta: String? {
+        guard let guidance = model.dailyGuidance else { return nil }
+        return "已扫描 \(guidance.items.count) 只真实持仓 · \(guidance.generatedAt.formatted(date: .omitted, time: .shortened))生成"
+    }
+
     var body: some View {
-        GPPageBackground {
+        GPPageBackground { themedContent }
+        .task { if model.dailyGuidance == nil { await model.refreshGuidance() } }
+    }
+
+    @ViewBuilder private var themedContent: some View {
+        switch p.theme {
+        case .editorial:
             VStack(alignment: .leading, spacing: 0) {
-                EditorialSection(title: "今天需要做什么？", trailing: NextMarketClock.sessionDescription(), accent: p.chartViolet) {
-                    GPCard(accent: p.chartViolet) {
-                        Text(model.dailyGuidance?.summary ?? model.guidanceStatus)
-                            .font(.subheadline.weight(.semibold)).foregroundStyle(p.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let guidance = model.dailyGuidance {
-                            Text("已扫描 \(guidance.items.count) 只真实持仓 · \(guidance.generatedAt.formatted(date: .omitted, time: .shortened))生成")
-                                .font(.caption2).foregroundStyle(p.muted)
-                        }
-                        NavigationLink(value: GPRoute.decision(nil)) {
-                            IntentRow(icon: "sparkles", title: "打开完整 AI 今日指导", detail: "逐只查看做T、网格、持有或不交易的依据")
-                        }.accessibilityIdentifier("ai.guidance.open")
-                    }
+                EditorialSection(title: "今天需要做什么？", trailing: NextMarketClock.sessionDescription(), accent: p.chartGold) {
+                    guidanceCard(style: .editorial)
                 }
                 EditorialSection(title: "研究与复盘", accent: p.jade) {
                     GPCard(accent: p.jade) {
-                        NavigationLink(value: GPRoute.chat) {
-                            IntentRow(icon: "bubble.left.and.bubble.right", title: "AI 持仓问答", detail: "基于真实持仓、最新行情和 NAS 研究继续追问")
-                        }.accessibilityIdentifier("ai.chat.open")
-                        NavigationLink(value: GPRoute.grid) {
-                            IntentRow(icon: "square.grid.2x2", title: "智能网格候选", detail: "只展示今日统一指导生成的网格计划")
-                        }.accessibilityIdentifier("ai.grid.open")
-                        NavigationLink(value: GPRoute.news) {
-                            IntentRow(icon: "newspaper", title: "新闻与持仓影响", detail: "查看与真实持仓相关的事件")
-                        }
-                        NavigationLink(value: GPRoute.history) {
-                            IntentRow(icon: "clock.arrow.circlepath", title: "决策记忆与复盘", detail: "查看过去判断和真实成交反馈")
-                        }
+                        ForEach(actions) { action in AIHubShortcutCard(action: action, layout: .editorialRow) }
                     }
                 }
             }
+        case .modern:
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("AI 私人投资顾问").font(.caption.weight(.semibold)).foregroundStyle(p.primary)
+                    Spacer()
+                    Text(NextMarketClock.sessionDescription()).font(.caption2).foregroundStyle(p.muted)
+                }
+                guidanceCard(style: .modern)
+                EditorialSection(title: "研究与复盘", accent: p.chartBlue) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(actions) { action in AIHubShortcutCard(action: action, layout: .modernTile) }
+                    }
+                }
+            }
+        case .dashboard:
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("AI DECISION DESK").font(.system(size: 11, weight: .bold, design: .monospaced)).tracking(1.2)
+                    Spacer()
+                    Text(NextMarketClock.sessionDescription()).font(.system(size: 10, design: .monospaced)).foregroundStyle(p.muted)
+                }.foregroundStyle(p.primary).padding(.horizontal, 3)
+                guidanceCard(style: .dashboard)
+                HStack(spacing: 8) {
+                    dashboardMetric(title: "真实持仓", value: "\(model.book.positions.filter { $0.units > 0 }.count) 只")
+                    dashboardMetric(title: "候选机会", value: "\(model.dailyGuidance?.items.filter(\.isActionable).count ?? 0) 条")
+                    dashboardMetric(title: "NAS研究", value: NextServiceConnectionStatus.text(
+                        configured: !model.preferences.nasBaseURL.isEmpty,
+                        reachable: model.nasReachable, probedAt: model.nasProbedAt))
+                }
+                EditorialSection(title: "操作台", trailing: "研究 · 复盘", accent: p.chartBlue) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
+                        ForEach(actions) { action in AIHubShortcutCard(action: action, layout: .dashboardTile) }
+                    }
+                }
+            }
+        case .magazine:
+            VStack(alignment: .leading, spacing: 8) {
+                Text(Date.now.formatted(.dateTime.month(.abbreviated).day().weekday(.wide)))
+                    .font(.caption.weight(.medium)).foregroundStyle(p.muted)
+                Text("今天的投资判断")
+                    .font(.system(size: 29, weight: .bold, design: .serif)).foregroundStyle(p.ink)
+                Text("观盘 · AI 私人投资手册").font(.caption).foregroundStyle(p.muted)
+                guidanceCard(style: .magazine)
+                EditorialSection(title: "延伸阅读", accent: p.chartRose) {
+                    VStack(spacing: 8) {
+                        ForEach(actions) { action in AIHubShortcutCard(action: action, layout: .magazineRow) }
+                    }
+                }
+            }
+        case .puzzle:
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("观盘").font(.system(size: 28, weight: .bold, design: .rounded)).foregroundStyle(p.ink)
+                    Text("AI 私人投资顾问 · \(Date.now.formatted(.dateTime.month(.twoDigits).day()))")
+                        .font(.caption2).foregroundStyle(p.muted)
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    guidanceCard(style: .puzzle).gridCellColumns(2)
+                    ForEach(actions) { action in AIHubShortcutCard(action: action, layout: .puzzleTile) }
+                }
+            }
         }
-        .task { if model.dailyGuidance == nil { await model.refreshGuidance() } }
+    }
+
+    private func guidanceCard(style: AIHubGuidanceStyle) -> some View {
+        GPCard(accent: style.accent(in: p)) {
+            VStack(alignment: .leading, spacing: style == .magazine ? 12 : 8) {
+                HStack {
+                    Label("AI 今日指导", systemImage: "sparkles")
+                        .font(.system(size: style == .dashboard ? 12 : 14, weight: .bold, design: style == .magazine ? .serif : .default))
+                        .foregroundStyle(style.accent(in: p))
+                    Spacer()
+                    if style == .dashboard { Text("唯一建议").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(p.muted) }
+                    Image(systemName: "arrow.up.right").font(.caption.weight(.bold)).foregroundStyle(p.muted)
+                }
+                Text(guidanceSummary)
+                    .font(.system(size: style == .magazine ? 20 : (style == .dashboard ? 14 : 16), weight: .semibold,
+                                  design: style == .magazine || style == .editorial ? .serif : .default))
+                    .foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
+                if let guidanceMeta { Text(guidanceMeta).font(.caption2).foregroundStyle(p.muted) }
+                NavigationLink(value: GPRoute.decision(nil)) {
+                    if style == .puzzle {
+                        Label("打开逐只持仓指导", systemImage: "arrow.right.circle.fill")
+                            .font(.caption.weight(.bold)).foregroundStyle(p.ink)
+                    } else {
+                        IntentRow(icon: "sparkles", title: "打开完整 AI 今日指导", detail: "查看做T、网格、持有或不交易的依据")
+                    }
+                }.accessibilityIdentifier("ai.guidance.open")
+            }
+        }
+    }
+
+    private func dashboardMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 9, weight: .medium)).foregroundStyle(p.muted)
+            Text(value).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundStyle(p.ink).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(9)
+        .background(p.paper, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(p.line.opacity(0.7), lineWidth: 0.7))
+    }
+}
+
+private enum AIHubGuidanceStyle: Equatable { case editorial, modern, dashboard, magazine, puzzle
+    func accent(in palette: GPPalette) -> Color {
+        switch self {
+        case .editorial: palette.chartGold
+        case .modern: palette.primary
+        case .dashboard: palette.chartViolet
+        case .magazine: palette.chartRose
+        case .puzzle: palette.chartGold
+        }
+    }
+}
+
+private struct AIHubShortcut: Identifiable {
+    let identifier: String
+    let title: String
+    let detail: String
+    let symbol: String
+    let route: GPRoute
+    let accent: Color
+    var id: String { identifier }
+}
+
+private enum AIHubShortcutLayout: Equatable { case editorialRow, modernTile, dashboardTile, magazineRow, puzzleTile }
+
+private struct AIHubShortcutCard: View {
+    @Environment(\.gp) private var p
+    let action: AIHubShortcut
+    let layout: AIHubShortcutLayout
+
+    var body: some View {
+        NavigationLink(value: action.route) {
+            Group {
+                switch layout {
+                case .editorialRow, .magazineRow:
+                    IntentRow(icon: action.symbol, title: action.title, detail: action.detail)
+                case .modernTile:
+                    VStack(alignment: .leading, spacing: 9) {
+                        Image(systemName: action.symbol).font(.system(size: 19, weight: .semibold)).foregroundStyle(action.accent)
+                        Text(action.title).font(.subheadline.weight(.bold)).foregroundStyle(p.ink)
+                        Text(action.detail).font(.caption2).foregroundStyle(p.muted).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: .infinity, minHeight: 94, alignment: .leading).padding(12)
+                case .dashboardTile:
+                    HStack(spacing: 9) {
+                        Image(systemName: action.symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(action.accent)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(action.title).font(.system(size: 12, weight: .bold)).foregroundStyle(p.ink)
+                            Text(action.detail).font(.system(size: 9)).foregroundStyle(p.muted).lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
+                    }.frame(maxWidth: .infinity, minHeight: 66, alignment: .leading).padding(10)
+                case .puzzleTile:
+                    VStack(alignment: .leading, spacing: 8) {
+                        Image(systemName: action.symbol).font(.system(size: 20, weight: .bold)).foregroundStyle(action.accent)
+                        Text(action.title).font(.subheadline.weight(.bold)).foregroundStyle(p.ink)
+                        Text(action.detail).font(.caption2).foregroundStyle(p.muted).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }.frame(maxWidth: .infinity, minHeight: 102, alignment: .leading).padding(12)
+                }
+            }
+            .background(p.tint.opacity(layout == .puzzleTile ? 0.7 : 0.45),
+                        in: RoundedRectangle(cornerRadius: p.theme == .puzzle ? 18 : p.cardRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: p.theme == .puzzle ? 18 : p.cardRadius, style: .continuous)
+                .stroke(action.accent.opacity(0.28), lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(action.identifier)
     }
 }
 
@@ -1526,6 +1692,91 @@ private struct AssetsScreen: View {
         }
     }
     private var valuation: NextAssetValuation { model.book.valuation(using: model.quotes, at: Date()) }
+    private var freshQuoteCount: Int {
+        model.book.positions.filter { position in
+            guard let quote = model.quotes[position.code] else { return false }
+            return quote.quote.isFreshForPricePlan(at: Date())
+        }.count
+    }
+
+    @ViewBuilder private var assetThemePrelude: some View {
+        switch p.theme {
+        case .editorial:
+            HStack(spacing: 8) {
+                Image(systemName: "book.closed.fill").foregroundStyle(p.chartGold)
+                Text("场内资产手册").font(.system(size: 14, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
+                Spacer()
+                Text("真实账本").font(.caption2.weight(.medium)).foregroundStyle(p.muted)
+            }.padding(.horizontal, 3)
+        case .modern:
+            EmptyView()
+        case .dashboard:
+            HStack(spacing: 8) {
+                assetMetric(title: "持仓", value: "\(model.book.positions.filter { $0.units > 0 }.count)", note: "只真实证券")
+                assetMetric(title: "现金", value: "¥\(NextMoney.text(model.book.cash))", note: "账本余额")
+                assetMetric(title: "新鲜报价", value: "\(freshQuoteCount)/\(model.book.positions.filter { $0.units > 0 }.count)", note: "只计有效时点")
+            }
+        case .magazine:
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Date.now.formatted(.dateTime.year().month(.wide).day()))
+                    .font(.caption.weight(.medium)).foregroundStyle(p.muted)
+                Text("我的资产与现金流")
+                    .font(.system(size: 25, weight: .bold, design: .serif)).foregroundStyle(p.ink)
+                Text("以真实流水为底稿，行情估值会随数据时点更新。")
+                    .font(.caption).foregroundStyle(p.muted)
+            }.padding(.vertical, 3)
+        case .puzzle:
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
+                assetMetric(title: "持仓标的", value: "\(model.book.positions.filter { $0.units > 0 }.count)", note: "真实账本")
+                assetMetric(title: "可用现金", value: "¥\(NextMoney.text(model.book.cash))", note: "不含未成交计划")
+                assetMetric(title: "今日盈亏", value: valuation.dailyChange.map { "¥\(NextMoney.text($0))" } ?? "数据不足",
+                            note: "由真实流水与可靠行情计算")
+                assetMetric(title: "有效报价", value: "\(freshQuoteCount) 只", note: "有时间戳且新鲜")
+            }
+        }
+    }
+
+    private func assetMetric(title: String, value: String, note: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption2.weight(.medium)).foregroundStyle(p.muted)
+            Text(value).font(.system(size: p.theme == .dashboard ? 12 : 15, weight: .bold,
+                                     design: p.theme == .magazine ? .serif : .rounded))
+                .monospacedDigit().foregroundStyle(p.ink).lineLimit(1).minimumScaleFactor(0.75)
+            Text(note).font(.system(size: 9)).foregroundStyle(p.muted).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: p.theme == .puzzle ? 72 : 54, alignment: .leading)
+        .padding(10)
+        .background(p.theme == .puzzle ? p.tint : p.paper,
+                    in: RoundedRectangle(cornerRadius: p.theme == .puzzle ? 17 : 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: p.theme == .puzzle ? 17 : 11, style: .continuous)
+            .stroke(p.primary.opacity(0.18), lineWidth: 0.8))
+    }
+
+    private var analysisEntry: some View {
+        NavigationLink(value: GPRoute.portfolioAnalysis) {
+            GPCard(accent: p.jade) {
+                IntentRow(icon: "chart.pie", title: "持仓盈亏与风险分析", detail: "成本口径、区间表现、集中度与账户诊断")
+            }
+        }.buttonStyle(.plain).accessibilityIdentifier("assets.analysis.open")
+    }
+
+    private var positionsSection: some View {
+        EditorialSection(title: "持仓明细", trailing: "\(model.book.positions.count) 项", accent: p.jade) {
+            HStack {
+                Button { addPosition = true } label: { Label("录入已确认持仓", systemImage: "plus") }.font(.caption.weight(.semibold))
+                Spacer()
+                NavigationLink(value: GPRoute.fills) { Label("资产流水", systemImage: "list.bullet.rectangle") }.font(.caption)
+            }.tint(p.forest)
+            if model.book.positions.isEmpty {
+                GPStatus(title: "账本为空", detail: "只录入你确认的场内证券，不自动导入旧账本或场外基金。", symbol: "tray")
+            }
+            ForEach(model.book.positions) { position in PositionRow(position: position, quote: model.quotes[position.code]) }
+            NavigationLink(value: GPRoute.dividends(nil)) {
+                IntentRow(icon: "yensign.circle", title: "收息与派息", detail: "实际到账、待到账及股息买入参考")
+            }.buttonStyle(.plain)
+        }
+    }
+
     var body: some View {
         GPPageBackground {
             VStack(alignment: .leading, spacing: 12) {
@@ -1538,20 +1789,17 @@ private struct AssetsScreen: View {
                     history: model.book.history
                 )
                 .padding(.top, 6)
-                NavigationLink(value: GPRoute.portfolioAnalysis) {
-                    GPCard(accent: p.jade) {
-                        IntentRow(icon: "chart.pie", title: "持仓盈亏与风险分析", detail: "成本口径、区间表现、集中度与账户诊断")
-                    }
-                }.buttonStyle(.plain).accessibilityIdentifier("assets.analysis.open")
-                EditorialSection(title: "持仓明细", trailing: "\(model.book.positions.count) 项", accent: p.jade) {
-                    HStack { Button { addPosition = true } label: { Label("录入已确认持仓", systemImage: "plus") }.font(.caption.weight(.semibold)); Spacer(); NavigationLink(value: GPRoute.fills) { Label("资产流水", systemImage: "list.bullet.rectangle") }.font(.caption) }.tint(p.forest)
-                    if model.book.positions.isEmpty { GPStatus(title: "账本为空", detail: "只录入你确认的场内证券，不自动导入旧账本或场外基金。", symbol: "tray") }
-                    ForEach(model.book.positions) { position in
-                        PositionRow(position: position, quote: model.quotes[position.code])
-                    }
-                    NavigationLink(value: GPRoute.dividends(nil)) {
-                        IntentRow(icon: "yensign.circle", title: "收息与派息", detail: "实际到账、待到账及股息买入参考")
-                    }.buttonStyle(.plain)
+                assetThemePrelude
+                switch p.theme {
+                case .editorial, .dashboard:
+                    analysisEntry
+                    positionsSection
+                case .modern, .magazine:
+                    positionsSection
+                    analysisEntry
+                case .puzzle:
+                    analysisEntry
+                    positionsSection
                 }
                 // 收息通过持仓明细进入，共用同一真实账本，不再占一个主导航位。
                 EditorialSection(title: "现金变动", trailing: "可用 ¥\(NextMoney.text(model.book.cash))") {

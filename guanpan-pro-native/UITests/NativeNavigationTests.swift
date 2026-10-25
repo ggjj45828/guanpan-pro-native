@@ -201,6 +201,19 @@ final class NativeNavigationTests: XCTestCase {
     }
 
     func testFivePresentationThemesRenderHomeHoldingsAndAI() throws {
+        let holdingsIdentity = [
+            "editorial": "场内资产手册",
+            "dashboard": "新鲜报价",
+            "magazine": "我的资产与现金流",
+            "puzzle": "持仓标的"
+        ]
+        let aiIdentity = [
+            "editorial": "今天需要做什么？",
+            "modern": "AI 私人投资顾问",
+            "dashboard": "AI DECISION DESK",
+            "magazine": "今天的投资判断",
+            "puzzle": "AI 私人投资顾问 ·"
+        ]
         for theme in ["editorial", "modern", "dashboard", "magazine", "puzzle"] {
             let app = XCUIApplication()
             app.launchArguments = ["-ui-testing", "1", "-ui-testing-reset", "-theme", theme]
@@ -214,11 +227,21 @@ final class NativeNavigationTests: XCTestCase {
             holdings.tap()
             XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "持仓明细"))
                 .firstMatch.waitForExistence(timeout: 5), "\(theme) 持仓页未渲染")
+            if let identity = holdingsIdentity[theme] {
+                XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", identity))
+                    .firstMatch.waitForExistence(timeout: 5), "\(theme) 持仓页未显示主题专属布局")
+            }
             attach(app, "theme-\(theme)-holdings")
             let ai = byId(app, "tab.ai")
             XCTAssertTrue(ai.waitForExistence(timeout: 5), "\(theme) AI导航不存在")
             ai.tap()
             XCTAssertTrue(byId(app, "ai.chat.open").waitForExistence(timeout: 5), "\(theme) AI页未渲染")
+            if let identity = aiIdentity[theme] {
+                XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", identity))
+                    .firstMatch.waitForExistence(timeout: 5), "\(theme) AI页未显示主题专属布局")
+            } else {
+                XCTFail("\(theme) 缺少AI主题验收标记")
+            }
             attach(app, "theme-\(theme)-ai")
             app.terminate()
         }

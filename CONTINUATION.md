@@ -657,6 +657,17 @@
 - 下一步第一件事：`git diff --check`，核对上述两处测试源码与矩阵/续记，再创建本地提交并用Git Database API安全推进验证分支，触发完整Validate；取得新`ios-validation-results`工件，确认Xcode编译与全部XCTest结果，继续按真实失败修复。不要把Portable Core通过、IPA打包或当前源码修正当成XCTest通过。
 - 当前环境限制：本机无`swift`/`xcodebuild`/`xcrun`；因此Swift需继续由macOS CI执行。NAS本地测试此前58/58、84/84、58/58通过，但不等于真实NAS运行或长期样本验证。产品红线：B保持独立部署；只用真实账本；不模拟账户/资金/成交，不自动下单；不把相关性解释成因果；不放松minimum sessions、fail-closed或防未来数据约束。
 
+## 2026-10-25 接续：主题专属AI与持仓布局
+
+- 当前B验证分支HEAD为`1a7c323f280d1330c7af0f2a5461a3d6bb3d7940`；Validate #120 `40167639891`仍在运行。当前可见Portable Swift Core步骤通过；Xcode模拟器应用编译和完整XCTest仍执行中，未读取最终结果。Build IPA #189成功，但只代表unsigned IPA可打包。
+- #119的具体失败是新AppModel测试闭包MainActor隔离编译错误。提交`1a7c323`已把辅助断言和闭包隔离到MainActor，完整复测正在#120进行；尚不能升级矩阵第47项。
+- 对#118模拟器截图（38张，含五套主题首页/持仓/AI等）复核后发现：首页结构已有区别，但持仓和AI仍大多沿用相同内容结构，旧持仓截图为空测试账本。没有把“页面能渲染”误记为视觉验收完成。
+- 当前未提交源码：`guanpan-pro-native/Sources/GuanpanAdvisorApp.swift`为AI Hub增加五种独立布局（编辑室栏目、现代双列卡、深色交易台、杂志摘要、Bento拼图），持仓页增加主题专属摘要、指标和模块顺序；`guanpan-pro-native/UITests/NativeNavigationTests.swift`为五主题持仓/AI页面增加专属标题断言，并保留逐页截图。两者共用原有真实账本、日指导和路由；新增UI代码未编译/运行。
+- Master Acceptance Matrix第54、56、60、61项已更新为截图审阅结论及本轮实现状态；均保持🟠。矩阵总数仍145：✅1、🟡18、🟠126、⚠️0。
+- 本轮本地实际重跑NAS研究58/58、同步服务58/58通过。旧NAS服务84/84是此前验证，本轮未重跑；本次尝试pytest无模块，已用仓库unittest测试入口执行，不把pytest缺失记成产品故障。尚未连接用户真实NAS或在线上游行情。
+- 下一步：运行`git diff --check`并检查SwiftUI与测试差异；保持#120等待结果。随后将当前源码、测试、矩阵、续记提交到B验证分支并推送，触发新的完整Validate和IPA构建；获取完整XCTest摘要及五主题截图，修复任何构建/运行/视觉失败。继续从Master Acceptance Matrix的可推进Partial处理，不能因为CI全绿停止。
+- 产品红线：B完全独立，不合并/拣选A代码；只使用唯一真实账本，无虚拟资金/持仓/成交，不自动下单；历史相关只描述相关，不称因果；不降低最小独立交易日样本、fail-closed或防未来数据门槛。
+
 ## 2026-10-25 Validate #116成功与继续的UI/时效修复
 
 - 修复后的验证提交`fe36150b769a95e15c1468e850e34e5e9c294460`触发Validate #116 `40164683820`和Build IPA #185 `40164683817`。完整Portable Swift Core、Xcode编译、Unit/Integration/UI XCTest全部成功；UI截图artifact验证为可读ZIP，共24张iPhone 16 Pro截图，覆盖主导航、设置、图表、AI问答、账本强制重启和当前默认主题。IPA构建成功但为unsigned，不能推导签名/安装成功。
