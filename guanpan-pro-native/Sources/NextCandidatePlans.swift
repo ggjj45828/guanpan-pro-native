@@ -718,6 +718,21 @@ enum NextAIOutputGuard {
         #"(?:卖出|买回|买入|卖|买|挂单|限价)[^\n。；;]{0,28}?(\d+)\s*(?:份|股)"#,
         #"(\d+)\s*(?:份|股)[^\n。；;]{0,16}?(?:卖出|买回|买入|挂单|限价)"#
     ]
+    private static let financialClaimPatterns = [
+        #"(?:预计|预估|理论)?(?:净收益|毛收益|收益|毛价差|价差|等效降本|降本|成本降低|手续费|胜率|成功率|触达概率|资金占用|持仓占比|现金占比|回本涨幅)[^\n。；;]{0,20}?(?:¥|￥)?\s*\d+(?:\.\d+)?\s*(?:元|%|倍|/份)?"#,
+        #"(?:¥|￥)\s*\d+(?:\.\d+)?\s*(?:元)?[^\n。；;]{0,20}?(?:净收益|毛收益|收益|价差|降本|成本降低|手续费|资金占用)"#,
+        #"\d+(?:\.\d+)?\s*(?:元/份|元每份|%|倍)?[^\n。；;]{0,12}?(?:净收益|毛收益|收益|降本|成本降低|手续费|胜率|成功率|触达概率)"#
+    ]
+
+    /// Numeric financial results belong to deterministic plan/account cards. The
+    /// language model may explain them, but must not restate or recalculate them.
+    static func containsUnverifiedFinancialClaim(_ text: String) -> Bool {
+        for pattern in financialClaimPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            if regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return true }
+        }
+        return false
+    }
 
     static func containsUnverifiedActionPrice(_ text: String, guidance: NextDailyGuidance) -> Bool {
         // Validate each actionable sentence against its own security. A global
@@ -807,13 +822,19 @@ enum NextDecisionContextBuilder {
         timestampFormatter.locale = Locale(identifier: "zh_CN")
         timestampFormatter.dateStyle = .short
         timestampFormatter.timeStyle = .short
+        let heldPositions = book.positions.filter { $0.units > 0 }
+        let portfolioQuotesTrusted = !heldPositions.isEmpty && heldPositions.allSatisfy { position in
+            guard let quote = quotes[position.code] else { return false }
+            return quote.code == position.code && quote.isFreshForPricePlan(at: now)
+        }
+        let trustedPortfolioTotal = portfolioQuotesTrusted ? book.total(using: quotes) : nil
         for position in book.positions where position.units > 0 {
             let quote = quotes[position.code]
             let priceText = quote.map {
                 "现价 ¥\(NextMoney.text($0.price, digits: 3))，来源 \($0.source)，行情时间 \(timestampFormatter.string(from: $0.time))，\($0.isFresh(at: now) ? "新鲜" : "已过期/需核对")"
             } ?? "无报价"
             let weight: String
-            if let total = book.total(using: quotes), total > 0, let quote {
+            if let total = trustedPortfolioTotal, total > 0, let quote {
                 weight = "，占比 \(NextNum.text(NextNum.double(quote.price * Decimal(position.units) / total * 100), digits: 1))%"
             } else { weight = "" }
             holdings.append("\(position.name)(\(position.code)) 持有 \(position.units) 份，成本 ¥\(NextMoney.text(position.costPerUnit, digits: 3))，\(priceText)\(weight)")
@@ -881,6 +902,7 @@ enum NextDecisionContextBuilder {
         6. 不要输出画像里的原始成交明细，只引用上面的结论。
         7. 跨市场关系即使历史统计标为稳定候选，也必须先经过预注册的未来未见样本复现，并由NAS明确标记可用于风险判断；否则只能描述为历史研究，不得改变做T/网格/加仓结论。缺失/过期/样本不足必须说「暂无可靠证据/没有稳定领先关系」，不得编造市场关系或概率。
         8. 跨市场市场状态为 closed、stale 或 unknown 时，只能将其解释为历史关系研究，不能描述成今天的海外实时方向信号；开放市场的最新点超过数据新鲜度门槛也必须忽略。
+        9. 在线AI只解释理由和风险，不复述或重算任何交易价格、份额、收益、手续费、降本、胜率、仓位占比等金融数值；这些精确数值只由页面中的规则计划与真实账户卡片展示。
         """
         return NextDecisionContext(generatedAt: now, guidance: guidance, holdingsLines: holdings,
                                    portfolioLines: portfolioLines,

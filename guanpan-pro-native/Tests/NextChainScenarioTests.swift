@@ -115,6 +115,29 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(context.promptBlock.contains("组合占比未计算：报价不全"))
     }
 
+    func testDecisionContextDoesNotPresentStalePortfolioWeightsAsCurrent() {
+        let book = NextBook(cash: 10_000, positions: [
+            NextPosition(code: code, name: "纳指ETF", units: 1_000, bookCost: 1_300),
+            NextPosition(code: "513100", name: "日经ETF", units: 1_000, bookCost: 1_100)
+        ])
+        let first = quote(price: 1.4)
+        let second = NextQuote(code: "513100", name: "日经ETF", price: 1.1, previousClose: 1.1,
+                               time: now.addingTimeInterval(-121), source: "fixture", timeQuality: "exchange_time")
+        let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "无候选",
+                                         noActionSummary: "继续持有", dataState: "行情过期")
+        let stale = NextDecisionContextBuilder.build(guidance: guidance, book: book,
+            quotes: [code: first, "513100": second], nasResearchLines: [], newsLines: [], now: now)
+        XCTAssertFalse(stale.holdingsLines.contains(where: { $0.contains("占比") }),
+            "任一持仓行情过期时不应把其他旧估值显示成当前组合占比")
+
+        let freshSecond = NextQuote(code: "513100", name: "日经ETF", price: 1.1, previousClose: 1.1,
+                                    time: now, source: "fixture", timeQuality: "exchange_time")
+        let fresh = NextDecisionContextBuilder.build(guidance: guidance, book: book,
+            quotes: [code: first, "513100": freshSecond], nasResearchLines: [], newsLines: [], now: now)
+        XCTAssertTrue(fresh.holdingsLines.allSatisfy { $0.contains("占比") },
+            "全持仓行情新鲜可信时才显示组合占比")
+    }
+
     func testOnlineAIOutputGuardBlocksUnplannedActionPrices() {
         let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "今天不建议交易",
                                          noActionSummary: "继续持有", dataState: "无合格计划")
@@ -132,6 +155,11 @@ final class NextChainScenarioTests: XCTestCase {
         XCTAssertTrue(NextAIOutputGuard.containsUnverifiedAction("建议卖出价 1 元。",
                                                                    approvedPrices: planPrices, approvedUnits: [500]),
                       "整数价位同样不能绕过价格授权检查")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("预计净收益约 ¥96.5，等效降本 0.019 元/份。"),
+                      "大模型不能重述或编造计划收益与降本数值")
+        XCTAssertTrue(NextAIOutputGuard.containsUnverifiedFinancialClaim("手续费 0.10 元/笔。"),
+                      "手续费只能使用交易规则卡片的确定值")
+        XCTAssertFalse(NextAIOutputGuard.containsUnverifiedFinancialClaim("今天先观察，主要风险是单边下跌。"))
 
         let confidence = NextDataConfidence.assess(quote: quote(price: 1.4), now: now,
             dailyBarCount: 60, minuteSampleCount: 120, intradayLatestAt: now, dailyLatestAt: now)
