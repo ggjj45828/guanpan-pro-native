@@ -121,6 +121,15 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertNil(decoded.instrumentRoleReason)
     }
 
+    func testOlderDecisionRecordDecodesWithoutLatestSnapshot() throws {
+        let encoded = try JSONEncoder().encode(record(snapshot()))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "latestSnapshot")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(NextDecisionRecord.self, from: legacyData)
+        XCTAssertNil(decoded.latestSnapshot, "旧记忆应以不可变原始快照作为最新基线")
+    }
+
     func testDecisionSnapshotCapturesPerInstrumentRoleAtDecisionTime() {
         var profile = NextInvestorProfile()
         profile.instrumentRoles["159941"] = NextInstrumentRole(
@@ -255,6 +264,15 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertEqual(memory.revisions[0].fromHeadline, "反T · 先卖后买")
         XCTAssertEqual(memory.revisions[0].toHeadline, "持有")
         XCTAssertFalse(memory.revisions[0].changes.isEmpty)
+        XCTAssertEqual(memory.latestSnapshot?.price, "1.450")
+        XCTAssertEqual(memory.currentSnapshot.headline, "持有")
+        XCTAssertNil(memory.revise(with: snapshot(price: "1.450", headline: "持有"),
+                                   at: now.addingTimeInterval(180)), "重复收到同一判断不能重复记一条改判")
+        XCTAssertEqual(memory.revisions.count, 1)
+        _ = memory.revise(with: snapshot(price: "1.460", headline: "继续持有"), at: now.addingTimeInterval(240))
+        XCTAssertEqual(memory.revisions.count, 2)
+        XCTAssertEqual(memory.revisions[1].fromHeadline, "持有", "后续改判应从最近一次判断开始比较")
+        XCTAssertEqual(memory.currentSnapshot.headline, "继续持有")
         // 快照本身不能被改写：记忆要保留「当时」。
         XCTAssertEqual(memory.snapshot.price, "1.400")
     }
@@ -299,6 +317,31 @@ final class NextDecisionMemoryTests: XCTestCase {
         XCTAssertFalse(result[0].outcome.isFilled)
         XCTAssertNil(result[0].review.filledPrice)
         XCTAssertTrue(result[0].review.note.contains("未记录到真实成交"))
+    }
+
+    func testNoTradeMemoryExpiresAfterShanghaiCalendarDayWithoutInventingFill() throws {
+        let noTradeSnapshot = NextDecisionSnapshot(state: "数据不足", strategy: "不交易",
+                                                   headline: "今天不交易",
+                                                   evidence: ["缺少长期分时"],
+                                                   confidenceLevel: "低")
+        let pending = record(noTradeSnapshot)
+        let sameDay = NextDecisionMemory.expire([pending], at: now.addingTimeInterval(3600),
+                                                quoteFor: { _ in nil })
+        XCTAssertEqual(sameDay[0].outcome, .pending)
+
+        var shanghai = Calendar(identifier: .gregorian)
+        shanghai.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let nextDay = try XCTUnwrap(shanghai.date(byAdding: .day, value: 1, to: now))
+        let nextDayResult = NextDecisionMemory.expire([pending], at: nextDay, quoteFor: { _ in nil })
+        XCTAssertEqual(nextDayResult[0].outcome, .expired)
+        XCTAssertFalse(nextDayResult[0].outcome.isFilled)
+        XCTAssertNil(nextDayResult[0].review.filledPrice)
+        XCTAssertTrue(nextDayResult[0].review.note.contains("持有/不交易判断已过期"))
+
+        let futureRecord = NextDecisionRecord(code: "159941", name: "纳指ETF",
+                                              createdAt: nextDay, snapshot: noTradeSnapshot)
+        let clockRollback = NextDecisionMemory.expire([futureRecord], at: now, quoteFor: { _ in nil })
+        XCTAssertEqual(clockRollback[0].outcome, .pending, "系统时钟回拨时不能把未来决策误标为过期")
     }
 
     func testExpireInvalidatesWhenPriceBreaksAwayFromPlan() {

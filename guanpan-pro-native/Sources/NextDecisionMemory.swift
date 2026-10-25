@@ -138,6 +138,8 @@ struct NextDecisionRecord: Codable, Identifiable, Equatable {
     let name: String
     let createdAt: Date
     let snapshot: NextDecisionSnapshot
+    /// 最新一次已记录的同日判断；原始 snapshot 不可变。Optional 以兼容旧归档。
+    var latestSnapshot: NextDecisionSnapshot? = nil
     var outcome: NextDecisionOutcome = .pending
     var outcomeAt: Date?
     var review = NextDecisionReview()
@@ -145,14 +147,17 @@ struct NextDecisionRecord: Codable, Identifiable, Equatable {
     var revisions: [NextDecisionRevision] = []
 
     var isOpen: Bool { outcome == .pending }
+    var currentSnapshot: NextDecisionSnapshot { latestSnapshot ?? snapshot }
 
     /// 用新的快照生成一次改判记录。结论或关键数字变了才有记录。
     mutating func revise(with snapshot: NextDecisionSnapshot, at time: Date) -> NextDecisionRevision? {
-        let changes = NextDecisionDiff.compare(old: self.snapshot, new: snapshot)
+        let previous = latestSnapshot ?? self.snapshot
+        let changes = NextDecisionDiff.compare(old: previous, new: snapshot)
         guard !changes.isEmpty else { return nil }
-        let revision = NextDecisionRevision(at: time, fromHeadline: self.snapshot.headline,
+        let revision = NextDecisionRevision(at: time, fromHeadline: previous.headline,
                                             toHeadline: snapshot.headline, changes: changes)
         revisions.append(revision)
+        latestSnapshot = snapshot
         return revision
     }
 }
@@ -313,6 +318,12 @@ enum NextDecisionDiff {
 // MARK: - 决策记忆仓库（只做内存整理，持久化由 App 层负责）
 
 enum NextDecisionMemory {
+    private static func shanghaiCalendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar
+    }
+
     /// A manual ledger fill may be associated only with the same holding's still-pending
     /// decision from the same Shanghai trading day. The UI must let the user choose it;
     /// matching by code/time alone is never treated as proof that a fill followed advice.
@@ -496,8 +507,7 @@ enum NextDecisionMemory {
         if let calendar {
             tradingCalendar = calendar
         } else {
-            tradingCalendar = Calendar(identifier: .gregorian)
-            tradingCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+            tradingCalendar = shanghaiCalendar()
         }
         var result = existing
         for record in incoming {
@@ -517,9 +527,17 @@ enum NextDecisionMemory {
     /// 计划到期/条件失效的自动迁移。只改状态，不改快照，不产生任何成交。
     static func expire(_ records: [NextDecisionRecord], at now: Date,
                        quoteFor: (String) -> NextQuote?) -> [NextDecisionRecord] {
-        records.map { record in
+        let calendar = shanghaiCalendar()
+        return records.map { record in
             var copy = record
             guard copy.outcome == .pending else { return copy }
+            if copy.createdAt < now, copy.snapshot.validUntil == nil, copy.snapshot.limitPrice == nil,
+               !calendar.isDate(copy.createdAt, inSameDayAs: now) {
+                copy.outcome = .expired
+                copy.outcomeAt = now
+                copy.review.note = "上一上海交易日的持有/不交易判断已过期；未记录真实成交"
+                return copy
+            }
             if let validUntil = copy.snapshot.validUntil, validUntil < now {
                 copy.outcome = .expired
                 copy.outcomeAt = now

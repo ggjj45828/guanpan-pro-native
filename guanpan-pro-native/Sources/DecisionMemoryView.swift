@@ -106,12 +106,13 @@ struct DecisionMemoryView: View {
     }
 
     private func row(_ record: NextDecisionRecord) -> some View {
-        GPCard(accent: tone(record)) {
+        let current = record.currentSnapshot
+        return GPCard(accent: tone(record)) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(record.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(p.ink).lineLimit(1)
-                        Text(record.snapshot.state).font(.system(size: 9)).foregroundStyle(p.muted)
+                        Text(current.state).font(.system(size: 9)).foregroundStyle(p.muted)
                         if !record.revisions.isEmpty {
                             Text("\(record.revisions.count) 次改判")
                                 .font(.system(size: 9, weight: .semibold))
@@ -120,12 +121,12 @@ struct DecisionMemoryView: View {
                                 .foregroundStyle(p.terracotta)
                         }
                     }
-                    Text(record.snapshot.headline).font(.system(size: 12, weight: .medium)).foregroundStyle(p.ink).lineLimit(2)
+                    Text(current.headline).font(.system(size: 12, weight: .medium)).foregroundStyle(p.ink).lineLimit(2)
                     HStack(spacing: 6) {
-                        if let limit = record.snapshot.limitPrice {
+                        if let limit = current.limitPrice {
                             Text("限价 ¥\(limit)").font(.system(size: 10, design: .monospaced)).foregroundStyle(p.muted)
                         }
-                        if let units = record.snapshot.limitUnits {
+                        if let units = current.limitUnits {
                             Text("\(units) 份").font(.system(size: 10, design: .monospaced)).foregroundStyle(p.muted)
                         }
                     }
@@ -190,15 +191,18 @@ struct DecisionRecordDetail: View {
     }
 
     private func summary(_ record: NextDecisionRecord) -> some View {
-        DataPanel(title: record.name, accent: p.forest,
-                  caption: NextDecisionDiff.dateText(record.createdAt)) {
+        let current = record.currentSnapshot
+        let title = record.latestSnapshot == nil ? "最初判断" : "最近一次判断"
+        let changedAt = record.revisions.last?.at ?? record.createdAt
+        return DataPanel(title: "\(record.name) · \(title)", accent: p.forest,
+                  caption: NextDecisionDiff.dateText(changedAt)) {
             HStack(spacing: 8) {
-                pill(record.snapshot.state, p.chartBlue)
-                pill(record.snapshot.strategy, p.forest)
-                pill("置信度 \(record.snapshot.confidenceLevel)", p.chartGold)
+                pill(current.state, p.chartBlue)
+                pill(current.strategy, p.forest)
+                pill("置信度 \(current.confidenceLevel)", p.chartGold)
                 Spacer(minLength: 0)
             }
-            Text(record.snapshot.headline).font(.system(size: 15, weight: .semibold)).foregroundStyle(p.ink)
+            Text(current.headline).font(.system(size: 15, weight: .semibold)).foregroundStyle(p.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Text(NextDecisionMemory.freshness(record, at: Date())).font(.caption2).foregroundStyle(p.muted)
         }
