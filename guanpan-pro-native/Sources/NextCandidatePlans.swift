@@ -862,6 +862,7 @@ enum NextDecisionContextFreshness {
 /// Online models are explanatory only. Reject actionable price text unless the exact
 /// decimal is present in the deterministic rule-engine plan supplied to this call.
 enum NextAIOutputGuard {
+    private static let priceMatchTolerance = Decimal(string: "0.000001") ?? .zero
     private static let actionPricePatterns = [
         #"(?:卖出|买回|买入|卖|买|挂单|限价|建议卖价|建议买价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)\s*(?:价)?[^\n。；;]{0,40}?(?:¥|￥|\$)?\s*(?<![\d.,A-Za-z_])([-+]?\d[\d,]*\.\d+[A-Za-z_]*)(?![\d.,A-Za-z_])"#,
         #"(?:卖出|买回|买入|卖|买|挂单|限价|sell|buy|purchase|rebuy|buyback|place\s+order|limit\s+order)[^\n。；;]{0,40}?(?:¥|￥|\$)\s*(?<![\d.,A-Za-z_])([-+]?\d[\d,]*(?:\.\d+)?[A-Za-z_]*)(?![\d.,A-Za-z_])"#,
@@ -973,7 +974,7 @@ enum NextAIOutputGuard {
                       let valueRange = Range(match.range(at: 1), in: text) else { continue }
                 let raw = String(text[valueRange])
                 guard let decimal = strictActionDecimal(raw),
-                      approvedPrices.contains(where: { abs($0 - decimal) < Decimal(string: "0.000001")! }) else { return true }
+                      approvedPrices.contains(where: { abs($0 - decimal) < priceMatchTolerance }) else { return true }
             }
         }
         for pattern in actionUnitPatterns {

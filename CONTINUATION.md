@@ -646,3 +646,13 @@
 - 因#114工件没有包括运行日志，本轮扩展`.github/workflows/validate-ios.yml`：下次将portable Swift/Xcode原始日志与各自step summary复制进`ios-validation-results`工件，保留现有测试命令、门槛和代码签名设置。Workflow修改尚未被runner验证。
 - Matrix第46已更新：完整portable Swift Core运行成功；Xcode测试仍失败待诊断，所以继续🟡。全矩阵统计仍145项：✅1、🟡17、🟠123、⚠️4。
 - 工作树中workflow、Matrix和Continuation修改尚待复核/提交。下一步：检查YAML结构、`git diff --check`，将诊断工件改动提交并沿B独立验证分支安全快进更新；运行新Validate，下载日志工件定位exit 65的具体原因，修复后重复完整测试。NAS三套Python回归58/58、84/84、58/58、compileall和四份Compose配置此前均通过，不视为真实NAS验证。产品红线不变。
+
+## 2026-10-25 Validate #115诊断与修复
+
+- 已读取Validate #115 `40164207806`诊断工件（远端B验证分支提交`dfaf414878cd4284c2a38337eba676c540fe1f75`）：Portable Swift Core全量步骤通过；`xcodebuild test`在编译Apple工程时失败，XCTest尚未开始。
+- 具体编译错误位于`guanpan-pro-native/UnitTests/NextLedgerPersistenceTests.swift`：`model.notice`为非可选`String`，测试误用了可选链；另一个`repository.save([])`无法从空数组推断`Encodable`类型。已分别改为`model.notice.contains(...)`和显式`[NextCandidatePlan]()`。没有改测试口径或业务安全约束。
+- `NextAIOutputGuard`中价格容差的常量强制解包已移除，改用安全Decimal初始化；Core安全规则和回归逻辑未变。
+- Master Acceptance Matrix顶部和第32/46项已更新为#115真实状态；总矩阵仍145项：✅1、🟡17、🟠123、⚠️4。工作树变更尚未提交，修复尚未由Xcode验证。
+- 当前提交基线：本地HEAD `5dd4944`；最近一次远端分支提交`dfaf414…`。本地与远端commit SHA因API序列化可能不同，推送前必须核验远端tree等于本地HEAD tree；只可沿B专属验证分支以`force=false`更新，并校验新远端tree等于本地目标tree。用户已授权B版验证分支上传/触发Actions。
+- 下一步第一件事：`git diff --check`，核对上述两处测试源码与矩阵/续记，再创建本地提交并用Git Database API安全推进验证分支，触发完整Validate；取得新`ios-validation-results`工件，确认Xcode编译与全部XCTest结果，继续按真实失败修复。不要把Portable Core通过、IPA打包或当前源码修正当成XCTest通过。
+- 当前环境限制：本机无`swift`/`xcodebuild`/`xcrun`；因此Swift需继续由macOS CI执行。NAS本地测试此前58/58、84/84、58/58通过，但不等于真实NAS运行或长期样本验证。产品红线：B保持独立部署；只用真实账本；不模拟账户/资金/成交，不自动下单；不把相关性解释成因果；不放松minimum sessions、fail-closed或防未来数据约束。

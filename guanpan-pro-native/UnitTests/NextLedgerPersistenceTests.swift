@@ -13,7 +13,7 @@ final class NextLedgerPersistenceTests: XCTestCase {
                                   numeric: .infinity)
             XCTAssertEqual(model.profile.thresholds.gridMaxTiers, originalTiers)
             XCTAssertNil(model.profile.trait(.gridTiers), "拒绝输入时不得创建或覆盖显式画像规则")
-            XCTAssertTrue(model.notice?.contains("有限") == true)
+            XCTAssertTrue(model.notice.contains("有限"))
 
             model.setProfileTrait(.gridTiers, value: "3", label: "最多三档", detail: "用户上限",
                                   numeric: 3)
@@ -109,7 +109,7 @@ final class NextLedgerPersistenceTests: XCTestCase {
             let model = NextAppModel(repository: repository)
             XCTAssertTrue(model.candidatePlans.isEmpty, "重复候选计划ID不能让两条不同证券计划混淆")
             XCTAssertTrue(model.errorMessage?.contains("candidate-plans-v1.json") == true)
-            XCTAssertNotNil(repository.save([], filename: "candidate-plans-v1.json"))
+            XCTAssertNotNil(repository.save([NextCandidatePlan](), filename: "candidate-plans-v1.json"))
             XCTAssertEqual(try Data(contentsOf: url), original)
         }
     }
