@@ -8,6 +8,7 @@ on:
       - master
       - 'upgrade/v2.13.55-r2'
       - 'validation/**'
+      - 'b-latest'
     paths:
       - 'guanpan-pro-native/**'
       - '.github/workflows/build-ios.yml'
