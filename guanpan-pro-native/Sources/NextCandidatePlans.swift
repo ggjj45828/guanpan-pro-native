@@ -402,6 +402,37 @@ enum NextPortfolioRiskGuard {
         return .notWorthwhile([reason])
     }
 
+    /// A buy plan can breach concentration limits even when today's holding is
+    /// still below the limit. Assess the worst case where every planned buy fills
+    /// and no offsetting sell fills. Fees reduce NAV; principal becomes ETF value.
+    static func projectedBuyBlock(currentPositionValue: Decimal?, totalAssets: Decimal?,
+                                  plannedCashUsage: Decimal, estimatedFees: Decimal,
+                                  concentrationLimit: Decimal, targetPercent: Double?) -> String? {
+        guard let currentPositionValue, let totalAssets,
+              !currentPositionValue.isNaN, currentPositionValue >= 0,
+              !totalAssets.isNaN, totalAssets > 0,
+              !plannedCashUsage.isNaN, plannedCashUsage >= 0,
+              !estimatedFees.isNaN, estimatedFees >= 0,
+              plannedCashUsage >= estimatedFees,
+              !concentrationLimit.isNaN, concentrationLimit > 0, concentrationLimit <= 100,
+              totalAssets > estimatedFees else {
+            return "买入后的组合占比无法可靠核算；暂停新增买入计划"
+        }
+        let projectedAssets = totalAssets - estimatedFees
+        let projectedPosition = currentPositionValue + plannedCashUsage - estimatedFees
+        guard !projectedAssets.isNaN, projectedAssets > 0,
+              !projectedPosition.isNaN, projectedPosition >= 0 else {
+            return "买入后的组合占比计算异常；暂停新增买入计划"
+        }
+        let projectedPercent = NextNum.double(projectedPosition / projectedAssets * 100)
+        guard projectedPercent.isFinite else {
+            return "买入后的组合占比计算异常；暂停新增买入计划"
+        }
+        return allocationAssessment(currentPercent: projectedPercent,
+                                    concentrationLimit: NextNum.double(concentrationLimit),
+                                    targetPercent: targetPercent).blockingNote
+    }
+
     static func currentPlanQuoteBlock(for plan: NextCandidatePlan, quote: NextQuote?, now: Date) -> String? {
         guard let quote, quote.code == plan.code, quote.isFreshForPricePlan(at: now) else {
             return "当前行情缺失、过期或来源时间不可核验，请刷新行情后重新保存计划"
@@ -606,7 +637,20 @@ enum NextOpportunityScanner {
                     portfolioNote = reasons.first
                     headline = "现金储备约束 · 暂停正T"
                 }
-                result = reserveChecked
+                var fullyChecked = reserveChecked
+                if case let .ready(plan) = reserveChecked, plan.kind == .forward {
+                    let buyCash = plan.buyPrice * Decimal(plan.units) + plan.feeTotal / 2
+                    if let block = NextPortfolioRiskGuard.projectedBuyBlock(
+                        currentPositionValue: quote.map { $0.price * Decimal(position.units) },
+                        totalAssets: total, plannedCashUsage: buyCash, estimatedFees: plan.feeTotal / 2,
+                        concentrationLimit: goal.concentrationLimit,
+                        targetPercent: goal.targetWeights[position.code].map { NextNum.double($0) }) {
+                        fullyChecked = .notWorthwhile([block])
+                        portfolioNote = block
+                        headline = "组合上限约束 · 暂停正T"
+                    }
+                }
+                result = fullyChecked
                 tPlan = result
                 if case let .ready(plan) = result {
                     headline = plan.kind.rawValue
@@ -629,6 +673,20 @@ enum NextOpportunityScanner {
                         portfolioNote = reasons.first
                     }
                     result = reserveChecked
+                    if case let .ready(plan) = reserveChecked {
+                        let buyTiers = plan.tiers.filter { $0.side == "buy" }
+                        let feeTotal = buyTiers.reduce(Decimal.zero) { partial, tier in
+                            partial + tier.cashRequired - tier.price * Decimal(tier.units)
+                        }
+                        if let block = NextPortfolioRiskGuard.projectedBuyBlock(
+                            currentPositionValue: quote.map { $0.price * Decimal(position.units) },
+                            totalAssets: total, plannedCashUsage: plan.maxCashUsage, estimatedFees: feeTotal,
+                            concentrationLimit: goal.concentrationLimit,
+                            targetPercent: goal.targetWeights[position.code].map { NextNum.double($0) }) {
+                            result = .notRecommended([block])
+                            portfolioNote = block
+                        }
+                    }
                 }
                 gridPlan = result
                 if case let .ready(plan) = result {

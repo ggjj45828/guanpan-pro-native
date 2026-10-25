@@ -260,6 +260,23 @@ final class NextCoreTests: XCTestCase {
             return XCTFail("最坏情形下网格买档会跌破现金储备时必须撤回")
         }
     }
+
+    func testPortfolioGuardChecksWorstCaseConcentrationAfterPlannedBuys() {
+        XCTAssertNil(NextPortfolioRiskGuard.projectedBuyBlock(currentPositionValue: 3_000,
+            totalAssets: 10_000, plannedCashUsage: 1_000, estimatedFees: Decimal(string: "0.10")!,
+            concentrationLimit: 40, targetPercent: nil), "最坏成交后未超过40%上限时允许继续评估")
+        XCTAssertTrue(NextPortfolioRiskGuard.projectedBuyBlock(currentPositionValue: 3_000,
+            totalAssets: 10_000, plannedCashUsage: 1_001, estimatedFees: Decimal(string: "0.10")!,
+            concentrationLimit: 40, targetPercent: nil)?.contains("暂停新增买入") == true,
+            "买入档全部成交后超过组合集中度上限必须撤回")
+        XCTAssertTrue(NextPortfolioRiskGuard.projectedBuyBlock(currentPositionValue: 3_000,
+            totalAssets: 10_000, plannedCashUsage: 1_000, estimatedFees: Decimal(string: "0.10")!,
+            concentrationLimit: 60, targetPercent: 35)?.contains("目标权重") == true,
+            "候选买入会明显超过用户配置目标时不得继续作为可执行建议")
+        XCTAssertNotNil(NextPortfolioRiskGuard.projectedBuyBlock(currentPositionValue: 3_000,
+            totalAssets: nil, plannedCashUsage: 100, estimatedFees: 0,
+            concentrationLimit: 40, targetPercent: nil), "组合总资产不完整时必须fail closed")
+    }
     func testRecoveryAddOptionRequiresCompletePortfolioQuotesAndCashGuard() {
         let held = NextPosition(code: "159941", name: "纳指ETF", units: 1_000, bookCost: 2_000)
         let other = NextPosition(code: "563020", name: "行业ETF", units: 1_000, bookCost: 3_000)
