@@ -200,6 +200,30 @@ final class NativeNavigationTests: XCTestCase {
         attach(largeText, "assets-accessibility-text")
     }
 
+    func testFivePresentationThemesRenderHomeHoldingsAndAI() throws {
+        for theme in ["editorial", "modern", "dashboard", "magazine", "puzzle"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-ui-testing", "1", "-ui-testing-reset", "-theme", theme]
+            app.launchEnvironment["GUANPAN_TESTING"] = "1"
+            app.launch()
+
+            XCTAssertTrue(byId(app, "tab.decision").waitForExistence(timeout: 10), "\(theme) 首页未启动")
+            attach(app, "theme-\(theme)-home")
+            let holdings = byId(app, "tab.assets")
+            XCTAssertTrue(holdings.waitForExistence(timeout: 5), "\(theme) 持仓导航不存在")
+            holdings.tap()
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "持仓明细"))
+                .firstMatch.waitForExistence(timeout: 5), "\(theme) 持仓页未渲染")
+            attach(app, "theme-\(theme)-holdings")
+            let ai = byId(app, "tab.ai")
+            XCTAssertTrue(ai.waitForExistence(timeout: 5), "\(theme) AI导航不存在")
+            ai.tap()
+            XCTAssertTrue(byId(app, "ai.chat.open").waitForExistence(timeout: 5), "\(theme) AI页未渲染")
+            attach(app, "theme-\(theme)-ai")
+            app.terminate()
+        }
+    }
+
     func testDeepSeekKeyEntryIsPresentInSettings() throws {
         let app = launch()
         let settingsEntry = byId(app, "settings.open")

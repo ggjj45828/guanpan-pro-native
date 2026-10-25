@@ -1214,6 +1214,19 @@ final class NextCoreTests: XCTestCase {
         XCTAssertNotNil(quotes[2].observedAt)
     }
 
+    func testIndexCardsNeverLabelUntimestampedOrOldSnapshotsAsFresh() {
+        let now = Date(timeIntervalSince1970: 1_792_351_800)
+        XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: nil, now: now), "时间未知")
+        XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: now, now: now), "刚更新")
+        XCTAssertEqual(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(300), now: now), "时间异常")
+        XCTAssertTrue(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(-86_400), now: now)
+            .hasPrefix("最后更新·"))
+        XCTAssertTrue(NextIndexQuoteFreshness.label(observedAt: now.addingTimeInterval(-97 * 3600), now: now)
+            .hasPrefix("陈旧·"))
+        XCTAssertTrue(NextIndexQuoteFreshness.label(observedAt: now, timeQuality: "receipt_only", now: now)
+            .hasPrefix("接收时间·"), "只知道收包时间时必须明确它不是供应商行情时间")
+    }
+
     func testCostBasisKeepsAverageCostAndComputesDilutedCost() {
         // 买 1000 份 @1.00（费 0.10），再卖 500 份 @1.20（费 0.10），剩 500 份。
         let book = NextBook(cash: 0, positions: [

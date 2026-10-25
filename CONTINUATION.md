@@ -656,3 +656,13 @@
 - 当前提交基线：本地HEAD `5dd4944`；最近一次远端分支提交`dfaf414…`。本地与远端commit SHA因API序列化可能不同，推送前必须核验远端tree等于本地HEAD tree；只可沿B专属验证分支以`force=false`更新，并校验新远端tree等于本地目标tree。用户已授权B版验证分支上传/触发Actions。
 - 下一步第一件事：`git diff --check`，核对上述两处测试源码与矩阵/续记，再创建本地提交并用Git Database API安全推进验证分支，触发完整Validate；取得新`ios-validation-results`工件，确认Xcode编译与全部XCTest结果，继续按真实失败修复。不要把Portable Core通过、IPA打包或当前源码修正当成XCTest通过。
 - 当前环境限制：本机无`swift`/`xcodebuild`/`xcrun`；因此Swift需继续由macOS CI执行。NAS本地测试此前58/58、84/84、58/58通过，但不等于真实NAS运行或长期样本验证。产品红线：B保持独立部署；只用真实账本；不模拟账户/资金/成交，不自动下单；不把相关性解释成因果；不放松minimum sessions、fail-closed或防未来数据约束。
+
+## 2026-10-25 Validate #116成功与继续的UI/时效修复
+
+- 修复后的验证提交`fe36150b769a95e15c1468e850e34e5e9c294460`触发Validate #116 `40164683820`和Build IPA #185 `40164683817`。完整Portable Swift Core、Xcode编译、Unit/Integration/UI XCTest全部成功；UI截图artifact验证为可读ZIP，共24张iPhone 16 Pro截图，覆盖主导航、设置、图表、AI问答、账本强制重启和当前默认主题。IPA构建成功但为unsigned，不能推导签名/安装成功。
+- #116工件诊断了#115的两个测试编译问题；`NextLedgerPersistenceTests.swift`已改用非可选`notice`和显式空数组类型。包含10次App/repository重新初始化，现金13,100、持仓、流水、分红、快照、复盘与画像样本保持幂等的持久化测试随#116通过。
+- 真实截图暴露当前指数卡没有显示行情供应商时间：周日画面仍显示指数值和涨跌但用户无法知道这是旧快照。新增`NextIndexQuoteFreshness`：来源时间缺失显示“时间未知”，超过窗口标“陈旧”，未来时间标异常，仅有receipt时间标明“接收时间”；首页五种指数卡均显示该标签。新增纯逻辑边界测试，等待下一次CI。
+- 新增`testFivePresentationThemesRenderHomeHoldingsAndAI`：以启动参数固定五主题，各自进入首页、持仓、AI并附加模拟器截图，不写回真实偏好。当前未在CI运行。
+- Matrix第9项已记录指数报价时点提示；第99/102/103/104项状态依据最新完整CI和截图更新；统计为✅1、🟡18、🟠126、⚠️0，共145项。零External仅表示当前还有云端模拟器/构建可推进，不代表真实NAS/iPhone、在线AI Key、长期真实数据或最终五主题视觉验收已完成。
+- 当前本地HEAD为`2abf817`，它与远端验证分支`fe36150…`的树一致。工作树新增待CI源码为`Sources/GlobalIndices.swift`、`Sources/ThemeHome.swift`、`Tests/NextCoreTests.swift`、`UITests/NativeNavigationTests.swift`以及矩阵/续记。下一步先`git diff --check`、核对矩阵状态计数，再创建提交，沿B验证分支以非强制快进推送并等待Validate/IPA；读取新XCTest摘要和截图，修复失败及逐主题视觉偏差，继续从145矩阵的可推进Partial选下一批。
+- 本轮本地Python回归重新通过：NAS兼容研究58/58、旧NAS服务84/84、同步服务58/58；未连接用户真实NAS。不要合并A代码；真实账户唯一、无虚拟成交、不自动下单，统计与防未来约束不放松。

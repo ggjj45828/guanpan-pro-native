@@ -522,6 +522,7 @@ private struct HomeIndexBoard: View {
         let price: Double
         let percent: Double?
         let spark: [Double]
+        let freshnessLabel: String
     }
 
     private var columns: [GridItem] {
@@ -553,7 +554,12 @@ private struct HomeIndexBoard: View {
                 Text(NextNum.text(row.price, digits: 2))
                     .font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(tone)
                     .lineLimit(1).minimumScaleFactor(0.7)
-                ChangePill(percent: row.percent, compact: true)
+                HStack(spacing: 3) {
+                    ChangePill(percent: row.percent, compact: true)
+                    Spacer(minLength: 0)
+                    Text(row.freshnessLabel).font(.system(size: 7, weight: .medium)).foregroundStyle(p.muted)
+                        .lineLimit(1).minimumScaleFactor(0.65).accessibilityLabel("指数\(row.name)\(row.freshnessLabel)")
+                }
             }
             .padding(.horizontal, 7).padding(.vertical, 7)
             .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 100, alignment: .topLeading)
@@ -565,7 +571,12 @@ private struct HomeIndexBoard: View {
                 Text(NextNum.text(row.price, digits: 2))
                     .font(.system(size: 16, weight: .bold, design: .rounded)).monospacedDigit()
                     .foregroundStyle(tone).lineLimit(1).minimumScaleFactor(0.65)
-                ChangePill(percent: row.percent)
+                HStack(spacing: 3) {
+                    ChangePill(percent: row.percent)
+                    Spacer(minLength: 0)
+                    Text(row.freshnessLabel).font(.system(size: 7.5, weight: .medium)).foregroundStyle(p.muted)
+                        .lineLimit(1).minimumScaleFactor(0.65).accessibilityLabel("指数\(row.fullName)\(row.freshnessLabel)")
+                }
                 Sparkline(values: row.spark, tone: tone).frame(height: 22)
             }
             .padding(9)
@@ -578,7 +589,12 @@ private struct HomeIndexBoard: View {
                 Text(NextNum.text(row.price, digits: 2))
                     .font(.system(size: 15, weight: .bold, design: .monospaced)).monospacedDigit()
                     .foregroundStyle(tone).lineLimit(1).minimumScaleFactor(0.6)
-                ChangePill(percent: row.percent, compact: true)
+                HStack(spacing: 3) {
+                    ChangePill(percent: row.percent, compact: true)
+                    Spacer(minLength: 0)
+                    Text(row.freshnessLabel).font(.system(size: 7, weight: .medium)).foregroundStyle(p.muted)
+                        .lineLimit(1).minimumScaleFactor(0.65).accessibilityLabel("指数\(row.name)\(row.freshnessLabel)")
+                }
                 Sparkline(values: row.spark, tone: tone).frame(height: 18)
             }
             .padding(8)
@@ -612,7 +628,8 @@ private struct HomeIndexBoard: View {
             let all = try await GlobalIndexFeed.fetch()
             if let sh = all.first(where: { $0.symbol == "s_sh000001" }) {
                 result.append(IndexRow(id: "000001", name: "上证", fullName: "上证指数", price: sh.price,
-                                       percent: sh.price > 0 ? sh.changePercent : nil, spark: []))
+                                       percent: sh.price > 0 ? sh.changePercent : nil, spark: [],
+                                       freshnessLabel: NextIndexQuoteFreshness.label(observedAt: sh.observedAt, now: Date())))
             }
         } catch { problems.append("上证指数取不到") }
         // 深证成指 / 创业板指走多源报价链 + 日 K 迷你走势
@@ -628,7 +645,11 @@ private struct HomeIndexBoard: View {
                 let label = code == "399001" ? "深证" : "创业板"
                 let fullLabel = code == "399001" ? "深证成指" : "创业板指"
                 result.append(IndexRow(id: code, name: label, fullName: fullLabel, price: NextNum.double(quote.price),
-                                       percent: quote.changePercent.map { NextNum.double($0) }, spark: spark))
+                                       percent: quote.changePercent.map { NextNum.double($0) }, spark: spark,
+                                       freshnessLabel: NextIndexQuoteFreshness.label(
+                                        observedAt: quote.time,
+                                        timeQuality: quote.timeQuality,
+                                        now: Date())))
             }
         } catch {
             problems.append("深证/创业板指数取不到")
