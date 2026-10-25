@@ -68,6 +68,32 @@ final class NextLedgerPersistenceTests: XCTestCase {
         }
     }
 
+    func testAppRejectsDuplicateCandidatePlanIDsWithoutReplacingOriginalFile() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-candidate-plan-duplicate-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let now = Date().addingTimeInterval(-60)
+            let first = NextCandidatePlan(kind: .gridBuy, code: "159941", name: "纳指ETF",
+                limitPrice: 1.2, units: 100, createdAt: now, expiresAt: now.addingTimeInterval(3600),
+                triggerNote: "回落触发", cancelNote: "突破区间", quoteSource: "test", quoteTime: now,
+                dailyBarCount: 120, minuteSampleCount: 0, confidenceLevel: "medium",
+                rationale: "test candidate", expectedNetGain: nil, expectedCostReduction: nil,
+                riskNote: "价格波动", marketState: "震荡", cancelAbove: nil, cancelBelow: nil)
+            let duplicate = first
+            let original = try JSONEncoder().encode([first, duplicate])
+            let url = directory.appendingPathComponent("candidate-plans-v1.json")
+            try original.write(to: url, options: .atomic)
+
+            let model = NextAppModel(repository: repository)
+            XCTAssertTrue(model.candidatePlans.isEmpty, "重复候选计划ID不能让两条不同证券计划混淆")
+            XCTAssertTrue(model.errorMessage?.contains("重复编号") == true)
+            XCTAssertNotNil(repository.save([], filename: "candidate-plans-v1.json"))
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
     func testFailedLedgerWriteDoesNotAdvanceTheInMemoryAccount() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory

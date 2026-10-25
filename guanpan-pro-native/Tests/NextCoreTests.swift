@@ -220,6 +220,10 @@ final class NextCoreTests: XCTestCase {
         var partialConfirmation = valid
         partialConfirmation.confirmedUnits = 100
         XCTAssertThrowsError(try partialConfirmation.validate(), "不完整的真实成交回填不能进入已保存计划")
+
+        var futureStateChange = valid
+        futureStateChange.stateChangedAt = Date().addingTimeInterval(600)
+        XCTAssertThrowsError(try futureStateChange.validate(), "远超设备时钟容差的未来状态时间必须拒绝")
     }
     func testWithdrawnGuidanceCannotBeSavedAsCandidatePlan() {
         let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
