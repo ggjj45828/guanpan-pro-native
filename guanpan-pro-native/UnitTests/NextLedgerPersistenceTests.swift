@@ -67,7 +67,9 @@ final class NextLedgerPersistenceTests: XCTestCase {
                 .appendingPathComponent("Guanpan-ledger-restart-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: directory) }
             let repository = NextLocalRepository(directoryOverride: directory)
-            let stamp = Date()
+            // Keep every restored fill inside the profile's observation window, while
+            // ensuring neither fill is in the future when reconciliation runs.
+            let stamp = Date().addingTimeInterval(-60)
             let memory = NextDecisionRecord(code: "563020", name: "红利ETF", createdAt: stamp,
                 snapshot: NextDecisionSnapshot(state: "持有", strategy: "hold", headline: "继续持有", confidenceLevel: "medium"))
             let partialFillA = NextFill(date: stamp, code: "563020", side: "buy", units: 1_000,
