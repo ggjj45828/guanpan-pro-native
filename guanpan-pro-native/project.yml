@@ -63,20 +63,36 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         TEST_TARGET_NAME: GuanpanProNative
         CODE_SIGNING_ALLOWED: "NO"
+  GuanpanProLedgerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: UnitTests
+    dependencies:
+      - target: GuanpanProNative
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native.ledger-tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: GuanpanProNative
+        CODE_SIGNING_ALLOWED: "NO"
 schemes:
   GuanpanProNative:
     build:
       targets:
         GuanpanProNative: all
         GuanpanProExperienceTests: [test]
+        GuanpanProLedgerTests: [test]
   GuanpanProValidation:
     build:
       targets:
         GuanpanProNative: all
         GuanpanProExperienceTests: [test]
+        GuanpanProLedgerTests: [test]
     test:
       config: Debug
       targets:
         - GuanpanProExperienceTests
+        - GuanpanProLedgerTests
       environmentVariables:
         GUANPAN_TESTING: "1"
