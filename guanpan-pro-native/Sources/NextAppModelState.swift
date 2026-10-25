@@ -422,6 +422,9 @@ import Combine
     /// 生成今日指导：补齐日 K 与分时后，扫描全部真实持仓。
     /// 只读真实账本；不创建模拟账户、不生成虚拟订单、不改变持仓与现金。
     func refreshGuidance() async {
+        // A refreshed rule snapshot invalidates any older online explanation immediately.
+        unifiedAIAdvice = nil
+        if !unifiedAIIsRunning { unifiedAIStatus = "规则指导正在刷新；在线 AI 旧答复已清除" }
         guard !book.positions.isEmpty else {
             dailyGuidance = nil
             dailyGuidanceLedgerFingerprint = nil
@@ -715,6 +718,9 @@ import Combine
         let dailyBars = Dictionary(uniqueKeysWithValues: book.positions.compactMap { position in
             chartData["\(position.code):day"].map { (position.code, $0.samples) }
         })
+        let intradayBars = Dictionary(uniqueKeysWithValues: book.positions.compactMap { position in
+            chartData[position.code].map { (position.code, $0.samples) }
+        })
         let decisionNow = Date()
         let portfolioReview = NextAccountAdvisor.review(book: book, quotes: quoteMap,
             concentrationLimitPercent: goal.concentrationLimit, targetWeights: goal.targetWeights,
@@ -731,6 +737,11 @@ import Combine
                                                 goal: goal,
                                                 portfolioReview: portfolioReview,
                                                 dailyBars: dailyBars,
+                                                intradayBars: intradayBars,
+                                                nasResearchSnapshot: nasResearch,
+                                                newsSnapshot: nasNews,
+                                                profileSnapshot: profile,
+                                                goalSnapshot: goal,
                                                 now: decisionNow)
     }
 
@@ -743,9 +754,25 @@ import Combine
         unifiedAIStatus = "正在汇总真实持仓、最新行情、NAS研究、新闻和投资画像…"
         defer { unifiedAIIsRunning = false }
         await refreshGuidance()
+        unifiedAIStatus = "规则指导已刷新，正在请求手机在线 AI 综合本次最新快照…"
         let context = makeDecisionContext()
         do {
             let response = try await DeepSeekMobile.analyze(prompt: context.promptBlock, key: key, profile: modelProfile)
+            let currentContext = makeDecisionContext()
+            if let reason = NextDecisionContextFreshness.rejectionReason(
+                sent: context, current: currentContext, now: Date()) {
+                unifiedAIAdvice = "在线分析已作废：\(reason)\n\n\(currentContext.guidance.summary)"
+                unifiedAIStatus = reason
+                let stamp = Date()
+                recordDecision(NextDecision(createdAt: stamp, title: "AI 今日统一指导（上下文已变化）",
+                    evidence: [
+                        NextEvidence(id: "unified-guidance-stale-context", title: "决策上下文过期保护",
+                                     detail: reason, level: "真实持仓与市场证据优先", observedAt: stamp),
+                        NextEvidence(id: "unified-guidance-current-rules", title: "当前手机规则结论",
+                                     detail: currentContext.guidance.summary, level: "离线规则引擎", observedAt: stamp)
+                    ], options: [], status: "旧在线回答已丢弃；未自动下单", origin: "在线AI结果与当前决策快照不一致"))
+                return
+            }
             guard !NextAIOutputGuard.containsUnverifiedActionPrice(response.content, guidance: context.guidance),
                   !NextAIOutputGuard.containsUnverifiedFinancialClaim(response.content) else {
                 unifiedAIAdvice = "在线 AI 输出了未经规则引擎确认的交易或财务数字，已拦截该段内容。请以页面中的手机规则计划和真实账户卡片为准。\n\n\(context.guidance.summary)"
@@ -798,6 +825,11 @@ import Combine
         \(cleanedQuestion)
         """
         let response = try await DeepSeekMobile.analyze(prompt: prompt, key: key, profile: modelProfile)
+        let currentContext = makeDecisionContext()
+        if let reason = NextDecisionContextFreshness.rejectionReason(
+            sent: context, current: currentContext, now: Date()) {
+            return "这条回答已作废：\(reason) 当前手机规则结论：\(currentContext.guidance.summary)"
+        }
         guard !NextAIOutputGuard.containsUnverifiedActionPrice(response.content, guidance: context.guidance),
               !NextAIOutputGuard.containsUnverifiedFinancialClaim(response.content) else {
             return "模型回答包含未经规则引擎确认的交易或财务数字，已拦截。请查看 AI 今日指导中的候选计划和真实账户卡片；没有合格计划时不要按模型生成的数字交易。"

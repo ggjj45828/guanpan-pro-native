@@ -138,6 +138,64 @@ final class NextChainScenarioTests: XCTestCase {
             "全持仓行情新鲜可信时才显示组合占比")
     }
 
+    func testOnlineDecisionContextIsRejectedWhenAccountOrEvidenceChangesInFlight() {
+        let book = book()
+        let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "暂无操作机会",
+                                         noActionSummary: "继续持有", dataState: "数据完整")
+        func context(_ currentBook: NextBook, quotePrice: Double,
+                     news: [String], research: [String]) -> NextDecisionContext {
+            NextDecisionContextBuilder.build(guidance: guidance, book: currentBook,
+                quotes: [code: quote(price: quotePrice)], nasResearchLines: research,
+                newsLines: news, now: now)
+        }
+        let baselineNews = ["来源A：持仓相关线索"]
+        let baselineResearch = ["NAS统计版本A"]
+        let sent = context(book, quotePrice: 1.4, news: baselineNews, research: baselineResearch)
+        XCTAssertNil(NextDecisionContextFreshness.rejectionReason(
+            sent: sent, current: context(book, quotePrice: 1.4, news: baselineNews, research: baselineResearch), now: now))
+
+        var changedBook = book
+        changedBook.cash += 1
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: sent, current: context(changedBook, quotePrice: 1.4, news: baselineNews, research: baselineResearch),
+            now: now)?.contains("真实持仓") == true)
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: sent, current: context(book, quotePrice: 1.401, news: baselineNews, research: baselineResearch),
+            now: now)?.contains("行情") == true)
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: sent, current: context(book, quotePrice: 1.4, news: ["来源B：新新闻"], research: baselineResearch),
+            now: now)?.contains("新闻") == true)
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: sent, current: context(book, quotePrice: 1.4, news: baselineNews, research: ["NAS统计版本B"]),
+            now: now)?.contains("NAS") == true)
+
+        let bar = NextChartSample(timestamp: now.addingTimeInterval(-60), open: 1.4, high: 1.41,
+                                  low: 1.39, close: 1.4, iopv: nil, volume: 100_000)
+        let changedBar = NextChartSample(timestamp: bar.timestamp, open: 1.4, high: 1.41,
+                                         low: 1.39, close: 1.401, iopv: nil, volume: 100_000)
+        func chartContext(_ daily: [NextChartSample], _ intraday: [NextChartSample]) -> NextDecisionContext {
+            NextDecisionContextBuilder.build(guidance: guidance, book: book, quotes: [code: quote(price: 1.4)],
+                nasResearchLines: baselineResearch, newsLines: baselineNews,
+                dailyBars: [code: daily], intradayBars: [code: intraday], now: now)
+        }
+        let chartSent = chartContext([bar], [bar])
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: chartSent, current: chartContext([changedBar], [bar]), now: now)?.contains("日K/分时") == true,
+            "仅有旧文本摘要相同不够，策略用日K变化也必须使在线答复失效")
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: chartSent, current: chartContext([bar], [changedBar]), now: now)?.contains("日K/分时") == true)
+
+        let oldTime = now.addingTimeInterval(-121)
+        let oldGuidance = NextDailyGuidance(generatedAt: oldTime, items: [], summary: "旧指导",
+                                            noActionSummary: "持有", dataState: "旧快照")
+        let expired = NextDecisionContextBuilder.build(guidance: oldGuidance, book: NextBook(),
+            quotes: [:], nasResearchLines: [], newsLines: [], now: oldTime)
+        let current = NextDecisionContextBuilder.build(guidance: oldGuidance, book: NextBook(),
+            quotes: [:], nasResearchLines: [], newsLines: [], now: now)
+        XCTAssertTrue(NextDecisionContextFreshness.rejectionReason(
+            sent: expired, current: current, now: now)?.contains("有效期") == true)
+    }
+
     func testPortfolioCorrelationUsesAlignedHistoricalBarsAndRejectsInsufficientOrFutureSamples() {
         let book = NextBook(cash: 0, positions: [
             NextPosition(code: code, name: "纳指ETF", units: 1_000, bookCost: 1_300),

@@ -703,6 +703,14 @@ enum NextOpportunityScanner {
 /// 最终只允许输出一份综合建议——不允许 NAS 说买、手机说卖。
 struct NextDecisionContext: Equatable {
     let generatedAt: Date
+    let ledgerFingerprint: String
+    let quoteSnapshot: [String: NextQuote]
+    let dailyBarsSnapshot: [String: [NextChartSample]]
+    let intradayBarsSnapshot: [String: [NextChartSample]]
+    let nasResearchSnapshot: [String: NextNASResearch]
+    let newsSnapshot: [String: [NextNewsInput]]
+    let profileSnapshot: NextInvestorProfile?
+    let goalSnapshot: NextGoal?
     let guidance: NextDailyGuidance
     let holdingsLines: [String]
     let portfolioLines: [String]
@@ -713,6 +721,61 @@ struct NextDecisionContext: Equatable {
     /// 本次在线 AI 实际收到的画像结论（可解释性：用户能查「AI 用了哪些画像信息」）。
     let profileLines: [String]
     let promptBlock: String
+}
+
+/// An online answer is useful only while the exact account and evidence snapshot
+/// used for its prompt is still current. Network latency must not turn old advice
+/// into today's guidance after a fill, quote, research, news, or profile update.
+enum NextDecisionContextFreshness {
+    static func rejectionReason(sent: NextDecisionContext, current: NextDecisionContext,
+                                now: Date, maximumAge: TimeInterval = 120) -> String? {
+        guard sent.generatedAt <= now, now.timeIntervalSince(sent.generatedAt) <= maximumAge,
+              sent.guidance.generatedAt <= now,
+              now.timeIntervalSince(sent.guidance.generatedAt) <= maximumAge else {
+            return "在线分析返回时，本次决策上下文已超过有效期；请刷新后重新分析"
+        }
+        guard sent.ledgerFingerprint == current.ledgerFingerprint else {
+            return "在线分析期间真实持仓、现金或成交流水发生变化；旧回答已作废，请按新账本重新分析"
+        }
+        guard sent.quoteSnapshot == current.quoteSnapshot else {
+            return "在线分析期间行情发生变化；旧回答已作废，请刷新行情后重新分析"
+        }
+        guard sent.dailyBarsSnapshot == current.dailyBarsSnapshot,
+              sent.intradayBarsSnapshot == current.intradayBarsSnapshot,
+              sent.nasResearchSnapshot == current.nasResearchSnapshot,
+              sent.newsSnapshot == current.newsSnapshot,
+              sent.profileSnapshot == current.profileSnapshot,
+              sent.goalSnapshot == current.goalSnapshot else {
+            return "在线分析期间日K/分时、NAS研究、新闻或投资画像发生变化；旧回答已作废，请重新分析"
+        }
+        guard sent.guidance == current.guidance,
+              sent.holdingsLines == current.holdingsLines,
+              sent.portfolioLines == current.portfolioLines,
+              sent.portfolioCorrelationLines == current.portfolioCorrelationLines,
+              sent.nasResearchLines == current.nasResearchLines,
+              sent.crossMarketLines == current.crossMarketLines,
+              sent.newsLines == current.newsLines,
+              sent.profileLines == current.profileLines else {
+            return "在线分析期间 NAS研究、新闻、画像或规则指导发生变化；旧回答已作废，请重新分析"
+        }
+        let plansAreCurrent = sent.guidance.items.filter(\.isActionable).allSatisfy { item in
+            let tPlanIsCurrent: Bool
+            if case let .ready(plan)? = item.tPlan { tPlanIsCurrent = plan.validUntil > now }
+            else { tPlanIsCurrent = true }
+            let gridPlanIsCurrent: Bool
+            if case let .ready(plan)? = item.gridPlan { gridPlanIsCurrent = plan.validUntil > now }
+            else { gridPlanIsCurrent = true }
+            return tPlanIsCurrent && gridPlanIsCurrent
+        }
+        guard plansAreCurrent else {
+            return "在线分析返回时，候选计划已经到期；旧回答已作废，请刷新后重新分析"
+        }
+        if sent.guidance.items.contains(where: \.isActionable),
+           !NextMarketClock.canGenerateActionablePlan(now) {
+            return "在线分析返回时已不在可生成计划的交易时段；旧操作指导已作废"
+        }
+        return nil
+    }
 }
 
 /// Online models are explanatory only. Reject actionable price text unless the exact
@@ -827,6 +890,11 @@ enum NextDecisionContextBuilder {
                       newsLines: [String], profileLines: [String] = [], goal: NextGoal = NextGoal(),
                       portfolioReview: NextAccountReview? = nil,
                       dailyBars: [String: [NextChartSample]] = [:],
+                      intradayBars: [String: [NextChartSample]] = [:],
+                      nasResearchSnapshot: [String: NextNASResearch] = [:],
+                      newsSnapshot: [String: [NextNewsInput]] = [:],
+                      profileSnapshot: NextInvestorProfile? = nil,
+                      goalSnapshot: NextGoal? = nil,
                       now: Date) -> NextDecisionContext {
         var holdings: [String] = []
         let timestampFormatter = DateFormatter()
@@ -922,7 +990,13 @@ enum NextDecisionContextBuilder {
         9. 在线AI只解释理由和风险，不复述或重算任何交易价格、份额、收益、手续费、降本、胜率、仓位占比等金融数值；这些精确数值只由页面中的规则计划与真实账户卡片展示。
         10. 持仓间相关性只基于实际共同日K样本描述历史价格共振；样本不足必须明示，不得称作ETF成分重叠、因果或未来预测，也不能单独决定交易。
         """
-        return NextDecisionContext(generatedAt: now, guidance: guidance, holdingsLines: holdings,
+        let trustedQuoteSnapshot = quotes.filter { $0.key == $0.value.code }
+        return NextDecisionContext(generatedAt: now, ledgerFingerprint: book.syncFingerprint,
+                                   quoteSnapshot: trustedQuoteSnapshot, dailyBarsSnapshot: dailyBars,
+                                   intradayBarsSnapshot: intradayBars,
+                                   nasResearchSnapshot: nasResearchSnapshot, newsSnapshot: newsSnapshot,
+                                   profileSnapshot: profileSnapshot, goalSnapshot: goalSnapshot,
+                                   guidance: guidance, holdingsLines: holdings,
                                    portfolioLines: portfolioLines,
                                    portfolioCorrelationLines: portfolioCorrelationLines,
                                    nasResearchLines: nasResearchLines, crossMarketLines: crossMarketLines,
