@@ -34,13 +34,35 @@ jobs:
           PY
       - name: Run application compile and Apple runtime tests
         run: |
+          set -o pipefail
           xcodebuild test -project guanpan-pro-native/GuanpanProNative.xcodeproj \
             -scheme GuanpanProValidation -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -resultBundlePath "$RUNNER_TEMP/GuanpanValidation.xcresult" \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log"
+      - name: Summarize Apple validation failures
+        if: always()
+        run: |
+          {
+            echo '## Apple runtime validation diagnostics'
+            echo
+            if [ -f "$RUNNER_TEMP/xcodebuild-test.log" ]; then
+              echo '### Compiler and test failure lines'
+              echo '```text'
+              grep -E 'error:|failed|FAIL|Executed|Testing failed|BUILD FAILED|TEST FAILED' "$RUNNER_TEMP/xcodebuild-test.log" | tail -n 120 || true
+              echo '```'
+              echo
+            fi
+            if [ -d "$RUNNER_TEMP/GuanpanValidation.xcresult" ]; then
+              echo '### XCTest result summary'
+              echo '```json'
+              xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/GuanpanValidation.xcresult" --format json 2>/dev/null | head -c 12000 || true
+              echo
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Export UI test screenshots
         if: always()
         run: |

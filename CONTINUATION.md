@@ -591,3 +591,9 @@
 - 新增Core XCTest覆盖非数值字段、非有限值、越界、网格分数档和合法上限；新增AppModel XCTest验证拒绝时画像/策略阈值不变、合法值能保存。本机无Swift/Xcode，这些新增测试尚未执行。`git diff --check`通过。
 - 矩阵第32项Implementation已记录数值输入防护，状态仍🟠；总计仍✅1、🟡17、🟠123、⚠️4。相关项不因新增源码/测试自动升级。
 - 下一步：检查代码和用例后提交当前画像修复及验收记录，推送至已授权的`validation/acceptance-20261024`，触发完整Validate与IPA；取得新run结论后继续修复CI/XCTest失败并从矩阵挑下一项可推进Partial。产品红线不变：B独立、真实账户唯一、无模拟交易、无自动下单、不放松统计/未来数据约束。
+
+## 2026-10-25 XCTest失败可诊断性
+
+- 在`.github/workflows/validate-ios.yml`为`xcodebuild test`增加`tee`构建日志，并新增always-run汇总步骤，把编译/test failure行及`xcresulttool` XCTest summary输出到Actions step summary。目的是避免CI只显示exit 65、日志因匿名访问被挡时仍无法识别具体失败；不更改测试命令、门槛或策略逻辑。
+- 工作流变更通过手工检查缩进和shell管道结构；本机无Python YAML解析器/Swift/Xcode及bash，尚未在真实runner验证该summary命令兼容性，须由下次完整Validate证明。
+- 下一步：将画像数值校验、Core/AppModel测试、工作流诊断及矩阵一起提交，推送已授权B验证分支；以新run完整执行全部Swift/XCTest，优先获取详细失败并修复。不得把9c66bbf的IPA成功算作XCTest成功，也不得改变矩阵总状态。
