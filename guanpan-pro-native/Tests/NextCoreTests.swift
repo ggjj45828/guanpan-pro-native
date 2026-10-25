@@ -407,6 +407,10 @@ final class NextCoreTests: XCTestCase {
             quote: quote, now: now))
         XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
             guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
+            quote: self.quote(time: now, price: Decimal(string: "1.800")!), now: now)?
+            .contains("报价异常") == true, "保存前必须拦截时间新鲜但价格串号的行情")
+        XCTAssertTrue(NextPortfolioRiskGuard.candidateSaveBlock(for: actionable, guidanceGeneratedAt: now,
+            guidanceLedgerFingerprint: "account-v1", currentLedgerFingerprint: "account-v1",
             quote: self.quote(time: now.addingTimeInterval(-121)), now: now)?
             .contains("过期") == true, "保存时必须复核当前行情，而不是只信任生成时的数据")
         let afterClose = now.addingTimeInterval(6 * 3600)
@@ -440,6 +444,9 @@ final class NextCoreTests: XCTestCase {
             quote: quote(time: now, price: Decimal(string: "1.240")!), now: now)?.contains("下方失效线") == true)
         XCTAssertNotNil(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
             quote: quote(time: now.addingTimeInterval(-121)), now: now))
+        XCTAssertTrue(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
+            quote: quote(time: now, price: Decimal(string: "1.800")!), now: now)?.contains("报价异常") == true,
+            "新鲜但相对昨收异常的价格不得继续支持旧候选计划")
         XCTAssertNotNil(NextPortfolioRiskGuard.currentPlanQuoteBlock(for: plan,
             quote: nil, now: now))
     }
@@ -819,7 +826,8 @@ final class NextCoreTests: XCTestCase {
             ("供应商时间超前", quote(time: now.addingTimeInterval(61))),
             ("仅有接收时间", quote(timeQuality: "receipt_only")),
             ("报价过期", quote(time: now.addingTimeInterval(-121))),
-            ("无效价格", quote(price: 0))
+            ("无效价格", quote(price: 0)),
+            ("新鲜但异常报价", quote(price: Decimal(string: "1.800")!))
         ]
         for (label, incoming) in invalidCases {
             var candidate = plan()

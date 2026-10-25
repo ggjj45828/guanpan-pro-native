@@ -226,6 +226,10 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
             state = .invalidated; stateChangedAt = now
             return "\(name) 的行情价格无效，原计划自动作废；请刷新行情后重新分析"
         }
+        if let anomaly = NextPortfolioCalculator.anomalyReason(quote: quote, storedCostPerUnit: 0) {
+            state = .invalidated; stateChangedAt = now
+            return "\(name) 的当前报价异常，原计划自动作废：\(anomaly)"
+        }
         guard quote.hasReliableMarketTime else {
             state = .invalidated; stateChangedAt = now
             return "\(name) 的行情没有可核验的供应商时间，原计划自动作废；请使用带来源时间的行情重新分析"
@@ -444,6 +448,9 @@ enum NextPortfolioRiskGuard {
         guard let quote, quote.code == plan.code, quote.isFreshForPricePlan(at: now) else {
             return "当前行情缺失、过期或来源时间不可核验，请刷新行情后重新保存计划"
         }
+        if let anomaly = NextPortfolioCalculator.anomalyReason(quote: quote, storedCostPerUnit: 0) {
+            return "当前报价异常，不能继续使用候选计划：\(anomaly)"
+        }
         if let cancelAbove = plan.cancelAbove, quote.price > cancelAbove {
             return "现价已越过候选计划上方失效线 ¥\(NextMoney.text(cancelAbove, digits: 3))，请重新分析"
         }
@@ -489,6 +496,9 @@ enum NextPortfolioRiskGuard {
         }
         guard let quote, quote.code == item.code, quote.isFreshForPricePlan(at: now) else {
             return "当前行情缺失、过期或来源时间不可核验，请刷新行情后重新分析"
+        }
+        if let anomaly = NextPortfolioCalculator.anomalyReason(quote: quote, storedCostPerUnit: 0) {
+            return "当前报价异常，不能保存候选计划：\(anomaly)"
         }
         return nil
     }

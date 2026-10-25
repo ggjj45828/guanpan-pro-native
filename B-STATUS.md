@@ -1,15 +1,15 @@
 # B版当前状态
 
-更新时间：2026-10-25（Asia/Shanghai）
+更新时间：2026-10-25 19:08（Asia/Shanghai）
 
 ## 版本标识
 - 路线：B（Master Acceptance Matrix独立路线）；未合并、未cherry-pick A版。
 - 当前工作分支：`validation/acceptance-20261024`。
-- B源码快照对应commit：65819d2800c64734681dfcf44756adfc66e3364f；B-LATEST.zip按该源码树生成。
-- 快照生成时间：2026-10-25 18:53:19 +08:00。
-- 三层保存规则：[B-DEVELOPMENT-RULES.md](B-DEVELOPMENT-RULES.md)。本工作树当前HEAD对应commit尚未在本轮远端确认；NAS灾备本轮未同步，因此不能据此判定满足安全关机条件。
-- 远程核验：远程名为 `origin`，指向B独立仓库 `ggjj45828/guanpan-pro-native`；远端当前分支commit尚未在本轮核验。
-- NAS快照commit：本轮未同步 / 未核验。
+- B源码快照对应commit：待本轮修复提交后更新；当前有未提交的候选计划行情异常保护修改。
+- 快照生成时间：本轮代码提交后生成。
+- 三层保存规则：[B-DEVELOPMENT-RULES.md](B-DEVELOPMENT-RULES.md)。
+- 按用户指定顺序核验：GitHub连接再次测试时DNS仍无法解析`github.com`，`git ls-remote`失败；远端HEAD是否包含本地最新commit未知。NAS快照commit未同步/未核验（当前环境没有可用NAS盘符或挂载点）。
+- 本地/远程：远程本轮不可达，不能称已备份。NAS：未同步。最新工作尚未同时具备GitHub与NAS外部副本，不满足安全关机条件。
 
 ## Master Acceptance Matrix
 - 唯一最新矩阵：[B-MASTER-ACCEPTANCE-MATRIX.md](B-MASTER-ACCEPTANCE-MATRIX.md)
@@ -23,6 +23,12 @@
 - Risk Guard对显式非法目标权重（NaN/越界）及超过100%的持仓权重改为拒绝新增买入。
 - 新增事务失败回滚、费率修改重启恢复、失败不改内存、五场景主题映射及异常组合比例测试代码；Swift/XCTest未运行。
 - 继续审计发现手续费批量保存函数在事务开始前仍提前赋值 `@Published preferences` 和 `rules`，使已存在的失败测试预期无法保证；本轮已移除提前赋值，现仅在 `saveTransaction` 成功后发布费率、规则和撤回计划。本修复尚未运行Swift/XCTest。
+- 真实账户极端份额路径新增溢出保护：部分成交合并、T+1锁定份额、完整流水成本判断、网格卖出档合计、补仓后份额及回本次数转换；不可信总量不生成摊薄成本/计划，可能溢出的成交写入明确拒绝。新增纯逻辑与账本集成测试源码，尚未执行Swift/XCTest。
+- 组合风险守卫增加正T买入腿和网格全部买档成交/卖档未成交时的最坏情形投影，扣除估算手续费后的组合净值，并同时检查集中度上限及用户目标权重；数据不完整时拒绝新增计划。新增边界XCTest源码，尚未执行。
+- 候选计划真实成交原来会在`recordTrade`后立即学习一次，又在计划/建议/决策记忆更新后再次学习；现改为候选成交路径只在所有状态完成后学习一次，普通人工成交入口仍只学习一次。
+- 组合风险估值曾只看行情时间与来源，未将“时间新鲜但相对昨收/账本成本异常”的报价排除；现复用组合估值的价格异常规则，任一持仓出现此类报价便不能建立可用组合权重。已补测试源码，未执行Swift/XCTest。
+- 候选计划原先允许时间新鲜但相对昨收异常的报价通过保存/计划复核；现对候选计划保存、持续触价复核和状态刷新统一调用同一异常报价门槛，异常时拒绝保存或作废旧计划。新增回归测试源码，尚未运行Swift/XCTest。
+- GitHub连接复测：DNS解析失败，`git ls-remote`无法确认远端HEAD；未重复尝试网络探测。
 
 ## 当前可确认的测试和外部验证
 - NAS研究：本轮用 bundled Python 执行 `nas-advisor-compat/tests/test_research_only.py`，65/65通过。
@@ -32,7 +38,7 @@
 - GitHub Actions：最近矩阵记录的 #123 等运行尚未取得可核验终态；External Verification Pending。
 - Simulator/截图：旧树有历史截图产物；本轮五主题和详情变化尚无可核验截图，External Verification Pending。
 - iPhone/NAS实机联调、真实API Key端到端、真实长期分钟档案：External Verification Pending。
-- 跨电脑灾备：Project Files本地checkpoint已生成；远程commit与NAS快照未核实。当前工作尚未满足“可安全关机”确认条件。
+- 跨电脑灾备：Project Files本地checkpoint已生成；远程因DNS失败无法核验，NAS无挂载且未同步。**B版最新工作仍仅存在当前电脑，不满足安全关机条件。**
 
 ## 当前真实产品缺口
 - 145项矩阵仍有大量Partial；本次只完成本地可做的代码/测试源更新，不能称整体验收完成。
@@ -41,8 +47,8 @@
 
 ## 下一开发断点
 1. 继续从B-MASTER-ACCEPTANCE-MATRIX的P0/本地可推进Partial中审计业务缺口，不重复探测Actions、Xcode、Simulator或localhost权限。
-2. 本轮发现并修复手续费事务失败前的内存提前发布；检查对应集成测试、静态路径与其他真实账本多文件写入边界。
-3. 远端push及commit核验、NAS灾备同步当前均未确认；仅在确有可用通道时执行并记录，不能把本机checkpoint说成脱机备份。
+2. 继续审计真实账本/成交恢复的异常边界及DecisionContext一致性；新整数溢出保护、买入后组合风险守卫、异常报价隔离、手续费事务与画像单次学习修复等待Swift完整测试。
+3. GitHub DNS恢复后推送并核对远端commit；NAS可访问时同步三份B快照并记录NAS快照commit。未满足之前不声称具备安全关机备份。
 
 ## 产品红线
 - 只使用唯一真实账户；无模拟资金/持仓/成交；不自动下单。
