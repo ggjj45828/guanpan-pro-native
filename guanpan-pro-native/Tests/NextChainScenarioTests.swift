@@ -621,7 +621,24 @@ final class NextChainScenarioTests: XCTestCase {
             XCTAssertGreaterThan(plan.maxCashUsage, 0)
             XCTAssertLessThanOrEqual(plan.maxCashUsage, Decimal(50_000) + 10, "买入档不能超过可用现金")
             XCTAssertTrue(plan.upper > plan.lower)
-            for tier in plan.tiers where tier.side == "buy" {
+            let buyTiers = plan.tiers.filter { $0.side == "buy" }
+            let sellTiers = plan.tiers.filter { $0.side == "sell" }
+            XCTAssertFalse(sellTiers.isEmpty, "组合压力计算必须能证明卖档不会被提前当作现金")
+            XCTAssertEqual(plan.maxCashUsage, buyTiers.reduce(Decimal.zero) { $0 + $1.cashRequired },
+                           "最坏情形资金占用应覆盖全部买档，不能预先扣除卖档收入")
+            let buyNotional = buyTiers.reduce(Decimal.zero) { $0 + $1.price * Decimal($1.units) }
+            XCTAssertEqual(plan.maxCashUsage - buyNotional,
+                           Decimal(buyTiers.count) * Decimal(string: "0.10")!,
+                           "每个买档各自计入一笔0.10元费用")
+            let reserve = Decimal(2_000)
+            let cashAtBoundary = plan.maxCashUsage + reserve
+            XCTAssertNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: cashAtBoundary,
+                totalAssets: 10_000, targetCashPercent: 20, requiredCash: plan.maxCashUsage),
+                "现金刚好覆盖所有买档和目标储备时允许通过")
+            XCTAssertNotNil(NextPortfolioRiskGuard.cashReserveBlock(availableCash: cashAtBoundary - Decimal(string: "0.01")!,
+                totalAssets: 10_000, targetCashPercent: 20, requiredCash: plan.maxCashUsage),
+                "现金少一分钱就不能侵占目标储备")
+            for tier in buyTiers {
                 XCTAssertGreaterThan(tier.cashRequired, tier.price * Decimal(tier.units),
                                      "每档买入成本必须含手续费")
                 XCTAssertTrue(tier.price >= plan.lower && tier.price <= plan.upper)

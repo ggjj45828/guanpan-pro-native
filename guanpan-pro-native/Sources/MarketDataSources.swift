@@ -246,7 +246,7 @@ enum NextTencentDailyParser {
 // MARK: - 东财 K 线（日 K 与 1 分钟 K 共用内核）
 
 /// 东财历史 K 线（push2his.eastmoney.com/api/qt/stock/kline/get）。
-/// 字段口径与 NAS 服务端一致：klines 每行 "日期[, 时:分],开,收,高,低,量(股),额,幅%"。
+/// 字段口径与 NAS 服务端一致：klines 每行 "日期[, 时:分],开,收,高,低,量(手),额,幅%"。
 /// 日 K（klt=101, fqt=1 前复权）与 1 分钟 K（klt=1）共用同一解析内核，只差时间粒度。
 enum NextEastMoneyKlineParser {
     enum Mode { case daily, minute }

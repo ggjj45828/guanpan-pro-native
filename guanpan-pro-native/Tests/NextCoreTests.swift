@@ -816,6 +816,22 @@ final class NextCoreTests: XCTestCase {
         XCTAssertNil(dataset.iopvSource)
         try dataset.validate()
     }
+    func testEastMoneyMinuteParserPreservesHandVolumeUsedByLiquidityEvidence() throws {
+        // 2026-10-23 public 159941 15:00 sample: 12,722,300 shares × ¥1.668
+        // ~= ¥21,220,796 turnover, so the returned volume 127,223 is in 100-share lots.
+        let payload: [String: Any] = ["data": ["klines": [
+            "2026-10-23 14:59,1.668,1.668,1.668,1.668,0,0.000,0.00",
+            "2026-10-23 15:00,1.668,1.668,1.668,1.668,127223,21220796.000,0.00"
+        ]]]
+        let received = ISO8601DateFormatter().date(from: "2026-10-23T07:01:00Z")!
+        let dataset = try XCTUnwrap(NextEastMoneyKlineParser.parse(
+            try JSONSerialization.data(withJSONObject: payload), code: "159941", mode: .minute,
+            priceSource: "EastMoney kline fixture", receivedAt: received))
+        XCTAssertEqual(dataset.samples.count, 2)
+        let volume = try XCTUnwrap(dataset.samples.last?.volume)
+        XCTAssertEqual(volume, Decimal(127_223),
+                       "分钟成交量保持手数，NextIntradayStatsEngine才能正确计算计划份额参与率")
+    }
     func testIntradayFreshnessUsesSampleTimeNotResponseReceiptTime() throws {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
