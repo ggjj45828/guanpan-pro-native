@@ -89,10 +89,34 @@ struct NextCandidatePlan: Codable, Identifiable, Equatable {
 
     func validate() throws {
         guard code.count == 6, code.allSatisfy(\.isNumber), !name.isEmpty,
-              limitPrice > 0, !limitPrice.isNaN, units > 0,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              limitPrice > 0, !limitPrice.isNaN, units > 0, units <= 100_000_000,
               expiresAt > createdAt,
-              !rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              NextLedgerTimestamp.isPlausible(createdAt),
+              NextLedgerTimestamp.isPlausible(expiresAt),
+              dailyBarCount >= 0, minuteSampleCount >= 0,
+              !quoteSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !confidenceLevel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              cancelAbove.map({ !$0.isNaN && $0 > 0 }) ?? true,
+              cancelBelow.map({ !$0.isNaN && $0 > 0 }) ?? true,
+              cancelAbove.map({ above in cancelBelow.map({ above > $0 }) ?? true }) ?? true,
+              expectedNetGain.map({ !$0.isNaN }) ?? true,
+              expectedCostReduction.map({ !$0.isNaN }) ?? true,
+              quoteTime.map({ NextLedgerTimestamp.isPlausible($0) }) ?? true,
+              stateChangedAt.map({ NextLedgerTimestamp.isPlausible($0) && $0 >= createdAt }) ?? true,
+              triggeredAt.map({ NextLedgerTimestamp.isPlausible($0) && $0 >= createdAt }) ?? true,
+              viewedAt.map({ NextLedgerTimestamp.isPlausible($0) && $0 >= createdAt }) ?? true,
+              confirmedAt.map({ NextLedgerTimestamp.isPlausible($0) && $0 >= createdAt }) ?? true,
+              confirmedUnits.map({ $0 > 0 }) ?? true,
+              confirmedPrice.map({ !$0.isNaN && $0 > 0 }) ?? true,
+              confirmedFee.map({ !$0.isNaN && $0 >= 0 }) ?? true,
+              feedback.map({ NextLedgerTimestamp.isPlausible($0.createdAt) && $0.createdAt >= createdAt }) ?? true else {
             throw NextError.invalid("候选计划的证券、价格、份额或有效期无效")
+        }
+        let hasConfirmation = confirmedUnits != nil || confirmedPrice != nil || confirmedFee != nil || confirmedAt != nil
+        guard !hasConfirmation || (confirmedUnits != nil && confirmedPrice != nil && confirmedFee != nil && confirmedAt != nil) else {
+            throw NextError.invalid("候选计划的真实成交回填字段不完整")
         }
     }
 

@@ -42,6 +42,32 @@ final class NextLedgerPersistenceTests: XCTestCase {
         }
     }
 
+    func testAppRejectsSemanticallyInvalidCandidatePlansWithoutReplacingOriginalFile() async throws {
+        try await MainActor.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Guanpan-candidate-plan-validation-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let repository = NextLocalRepository(directoryOverride: directory)
+            let now = Date().addingTimeInterval(-60)
+            let invalidPlan = NextCandidatePlan(kind: .gridBuy, code: "159941", name: "纳指ETF",
+                limitPrice: 1.2, units: -100, createdAt: now, expiresAt: now.addingTimeInterval(3600),
+                triggerNote: "回落触发", cancelNote: "突破区间", quoteSource: "test", quoteTime: now,
+                dailyBarCount: 120, minuteSampleCount: 0, confidenceLevel: "medium",
+                rationale: "test candidate", expectedNetGain: nil, expectedCostReduction: nil,
+                riskNote: "价格波动", marketState: "震荡", cancelAbove: nil, cancelBelow: nil)
+            let original = try JSONEncoder().encode([invalidPlan])
+            let url = directory.appendingPathComponent("candidate-plans-v1.json")
+            try original.write(to: url, options: .atomic)
+
+            let model = NextAppModel(repository: repository)
+            XCTAssertTrue(model.candidatePlans.isEmpty, "语义无效的持久候选计划不能进入UI或后续决策上下文")
+            XCTAssertTrue(model.errorMessage?.contains("候选计划") == true)
+            XCTAssertNotNil(repository.save([invalidPlan], filename: "candidate-plans-v1.json"),
+                             "不能用空数组静默覆盖待恢复的原计划文件")
+            XCTAssertEqual(try Data(contentsOf: url), original)
+        }
+    }
+
     func testFailedLedgerWriteDoesNotAdvanceTheInMemoryAccount() async throws {
         try await MainActor.run {
             let directory = FileManager.default.temporaryDirectory

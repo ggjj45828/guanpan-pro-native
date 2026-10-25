@@ -207,6 +207,20 @@ final class NextCoreTests: XCTestCase {
         let decodedLegacyPlan = try JSONDecoder().decode(NextCandidatePlan.self, from: legacyData)
         XCTAssertNil(decodedLegacyPlan.decisionMemoryID, "旧版候选计划缺少关联字段时仍应可读取")
     }
+    func testCandidatePlanPersistenceRejectsInconsistentConfirmationAndEvidence() throws {
+        let valid = NextCandidatePlan(kind: .gridBuy, code: "159941", name: "纳指ETF",
+            limitPrice: Decimal(string: "1.380")!, units: 200, createdAt: now, expiresAt: now.addingTimeInterval(3600),
+            triggerNote: "回落触发", cancelNote: "突破区间", quoteSource: "test", quoteTime: now,
+            dailyBarCount: 120, minuteSampleCount: 0, confidenceLevel: "medium",
+            rationale: "candidate evidence", expectedNetGain: nil, expectedCostReduction: nil,
+            riskNote: "波动风险", marketState: "震荡", cancelAbove: Decimal(string: "1.500"),
+            cancelBelow: Decimal(string: "1.300"))
+        XCTAssertNoThrow(try valid.validate())
+
+        var partialConfirmation = valid
+        partialConfirmation.confirmedUnits = 100
+        XCTAssertThrowsError(try partialConfirmation.validate(), "不完整的真实成交回填不能进入已保存计划")
+    }
     func testWithdrawnGuidanceCannotBeSavedAsCandidatePlan() {
         let confidence = NextDataConfidence.assess(quote: nil, now: now, dailyBarCount: 0, minuteSampleCount: 0)
         let blocked = NextGuidanceItem(code: "159941", name: "纳指ETF", state: .wideRange,

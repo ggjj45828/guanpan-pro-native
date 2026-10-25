@@ -117,7 +117,13 @@ import Combine
         self.nasNews = repository.load([String: [NextNewsInput]].self, filename: "nas-news-v1.json", fallback: [:])
         self.dividendEvents = repository.load([String: [NextETFDividendEvent]].self, filename: "dividend-history-v1.json", fallback: [:])
         self.patientLimitPlans = repository.load([NextPatientLimitPlan].self, filename: "patient-limit-plans-v1.json", fallback: [])
-        self.candidatePlans = repository.load([NextCandidatePlan].self, filename: "candidate-plans-v1.json", fallback: [])
+        self.candidatePlans = repository.loadValidated([NextCandidatePlan].self, filename: "candidate-plans-v1.json",
+            fallback: [], validate: { plans in
+                guard Set(plans.map(\.id)).count == plans.count else {
+                    throw NextError.invalid("候选计划存在重复编号")
+                }
+                for plan in plans { try plan.validate() }
+            })
         self.profile = repository.load(NextInvestorProfile.self, filename: "investor-profile-v1.json", fallback: NextInvestorProfile())
         self.suggestions = repository.load([NextSuggestionRecord].self, filename: "ai-suggestions-v1.json", fallback: [])
         self.errorMessage = repository.integrityWarning
