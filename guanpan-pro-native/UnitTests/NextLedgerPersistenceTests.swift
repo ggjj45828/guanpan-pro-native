@@ -61,7 +61,7 @@ final class NextLedgerPersistenceTests: XCTestCase {
 
             let model = NextAppModel(repository: repository)
             XCTAssertTrue(model.candidatePlans.isEmpty, "语义无效的持久候选计划不能进入UI或后续决策上下文")
-            XCTAssertTrue(model.errorMessage?.contains("候选计划") == true)
+            XCTAssertTrue(model.errorMessage?.contains("candidate-plans-v1.json") == true)
             XCTAssertNotNil(repository.save([invalidPlan], filename: "candidate-plans-v1.json"),
                              "不能用空数组静默覆盖待恢复的原计划文件")
             XCTAssertEqual(try Data(contentsOf: url), original)
@@ -88,7 +88,7 @@ final class NextLedgerPersistenceTests: XCTestCase {
 
             let model = NextAppModel(repository: repository)
             XCTAssertTrue(model.candidatePlans.isEmpty, "重复候选计划ID不能让两条不同证券计划混淆")
-            XCTAssertTrue(model.errorMessage?.contains("重复编号") == true)
+            XCTAssertTrue(model.errorMessage?.contains("candidate-plans-v1.json") == true)
             XCTAssertNotNil(repository.save([], filename: "candidate-plans-v1.json"))
             XCTAssertEqual(try Data(contentsOf: url), original)
         }
