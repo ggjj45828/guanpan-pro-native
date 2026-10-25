@@ -632,3 +632,17 @@
 - 本机可运行检查：NAS研究58/58、旧服务84/84、NAS同步58/58均通过；Python compileall通过；四份Docker Compose配置解析通过；本轮Python正则/英文财务正反例烟测通过。旧服务/同步HTTP测试先被沙箱回环端口限制，获准运行本地测试服务后通过；没有连接真实NAS或上游行情。
 - GitHub网络拆分结果：origin是`https://github.com/ggjj45828/guanpan-pro-native.git`，credential helper为Git Credential Manager；提升权限后`github.com` DNS解析成功，但对`github.com:443` TCP连接超时，SSH连通探测停在host-key验证。`api.github.com:443`可达（HTTP 200）；通过认证的Actions日志下载被GitHub返回403“Must have admin rights”，不等同于密码错误。没有读取或显示Token/私钥。后续可在API具备分支写权限时，通过Git Database API沿用B专属验证分支并触发Actions；先验证远端ref与本地父子关系，拒绝覆盖或强推。
 - 当前工作树尚有Swift守卫、Core测试、矩阵与本续记改动未提交；先执行`git diff --check`与正则静态检查，再提交。矩阵第46仍🟡；总计145项维持✅1、🟡17、🟠123、⚠️4。下一步优先用安全的API快进更新B验证分支，重新运行完整portable Swift Core与Xcode XCTest；按真实失败继续修复。若API权限不足，保留本地提交，继续其他本机可做Partial，不能声称测试通过。产品红线：B独立、真实账户唯一、无模拟账户/虚拟交易、无自动下单；历史相关不说成因果，样本和未来数据约束不放松。
+
+## 2026-10-25 最新macOS重跑状态
+
+- Validate #113日志已确认：`Decimal(string:)`在Apple runner上把`1.100abc`的数字前缀解析成有效小数，导致数字后缀回归失败。增加全串正则校验后，Python编译/捕获组烟测通过；严格Swift修复仍必须等runner验收。
+- B版修复提交的本地SHA为`3106163d8a0fcbfd8be5b89408e0902ef8381764`；经GitHub Git Database API沿用验证分支更新到`f23bf0d4b3f013f8793ac66d0138b0fd237027d0`，上传树SHA与本地树`ba10d02ca0f2559997e7c37045edb96e2760bd2c`一致，远端父提交为原验证分支`059262fa603bfa44eb435ad85c33511af1322d81`，使用force=false；API对提交换行/时区规范化使commit SHA不同，代码树已确认相同。
+- 已自动触发Validate #114与Build IPA #184，检查时都在运行。需先取#114 portable Swift完整Core XCTest结果，再继续Xcode运行时测试；#184成功只代表unsigned IPA打包。第46仍🟡，总状态仍✅1、🟡17、🟠123、⚠️4。
+- 当前可执行NAS回归仍为58/58、84/84、58/58；compileall及四份Compose配置均通过。此后第一步：用只读Actions状态检查等待#114/#184终态；读取可见step summary/日志诊断，修复真实失败，再继续矩阵中的其余🟠项目。若公开Actions页面不显示诊断，不伪造结论，保留Swift未验证并继续其它本机任务。产品红线继续有效：B独立、真实账户唯一、无模拟交易和自动下单，不降低统计/防未来约束。
+
+## 2026-10-25 Validate #114结果与诊断工件
+
+- Validate #114 `40163794974`完成：portable Swift Core测试步骤成功；Xcode模拟器编译/运行测试步骤失败，GitHub公开check annotation只写exit 65，未暴露具体测试名。Build IPA #184成功，使用相同的远端B代码树；它仍是unsigned打包验证，不能替代Xcode XCTest。
+- 因#114工件没有包括运行日志，本轮扩展`.github/workflows/validate-ios.yml`：下次将portable Swift/Xcode原始日志与各自step summary复制进`ios-validation-results`工件，保留现有测试命令、门槛和代码签名设置。Workflow修改尚未被runner验证。
+- Matrix第46已更新：完整portable Swift Core运行成功；Xcode测试仍失败待诊断，所以继续🟡。全矩阵统计仍145项：✅1、🟡17、🟠123、⚠️4。
+- 工作树中workflow、Matrix和Continuation修改尚待复核/提交。下一步：检查YAML结构、`git diff --check`，将诊断工件改动提交并沿B独立验证分支安全快进更新；运行新Validate，下载日志工件定位exit 65的具体原因，修复后重复完整测试。NAS三套Python回归58/58、84/84、58/58、compileall和四份Compose配置此前均通过，不视为真实NAS验证。产品红线不变。

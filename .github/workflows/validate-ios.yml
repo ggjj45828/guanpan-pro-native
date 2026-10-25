@@ -38,6 +38,9 @@ jobs:
               echo 'No portable Swift log was produced.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/portable-swift-core-summary.md"
+          fi
       - name: Select an available iPhone simulator
         run: |
           xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
@@ -79,6 +82,9 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/apple-validation-summary.md"
+          fi
       - name: Export UI test screenshots
         if: always()
         run: |
@@ -98,5 +104,9 @@ jobs:
           path: |
             ${{ runner.temp }}/GuanpanValidation.xcresult
             ${{ runner.temp }}/experience-screenshots
+            ${{ runner.temp }}/swift-core-test.log
+            ${{ runner.temp }}/portable-swift-core-summary.md
+            ${{ runner.temp }}/xcodebuild-test.log
+            ${{ runner.temp }}/apple-validation-summary.md
           if-no-files-found: warn
 
