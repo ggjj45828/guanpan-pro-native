@@ -697,6 +697,7 @@ struct NextDecisionContext: Equatable {
     let guidance: NextDailyGuidance
     let holdingsLines: [String]
     let portfolioLines: [String]
+    let portfolioCorrelationLines: [String]
     let nasResearchLines: [String]
     let crossMarketLines: [String]
     let newsLines: [String]
@@ -816,6 +817,7 @@ enum NextDecisionContextBuilder {
                       nasResearchLines: [String], crossMarketLines: [String] = [],
                       newsLines: [String], profileLines: [String] = [], goal: NextGoal = NextGoal(),
                       portfolioReview: NextAccountReview? = nil,
+                      dailyBars: [String: [NextChartSample]] = [:],
                       now: Date) -> NextDecisionContext {
         var holdings: [String] = []
         let timestampFormatter = DateFormatter()
@@ -828,6 +830,8 @@ enum NextDecisionContextBuilder {
             return quote.code == position.code && quote.isFreshForPricePlan(at: now)
         }
         let trustedPortfolioTotal = portfolioQuotesTrusted ? book.total(using: quotes) : nil
+        let portfolioCorrelationLines = NextPortfolioCorrelationEngine.contextLines(
+            book: book, dailyBars: dailyBars, now: now)
         for position in book.positions where position.units > 0 {
             let quote = quotes[position.code]
             let priceText = quote.map {
@@ -879,11 +883,15 @@ enum NextDecisionContextBuilder {
         } else {
             portfolioLines.append("组合体检未提供；不得据此假设现金缓冲、集中度或目标偏差正常")
         }
+        let correlationSection = portfolioCorrelationLines.isEmpty
+            ? "真实持仓日K共同样本不足；不推断ETF成分重叠或相关关系"
+            : portfolioCorrelationLines.joined(separator: "\n")
         let promptBlock = """
         你是观盘顾问，一位只基于用户真实持仓工作的投资顾问。以下是本次统一决策上下文，只能在此基础上给建议：
         【账户】现金 ¥\(NextMoney.text(book.cash))；持仓 \(book.positions.count) 只。
         【长期配置】\(allocationLines.isEmpty ? "未设置ETF目标权重；按组合风险和真实机会判断，不强行投入现金。" : allocationLines.joined(separator: "；"))
         【组合级风险体检】\(portfolioLines.joined(separator: "；"))
+        【持仓间历史共振】\(correlationSection)
         【持仓】\(holdings.joined(separator: "\n"))
         【A股交易日历】\(NextMarketClock.sessionDescription(now))。休市日、周末、盘前、午休和收盘后不得描述为“今天可挂”；只能引用规则引擎给出的有效候选计划，计划缺失就明确说没有当日可执行价格。
         【市场状态与候选计划】\(planLines.joined(separator: "\n"))
@@ -903,9 +911,11 @@ enum NextDecisionContextBuilder {
         7. 跨市场关系即使历史统计标为稳定候选，也必须先经过预注册的未来未见样本复现，并由NAS明确标记可用于风险判断；否则只能描述为历史研究，不得改变做T/网格/加仓结论。缺失/过期/样本不足必须说「暂无可靠证据/没有稳定领先关系」，不得编造市场关系或概率。
         8. 跨市场市场状态为 closed、stale 或 unknown 时，只能将其解释为历史关系研究，不能描述成今天的海外实时方向信号；开放市场的最新点超过数据新鲜度门槛也必须忽略。
         9. 在线AI只解释理由和风险，不复述或重算任何交易价格、份额、收益、手续费、降本、胜率、仓位占比等金融数值；这些精确数值只由页面中的规则计划与真实账户卡片展示。
+        10. 持仓间相关性只基于实际共同日K样本描述历史价格共振；样本不足必须明示，不得称作ETF成分重叠、因果或未来预测，也不能单独决定交易。
         """
         return NextDecisionContext(generatedAt: now, guidance: guidance, holdingsLines: holdings,
                                    portfolioLines: portfolioLines,
+                                   portfolioCorrelationLines: portfolioCorrelationLines,
                                    nasResearchLines: nasResearchLines, crossMarketLines: crossMarketLines,
                                    newsLines: newsLines,
                                    profileLines: profileLines, promptBlock: promptBlock)

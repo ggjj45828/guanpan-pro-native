@@ -300,3 +300,119 @@ enum NextBookHealth {
         return issues
     }
 }
+
+// MARK: - 真实持仓历史共振（不是成分重叠或预测）
+
+struct NextPortfolioCorrelationWindow: Equatable {
+    let requestedDays: Int
+    let sampleCount: Int
+    let coefficient: Double?
+    let startDay: String?
+    let endDay: String?
+}
+
+struct NextPortfolioCorrelation: Identifiable, Equatable {
+    let codeA: String
+    let nameA: String
+    let codeB: String
+    let nameB: String
+    let windows: [NextPortfolioCorrelationWindow]
+    var id: String { "\(codeA)-\(codeB)" }
+}
+
+enum NextPortfolioCorrelationEngine {
+    private static let windows = [20, 60, 120]
+    private static let minimumSamples = 20
+
+    /// Computes aligned close-to-close return correlation from the user's stored
+    /// daily bars. It describes historical co-movement only; it is not constituent
+    /// overlap, causal evidence, or a trading signal.
+    static func analyze(book: NextBook, dailyBars: [String: [NextChartSample]], now: Date)
+        -> [NextPortfolioCorrelation] {
+        let positions = book.positions.filter { $0.units > 0 }.sorted { $0.code < $1.code }
+        guard positions.count > 1 else { return [] }
+        var result: [NextPortfolioCorrelation] = []
+        for leftIndex in 0..<(positions.count - 1) {
+            for rightIndex in (leftIndex + 1)..<positions.count {
+                let left = positions[leftIndex], right = positions[rightIndex]
+                let leftCloses = closesBySession(dailyBars[left.code] ?? [], now: now)
+                let rightCloses = closesBySession(dailyBars[right.code] ?? [], now: now)
+                let commonDays = Set(leftCloses.keys).intersection(rightCloses.keys).sorted()
+                guard commonDays.count >= 2 else {
+                    result.append(NextPortfolioCorrelation(codeA: left.code, nameA: left.name,
+                        codeB: right.code, nameB: right.name,
+                        windows: windows.map { NextPortfolioCorrelationWindow(requestedDays: $0,
+                            sampleCount: 0, coefficient: nil, startDay: nil, endDay: nil) }))
+                    continue
+                }
+                var returns: [(day: String, a: Double, b: Double)] = []
+                for index in 1..<commonDays.count {
+                    let previousDay = commonDays[index - 1], day = commonDays[index]
+                    guard let a0 = leftCloses[previousDay], let a1 = leftCloses[day],
+                          let b0 = rightCloses[previousDay], let b1 = rightCloses[day],
+                          a0 > 0, a1 > 0, b0 > 0, b1 > 0 else { continue }
+                    let aReturn = a1 / a0 - 1, bReturn = b1 / b0 - 1
+                    guard aReturn.isFinite, bReturn.isFinite else { continue }
+                    returns.append((day: day, a: aReturn, b: bReturn))
+                }
+                let summaries = windows.map { days -> NextPortfolioCorrelationWindow in
+                    let sample = Array(returns.suffix(days))
+                    let coefficient = sample.count == days && sample.count >= minimumSamples
+                        ? pearson(sample.map { ($0.a, $0.b) }) : nil
+                    return NextPortfolioCorrelationWindow(requestedDays: days,
+                        sampleCount: sample.count, coefficient: coefficient,
+                        startDay: sample.first?.day, endDay: sample.last?.day)
+                }
+                result.append(NextPortfolioCorrelation(codeA: left.code, nameA: left.name,
+                    codeB: right.code, nameB: right.name, windows: summaries))
+            }
+        }
+        return result
+    }
+
+    static func contextLines(book: NextBook, dailyBars: [String: [NextChartSample]], now: Date)
+        -> [String] {
+        analyze(book: book, dailyBars: dailyBars, now: now).map { pair in
+            let windows = pair.windows.map { window in
+                if let value = window.coefficient {
+                    let range = [window.startDay, window.endDay].compactMap { $0 }.joined(separator: "–")
+                    return "\(window.requestedDays)日 r=\(String(format: "%+.2f", value)) (n=\(window.sampleCount)，\(range))"
+                }
+                return "\(window.requestedDays)日样本不足 (n=\(window.sampleCount)/\(window.requestedDays))"
+            }.joined(separator: "；")
+            return "\(pair.nameA)(\(pair.codeA)) / \(pair.nameB)(\(pair.codeB))：\(windows)；仅为历史价格共振代理，不代表成分重叠、因果或未来预测；不得单独生成交易指令"
+        }
+    }
+
+    private static func closesBySession(_ samples: [NextChartSample], now: Date) -> [String: Double] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        var latest: [String: (Date, Double)] = [:]
+        for sample in samples where sample.timestamp <= now && sample.close > 0 && !sample.close.isNaN {
+            let parts = calendar.dateComponents([.year, .month, .day], from: sample.timestamp)
+            guard let year = parts.year, let month = parts.month, let day = parts.day else { continue }
+            let key = String(format: "%04d-%02d-%02d", year, month, day)
+            let close = NextNum.double(sample.close)
+            guard close.isFinite, close > 0 else { continue }
+            if latest[key].map({ $0.0 < sample.timestamp }) ?? true { latest[key] = (sample.timestamp, close) }
+        }
+        return latest.mapValues { $0.1 }
+    }
+
+    private static func pearson(_ pairs: [(Double, Double)]) -> Double? {
+        guard pairs.count >= minimumSamples else { return nil }
+        let meanA = pairs.reduce(0) { $0 + $1.0 } / Double(pairs.count)
+        let meanB = pairs.reduce(0) { $0 + $1.1 } / Double(pairs.count)
+        var covariance = 0.0, varianceA = 0.0, varianceB = 0.0
+        for (a, b) in pairs {
+            let da = a - meanA, db = b - meanB
+            covariance += da * db
+            varianceA += da * da
+            varianceB += db * db
+        }
+        guard varianceA > 0, varianceB > 0 else { return nil }
+        let coefficient = covariance / sqrt(varianceA * varianceB)
+        guard coefficient.isFinite else { return nil }
+        return max(-1, min(1, coefficient))
+    }
+}

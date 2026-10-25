@@ -138,6 +138,62 @@ final class NextChainScenarioTests: XCTestCase {
             "全持仓行情新鲜可信时才显示组合占比")
     }
 
+    func testPortfolioCorrelationUsesAlignedHistoricalBarsAndRejectsInsufficientOrFutureSamples() {
+        let book = NextBook(cash: 0, positions: [
+            NextPosition(code: code, name: "纳指ETF", units: 1_000, bookCost: 1_300),
+            NextPosition(code: "513100", name: "日经ETF", units: 1_000, bookCost: 1_100)
+        ])
+        let changes: [Double] = [0.010, -0.014, 0.006, -0.003, 0.018, -0.009, 0.004]
+        var closeA = 100.0, closeB = 80.0
+        var barsA: [NextChartSample] = [], barsB: [NextChartSample] = []
+        for index in 0...120 {
+            if index > 0 {
+                let change = changes[(index - 1) % changes.count]
+                closeA *= 1 + change
+                closeB *= 1 + change
+            }
+            let stamp = now.addingTimeInterval(-Double(120 - index) * 86_400)
+            barsA.append(NextChartSample(timestamp: stamp, open: nil, high: nil, low: nil,
+                close: Decimal(string: String(format: "%.6f", closeA))!, iopv: nil, volume: nil))
+            barsB.append(NextChartSample(timestamp: stamp, open: nil, high: nil, low: nil,
+                close: Decimal(string: String(format: "%.6f", closeB))!, iopv: nil, volume: nil))
+        }
+        let daily = [code: barsA, "513100": barsB]
+        let pairs = NextPortfolioCorrelationEngine.analyze(book: book, dailyBars: daily, now: now)
+        XCTAssertEqual(pairs.count, 1)
+        XCTAssertEqual(pairs[0].windows.count, 3)
+        XCTAssertEqual(pairs[0].windows[0].sampleCount, 20)
+        XCTAssertEqual(pairs[0].windows[1].sampleCount, 60)
+        XCTAssertEqual(pairs[0].windows[2].sampleCount, 120)
+        XCTAssertEqual(pairs[0].windows[2].coefficient ?? 0, 1, accuracy: 0.0001)
+
+        var withFuture = daily
+        let future = now.addingTimeInterval(86_400)
+        for key in [code, "513100"] {
+            withFuture[key, default: []].append(NextChartSample(timestamp: future, open: nil, high: nil,
+                low: nil, close: 999, iopv: nil, volume: nil))
+        }
+        let futureFiltered = NextPortfolioCorrelationEngine.analyze(book: book, dailyBars: withFuture, now: now)
+        XCTAssertEqual(futureFiltered, pairs, "未来日K不能进入历史相关性")
+
+        let shortBook = NextBook(cash: 0, positions: [
+            NextPosition(code: code, name: "纳指ETF", units: 1_000, bookCost: 1_300),
+            NextPosition(code: "513100", name: "日经ETF", units: 1_000, bookCost: 1_100)
+        ])
+        let shortA = Array(barsA.suffix(12)), shortB = Array(barsB.suffix(12))
+        let short = NextPortfolioCorrelationEngine.analyze(book: shortBook,
+            dailyBars: [code: shortA, "513100": shortB], now: now)
+        XCTAssertTrue(short[0].windows.allSatisfy { $0.coefficient == nil },
+            "少于20个共同收益样本时明确显示不足，不产生相关结论")
+
+        let context = NextDecisionContextBuilder.build(
+            guidance: NextDailyGuidance(generatedAt: now, items: [], summary: "无候选",
+                noActionSummary: "持有", dataState: "研究中"),
+            book: book, quotes: [:], nasResearchLines: [], newsLines: [], dailyBars: daily, now: now)
+        XCTAssertTrue(context.portfolioCorrelationLines.first?.contains("120日 r=") == true)
+        XCTAssertTrue(context.promptBlock.contains("不代表成分重叠、因果或未来预测"))
+    }
+
     func testOnlineAIOutputGuardBlocksUnplannedActionPrices() {
         let guidance = NextDailyGuidance(generatedAt: now, items: [], summary: "今天不建议交易",
                                          noActionSummary: "继续持有", dataState: "无合格计划")

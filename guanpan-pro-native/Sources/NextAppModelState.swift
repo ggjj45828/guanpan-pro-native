@@ -712,6 +712,9 @@ import Combine
             crossMarketLines.append("\(position.name)(\(position.code))：NAS未提供跨市场验证结果；不可推断领先关系")
         }
         let quoteMap = Dictionary(uniqueKeysWithValues: quotes.map { ($0.key, $0.value.quote) })
+        let dailyBars = Dictionary(uniqueKeysWithValues: book.positions.compactMap { position in
+            chartData["\(position.code):day"].map { (position.code, $0.samples) }
+        })
         let decisionNow = Date()
         let portfolioReview = NextAccountAdvisor.review(book: book, quotes: quoteMap,
             concentrationLimitPercent: goal.concentrationLimit, targetWeights: goal.targetWeights,
@@ -727,6 +730,7 @@ import Combine
                                                 profileLines: NextProfileEngine.promptLines(profile: profile),
                                                 goal: goal,
                                                 portfolioReview: portfolioReview,
+                                                dailyBars: dailyBars,
                                                 now: decisionNow)
     }
 
