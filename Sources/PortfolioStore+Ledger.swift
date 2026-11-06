@@ -47,11 +47,19 @@ extension PortfolioStore {
     ///
     /// 时机很关键：必须在任何成交写入之前调用，否则起点会被成交后的持仓污染。
     /// 所以挂在 `save()` 的最前面 —— 只要这一次保存时账本还是干净的，就顺手定下来。
+    ///
+    /// 还没成交时每次保存都跟着刷新内容：用户往往是一只手一只地录进来的，
+    /// 只在第一次录的时候抓一次快照，起点就只剩第一只标的，之后对账永远差几笔。
+    /// 起点描述的是「开始跟踪时的样子」，在没有任何成交之前，那个样子就该跟着变。
+    /// 一旦出现成交，这里就不再改动任何东西。
     func captureOpeningSnapshotIfNeeded() {
-        guard data.openingSnapshot == nil, canRewriteOpening else { return }
-        // 一只持仓都没有、现金也是 0 的空账本，没必要占一个起点。
+        guard canRewriteOpening else { return }
         guard !data.holdings.isEmpty || data.cash != 0 else { return }
-        data.openingSnapshot = makeOpeningSnapshot(source: .adopted)
+        let existing = data.openingSnapshot
+        var snapshot = makeOpeningSnapshot(source: existing?.source ?? .adopted)
+        if let capturedAt = existing?.capturedAt { snapshot.capturedAt = capturedAt }
+        guard snapshot != existing else { return }
+        data.openingSnapshot = snapshot
     }
 
     private func makeOpeningSnapshot(source: LedgerOpeningSnapshot.Source) -> LedgerOpeningSnapshot {
