@@ -256,13 +256,16 @@ enum EpisodeProjection {
         dayFormatter.dateFormat = "yyyy-MM-dd"
 
         func alreadyInLedger(code: String, side: FundTransaction.Side, quantity: Double,
-                             nav: Double, day: String) -> Bool {
+                             nav: Double, days: [String]) -> Bool {
             let wantedSide: LedgerEntry.Side = side == .sell ? .sell : .buy
+            let wantedDays = Set(days)
             return fills.contains { fill in
                 guard fill.kind == .fund, fill.code == code, fill.side == wantedSide,
-                      abs(fill.quantity - quantity) <= 0.0001 else { return false }
-                return dayFormatter.string(from: fill.date) == day
-                    && abs(fill.price - nav) <= 0.0001
+                      abs(fill.quantity - quantity) <= 0.0001,
+                      abs(fill.price - nav) <= 0.0001 else { return false }
+                // 日期不能只认 effectiveDate：基金 T+1 确认时，账本流水记的是委托日，
+                // 只比确认日会漏配，然后把同一笔申赎算成两次买入。
+                return wantedDays.contains(dayFormatter.string(from: fill.date))
             }
         }
 
@@ -273,7 +276,7 @@ enum EpisodeProjection {
             let nav = trade.nav > 0 ? trade.nav : (trade.quantity > 0 ? trade.amount / trade.quantity : 0)
             guard nav > 0 else { continue }
             if alreadyInLedger(code: trade.code, side: trade.side, quantity: trade.quantity,
-                               nav: nav, day: trade.effectiveDate) { continue }
+                               nav: nav, days: [trade.effectiveDate, trade.requestDate]) { continue }
 
             let side: LedgerEntry.Side
             let isReinvest: Bool

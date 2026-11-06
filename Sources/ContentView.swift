@@ -1273,7 +1273,7 @@ struct MoreHubView: View {
                             showEpisodes = true
                         }
                         MoreHubTile(title: "账户杂费", subtitle: "平台费\n融资利息",
-                                    icon: "creditcard.trianglebadge.exclamationmark", tint: Color(red: 0.92, green: 0.52, blue: 0.32)) {
+                                    icon: "creditcard.fill", tint: Color(red: 0.92, green: 0.52, blue: 0.32)) {
                             showExpenses = true
                         }
                     }

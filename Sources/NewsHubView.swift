@@ -23,9 +23,9 @@ struct NewsHubView: View {
 
     private var displayed: [NewsArticle] {
         let all = news.displayArticles
-        guard onlyRelated else { return all }
-        let related = news.articles(forCodes: holdingCodes, in: all)
-        return related
+        // 没有持仓时「只看关联」必然是空列表，那种空是假空 —— 直接给全部。
+        guard onlyRelated, !holdingCodes.isEmpty else { return all }
+        return news.articles(forCodes: holdingCodes, in: all)
     }
 
     var body: some View {
