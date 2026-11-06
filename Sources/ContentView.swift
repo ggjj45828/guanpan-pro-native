@@ -4736,6 +4736,20 @@ struct AIAnalysisView: View {
                         .plainCard(isLight: isLight)
                 }
                 if !result.isEmpty {
+                    let decision = AIDecisionBuilder.make(
+                        text: AISuggestionParser.displayText(result),
+                        suggestions: suggestions,
+                        quotesFresh: store.data.quotes.contains {
+                            guard let updated = $0.updatedAt else { return false }
+                            return Date().timeIntervalSince(updated) < 900
+                        },
+                        asOf: store.data.savedAccountAIAnalysis?.updatedAt)
+                    if decision.hasAnything {
+                        Section {
+                            AIDecisionCard(decision: decision)
+                        }
+                        .plainCard(isLight: isLight)
+                    }
                     Section("分析结果") {
                         if let saved = store.data.savedAccountAIAnalysis {
                             Label("保存于 \(saved.updatedAt.formatted(date: .abbreviated, time: .shortened)) · 下次成功分析后替换",

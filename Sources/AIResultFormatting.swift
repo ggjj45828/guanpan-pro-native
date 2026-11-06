@@ -115,13 +115,13 @@ struct AIFormattedResultView: View {
     }
 }
 
-private struct AIResultGroup: Identifiable {
+struct AIResultGroup: Identifiable {
     let id = UUID()
     var title: String?
     var blocks: [AIResultBlock]
 }
 
-private struct AIResultBlock: Identifiable {
+struct AIResultBlock: Identifiable {
     enum Kind {
         case paragraph
         case subheading
