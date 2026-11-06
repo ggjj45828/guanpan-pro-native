@@ -68,6 +68,7 @@ enum PortfolioValuationEngine {
         var degraded: [String] = []
         var manualCount = 0
         var laggingFundCount = 0
+        var unknownNAVDateCount = 0
 
         for holding in data.holdings {
             guard holding.quantity > 0 else {
@@ -119,20 +120,25 @@ enum PortfolioValuationEngine {
 
             case .fund:
                 // 场外基金：用最新净值，容忍 T+N，但必须知道净值是哪天的。
+                //
+                // 注意「不知道净值日期」≠「报价过期」。基金净值是定期公布的，
+                // 很多账户从来没有 `marketUpdatedAt`（那是行情字段）。
+                // 如果因为缺这个字段就把整个估值判死，纯基金用户会永远看到「不可信」。
+                // 所以这里回落到净值历史里最新一点的日期，都取不到就只降级、不阻断。
                 let price = holding.current
                 guard price.isFinite, price > 0 else {
                     missing.append(holding.code); continue
                 }
-                if let updatedAt = holding.marketUpdatedAt {
-                    let age = now.timeIntervalSince(updatedAt)
+                let navDate = holding.marketUpdatedAt ?? latestNAVDate(for: holding.code, in: data)
+                if let navDate {
+                    let age = now.timeIntervalSince(navDate)
                     if age > Double(fundNAVToleranceDays) * 86_400 {
                         stale.append(holding.code); continue
                     }
                     if age > 86_400 { laggingFundCount += 1 }
-                    timestamps.append(updatedAt)
+                    timestamps.append(navDate)
                 } else {
-                    // 净值没有日期就无法判断新旧。宁可算不出来。
-                    stale.append(holding.code); continue
+                    unknownNAVDateCount += 1
                 }
                 holdingsValue += holding.quantity * price
             }
@@ -148,6 +154,9 @@ enum PortfolioValuationEngine {
         if laggingFundCount > 0 {
             degraded.append("\(laggingFundCount) 只场外基金净值滞后一日以上")
         }
+        if unknownNAVDateCount > 0 {
+            degraded.append("\(unknownNAVDateCount) 只基金净值日期未知")
+        }
 
         let total = holdingsValue + data.cash
         guard total.isFinite, holdingsValue.isFinite else {
@@ -158,5 +167,20 @@ enum PortfolioValuationEngine {
                                            total: total,
                                            quotesAsOf: timestamps.min(),
                                            degradedReasons: degraded))
+    }
+
+    /// 净值历史里最新一点的日期。用于「持仓没记净值日期」的情况。
+    private static func latestNAVDate(for code: String, in data: PortfolioData) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        var newest: Date?
+        for point in data.fundNAVHistory where point.code == code {
+            guard let date = formatter.date(from: point.date) else { continue }
+            if let current = newest, current >= date { continue }
+            newest = date
+        }
+        return newest
     }
 }
