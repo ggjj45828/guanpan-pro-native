@@ -79,8 +79,7 @@ enum GuanpanMaxNASMinuteArchive {
         return formatter
     }()
 
-    private static func parseTimestamp(_ text: String?) -> Date? {
-        guard let text else { return nil }
+    private static func parseTimestamp(_ text: String) -> Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractional.date(from: text) { return date }
@@ -313,7 +312,7 @@ enum GuanpanMaxNASMinuteArchive {
     private static func makeArchive(body: HistoryResponse,
                                     securityCode: String,
                                     dateText: String) -> MaxNASArchivedIntraday {
-        let zone = dayFormatter.timeZone
+        let zone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let minuteFormatter = DateFormatter()
         minuteFormatter.locale = Locale(identifier: "en_US_POSIX")
         minuteFormatter.timeZone = zone
@@ -415,7 +414,7 @@ enum GuanpanMaxNASMinuteArchive {
             throw MaxNASMinuteError.historyUnavailable("交易日格式无效")
         }
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = dayFormatter.timeZone
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? Date.distantFuture
         let samples: [MaxNASMinuteSample] = body.rows.compactMap { row in
             guard let stamp = parseTimestamp(row.timestamp),
