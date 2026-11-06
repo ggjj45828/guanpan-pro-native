@@ -26,7 +26,88 @@ enum AIContextBuilder {
         if let tech = technicalSection(store: store, codes: store.data.holdings.map(\.code)) {
             sections.append(tech)
         }
+        if let episodes = episodeSection(store: store) { sections.append(episodes) }
+        if let cost = expenseSection(store: store) { sections.append(cost) }
+        if let news = newsSection(store: store) { sections.append(news) }
         return sections
+    }
+
+    // MARK: - 持仓周期
+
+    /// 按「轮」统计的真实战绩：已了结几轮、赢几轮、平均拿多久。
+    /// 与「交易行为画像」不同 —— 那个看的是下单习惯，这里看的是**每一轮拿完的结果**。
+    static func episodeSection(store: PortfolioStore) -> String? {
+        let instruments = EpisodeProjection.build(from: store.data).instruments
+        guard !instruments.isEmpty else { return nil }
+        let closed = instruments.flatMap { $0.closedEpisodes }
+        guard !closed.isEmpty else {
+            return """
+            【持仓周期（本机按账本起点 + 逐笔成交还原）】
+            目前没有已了结的持仓周期（还没出现「买到清零」的完整回合），不能计算轮次胜率。
+            """
+        }
+        let wins = closed.filter { $0.realized > 0.01 }.count
+        let losses = closed.filter { $0.realized < -0.01 }.count
+        let days = closed.compactMap { $0.days() }
+        let averageDays = days.isEmpty ? 0 : Double(days.reduce(0, +)) / Double(days.count)
+        let realized = closed.reduce(0) { $0 + $1.realized }
+        let best = closed.max { $0.realized < $1.realized }
+        let worst = closed.min { $0.realized < $1.realized }
+        let resolved = wins + losses
+        let rate = resolved > 0 ? Double(wins) / Double(resolved) * 100 : 0
+
+        var lines: [String] = []
+        lines.append("已了结 \(closed.count) 轮：\(wins) 胜 \(losses) 负，胜率 \(rate.num(0))%（只统计有盈亏的回合）")
+        lines.append("这些回合合计已实现 \(realized.cny())，平均持有 \(Int(averageDays.rounded())) 天")
+        if let best { lines.append("最好的一轮：\(best.name) 第 \(best.number) 轮 \(best.realized.cny())") }
+        if let worst { lines.append("最差的一轮：\(worst.name) 第 \(worst.number) 轮 \(worst.realized.cny())") }
+        let active = instruments.filter { $0.activeEpisode != nil }
+        if !active.isEmpty {
+            let parts = active.prefix(6).map { item -> String in
+                let days = item.activeEpisode?.days().map { "\($0)" } ?? "未知"
+                let cost = item.activeEpisode?.averageCost ?? 0
+                return "\(item.name)（\(item.code)）本轮已持有 \(days) 天，成本 \(cost.num(3))"
+            }
+            lines.append("进行中：" + parts.joined(separator: "；"))
+        }
+        return """
+        【持仓周期（本机按账本起点 + 逐笔成交还原，一轮 = 从建仓到份额清零）】
+        · \(lines.joined(separator: "\n· "))
+        说明：账本起点之前的历史买入无法还原，第一轮的天数从起点快照时刻起算，可能偏短。
+        """
+    }
+
+    // MARK: - 账户级成本
+
+    /// 平台费、融资利息、托管费、数据费 —— 不在任何成交流水里，很容易被忽略。
+    static func expenseSection(store: PortfolioStore) -> String? {
+        let summary = store.expenseSummaryLastYear()
+        guard summary.count > 0 else {
+            return """
+            【账户级成本】
+            本机没有记录平台费、融资利息、托管费或数据费。这可能代表真的没有，也可能代表没记 —— 如果是后者，账户真实收益会比这里算出来的低。
+            """
+        }
+        var lines: [String] = []
+        lines.append("最近一年记录 \(summary.count) 笔，合计 \(summary.total.cny())")
+        if let rate = summary.annualizedRate {
+            let basis = summary.usedCurrentAssetFallback ? "（快照不足，分母用的是当前总资产）" : ""
+            lines.append("折算年化约占平均总资产的 \(rate.pct(2))\(basis)")
+        }
+        let top = summary.byCategory.prefix(3).map { "\($0.category.title) \($0.amount.cny())" }
+        if !top.isEmpty { lines.append("主要构成：" + top.joined(separator: "、")) }
+        return """
+        【账户级成本（本机手工记录，不含交易手续费）】
+        · \(lines.joined(separator: "\n· "))
+        这些是已经花出去的钱，讨论收益时应当扣掉；它们没有计进任何持仓成本。
+        """
+    }
+
+    // MARK: - 新闻
+
+    /// 市场快讯。只有点名了持仓代码的条目才会被带进来，且明确标注「标题、未核实正文」。
+    static func newsSection(store: PortfolioStore) -> String? {
+        NewsCenter.shared.evidenceText(forCodes: store.data.holdings.map(\.code))
     }
 
     // MARK: - 交易行为画像

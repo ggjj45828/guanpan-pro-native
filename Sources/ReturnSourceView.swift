@@ -25,6 +25,9 @@ struct ReturnSourceView: View {
         var cashDividends = 0.0
         var reinvestedDividends = 0.0
         var fees = 0.0
+        /// 账户级杂费（平台费、融资利息等）。它不在成交流水里，
+        /// 但确实降低了快照之间的资产变化，所以必须单列，否则会被当成「未归因」。
+        var expenses = 0.0
         var buys = 0
         var sells = 0
         var perCode: [CodeBreakdown] = []
@@ -76,9 +79,14 @@ struct ReturnSourceView: View {
                     LabeledContent("现金分红（已加回收益）", value: (result.cashDividends).cny())
                     LabeledContent("红利再投资（不重复计收益）", value: (result.reinvestedDividends).cny())
                     LabeledContent("已记录交易费用", value: (result.fees).cny())
+                    LabeledContent("账户级杂费（已含在快照结果中）",
+                                   value: "-\((result.expenses).cny())")
+                        .foregroundStyle(PnLColor.down)
                     LabeledContent("交易笔数", value: "买入 \(result.buys) / 卖出 \(result.sells)")
                     if canCalculate {
-                        let residual = result.economic - result.realized - result.cashDividends
+                        // 快照的经济收益里已经扣过杂费，这里把它加回去再减一次，
+                        // 才能把「已知的杂费」和「说不清的价格波动」分开。
+                        let residual = result.economic - result.realized - result.cashDividends + result.expenses
                         LabeledContent("未单独归因的持仓变化", value: (residual).cny())
                     }
                 }
@@ -96,7 +104,7 @@ struct ReturnSourceView: View {
                         .toneCard(CardTone.warn, isLight: isLight)
                 }
                 Section {
-                    Text("总收益由两端实际全账户快照和外部投入计算。汇率、ETF 折溢价、择时及持仓浮盈变化没有独立历史快照时，会留在“未单独归因的持仓变化”，不会伪造拆分。费用已经反映在快照净结果中，只单列展示。")
+                    Text("总收益由两端实际全账户快照和外部投入计算。汇率、ETF 折溢价、择时及持仓浮盈变化没有独立历史快照时，会留在“未单独归因的持仓变化”，不会伪造拆分。交易费用与账户级杂费都已经反映在快照净结果中，这里只单列展示，不重复扣减。账户级杂费只包含本机「账户杂费」里手工记过的部分。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -108,6 +116,14 @@ struct ReturnSourceView: View {
             .themedSheetBackground()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
+    }
+
+    private static func day(from text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: text)
     }
 
     private func calculate() -> Breakdown {
@@ -157,6 +173,10 @@ struct ReturnSourceView: View {
                         else { r.reinvestedDividends += trade.amount }
                     }
                 }
+                r.expenses = store.data.accountExpenses
+                    .filter { $0.date > (Self.day(from: start.date) ?? .distantPast) }
+                    .filter { $0.date <= (Self.day(from: end.date) ?? .distantFuture) }
+                    .reduce(0) { $0 + $1.amount }
                 r.realized = r.realizedETF + r.realizedFund
                 r.economic = end.total - start.total - r.flow + r.cashDividends
                 r.account = end.total - start.total - r.flow
@@ -181,6 +201,10 @@ struct ReturnSourceView: View {
             r.cashDividends = funds.filter { $0.side == .dividend && $0.status == .confirmed && $0.dividendMode == .cash }.reduce(0) { $0 + $1.amount }
             r.reinvestedDividends = funds.filter { $0.side == .dividend && $0.status == .confirmed && $0.dividendMode == .reinvest }.reduce(0) { $0 + $1.amount }
             r.fees = ledger.reduce(0) { $0 + $1.fee } + funds.reduce(0) { $0 + max(0, $1.fee) }
+            r.expenses = store.data.accountExpenses.filter {
+                let day = dateFormatter.string(from: $0.date)
+                return day >= from && day <= to
+            }.reduce(0) { $0 + $1.amount }
             r.buys = ledger.filter { $0.side == .buy }.count + funds.filter { $0.side == .buy && !$0.isBackfill }.count
             r.sells = ledger.filter { $0.side == .sell }.count + funds.filter { $0.side == .sell && $0.status == .confirmed }.count
             r.perCode = ledger.filter { $0.side == .sell }.map { CodeBreakdown(name: $0.name, amount: $0.realizedPnL) }

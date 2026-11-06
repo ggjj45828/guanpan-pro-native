@@ -263,6 +263,8 @@ enum WatchSortMode: String, CaseIterable, Identifiable {
 
 struct DashboardView: View {
     @EnvironmentObject var store: PortfolioStore
+    /// 新闻是全局共享的外部事实，不跟着账本走。
+    @ObservedObject private var news = NewsCenter.shared
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @AppStorage("guanpan.native.watch.sort") private var sortMode: WatchSortMode = .manual
     @AppStorage("guanpan.native.watch.grouping") private var groupEnabled = false
@@ -285,6 +287,7 @@ struct DashboardView: View {
     @State private var showGrid = false
     @State private var showIncome = false
     @State private var showLedger = false
+    @State private var showNews = false
     /// 搜索框是否展开。不用 `.searchable`：它必须挂在导航栏上，
     /// 而新版首页把导航栏整条藏掉了（标题区自绘），两者只能留一个。
     @State private var searchActive = false
@@ -354,6 +357,7 @@ struct DashboardView: View {
                         quickTiles
                     }
                     pulseSection
+                    newsPreviewSection
                     watchHeader
                     watchListBody
                     alertsSection
@@ -380,6 +384,7 @@ struct DashboardView: View {
             .sheet(isPresented: $showGrid) { DayGridView() .themedSheetBackground() }
             .sheet(isPresented: $showIncome) { IncomeHubView() .themedSheetBackground() }
             .sheet(isPresented: $showLedger) { LedgerAuditView() .themedSheetBackground() }
+            .sheet(isPresented: $showNews) { NewsHubView() .themedSheetBackground() }
             .alert("新建分组", isPresented: groupEditorBinding) {
                 TextField("分组名", text: $groupDraft)
                 Button("确定") {
@@ -393,6 +398,8 @@ struct DashboardView: View {
                 Text("分组只影响自选列表的显示与排序，不影响行情与持仓。")
             }
             .task {
+                // 快讯是背景材料，失败也不影响行情与账本，所以只让它自己去跑。
+                await news.refresh()
                 while !Task.isCancelled {
                     let interval = store.data.quoteRefreshSeconds
                     if scenePhase == .active && interval > 0 {
@@ -590,6 +597,84 @@ struct DashboardView: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    /// 市场快讯预览：只放最新 3 条标题。
+    ///
+    /// 不做「利好/利空」标注 —— 那是替人下结论。这里只回答「刚刚发生了什么」，
+    /// 是否与持仓有关由「关联」标签和数据本身说明。
+    @ViewBuilder private var newsPreviewSection: some View {
+        let items = Array(news.displayArticles.prefix(3))
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                DsSectionHeader(palette: palette, title: "市场快讯",
+                                trailing: "全部", action: { showNews = true })
+                VStack(spacing: 0) {
+                    ForEach(items) { article in
+                        Button {
+                            Haptics.tap()
+                            showNews = true
+                        } label: {
+                            newsPreviewRow(article, isLast: article.id == items.last?.id)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .dsSurface(palette, radius: 18, padding: 0)
+
+                Text(news.isStale ? "缓存已过期 · \(news.freshnessText)" : news.freshnessText)
+                    .scaledFont(9.5)
+                    .foregroundStyle(palette.ink3)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func newsPreviewRow(_ article: NewsArticle, isLast: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(article.title)
+                        .scaledFont(13, weight: .medium)
+                        .foregroundStyle(palette.ink)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        Text(article.publisher)
+                            .scaledFont(9.5)
+                            .foregroundStyle(palette.ink3)
+                            .lineLimit(1)
+                        if !article.relatedSecurities.isEmpty {
+                            Text("关联持仓")
+                                .scaledFont(9.5, weight: .semibold)
+                                .foregroundStyle(palette.accent)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background { Capsule().fill(palette.accentDim) }
+                        }
+                    }
+                }
+                Spacer(minLength: 4)
+                Text(Self.newsTime(article.publishedAt))
+                    .scaledFont(9.5)
+                    .monospacedDigit()
+                    .foregroundStyle(palette.ink3)
+            }
+            .padding(.vertical, 10)
+            if !isLast {
+                Rectangle().fill(palette.hairline).frame(height: 1)
+            }
+        }
+    }
+
+    private static func newsTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     private var pulseTrailing: String {
@@ -1103,6 +1188,9 @@ struct MoreHubView: View {
     @State private var showLedgerAudit = false
     @State private var showOperationHistory = false
     @State private var showDecisionScorecard = false
+    @State private var showEpisodes = false
+    @State private var showExpenses = false
+    @State private var showNewsHub = false
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -1179,6 +1267,24 @@ struct MoreHubView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
+                    HStack(spacing: 10) {
+                        MoreHubTile(title: "持仓周期", subtitle: "几轮买卖\n每轮战绩",
+                                    icon: "arrow.triangle.2.circlepath", tint: Color(red: 0.36, green: 0.72, blue: 0.62)) {
+                            showEpisodes = true
+                        }
+                        MoreHubTile(title: "账户杂费", subtitle: "平台费\n融资利息",
+                                    icon: "creditcard.trianglebadge.exclamationmark", tint: Color(red: 0.92, green: 0.52, blue: 0.32)) {
+                            showExpenses = true
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    MoreHubCard(title: "市场快讯", subtitle: "同花顺 7×24 公开接口；只给标题与来源，不给结论",
+                                icon: "newspaper.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
+                        showNewsHub = true
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
                 } header: { Text("复盘") } footer: {
                     Text("判读只用记录日之后的日线；「还在等」不计入命中率。这里只评估判断，不放收益承诺。")
                         .scaledFont(10)
@@ -1243,6 +1349,9 @@ struct MoreHubView: View {
             .sheet(isPresented: $showLedgerAudit) { LedgerAuditView() .themedSheetBackground() }
             .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
             .sheet(isPresented: $showDecisionScorecard) { DecisionScorecardView() .themedSheetBackground() }
+            .sheet(isPresented: $showEpisodes) { EpisodeView() .themedSheetBackground() }
+            .sheet(isPresented: $showExpenses) { ExpenseView() .themedSheetBackground() }
+            .sheet(isPresented: $showNewsHub) { NewsHubView() .themedSheetBackground() }
         }
     }
 }

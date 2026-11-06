@@ -2540,7 +2540,7 @@ final class PortfolioStore: ObservableObject {
 }
 
 enum StoreError: LocalizedError {
-    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger
+    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, invalidAccountExpense, insufficientCashForExpense
     var errorDescription: String? {
         switch self {
         case .invalidTrade: return "请检查份额、价格、费用和标的。"
@@ -2558,6 +2558,8 @@ enum StoreError: LocalizedError {
         case .invalidFundFeeCorrection: return "这笔赎回不存在、已经核对，或实际费用超出赎回总额。"
         case .invalidAllocationTarget: return "目标仓位需在 0% 到 100% 之间。"
         case .invalidImportedLedger: return "无法安全计算成交流水：请导入包含完整买入起点的历史记录，并检查卖出数量是否超过此前买入。"
+        case .invalidAccountExpense: return "请填写大于 0 的金额和说明；说明是这笔费用唯一的来由，不能空着。"
+        case .insufficientCashForExpense: return "参考现金不足，无法同时扣减。可以关掉「同步扣现金」，只做统计。"
         }
     }
 }

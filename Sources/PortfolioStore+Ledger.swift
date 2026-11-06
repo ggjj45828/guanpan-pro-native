@@ -273,7 +273,8 @@ extension PortfolioStore {
 
     // MARK: 内部
 
-    private func appendLedgerAudit(action: String, reason: String, priorDigest: String) {
+    /// 不标 private：账户杂费等其它写入口也要挂到同一条审计链上。
+    func appendLedgerAudit(action: String, reason: String, priorDigest: String) {
         let event = LedgerAuditEvent(occurredAt: .now, action: action, reason: reason,
                                      priorDigest: priorDigest, resultingDigest: ledgerDigest,
                                      caliber: LedgerDigest.caliber)

@@ -1594,7 +1594,10 @@ struct MarketChartView: View {
             let result = try await AIAnalysisService.analyzeInstrument(
                 config: store.data.aiAnalysisConfig, holding: actualHolding, quote: quote, bars: allBars,
                 intradayBars: selectedIntradayBars, priceLevels: priceLevelsPromptText,
-                profile: store.data.investmentProfile, totalAsset: store.totalAsset)
+                profile: store.data.investmentProfile, totalAsset: store.totalAsset,
+                // 只有点名了这只标的代码的快讯才会进 prompt；没有就传 nil，
+                // 让模型如实说「没有外部新闻」，而不是自己编一条。
+                newsEvidence: NewsCenter.shared.evidenceText(forCodes: [holding.code], limit: 6))
             instrumentAIResult = result
             store.data.savedInstrumentAIAnalyses[holding.code] = SavedAIAnalysis(text: result)
             store.saveAIAnalysisCache()
