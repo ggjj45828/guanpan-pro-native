@@ -174,7 +174,10 @@ enum GuanpanMaxNASMinuteArchive {
                 } else if let numeric = try? values.decodeIfPresent(Double.self, forKey: .volume) {
                     minuteVolume = numeric
                 } else if let text = try? values.decodeIfPresent(String.self, forKey: .minuteVolume),
-                          let numeric = text.flatMap({ Double($0) }) {
+                          let numeric = Double(text) {
+                    minuteVolume = numeric
+                } else if let text = try? values.decodeIfPresent(String.self, forKey: .volume),
+                          let numeric = Double(text) {
                     minuteVolume = numeric
                 } else {
                     minuteVolume = nil
