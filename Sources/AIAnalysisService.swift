@@ -187,8 +187,8 @@ enum AIAnalysisService {
     /// ② 拿到了但没过门槛 —— 明确写「已丢弃」并说清是哪一条不达标；
     /// ③ 过了门槛 —— 只给压缩统计量，不给原始分钟线，也不给交易计划。
     static func researchEvidenceBlock(code: String) async -> String? {
-        guard FNASBridge.isConfigured else { return nil }
-        guard let envelope = await FNASBridge.researchEvidence(code: code) else { return nil }
+        guard FMinuteArchive.isConfigured else { return nil }
+        guard let envelope = await FMinuteArchive.researchEvidence(code: code) else { return nil }
         let capturedAt = Date()
         guard envelope.isUsableForAI(capturedAt: capturedAt,
                                      contextCreatedAt: capturedAt,

@@ -6670,8 +6670,13 @@ struct SettingsView: View {
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     /// 观盘F（Next）服务端地址：只作为行情/日线的兜底数据源，不参与账本同步。
     @AppStorage(FNASBridge.urlKey) private var fnasURL = ""
+    /// 观盘F 的分钟归档服务（f-minute-archive）：AI 分析的「分钟级研究证据」从这里取。
+    /// 它和上面的行情兜底服务不是同一个进程，端口也常常不同，所以单独填。
+    @AppStorage(FMinuteArchive.urlKey) private var fminuteURL = ""
     @State private var checkingFNAS = false
     @State private var fnasStatus = ""
+    @State private var checkingFMinute = false
+    @State private var fminuteStatus = ""
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var confirmNASDownload = false
@@ -7038,6 +7043,30 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
+        Section("观盘F 分钟归档（研究证据）") {
+            HStack {
+                TextField("例如 http://192.168.1.20:8788", text: $fminuteURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL)
+                PasteButton(payloadType: String.self) { values in
+                    if let value = values.first { fminuteURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("从剪贴板粘贴分钟归档服务地址")
+            }
+            Button {
+                testFMinute()
+            } label: {
+                Label(checkingFMinute ? "正在检查…" : "测试连接", systemImage: "waveform.path.ecg")
+            }
+            .disabled(checkingFMinute || fminuteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if !fminuteStatus.isEmpty {
+                Text(fminuteStatus).font(.footnote).foregroundStyle(.secondary)
+            }
+            Text("f-minute-archive 是独立进程，多数部署在 8788，但和上面两个服务的端口没有关系，按实际部署填。填了以后，AI 分析会附上「这只票在归档分钟线上」的统计证据 —— 必须同时满足质量分 ≥ 90、独立交易日 ≥ 25 才会进 prompt，不达标就整段不出现，不会拿半成品数据凑数。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+
         Section("NAS 多设备同步") {
             HStack {
                 TextField("服务器地址，例如 http://192.168.1.20:8788", text: $nasURL)
@@ -7262,6 +7291,21 @@ struct SettingsView: View {
                 fnasStatus = version.map { "连接正常 · 服务端版本 \($0)" } ?? "连接正常（服务端未返回版本号）"
             } catch {
                 fnasStatus = "连接失败：\(error.localizedDescription)。确认地址带端口（例如 :30001）且服务端已启动。"
+            }
+        }
+    }
+
+    /// 只探归档服务的 /livez，确认地址填对了、对面真的是 f-minute-archive。
+    private func testFMinute() {
+        checkingFMinute = true
+        Task { @MainActor in
+            defer { checkingFMinute = false }
+            do {
+                fminuteStatus = try await FMinuteArchive.probe()
+            } catch let error as URLError where error.code == .cannotParseResponse {
+                fminuteStatus = "这个地址能连上，但不是 f-minute-archive：返回的 service 字段对不上。"
+            } catch {
+                fminuteStatus = "连接失败：\(error.localizedDescription)。确认地址带端口，且归档容器已启动。"
             }
         }
     }

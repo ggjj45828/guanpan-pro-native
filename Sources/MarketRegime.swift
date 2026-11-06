@@ -40,16 +40,62 @@ enum MarketRiskLevel: Int, Codable, CaseIterable, Comparable {
     }
 }
 
+/// 因子的量纲。决定怎么显示 —— 比率必须按百分比读，
+/// 全按四位小数显示会让 -0.0721 和 0.55 看起来像同一类东西。
+enum MarketRegimeFactorUnit {
+    case ratio      // 0.01 表示 1%
+    case absolute   // 原值
+    case flag       // 0 / 1
+
+    func format(_ value: Double) -> String {
+        switch self {
+        case .ratio: return value.pct(2)
+        case .absolute: return value.num(4)
+        case .flag: return value >= 0.5 ? "是" : "否"
+        }
+    }
+}
+
 struct MarketRegimeFactor: Identifiable {
     var id: String { key }
     let key: String
+    /// 中文短名。`key` 是给日志和排错看的，不该出现在界面上。
+    let label: String
     let value: Double?
     let available: Bool
     let reason: String
+    let unit: MarketRegimeFactorUnit
+    /// 同一因子在过去若干个交易日上的取值，最右为最新。
+    /// 缺值处留 nil 而不是丢掉 —— 丢掉会把时间轴压缩，看起来像「一直有值」。
+    let history: [Double?]
 
     var displayValue: String {
         guard let value, value.isFinite else { return "--" }
-        return value.num(4)
+        return unit.format(value)
+    }
+
+    /// 历史里真正有值的样本数。少于 3 个不画图：两个点只能说明「变了」。
+    var plottedHistory: [Double] {
+        history.compactMap { $0 }
+    }
+
+    var hasHistory: Bool { plottedHistory.count >= 3 }
+
+    var historyRange: (min: Double, max: Double)? {
+        let values = plottedHistory
+        guard let first = values.first else { return nil }
+        let result = values.dropFirst().reduce((first, first)) { partial, value in
+            (Swift.min(partial.0, value), Swift.max(partial.1, value))
+        }
+        return (min: result.0, max: result.1)
+    }
+
+    /// 当前值在历史里的分位（0 最低，1 最高）。样本太少返回 nil。
+    var historyPercentile: Double? {
+        let values = plottedHistory
+        guard values.count >= 5, let value else { return nil }
+        let below = values.filter { $0 < value }.count
+        return Double(below) / Double(values.count)
     }
 }
 
@@ -155,16 +201,56 @@ enum MarketRegimeEngine {
             && latestIsFresh && !hasConflictingDuplicates && closes.count >= 60
             && coreReliable && (memory?.lastEvaluationAt ?? .distantPast) <= (latestTimestamp ?? now)
 
+        let volumes = unique.map(\.volume)
+
         let factors: [MarketRegimeFactor] = [
-            factor("trend_MA20_60", ma20.flatMap { a in ma60.map { a / $0 - 1 } }, "MA20/MA60 排列；至少需要 60 个收盘样本"),
-            factor("trend_MA60_250", ma60.flatMap { a in ma250.map { a / $0 - 1 } }, "MA60/MA250 长期结构；至少需要 250 个收盘样本"),
-            factor("trend_slope", slope, "MA20 五个交易日斜率"),
-            factor("daily_bar_spacing", dailySpacingReliable ? 1 : nil,
-                   hasIntradaySpacing ? "存在间隔小于 12 小时的相邻 K 线，不是日线" : "相邻样本符合日线间隔"),
-            factor("drawdown_20", drawdown20, "近 20 个交易日相对高点回撤"),
-            factor("return_5", ret5, "近 5 个交易日跌速"),
-            factor("volatility_20", vol20, "近 20 个交易日实现波动率"),
-            factor("volume_expansion", volumeExpansion, "近 5 日与此前 15 日平均成交量比")
+            factor("trend_MA20_60", label: "MA20 / MA60", unit: .ratio,
+                   value: ma20.flatMap { a in ma60.map { a / $0 - 1 } },
+                   reason: "MA20/MA60 排列；至少需要 60 个收盘样本",
+                   history: historySeries(closes: closes, volumes: volumes) { c, _ in
+                       averageTail(c, count: 20).flatMap { a in averageTail(c, count: 60).map { a / $0 - 1 } }
+                   }),
+            factor("trend_MA60_250", label: "MA60 / MA250", unit: .ratio,
+                   value: ma60.flatMap { a in ma250.map { a / $0 - 1 } },
+                   reason: "MA60/MA250 长期结构；至少需要 250 个收盘样本",
+                   history: historySeries(closes: closes, volumes: volumes) { c, _ in
+                       averageTail(c, count: 60).flatMap { a in averageTail(c, count: 250).map { a / $0 - 1 } }
+                   }),
+            factor("trend_slope", label: "MA20 斜率", unit: .ratio,
+                   value: slope,
+                   reason: "MA20 五个交易日斜率",
+                   history: historySeries(closes: closes, volumes: volumes) { c, _ in
+                       movingAverageSlope(c, period: 20, lag: 5)
+                   }),
+            factor("daily_bar_spacing", label: "日线间隔", unit: .flag,
+                   value: dailySpacingReliable ? 1 : nil,
+                   reason: hasIntradaySpacing ? "存在间隔小于 12 小时的相邻 K 线，不是日线" : "相邻样本符合日线间隔",
+                   history: []),
+            factor("drawdown_20", label: "20 日回撤", unit: .ratio,
+                   value: drawdown20,
+                   reason: "近 20 个交易日相对高点回撤",
+                   history: historySeries(closes: closes, volumes: volumes) { c, _ in
+                       drawdown(c, lookback: 20)
+                   }),
+            factor("return_5", label: "5 日涨跌", unit: .ratio,
+                   value: ret5,
+                   reason: "近 5 个交易日跌速",
+                   history: historySeries(closes: closes, volumes: volumes) { c, _ in
+                       periodReturn(c, sessions: 5)
+                   }),
+            factor("volatility_20", label: "20 日波动率", unit: .ratio,
+                   value: vol20,
+                   reason: "近 20 个交易日实现波动率（年化）",
+                   history: historySeries(closes: closes, volumes: volumes) { c, _ in
+                       realizedVolatility(c, count: 20)
+                   }),
+            factor("volume_expansion", label: "量能放大", unit: .absolute,
+                   value: volumeExpansion,
+                   reason: "近 5 日与此前 15 日平均成交量比",
+                   history: historySeries(closes: closes, volumes: volumes) { c, v in
+                       guard c.count == v.count else { return nil }
+                       return volumeRatio(zip(c, v).map { (close: $0.0, volume: $0.1) })
+                   })
         ]
 
         // 5) 崩盘信号
@@ -328,8 +414,40 @@ enum MarketRegimeEngine {
 
     // MARK: 工具
 
-    private static func factor(_ key: String, _ value: Double?, _ reason: String) -> MarketRegimeFactor {
-        MarketRegimeFactor(key: key, value: value, available: value?.isFinite == true, reason: reason)
+    private static func factor(_ key: String, label: String, unit: MarketRegimeFactorUnit,
+                               value: Double?, reason: String,
+                               history: [Double?]) -> MarketRegimeFactor {
+        MarketRegimeFactor(key: key, label: label, value: value,
+                           available: value?.isFinite == true, reason: reason,
+                           unit: unit, history: history)
+    }
+
+    /// 因子历史最多回溯多少个交易日。
+    static let factorHistoryLength = 60
+
+    /// 滚动重算同一个因子，回答「这个数最近一直在什么位置」。
+    ///
+    /// 做法是每取一个端点就砍掉尾部 k 根 K 线重算一遍 —— 得到的是当时真能算出来的值，
+    /// 不用今天的参数回头修历史。某个端点上样本不够就留 nil，不拿前值填。
+    private static func historySeries(closes: [Double],
+                                      volumes: [Double],
+                                      length: Int = MarketRegimeEngine.factorHistoryLength,
+                                      compute: ([Double], [Double]) -> Double?) -> [Double?] {
+        guard closes.count > 1, closes.count == volumes.count else { return [] }
+        let span = min(length, closes.count - 1)
+        guard span > 0 else { return [] }
+        var result: [Double?] = []
+        result.reserveCapacity(span)
+        for drop in stride(from: span - 1, through: 0, by: -1) {
+            let windowCloses = drop == 0 ? closes : Array(closes.dropLast(drop))
+            let windowVolumes = drop == 0 ? volumes : Array(volumes.dropLast(drop))
+            guard let value = compute(windowCloses, windowVolumes), value.isFinite else {
+                result.append(nil)
+                continue
+            }
+            result.append(value)
+        }
+        return result
     }
 
     private static func date(from dayKey: String) -> Date? { formatter.date(from: dayKey) }
@@ -405,12 +523,43 @@ enum MarketRegimeEngine {
 
 // MARK: - 记忆存取
 
+/// 一次**已确认**的状态变更。
+///
+/// 只记确认值，不记 pending —— 防抖存在的意义就是让「一根大阳线」不进入结论，
+/// 如果 pending 也留痕，记录里全是噪音，等于把防抖又抵消掉。
+struct MarketRegimeTransition: Codable, Identifiable, Equatable {
+    let sessionKey: String
+    let at: Date
+    let fromRegime: MarketRegime
+    let fromRisk: MarketRiskLevel
+    let toRegime: MarketRegime
+    let toRisk: MarketRiskLevel
+
+    var id: String { "\(sessionKey)-\(toRegime.rawValue)-\(toRisk.rawValue)" }
+
+    var regimeChanged: Bool { toRegime != fromRegime }
+    var riskChanged: Bool { toRisk != fromRisk }
+    var isRiskUp: Bool { toRisk > fromRisk }
+
+    /// 一句话读法。风险方向和状态方向可能相反（状态转好但风险升级），
+    /// 所以两件事分开写，不合并成「变好 / 变差」。
+    var summary: String {
+        var parts: [String] = []
+        if regimeChanged { parts.append("\(fromRegime.title) → \(toRegime.title)") }
+        if riskChanged { parts.append("\(fromRisk.title) → \(toRisk.title)") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 /// 状态记忆存 UserDefaults：它不该进账本备份。
 ///
 /// 理由：这是「市场判断的防抖缓存」，不是账本事实。跟着备份在设备之间搬运，
 /// 会让新设备继承一个旧设备上的待确认状态。
 enum MarketRegimeStore {
     private static let key = "guanpan.pro.market.regime.memory"
+    private static let transitionKey = "guanpan.pro.market.regime.transitions"
+    /// 上限 60 条：按一周一次变更算够一年，再多也没人看。
+    private static let transitionLimit = 60
 
     static func load(market: String = "CN") -> MarketRegimeMemory? {
         guard let data = UserDefaults.standard.data(forKey: "\(key).\(market)") else { return nil }
@@ -420,6 +569,38 @@ enum MarketRegimeStore {
     static func save(_ memory: MarketRegimeMemory, market: String = "CN") {
         guard let data = try? JSONEncoder().encode(memory) else { return }
         UserDefaults.standard.set(data, forKey: "\(key).\(market)")
+    }
+
+    // MARK: 变更留痕
+
+    static func loadTransitions(market: String = "CN") -> [MarketRegimeTransition] {
+        guard let data = UserDefaults.standard.data(forKey: "\(transitionKey).\(market)"),
+              let list = try? JSONDecoder().decode([MarketRegimeTransition].self, from: data) else { return [] }
+        return list
+    }
+
+    static func clearTransitions(market: String = "CN") {
+        UserDefaults.standard.removeObject(forKey: "\(transitionKey).\(market)")
+    }
+
+    /// 比较前后两次确认值，变了才写。同一天重复评估不会重复记。
+    static func recordChange(from previous: MarketRegimeMemory,
+                            to next: MarketRegimeMemory,
+                            market: String = "CN") {
+        guard previous.confirmedRegime != next.confirmedRegime
+                || previous.confirmedRiskLevel != next.confirmedRiskLevel else { return }
+        let transition = MarketRegimeTransition(sessionKey: MarketCalendar.isoDay(next.lastEvaluationAt),
+                                                at: next.lastEvaluationAt,
+                                                fromRegime: previous.confirmedRegime,
+                                                fromRisk: previous.confirmedRiskLevel,
+                                                toRegime: next.confirmedRegime,
+                                                toRisk: next.confirmedRiskLevel)
+        var list = loadTransitions(market: market)
+        guard list.last?.sessionKey != transition.sessionKey else { return }
+        list.append(transition)
+        if list.count > transitionLimit { list.removeFirst(list.count - transitionLimit) }
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        UserDefaults.standard.set(data, forKey: "\(transitionKey).\(market)")
     }
 }
 
@@ -435,9 +616,11 @@ extension PortfolioStore {
         // 同一根 K 线重复评估不该把 pending 计数推上去，所以只在会话推进时写回。
         if let previous {
             if result.memory.lastEvaluationAt > previous.lastEvaluationAt {
+                MarketRegimeStore.recordChange(from: previous, to: result.memory)
                 MarketRegimeStore.save(result.memory)
             }
         } else {
+            // 第一次评估没有「之前」，不记变更 —— 那是初始化，不是转变。
             MarketRegimeStore.save(result.memory)
         }
         return result

@@ -9,7 +9,10 @@ struct MarketStateView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var regime: MarketRegimeAssessment?
-    @State private var expandedFactors = false
+    @State private var transitions: [MarketRegimeTransition] = []
+    /// 因子表默认展开：这一页进来的目的就是看细节，藏起来要再点一次没有意义。
+    @State private var expandedFactors = true
+    @State private var expandedFactorKey: String?
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -23,6 +26,7 @@ struct MarketStateView: View {
                     if let regime, !regime.reasons.isEmpty {
                         reasonCard(regime)
                     }
+                    transitionCard
                     factorCard
                     realizedCard
                     intradayCard
@@ -39,7 +43,12 @@ struct MarketStateView: View {
                     Button("完成") { dismiss() }.tint(palette.accent)
                 }
             }
-            .onAppear { regime = store.marketRegime() }
+            .onAppear {
+                // 顺序不能反：marketRegime() 会先写入可能发生的新变更，
+                // 之后读才拿得到刚记下的那条。
+                regime = store.marketRegime()
+                transitions = MarketRegimeStore.loadTransitions()
+            }
         }
     }
 
@@ -160,43 +169,177 @@ struct MarketStateView: View {
         }
     }
 
+    // MARK: 状态变更
+
+    /// 只列确认过的变更。pending 不进来 ——
+    /// 防抖的整个意义就是不让「一根大阳线」进入结论，留痕也不该破例。
+    private var transitionCard: some View {
+        let recent = Array(transitions.suffix(8).reversed())
+        return VStack(alignment: .leading, spacing: 8) {
+            DsSectionHeader(palette: palette, title: "状态变更")
+            if recent.isEmpty {
+                Text("确认状态还没有变过。这里只在状态跨过防抖阈值时记一条 —— 记的是结论，不是每天的候选值。")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(recent) { item in
+                        HStack(spacing: 10) {
+                            Text(String(item.sessionKey.suffix(5)))
+                                .scaledFont(DS.fsMicro)
+                                .monospacedDigit()
+                                .foregroundStyle(palette.ink3)
+                                .frame(width: 36, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                if item.regimeChanged {
+                                    Text("\(item.fromRegime.title) → \(item.toRegime.title)")
+                                        .scaledFont(11.5, weight: .medium)
+                                        .foregroundStyle(palette.ink)
+                                }
+                                if item.riskChanged {
+                                    Text("R\(item.fromRisk.rawValue) → R\(item.toRisk.rawValue)")
+                                        .scaledFont(9.5)
+                                        .monospacedDigit()
+                                        .foregroundStyle(item.isRiskUp ? PnLColor.up : palette.ink3)
+                                }
+                            }
+                            Spacer(minLength: 4)
+                            if item.isRiskUp {
+                                Text("风险↑")
+                                    .scaledFont(9.5, weight: .semibold)
+                                    .foregroundStyle(PnLColor.up)
+                            }
+                        }
+                        .padding(.vertical, 9)
+                        if item.id != recent.last?.id {
+                            Rectangle().fill(palette.hairline).frame(height: 1)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .dsSurface(palette, radius: 18, padding: 0)
+                Text("风险上调要 2 个交易日确认，下调要 3 个 —— 所以它总是慢半拍地降级，这是刻意的不对称。")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     // MARK: 因子
 
     private var factorCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let factors = regime?.factors ?? []
+        return VStack(alignment: .leading, spacing: 8) {
             DsSectionHeader(palette: palette, title: "计算因子",
                             trailing: expandedFactors ? "收起" : "展开",
                             action: { withAnimation(.easeInOut(duration: 0.18)) { expandedFactors.toggle() } })
             if expandedFactors {
-                VStack(spacing: 8) {
-                    ForEach(regime?.factors ?? []) { factor in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(factor.key)
-                                    .scaledFont(11, weight: .medium)
-                                    .foregroundStyle(factor.available ? palette.ink : palette.ink3)
-                                    .lineLimit(1)
-                                Text(factor.reason)
-                                    .scaledFont(9.5)
-                                    .foregroundStyle(palette.ink3)
-                                    .lineLimit(2)
-                            }
-                            Spacer(minLength: 6)
-                            Text(factor.available ? factor.displayValue : "--")
-                                .scaledFont(DS.fsLabel, weight: .medium)
-                                .monospacedDigit()
-                                .foregroundStyle(factor.available ? palette.ink : palette.ink3)
+                VStack(spacing: 0) {
+                    ForEach(factors) { factor in
+                        factorRow(factor)
+                        if factor.id != factors.last?.id {
+                            Rectangle().fill(palette.hairline).frame(height: 1)
                         }
-                        .padding(.vertical, 2)
                     }
                 }
-                .padding(14)
-                .dsSurface(palette, radius: 16, padding: 0)
+                .padding(.horizontal, 14)
+                .dsSurface(palette, radius: 18, padding: 0)
+
+                Text("点任意一行看它最近 \(MarketRegimeEngine.factorHistoryLength) 个交易日的走势。历史是把每根 K 线当作当天，只用那天之前的数据重算出来的 —— 不是用今天的参数回头修出来的。")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("\(regime?.factors.filter(\.available).count ?? 0) 项可用 / 共 \(regime?.factors.count ?? 0) 项")
+                Text("\(factors.filter(\.available).count) 项可用 / 共 \(factors.count) 项")
                     .scaledFont(DS.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func factorRow(_ factor: MarketRegimeFactor) -> some View {
+        let expanded = expandedFactorKey == factor.id
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard factor.hasHistory else { return }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    expandedFactorKey = expanded ? nil : factor.id
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 5) {
+                            Text(factor.label)
+                                .scaledFont(11.5, weight: .medium)
+                                .foregroundStyle(factor.available ? palette.ink : palette.ink3)
+                                .lineLimit(1)
+                            if factor.hasHistory {
+                                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(palette.ink3)
+                            }
+                        }
+                        Text(factor.reason)
+                            .scaledFont(9.5)
+                            .foregroundStyle(palette.ink3)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 6)
+                    Text(factor.displayValue)
+                        .scaledFont(DS.fsLabel, weight: .medium)
+                        .monospacedDigit()
+                        .foregroundStyle(factor.available ? factorTint(factor) : palette.ink3)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 9)
+
+            if expanded, factor.hasHistory {
+                factorHistory(factor)
+                    .padding(.bottom, 10)
+            }
+        }
+    }
+
+    private func factorHistory(_ factor: MarketRegimeFactor) -> some View {
+        let values = factor.plottedHistory
+        let range = factor.historyRange
+        return VStack(alignment: .leading, spacing: 6) {
+            DsSparkline(values: values, tint: factorTint(factor), lineWidth: 1.4)
+                .frame(height: 44)
+            HStack(spacing: 12) {
+                if let range {
+                    Text("区间 \(factor.unit.format(range.min)) ~ \(factor.unit.format(range.max))")
+                }
+                Text("\(values.count) 个交易日")
+                if let percentile = factor.historyPercentile {
+                    Text("当前 \(Int((percentile * 100).rounded()))% 分位")
+                }
+                Spacer(minLength: 0)
+            }
+            .scaledFont(9.5)
+            .foregroundStyle(palette.ink3)
+        }
+    }
+
+    /// 趋势类按涨跌上色；回撤用亏色；波动与量能超阈值才标红 ——
+    /// 剩下的保持中性，不然整张表都是颜色，等于没有颜色。
+    private func factorTint(_ factor: MarketRegimeFactor) -> Color {
+        guard let value = factor.value, value.isFinite else { return palette.ink3 }
+        switch factor.key {
+        case "volatility_20":
+            return value >= 0.25 ? PnLColor.up : palette.ink2
+        case "volume_expansion":
+            return value >= 1.8 ? PnLColor.up : palette.ink2
+        case "daily_bar_spacing":
+            return palette.ink2
+        default:
+            return PnLColor.of(value)
         }
     }
 
