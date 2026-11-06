@@ -691,6 +691,11 @@ struct PortfolioData: Codable {
     var openingSnapshot: LedgerOpeningSnapshot? = nil
     /// 只追加的账本操作审计链。
     var ledgerAudits: [LedgerAuditEvent] = []
+    /// 收息池：手工填写的每份年化现金分红，用来算股息率与目标买点。
+    /// 不做自动抓取 —— 分红没有稳定公开接口，猜一个数比空着更危险。
+    var dividendPool: [DividendPoolEntry] = []
+    /// 目标股息率（%）。低于它就算「没到位置」。
+    var dividendTargetYield: Double = 4.5
     var cash: Double = 0
     var cashLinkedByDefault = false
     var appearance: AppAppearance = .techBlack
@@ -716,7 +721,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, openingSnapshot, ledgerAudits, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, openingSnapshot, ledgerAudits, dividendPool, dividendTargetYield, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -748,6 +753,8 @@ struct PortfolioData: Codable {
         ledger = try c.decodeIfPresent([LedgerEntry].self, forKey: .ledger) ?? []
         openingSnapshot = try c.decodeIfPresent(LedgerOpeningSnapshot.self, forKey: .openingSnapshot)
         ledgerAudits = try c.decodeIfPresent([LedgerAuditEvent].self, forKey: .ledgerAudits) ?? []
+        dividendPool = try c.decodeIfPresent([DividendPoolEntry].self, forKey: .dividendPool) ?? []
+        dividendTargetYield = try c.decodeIfPresent(Double.self, forKey: .dividendTargetYield) ?? 4.5
         cash = try c.decodeIfPresent(Double.self, forKey: .cash) ?? 0
         cashLinkedByDefault = try c.decodeIfPresent(Bool.self, forKey: .cashLinkedByDefault) ?? false
         appearance = try c.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? .techBlack

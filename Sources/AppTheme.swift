@@ -18,12 +18,16 @@ struct AppTheme {
             Color(red: r / 255, green: g / 255, blue: b / 255)
         }
         switch appearance {
-        // 科技黑：画布 #0A0A0A → #050505，卡片 #171717（与画布拉开约 12% 亮度，边界不糊）。
+        // 科技黑（默认）：近纯黑画布 + 只比画布亮一级的卡片。
+        // 参照稿的设计意图是「卡片靠描边界定、不靠阴影」，所以画布压到 #0B0B0C，
+        // 卡片 #141416 —— 差 9 个色阶，足以分清，又不会把纯黑的高级感冲淡。
         case .techBlack:
-            return AppTheme(top: c(10, 10, 10), bottom: c(5, 5, 5), surface: c(23, 23, 23), isLight: false)
-        // 蓝海浅色：冷灰蓝画布 + 纯白卡片，白天户外可读性最好。
+            return AppTheme(top: Color(hex: 0x0B0B0C), bottom: Color(hex: 0x040405),
+                            surface: Color(hex: 0x141416), isLight: false)
+        // 蓝海浅色：同一套层级的浅色版 —— 极淡冷灰画布 + 纯白卡片。
         case .oceanBlue:
-            return AppTheme(top: c(238, 242, 250), bottom: c(222, 228, 240), surface: c(255, 255, 255), isLight: true)
+            return AppTheme(top: Color(hex: 0xF7F8FA), bottom: Color(hex: 0xEDEFF3),
+                            surface: Color(hex: 0xFFFFFF), isLight: true)
         case .system:
             return AppTheme(top: c(14, 16, 22), bottom: c(8, 9, 13), surface: c(28, 31, 39), isLight: false)
         case .dark:      // 深空灰
@@ -167,10 +171,11 @@ extension AppAppearance {
 
     var accentColor: Color {
         switch self {
-        // 科技黑主色：紫 #7C5CFF，与红涨绿跌拉开色相，不抢涨跌注意力。
-        case .techBlack: return Color(red: 0.486, green: 0.361, blue: 1.0)
-        // 蓝海主色：#3A6BE6，比纯天蓝更沉，白底上不刺眼。
-        case .oceanBlue: return Color(red: 0.227, green: 0.420, blue: 0.902)
+        // 科技黑主色：亮蓝 #4F7CFF。参照稿里强调色只出现在 AI 块与选中态，
+        // 所以它必须够亮才能在纯黑上跳出来，同时又不能抢走红涨绿跌。
+        case .techBlack: return Color(hex: 0x4F7CFF)
+        // 蓝海主色：#2F5BE8，白底上压得住。
+        case .oceanBlue: return Color(hex: 0x2F5BE8)
         case .oled, .dark, .graphite: return Color(red: 0.31, green: 0.55, blue: 1.0)
         case .light: return Color(red: 0.15, green: 0.39, blue: 0.92)
         case .blue: return Color(red: 0.30, green: 0.62, blue: 1.0)

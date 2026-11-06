@@ -101,20 +101,23 @@ private struct CardPanelBackgroundModifier: ViewModifier {
         // 用 AnyShapeStyle 统一两条分支的类型：Swift 的 opaque return type 要求
         // 函数体所有 return 的底层类型一致，直接返回 LinearGradient / Color 会编译失败。
         let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
+        let palette = DsPalette(isLight: theme.isLight)
         let strokeStyle: AnyShapeStyle
         let strokeWidth: CGFloat
         if let tone {
-            strokeStyle = AnyShapeStyle(tone.opacity(theme.isLight ? 0.36 : 0.52))
+            // 有涨跌色时描边也跟着染色，但只到 30% —— 参照稿里没有「彩色边框」的卡，
+            // 都是同色极淡底 + 细描边。
+            strokeStyle = AnyShapeStyle(tone.opacity(theme.isLight ? 0.28 : 0.34))
             strokeWidth = 1
         } else {
-            strokeStyle = AnyShapeStyle(Color.primary.opacity(0.10))
-            strokeWidth = 0.5
+            strokeStyle = AnyShapeStyle(palette.hairline)
+            strokeWidth = 1
         }
         return content
             .background(shape.fill(theme.surface))
             .overlay {
                 if let tone {
-                    shape.fill(tone.opacity(theme.isLight ? 0.12 : 0.18))
+                    shape.fill(tone.opacity(theme.isLight ? 0.06 : 0.10))
                 }
             }
             .overlay(shape.strokeBorder(strokeStyle, lineWidth: strokeWidth))

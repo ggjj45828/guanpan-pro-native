@@ -31,10 +31,13 @@ enum CardTone {
 
 /// 全 App 共用的版式尺寸。把卡片、间距和触控高度集中管理，避免不同页面越改越散。
 enum AppLayout {
-    static let cardRadius: CGFloat = 16
-    static let cardPadding: CGFloat = 14
-    static let rowVerticalInset: CGFloat = 6
-    static let pageHorizontalInset: CGFloat = 16
+    /// 卡片圆角。参照稿的卡片几乎是「药丸感」的大圆角，16 太小，22 才够。
+    static let cardRadius: CGFloat = 22
+    static let cardPadding: CGFloat = 16
+    /// 相邻卡片之间的空隙；比行内间距大一档，卡片才会「浮」起来。
+    static let cardSpacing: CGFloat = 12
+    static let rowVerticalInset: CGFloat = 5
+    static let pageHorizontalInset: CGFloat = 18
     /// Apple 平台常用的最低触控高度；文字可以紧凑，但按钮不能难点。
     static let minimumTapHeight: CGFloat = 44
 }
@@ -48,18 +51,19 @@ struct ToneCardBackground: View {
     var body: some View {
         let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
         let shape = RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
+        let palette = DsPalette(isLight: theme.isLight)
         Group {
             if let tone {
                 shape
                     .fill(theme.surface)
-                    .overlay(shape.fill(tone.opacity(isLight ? 0.08 : 0.12)))
-                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.22 : 0.30), lineWidth: 0.8))
+                    .overlay(shape.fill(tone.opacity(isLight ? 0.06 : 0.10)))
+                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.26 : 0.32), lineWidth: 1))
             } else {
                 // 中性卡面：仍然给一张「看得见的卡」，
                 // 否则浅色主题下 Section 会直接融进白底，又变成用户说的「全是白的」。
                 shape
                     .fill(theme.surface)
-                    .overlay(shape.strokeBorder(Color.primary.opacity(isLight ? 0.08 : 0.12), lineWidth: 0.6))
+                    .overlay(shape.strokeBorder(palette.hairline, lineWidth: 1))
             }
         }
         .padding(.vertical, AppLayout.rowVerticalInset / 2)
