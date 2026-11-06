@@ -36,6 +36,13 @@ struct PortfolioStarMapCard: View {
 
     private var hiddenCount: Int { max(0, nodes.count - maxNodes) }
 
+    /// 没画出来的那几只合计占多少。
+    private var hiddenShare: Double {
+        guard total > 0 else { return 0 }
+        let shownValue = shown.reduce(0.0) { $0 + $1.marketValue }
+        return max(0, (1 - shownValue / total) * 100)
+    }
+
     /// 前三大合计占比，集中度就看这个数。
     private var top3Share: Double {
         guard total > 0 else { return 0 }
@@ -65,7 +72,7 @@ struct PortfolioStarMapCard: View {
                 starField
                     .frame(height: 268)
                 if hiddenCount > 0 {
-                    Text("另有 \(hiddenCount) 只未画出（合计 \(((1 - shown.reduce(0) { $0 + $1.marketValue } / total) * 100).pct(1))）")
+                    Text("另有 \(hiddenCount) 只未画出（合计 \(hiddenShare.pct(1))）")
                         .scaledFont(DS.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
@@ -103,7 +110,7 @@ struct PortfolioStarMapCard: View {
                         path.move(to: center)
                         path.addLine(to: point)
                     }
-                    .stroke(palette.hairline, lineWidth: 1 + 2 * weight)
+                    .stroke(palette.hairline, lineWidth: CGFloat(1 + 2 * weight))
 
                     nodeView(holding, weight: weight)
                         .position(point)

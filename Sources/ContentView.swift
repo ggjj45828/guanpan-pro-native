@@ -1103,9 +1103,50 @@ struct MoreHubView: View {
     @State private var showLedgerAudit = false
     @State private var showOperationHistory = false
 
+    private var palette: DsPalette {
+        DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
+    }
+
+    /// 我的页顶部：账户身份卡。不放假数据，只放真实的账户规模与持仓只数。
+    private var profileCard: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(palette.accentDim).frame(width: 52, height: 52)
+                Text("观")
+                    .scaledFont(20, weight: .bold)
+                    .foregroundStyle(palette.accent)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("观盘 Pro")
+                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .foregroundStyle(palette.ink)
+                Text("\(store.data.holdings.count) 只持仓 · 总资产 \(store.totalAsset.cny())")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink2)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text("本机")
+                .scaledFont(DS.fsMicro, weight: .semibold)
+                .foregroundStyle(palette.ink2)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background { Capsule().fill(palette.cardSoft) }
+        }
+        .dsSurface(palette, radius: 20, padding: 16)
+    }
+
+
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    profileCard
+                        .listRowInsets(EdgeInsets(top: 4, leading: AppLayout.pageHorizontalInset,
+                                                  bottom: 8, trailing: AppLayout.pageHorizontalInset))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
                 Section {
                     VStack(spacing: 10) {
                         MoreHubCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
@@ -1177,7 +1218,7 @@ struct MoreHubView: View {
             .scrollContentBackground(.hidden)
             .appListLayout()
             .background(.clear)
-            .navigationTitle("更多")
+            .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showAnalysisTools) { ToolsView(initialAnchor: "tools-risk", title: "分析工具") .themedSheetBackground() }
             .sheet(isPresented: $showPlanningTools) { ToolsView(initialAnchor: "tools-returns", title: "计划与复盘") .themedSheetBackground() }
@@ -1877,7 +1918,7 @@ struct HoldingsView: View {
     /// 从该净值日开始保持彩虹强调，直到它之后的首个交易日 09:30。
     /// 因而周五晚更新会跨周末保留，周一开市再自动恢复；不是简单到午夜就消失。
     private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
-        guard holding.activeKind == .fund,
+        guard holding.kind == .fund,
               let latestDay = store.data.fundNAVHistory
                 .filter({ $0.code == holding.code })
                 .map(\.date).max() else { return false }
@@ -2030,7 +2071,7 @@ struct HoldingsView: View {
             ForEach(archivedCodes, id: \.self) { code in
                 let trades = store.data.fundTransactions.filter { $0.code == code }
                 let name = trades.first(where: { !$0.name.isEmpty })?.name ?? code
-                let realized = store.data.ledger.filter { $0.code == code && $0.activeKind == .fund }.reduce(0) { $0 + $1.realizedPnL }
+                let realized = store.data.ledger.filter { $0.code == code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
                     + trades.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
                 // 之前这一行是 Button + .buttonStyle(.plain)：按钮会吃掉横向滑动手势，
                 // 导致左滑不弹出删除按钮。改成普通行 + onTapGesture，swipeActions 才能生效。
@@ -2165,7 +2206,7 @@ struct TradeLedgerManagementView: View {
                             }
                             Text("\(entry.date.formatted(date: .numeric, time: .shortened)) · \((entry.quantity).num(4)) × \((entry.price).num(4)) · 手续费 \((entry.fee).num(2))")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text(entry.affectsHoldings == false ? "导入的历史流水，不影响当前持仓和现金" : "\(entry.activeKind == .fund ? "场外基金" : "当前账本交易") · \(entry.linkedCash ? "联动现金" : "未联动现金")")
+                            Text(entry.affectsHoldings == false ? "导入的历史流水，不影响当前持仓和现金" : "\(entry.kind == .fund ? "场外基金" : "当前账本交易") · \(entry.linkedCash ? "联动现金" : "未联动现金")")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         .swipeActions(edge: .trailing) {
@@ -2219,7 +2260,7 @@ struct ArchivedFundHistoryView: View {
         store.data.fundNAVHistory.filter { $0.code == item.code }.sorted { $0.date < $1.date }
     }
     private var realized: Double {
-        store.data.ledger.filter { $0.code == item.code && $0.activeKind == .fund }.reduce(0) { $0 + $1.realizedPnL }
+        store.data.ledger.filter { $0.code == item.code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
             + transactions.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
     }
 
@@ -2557,7 +2598,7 @@ struct FundQuantView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var funds: [Holding] {
-        store.data.holdings.filter { $0.activeKind == .fund && $0.quantity > 0 }
+        store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
             .sorted { $0.marketValue > $1.marketValue }
     }
     private var totalValue: Double { funds.reduce(0) { $0 + $1.marketValue } }
