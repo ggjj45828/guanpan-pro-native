@@ -148,6 +148,42 @@ enum DecisionEvaluator {
 
 // MARK: - 汇总
 
+/// 一条判断有没有被真的执行。
+///
+/// 命中率只说明判断本身准不准。但「判断对了却没买」和「判断对了并且买了」
+/// 是两种完全不同的人生结果 —— 不区分的话，成绩单会一直高估这份判断的价值。
+///
+/// 判定只认账本里的真实成交：同代码、记录日**当天或之后**、方向相符。
+/// 记录日当天算数，因为 AI 分析常在盘中跑，当天下午下单是最正常的情形；
+/// 这与行情判读「记录日当天不算」的口径不同，两者刻意分开：
+/// 判读要防事后挑价，执行要认已经发生的事实。
+struct DecisionExecution: Equatable {
+    enum State: String, Equatable {
+        /// 账本里找不到对应成交。
+        case none
+        /// 找到了方向相同的成交。
+        case executed
+        /// 只有方向相反的成交（例如建议买入却卖了）。
+        case contrary
+    }
+
+    var state: State = .none
+    /// 命中的那笔成交日期。
+    var date: String = ""
+    var quantity: Double = 0
+    var price: Double = 0
+
+    var isExecuted: Bool { state == .executed }
+
+    var label: String {
+        switch state {
+        case .none: return "未执行"
+        case .executed: return "已执行"
+        case .contrary: return "反向操作"
+        }
+    }
+}
+
 /// 一条记录 + 它的判读结果。
 ///
 /// 用结构体而不是 `(record:verdict:)` 元组：`ForEach` 的 id 要写成 key path，
@@ -155,6 +191,7 @@ enum DecisionEvaluator {
 struct DecisionJudgement: Identifiable {
     let record: DecisionRecord
     let verdict: DecisionVerdict
+    let execution: DecisionExecution
 
     var id: UUID { record.id }
 }
@@ -169,12 +206,32 @@ struct DecisionScoreboard {
     var returns: [Double] = []
     var daysToHit: [Int] = []
 
+    // 执行情况。只在「已了结」的条目上统计，否则新记录会一直拉低执行率。
+    var executedCount = 0
+    var unexecutedCount = 0
+    var contraryCount = 0
+    /// 判断对并且真做了。
+    var hitAndExecuted = 0
+    /// 判断对但没动。
+    var hitNotExecuted = 0
+    /// 判断错但也没做 —— 少亏一次。
+    var missAvoided = 0
+    /// 判断错还真做了。
+    var missAndExecuted = 0
+
     /// 已了结条数。命中率的分母只用它 —— 把「还在等」算进分母是在虚增难度。
     var resolved: Int { hits + misses }
     var total: Int { hits + misses + undecided + waiting + noData + settled }
 
     var hitRate: Double? {
         resolved > 0 ? Double(hits) / Double(resolved) : nil
+    }
+
+    /// 已了结条目里真正按判断动过手的比例。
+    var executionRate: Double? {
+        let acted = executedCount + unexecutedCount + contraryCount
+        guard acted > 0 else { return nil }
+        return Double(executedCount) / Double(acted)
     }
 
     var averageReturn: Double? {
@@ -208,6 +265,19 @@ struct DecisionScoreboard {
             }
             if let value = DecisionEvaluator.shadowReturn(item.record, verdict: item.verdict) {
                 board.returns.append(value)
+            }
+            // 执行情况只在有结论的条目上累计。
+            guard item.verdict.isResolved else { continue }
+            switch item.execution.state {
+            case .executed: board.executedCount += 1
+            case .none: board.unexecutedCount += 1
+            case .contrary: board.contraryCount += 1
+            }
+            switch (item.verdict.isHit, item.execution.isExecuted) {
+            case (true, true): board.hitAndExecuted += 1
+            case (true, false): board.hitNotExecuted += 1
+            case (false, true): board.missAndExecuted += 1
+            case (false, false): board.missAvoided += 1
             }
         }
         return board
@@ -270,12 +340,42 @@ extension PortfolioStore {
 
     /// 全部条目与判读结果，最近记录的在前。
     func decisionVerdicts() -> [DecisionJudgement] {
-        data.decisionJournal
+        let ledger = data.ledger
+        return data.decisionJournal
             .sorted { $0.recordedAt > $1.recordedAt }
             .map { record in
                 DecisionJudgement(record: record,
-                                  verdict: DecisionEvaluator.evaluate(record, bars: dailyBars[record.code] ?? []))
+                                  verdict: DecisionEvaluator.evaluate(record, bars: dailyBars[record.code] ?? []),
+                                  execution: decisionExecution(for: record, ledger: ledger))
             }
+    }
+
+    /// 这条判断有没有被真的执行。
+    ///
+    /// 只认账本里的真实成交。记录日当天及之后都算 —— 盘中给的判断当天下午下单，
+    /// 是最正常的情形，不该因为「不是第二天」而被判成没执行。
+    func decisionExecution(for record: DecisionRecord, ledger: [LedgerEntry]? = nil) -> DecisionExecution {
+        let fills = ledger ?? data.ledger
+        let start = DecisionEvaluator.dayKey(record.recordedAt)
+        let wantBuy = record.isBuy
+        var opposite: DecisionExecution?
+
+        for entry in fills.sorted(by: { $0.date < $1.date }) {
+            guard normalizedDecisionCode(entry.code) == record.code else { continue }
+            let day = DecisionEvaluator.dayKey(entry.date)
+            guard day >= start else { continue }
+            // 基金分红不在这张表里，这里只有买和卖。
+            let isBuy = entry.side == .buy
+            if isBuy == wantBuy {
+                return DecisionExecution(state: .executed, date: day,
+                                         quantity: entry.quantity, price: entry.price)
+            }
+            if opposite == nil {
+                opposite = DecisionExecution(state: .contrary, date: day,
+                                             quantity: entry.quantity, price: entry.price)
+            }
+        }
+        return opposite ?? DecisionExecution()
     }
 
     func removeDecision(_ record: DecisionRecord) {
@@ -362,13 +462,14 @@ struct DecisionScorecardView: View {
                 VStack(alignment: .leading, spacing: DS.sectionGap) {
                     heroCard
                     statRow
+                    crossCard
                     filterBar
                     if shownPairs.isEmpty {
                         emptyCard
                     } else {
                         VStack(spacing: 10) {
                             ForEach(shownPairs) { item in
-                                recordRow(item.record, verdict: item.verdict)
+                                recordRow(item.record, verdict: item.verdict, execution: item.execution)
                             }
                         }
                     }
@@ -451,6 +552,16 @@ struct DecisionScorecardView: View {
                     }
                 }
             }
+            if let rate = board.executionRate {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(palette.accent)
+                    Text("已了结的 \(board.resolved) 条里，真的照做了 \(Int((rate * 100).rounded()))%")
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink2)
+                }
+            }
             if refreshing {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
@@ -486,6 +597,64 @@ struct DecisionScorecardView: View {
         }
     }
 
+    /// 「判断对/错 × 有没有动手」四格。这是成绩单里最有用的一块：
+    /// 命中率高但从不执行，等于没有判断；命中率低但也没做，说明纪律救了账户。
+    @ViewBuilder private var crossCard: some View {
+        if board.resolved > 0 {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("判断 × 执行")
+                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .foregroundStyle(palette.ink2)
+                HStack(spacing: 10) {
+                    crossCell(title: "看对了也做了", value: board.hitAndExecuted, tone: CardTone.ok)
+                    crossCell(title: "看对了没动手", value: board.hitNotExecuted, tone: CardTone.warn)
+                }
+                HStack(spacing: 10) {
+                    crossCell(title: "看错但没做", value: board.missAvoided, tone: CardTone.ok)
+                    crossCell(title: "看错还做了", value: board.missAndExecuted, tone: PnLColor.down)
+                }
+                Text(crossNote)
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .dsSurface(palette, radius: 20, padding: 14)
+        }
+    }
+
+    private func crossCell(title: String, value: Int, tone: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(value)")
+                .scaledFont(20, weight: .bold)
+                .monospacedDigit()
+                .foregroundStyle(value > 0 ? tone : palette.ink3)
+            Text(title)
+                .scaledFont(9.5)
+                .foregroundStyle(palette.ink2)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.cardSoft) }
+    }
+
+    /// 一句诚实的解读。不吹「判断很准」，先看有没有真的执行。
+    private var crossNote: String {
+        if board.hitNotExecuted > board.hitAndExecuted {
+            return "看对的次数多于真正动手的次数 —— 命中率再高，没执行也不进账户。"
+        }
+        if board.missAndExecuted > 0 && board.missAndExecuted >= board.hitAndExecuted {
+            return "看错的几次都真金白银做了。这类记录比命中率更值得盯。"
+        }
+        if board.executedCount == 0 && board.unexecutedCount > 0 {
+            return "已了结的判断一条都没落到账本上。要么是判断没执行，要么成交记在了别处。"
+        }
+        return "执行情况按账本里的真实成交匹配：同代码、记录日当天或之后、方向相符。"
+    }
+
     private var filterBar: some View {
         HStack(spacing: 8) {
             ForEach(Filter.allCases) { item in
@@ -518,7 +687,8 @@ struct DecisionScorecardView: View {
 
     // MARK: 单条
 
-    private func recordRow(_ record: DecisionRecord, verdict: DecisionVerdict) -> some View {
+    private func recordRow(_ record: DecisionRecord, verdict: DecisionVerdict,
+                          execution: DecisionExecution) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 Text(record.sideLabel)
@@ -548,6 +718,8 @@ struct DecisionScorecardView: View {
                 priceLabel("失效", record.invalid)
                 Spacer(minLength: 0)
             }
+
+            executionRow(execution)
 
             if !record.reason.isEmpty {
                 Text(record.reason)
@@ -598,6 +770,39 @@ struct DecisionScorecardView: View {
                 .monospacedDigit()
                 .foregroundStyle(value == nil ? palette.ink3 : palette.ink)
         }
+    }
+
+    /// 执行情况那一行。判断准不准是一回事，有没有真动手是另一回事。
+    private func executionRow(_ execution: DecisionExecution) -> some View {
+        let tint: Color
+        let detail: String
+        switch execution.state {
+        case .executed:
+            tint = CardTone.ok
+            detail = "\(execution.date) · \(execution.quantity.num(0)) 份 @ \(execution.price.num(3))"
+        case .contrary:
+            tint = CardTone.warn
+            detail = "\(execution.date) 有反向成交，方向不符"
+        case .none:
+            tint = palette.ink3
+            detail = "账本里没有对应成交"
+        }
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(tint)
+                .frame(width: 5, height: 5)
+            Text(execution.label)
+                .scaledFont(9.5, weight: .semibold)
+                .foregroundStyle(tint)
+            Text(detail)
+                .scaledFont(9.5)
+                .foregroundStyle(palette.ink3)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(palette.isLight ? 0.07 : 0.10)) }
     }
 
     private func verdictTint(_ verdict: DecisionVerdict) -> Color {
@@ -675,6 +880,10 @@ struct DecisionScorecardView: View {
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
             Text("照做平均收益按参考价到目标 / 失效价计算，不含手续费、滑点与仓位差异，只用来衡量「判断本身」值不值钱。")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("执行情况只认账本里的真实成交：同代码、记录日当天或之后、方向相符。记录日当天算数 —— 盘中给的判断当天下午下单很正常；这与行情判读「记录日当天不算」刻意不同：判读要防事后挑价，执行要认已经发生的事。")
                 .scaledFont(DS.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)

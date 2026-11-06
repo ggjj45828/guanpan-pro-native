@@ -25,21 +25,49 @@ extension PortfolioStore {
         data.ledger.isEmpty && data.fundTransactions.isEmpty
     }
 
-    var ledgerDigest: String {
-        LedgerDigest.make(opening: data.openingSnapshot, cash: data.cash, fills: data.ledger)
+    /// 起点被锁住是因为哪一边。用户点不动按钮时必须知道原因 ——
+    /// 「已有成交」四个字不够：场内 ETF 成交和场外基金申赎是两件事。
+    var openingLockReason: String? {
+        let venue = data.ledger.count
+        let funds = data.fundTransactions.count
+        switch (venue, funds) {
+        case (0, 0):
+            return nil
+        case (_, 0):
+            return "场内已有 \(venue) 笔成交"
+        case (0, _):
+            return "场外基金已有 \(funds) 笔申赎/分红流水"
+        default:
+            return "场内 \(venue) 笔成交 + 基金 \(funds) 笔流水"
+        }
     }
 
-    /// 审计链自洽检查：返回链中断的位置（0 起算）。
-    /// 正常情况下应该永远为空。出现非空说明有代码绕过了本文件直接改账本。
-    func ledgerAuditBreaks() -> [Int] {
-        let events = data.ledgerAudits
-        guard events.count > 1 else { return [] }
-        var broken: [Int] = []
-        for index in 1..<events.count where events[index].priorDigest != events[index - 1].resultingDigest {
-            broken.append(index)
-        }
-        return broken
+    var ledgerDigest: String {
+        LedgerDigest.make(opening: data.openingSnapshot,
+                          cash: data.cash,
+                          fills: data.ledger,
+                          fundFills: data.fundTransactions)
     }
+
+    /// 审计链体检：返回链中断的位置（0 起算）与口径升级接缝。
+    /// 正常情况下断点应该永远为空。出现非空说明有代码绕过了本文件直接改账本。
+    func ledgerAuditHealth() -> LedgerAuditHealth {
+        let events = data.ledgerAudits
+        guard events.count > 1 else { return LedgerAuditHealth() }
+        var health = LedgerAuditHealth()
+        for index in 1..<events.count where events[index].priorDigest != events[index - 1].resultingDigest {
+            // 口径升级处前后算法不同，指纹天然对不上。这不是断链，记成迁移接缝。
+            if (events[index].caliber ?? 1) != (events[index - 1].caliber ?? 1) {
+                health.migrations.append(index)
+            } else {
+                health.breaks.append(index)
+            }
+        }
+        return health
+    }
+
+    /// 只要断点，不管接缝。旧的调用点继续用这个。
+    func ledgerAuditBreaks() -> [Int] { ledgerAuditHealth().breaks }
 
     // MARK: 起点快照
 
@@ -91,6 +119,33 @@ extension PortfolioStore {
                           reason: "\(confirmation.trimmedReason) · \(confirmation.trimmedNote)",
                           priorDigest: prior)
         save(label: "重写账本起点")
+        return snapshot
+    }
+
+    // MARK: 补记起点（基金域的主路径）
+
+    /// 补记一个起点：只给「起点是空的、但账本里已经先有流水」的账户用一次。
+    ///
+    /// 这种情况在基金域非常常见：用户先导入基金申赎流水，账本立刻就不是空的了，
+    /// `captureOpeningSnapshotIfNeeded` 从此再也不会写入起点。结果就是账本永远
+    /// 没有起点，审计页只能写「还没有记录账本起点」，起点这一章彻底缺失。
+    ///
+    /// 补记的语义要说清楚：它记的是「从现在开始跟踪时账户的样子」，
+    /// 不是历史起点。所以时间戳用当下、来源标成 `lateAdopt`，
+    /// 而且只允许在真正没有起点时做一次 —— 有过起点就不许覆盖。
+    @discardableResult
+    func adoptOpeningSnapshotLate(_ confirmation: LedgerConfirmation) throws -> LedgerOpeningSnapshot {
+        guard confirmation.isValid else { throw LedgerError.invalidConfirmation }
+        guard data.openingSnapshot == nil else { throw LedgerError.openingSnapshotAlreadyExists }
+        guard !data.holdings.isEmpty || data.cash != 0 else { throw LedgerError.emptyAccount }
+
+        let prior = ledgerDigest
+        let snapshot = makeOpeningSnapshot(source: .lateAdopt)
+        data.openingSnapshot = snapshot
+        appendLedgerAudit(action: "补记账本起点（已有历史流水）",
+                          reason: "\(confirmation.trimmedReason) · \(confirmation.trimmedNote)",
+                          priorDigest: prior)
+        save(label: "补记账本起点")
         return snapshot
     }
 
@@ -220,7 +275,8 @@ extension PortfolioStore {
 
     private func appendLedgerAudit(action: String, reason: String, priorDigest: String) {
         let event = LedgerAuditEvent(occurredAt: .now, action: action, reason: reason,
-                                     priorDigest: priorDigest, resultingDigest: ledgerDigest)
+                                     priorDigest: priorDigest, resultingDigest: ledgerDigest,
+                                     caliber: LedgerDigest.caliber)
         data.ledgerAudits.append(event)
         // 链只追加，但长度要可控；截断时保留最近的 200 条，断链检查从保留段开始仍然成立。
         if data.ledgerAudits.count > 200 {

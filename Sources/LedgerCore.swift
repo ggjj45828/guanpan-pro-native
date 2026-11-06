@@ -13,6 +13,9 @@ struct LedgerOpeningSnapshot: Codable, Equatable {
         case recorded
         /// 老备份没有起点，第一次保存时按当时状态采纳。
         case adopted
+        /// 账本里已经先有了流水（典型是直接导入基金申赎），事后补记的起点。
+        /// 与 `adopted` 一样是「当时状态」，区别在于它明确不是跟踪的始点。
+        case lateAdopt
     }
 
     var capturedAt: Date = .now
@@ -22,6 +25,20 @@ struct LedgerOpeningSnapshot: Codable, Equatable {
 
     var positionCount: Int { positions.count }
     var marketCostValue: Double { positions.reduce(0) { $0 + $1.quantity * $1.cost } }
+
+    // MARK: 两个域分开看
+    //
+    // 账本实际上是两张表：场内（`ledger`，交易所成交）和场外基金（`fundTransactions`，
+    // 申赎 + 分红 + 定投）。它们的成本口径不同 —— 场内是成交加权，场外是份额与净值
+    // 逐笔确认。混在一起看，用户永远不知道起点被哪一边锁住的。
+
+    var etfPositions: [LedgerOpeningPosition] { positions.filter { $0.kind == .etf } }
+    var fundPositions: [LedgerOpeningPosition] { positions.filter { $0.kind == .fund } }
+
+    var etfCostValue: Double { etfPositions.reduce(0) { $0 + $1.costValue } }
+    var fundCostValue: Double { fundPositions.reduce(0) { $0 + $1.costValue } }
+
+    var hasFundPositions: Bool { !fundPositions.isEmpty }
 }
 
 struct LedgerOpeningPosition: Codable, Equatable, Identifiable {
@@ -61,8 +78,23 @@ struct LedgerAuditEvent: Codable, Equatable, Identifiable {
     var reason: String
     var priorDigest: String
     var resultingDigest: String
+    /// 算指纹时的口径版本。口径升级后前后两条的指纹算法不同，
+    /// 链上会出现一处「对不上但合法」的接缝，用它标记出来，不要误报断链。
+    var caliber: Int? = nil
 
     var digestPair: String { "\(priorDigest.prefix(8)) → \(resultingDigest.prefix(8))" }
+}
+
+// MARK: - 链检查结果
+
+/// 审计链体检结论。断链和口径升级要分开 —— 前者是事故，后者是升级痕迹。
+struct LedgerAuditHealth: Equatable {
+    /// 真正的断点（0 起算）。非空说明有代码绕过了审计入口改了账本。
+    var breaks: [Int] = []
+    /// 口径迁移接缝（0 起算）。合法，只是提醒这里前后算法不同。
+    var migrations: [Int] = []
+
+    var isClean: Bool { breaks.isEmpty }
 }
 
 // MARK: - 状态指纹
@@ -73,7 +105,14 @@ struct LedgerAuditEvent: Codable, Equatable, Identifiable {
 /// 用于审计链自洽检查，不承担密码学职责。好处是不引入任何框架依赖，
 /// 也不会因为浮点格式化差异而在不同 iOS 版本上算出不同结果。
 enum LedgerDigest {
-    static func make(opening: LedgerOpeningSnapshot?, cash: Double, fills: [LedgerEntry]) -> String {
+    /// 口径版本。2 起把场外基金流水也纳入指纹 —— 之前只算场内 `ledger`，
+    /// 意味着删掉一笔基金申赎记录，指纹一点不动，审计链完全看不见。
+    static let caliber = 2
+
+    static func make(opening: LedgerOpeningSnapshot?,
+                     cash: Double,
+                     fills: [LedgerEntry],
+                     fundFills: [FundTransaction] = []) -> String {
         var text = "v1|"
         if let opening {
             text += "open:\(opening.capturedAt.timeIntervalSince1970):\(opening.source.rawValue)"
@@ -91,6 +130,16 @@ enum LedgerDigest {
         }) {
             text += "|f:\(fill.id.uuidString):\(fill.code):\(fill.kind?.rawValue ?? "etf")"
             text += ":\(fill.side.rawValue):\(units(fill.quantity)):\(money(fill.price)):\(money(fill.fee))"
+        }
+        // 场外基金域：申赎、分红、定投都在这张表里。分红模式与状态也进指纹 ——
+        // 「现金分红」改成「红利再投」会改变份额，属于账本事实，不是显示偏好。
+        for trade in fundFills.sorted(by: { lhs, rhs in
+            if lhs.effectiveDate == rhs.effectiveDate { return lhs.id.uuidString < rhs.id.uuidString }
+            return lhs.effectiveDate < rhs.effectiveDate
+        }) {
+            text += "|ft:\(trade.id.uuidString):\(trade.code):\(trade.side.rawValue)"
+            text += ":\(trade.effectiveDate):\(units(trade.quantity)):\(money(trade.nav))"
+            text += ":\(money(trade.fee)):\(trade.status.rawValue):\(trade.dividendMode?.rawValue ?? "-")"
         }
         return fnv1a64(text)
     }
@@ -163,16 +212,20 @@ enum HoldingRemovalMode: String, CaseIterable, Identifiable {
 
 enum LedgerError: LocalizedError, Equatable {
     case openingSnapshotLocked
+    case openingSnapshotAlreadyExists
     case invalidConfirmation
     case invalidAmount
     case missingHolding
     case noQuotedPrice(String)
     case nothingToLiquidate
+    case emptyAccount
 
     var errorDescription: String? {
         switch self {
         case .openingSnapshotLocked:
             return "账本里已经有成交记录了，起点不再是唯一事实来源，不能再直接改写。请改用「记一笔清仓卖出」。"
+        case .openingSnapshotAlreadyExists:
+            return "账本里已经有起点了。补记只用于「起点为空、但已经有历史流水」的账户，且只能做一次。"
         case .invalidConfirmation:
             return "请填写改动原因和确认说明。"
         case .invalidAmount:
@@ -183,6 +236,8 @@ enum LedgerError: LocalizedError, Equatable {
             return "「\(name)」没有可用行情，无法按市价记卖出。请先刷新行情，或改用手工交易录入。"
         case .nothingToLiquidate:
             return "没有可清仓的持仓。"
+        case .emptyAccount:
+            return "账户里还没有任何持仓或现金，补记出来的起点是空的，没有意义。"
         }
     }
 }

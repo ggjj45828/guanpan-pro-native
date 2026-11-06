@@ -5528,6 +5528,23 @@ private struct GridInstrument: Identifiable {
     var id: String { code }
 }
 
+// MARK: - 档位
+
+/// 一档网格的展示数据。价格公式与 `replayGrid` 完全一致（复利百分比），
+/// 否则表上写的档位和回放真正成交的档位会是两套价格。
+private struct GridRung: Identifiable {
+    /// 用档位+方向当 id，而不是每次重算都换一个 UUID ——
+    /// 后者会让每输入一个数字，整张表都被当成全新元素重建。
+    var id: String { (isBuy ? "b" : "s") + String(level) }
+    let level: Int
+    let isBuy: Bool
+    let price: Double
+    /// 相对当前参考价的偏离，小数（0.03 表示 +3%）。
+    let distance: Double
+    let shares: Double
+    let amount: Double
+}
+
 struct DayGridView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
@@ -5559,166 +5576,91 @@ struct DayGridView: View {
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
+    private var palette: DsPalette { DsPalette(isLight: isLight) }
     private var currentInstrument: GridInstrument? { instruments.first { $0.code == code } }
+
+    private var anchorValue: Double { Double(anchor) ?? 0 }
+    private var stepValue: Double { Double(step) ?? 0 }
+    private var levelsValue: Int { max(1, min(20, Int(levels) ?? 5)) }
+    private var capitalValue: Double { Double(capital) ?? 0 }
+    private var feeValue: Double { Double(fee) ?? 0 }
+
+    /// 每档预算与份数。与回放同一口径：总资金按「上下档 + 2 个基准档」平分。
+    private var perRungBudget: Double {
+        guard levelsValue > 0 else { return 0 }
+        return capitalValue / Double(levelsValue * 2 + 2)
+    }
+
+    private var sharesPerRung: Double {
+        guard anchorValue > 0 else { return 0 }
+        return (perRungBudget / (anchorValue * 100)).rounded(.down) * 100
+    }
+
+    /// 档位表。买入档从下往上、卖出档从下往上生成，渲染时卖出倒序。
+    private var rungs: [GridRung] {
+        guard anchorValue > 0, stepValue > 0, stepValue < 100 else { return [] }
+        let live = currentInstrument?.price ?? 0
+        let reference = live > 0 ? live : anchorValue
+        var rows: [GridRung] = []
+        for level in 1...levelsValue {
+            let buyPrice = anchorValue * pow(1 - stepValue / 100, Double(level))
+            let sellPrice = anchorValue * pow(1 + stepValue / 100, Double(level))
+            rows.append(GridRung(level: level, isBuy: true, price: buyPrice,
+                                 distance: buyPrice / reference - 1,
+                                 shares: sharesPerRung, amount: sharesPerRung * buyPrice))
+            rows.append(GridRung(level: level, isBuy: false, price: sellPrice,
+                                 distance: sellPrice / reference - 1,
+                                 shares: sharesPerRung, amount: sharesPerRung * sellPrice))
+        }
+        return rows
+    }
+
+    private var sellRungs: [GridRung] {
+        rungs.filter { !$0.isBuy }.sorted { $0.level > $1.level }
+    }
+
+    private var buyRungs: [GridRung] {
+        rungs.filter { $0.isBuy }.sorted { $0.level < $1.level }
+    }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("标的与参数") {
-                    if instruments.isEmpty {
-                        Text("先在自选或 ETF 持仓中添加标的。")
-                    } else {
-                        Picker("标的", selection: $code) {
-                            ForEach(instruments) { item in Text("\(item.name) · \(item.code)").tag(item.code) }
-                        }
-                        .onChange(of: code) { _, value in
-                            if let item = instruments.first(where: { $0.code == value }) {
-                                name = item.name
-                                anchor = item.price > 0 ? String(format: "%.4f", item.price) : ""
-                                result = nil
-                                recommendationText = "已切换到\(item.name)（\(item.code)），中枢价已按该标的最新行情重置。"
-                            }
-                        }
-                    }
-                    if let item = currentInstrument {
-                        LabeledContent("当前标的", value: "\(item.name) · \(item.code)")
-                        LabeledContent("最新参考价", value: item.price > 0 ? item.price.num(4) : "暂无有效行情")
-                    }
-                    labeledGridField("计划资金（元）", hint: "可用于买入网格的总资金", text: $capital, keyboard: .decimalPad)
-                    labeledGridField("网格中枢价", hint: "初始参考价；切换标的会更新", text: $anchor, keyboard: .decimalPad)
-                    labeledGridField("每档间距（%）", hint: "每相邻网格档位的涨跌幅", text: $step, keyboard: .decimalPad)
-                    labeledGridField("上下档数（各侧）", hint: "中枢上方和下方分别几档", text: $levels, keyboard: .numberPad)
-                    labeledGridField("每笔费用（元）", hint: "每次模拟成交扣除的固定费用", text: $fee, keyboard: .decimalPad)
-                    Button("根据历史分时生成规则建议") { suggestParameters() }.disabled(code.isEmpty)
-                    if !recommendationText.isEmpty { Text(recommendationText).font(.footnote).foregroundStyle(.secondary) }
-                    Button("保存/更新本地计划") { savePlan() }.disabled(code.isEmpty)
-                    Text("每档按 100 份整数手模拟。每档资金小于 1 手时会显示资金不足原因；计划仍可保存，调整资金或减少档数即可。计划预设不要求市场已开盘。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
-                Section("分时数据") {
-                    Button("导入分时 CSV") { showImporter = true }
-                    Text("CSV 支持 code,date,time,price,volume 或 code,timestamp,price；无 code 列时使用当前选择标的；timestamp/time 列需包含完整日期和时间（yyyy-MM-dd HH:mm[:ss]）。应用在前台且取得有效报价时才采集；已保存的分时历史不会按交易日数自动删除。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if !store.gridTradingDays.isEmpty {
-                        Picker("复盘日期", selection: $selectedDay) {
-                            ForEach(store.gridTradingDays, id: \.self) { Text($0).tag($0) }
-                        }
-                        Button("复盘所选日期") { runReplay() }.disabled(code.isEmpty || selectedDay.isEmpty)
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.sectionGap) {
+                    instrumentCard
+                    paramCard
+                    ladderCard
+                    actionRow
+                    if !recommendationText.isEmpty { noteCard(recommendationText, tone: palette.accent) }
+                    if !message.isEmpty { noteCard(message, tone: CardTone.warn) }
+                    if let result { resultCard(result) }
+                    if !store.data.dayGridPlans.isEmpty { plansCard }
+                    intradayCard
+                    strategicCard
+                    if !store.data.legacyGridArchives.isEmpty || !store.data.legacyShadowArchives.isEmpty {
+                        legacyCard
                     }
                 }
-                .plainCard(isLight: isLight)
-                Section("中长期网格计划（独立于日内回放）") {
-                    Button("打开中长期网格规划") { showStrategicGridPlanner = true }
-                    Text("按近 60 日价格区间、波动幅度和可选资金生成上下买卖档；不使用分时回放数据，也不会自动下单。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if let result {
-                    Section("路径模拟结果 · \(result.day)") {
-                        LabeledContent("模拟盈亏", value: "\((result.profit).directionMark()) \((result.profit).cny())")
-                            .foregroundStyle(PnLColor.of(result.profit))
-                        LabeledContent("买入 / 卖出", value: "\(result.buyCount) / \(result.sellCount) 笔")
-                        LabeledContent("估算费用", value: (result.fees).cny())
-                        LabeledContent("分时覆盖", value: (result.coverage * 100).pct(0))
-                        Text(result.fills == 0 ? "该日没有触发网格成交。若资金不足以买入 100 份一手、网格间距超出当日波动，或数据缺点，结果可能没有代表性。" : "回放按时间顺序计算，含逐笔固定费用；不含排队、成交量、滑点、涨跌停和真实券商规则。历史最佳参数会有过拟合，不能直接当作明日建议。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .toneCard(CardTone.pnl(result.profit), isLight: isLight)
-                }
-                if !message.isEmpty {
-                    Section { Text(message).font(.footnote) }
-                        .toneCard(CardTone.warn, isLight: isLight)
-                }
-                Section("已保存计划") {
-                    if store.data.dayGridPlans.isEmpty { Text("暂无计划") }
-                    ForEach(store.data.dayGridPlans) { plan in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(plan.name) · \(plan.code)").font(.headline)
-                            Text("资金 \((plan.capital).num(0)) · 中枢 \((plan.anchor).num(3)) · 间距 \((plan.stepPercent * 100).num(2))% · 每档约 \((floor(plan.capital / Double(plan.levelsEachSide * 2 + 2) / (plan.anchor * 100)) * 100).num(0)) 份")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Button("载入参数") { loadPlan(plan) }
-                            Button("删除计划", role: .destructive) { store.removeGridPlan(plan) }
-                        }
-                    }
-                }
-                .plainCard(isLight: isLight)
-                if !store.data.legacyGridArchives.isEmpty {
-                    Section("旧版网格记录（只读归档）") {
-                        ForEach(store.data.legacyGridArchives) { record in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("\(record.name) · \(record.code)")
-                                Text("\(record.horizon) · \(record.mode) · \(record.status) · \(record.created)")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if record.capital > 0 {
-                                    Text("计划资金 \((record.capital).cny()) · 原网格 \((record.lower).num(3))–\((record.upper).num(3)) · 每档 \((record.quantity).num(0)) 份")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        Text("旧版每条网格记录及其成交、模拟资金等字段以原始 JSON 保留；符合日内参数条件的已另外转换为可载入回放的计划。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                if !store.data.legacyShadowArchives.isEmpty {
-                    Section("旧版影子盘历史与自动模拟") {
-                        ForEach(store.data.legacyShadowArchives) { record in
-                            DisclosureGroup("\(record.name) · \(record.code)") {
-                                LabeledContent("模拟状态", value: record.closed ? "已结束" : (record.active ? "运行中" : "已暂停"))
-                                if !record.closed {
-                                    Button(record.active ? "暂停影子模拟" : "恢复影子模拟") {
-                                        store.setLegacyShadowActive(record, active: !record.active)
-                                    }
-                                }
-                                LabeledContent("影子账户盈亏（末次行情估算）", value: (record.lastEquityChange).cny())
-                                LabeledContent("相对初始持有", value: (record.lastEquityChange - record.holdOnlyChange).cny())
-                                LabeledContent("累计已实现", value: (record.realizedPnL).cny())
-                                LabeledContent("估算费用", value: (record.totalFees).cny())
-                                LabeledContent("模拟买 / 卖", value: "\(record.buys) / \(record.sells)")
-                                if record.scoredSells > 0 {
-                                    LabeledContent("旧记录卖出胜率", value: "\((Double(record.wins) / Double(record.scoredSells) * 100).num(1))%")
-                                }
-                                if !record.days.isEmpty {
-                                    DisclosureGroup("每日摘要（最近 20 日）") {
-                                        ForEach(Array(record.days.suffix(20).reversed())) { day in
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(day.day)
-                                                Text("买 \(day.buys) / 卖 \(day.sells) · 费用 \((day.fees).cny()) · 已实现 \((day.realizedPnL).cny())")
-                                                    .font(.caption).foregroundStyle(.secondary)
-                                            }
-                                        }
-                                    }
-                                }
-                                if !record.fills.isEmpty {
-                                    DisclosureGroup("成交明细（最近 20 笔，共 \(record.fills.count) 笔）") {
-                                        ForEach(Array(record.fills.suffix(20).reversed())) { fill in
-                                            Text("\(fill.day) \(fill.time) · \(fill.side == "buy" ? "买" : "卖") \((fill.quantity).num(0)) 份 @ \((fill.price).num(3)) · 费用 \((fill.fee).cny())")
-                                                .font(.caption)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Text("影子盘使用隔离的虚拟资金，前台有效行情更新时按网格档位模拟，不会计入原生真实持仓或现金。价格、费用与胜率均为估算，不能代表可成交结果；暂停期间只更新参考价、不记模拟成交，恢复时会重新建立行情基准。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
+                .padding(.horizontal, DS.pageInset)
+                .padding(.top, 8)
+                .padding(.bottom, 30)
             }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("日内网格 / 复盘")
+            .scrollIndicators(.hidden)
+            .background(palette.canvas.ignoresSafeArea())
+            .navigationTitle("日内网格")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
-            .navigationBarTitleDisplayMode(.inline)
-            .themedSheetBackground()
-            .listRowBackground(Color.clear)
-            .buttonStyle(.plain)
             .toolbar {
                 if !embedded {
                     ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 }
             }
             .onAppear {
-                if code.isEmpty, let first = instruments.first { code = first.code; name = first.name; anchor = first.price > 0 ? String(format: "%.4f", first.price) : "" }
+                if code.isEmpty, let first = instruments.first {
+                    code = first.code; name = first.name
+                    anchor = first.price > 0 ? String(format: "%.4f", first.price) : ""
+                }
                 if selectedDay.isEmpty { selectedDay = store.gridTradingDays.first ?? "" }
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { response in
@@ -5736,11 +5678,582 @@ struct DayGridView: View {
         }
     }
 
-    private func labeledGridField(_ title: String, hint: String, text: Binding<String>, keyboard: UIKeyboardType) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.subheadline.weight(.medium))
-            TextField(hint, text: text).keyboardType(keyboard)
+    // MARK: 标的
+
+    private var priceTone: Color {
+        guard let price = currentInstrument?.price, price > 0 else { return palette.ink2 }
+        // 与网格中枢比较：高于中枢用涨色，低于用跌色。这里只是提示位置，不是当日涨跌。
+        return price >= anchorValue ? PnLColor.up : PnLColor.down
+    }
+
+    private var instrumentCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(currentInstrument?.name ?? "未选择标的")
+                        .scaledFont(DS.fsTitle, weight: .semibold)
+                        .foregroundStyle(palette.ink)
+                        .lineLimit(1)
+                    Text(code.isEmpty ? "先在自选或持仓里添加标的" : code)
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink3)
+                }
+                Spacer(minLength: 6)
+                Menu {
+                    if instruments.isEmpty {
+                        Text("暂无可选标的")
+                    } else {
+                        ForEach(instruments) { item in
+                            Button {
+                                select(item)
+                            } label: {
+                                Text("\(item.name) · \(item.code)")
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("切换")
+                            .scaledFont(DS.fsLabel, weight: .semibold)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(palette.ink)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background { Capsule().fill(palette.cardSoft) }
+                }
+            }
+
+            Text(currentInstrument.map { $0.price > 0 ? $0.price.num(4) : "--" } ?? "--")
+                .scaledFont(40, weight: .bold)
+                .monospacedDigit()
+                .foregroundStyle(priceTone)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+
+            HStack(spacing: 14) {
+                miniStat("中枢", anchorValue > 0 ? anchorValue.num(4) : "--")
+                miniStat("每档", "\(stepValue.num(2))%")
+                miniStat("上下档", "各 \(levelsValue)")
+                miniStat("每档份数", sharesPerRung > 0 ? sharesPerRung.num(0) : "--")
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: DS.heroRadius, padding: 18)
+    }
+
+    private func miniStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+            Text(value)
+                .scaledFont(DS.fsLabel, weight: .semibold)
+                .monospacedDigit()
+                .foregroundStyle(palette.ink)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: 参数
+
+    private var paramCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DsSectionHeader(palette: palette, title: "计划参数")
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    paramField("计划资金", text: $capital, unit: "元", keyboard: .decimalPad)
+                    paramField("网格中枢", text: $anchor, unit: "元", keyboard: .decimalPad)
+                }
+                HStack(spacing: 10) {
+                    paramField("每档间距", text: $step, unit: "%", keyboard: .decimalPad)
+                    paramField("上下档数", text: $levels, unit: "档", keyboard: .numberPad)
+                }
+                HStack(spacing: 10) {
+                    paramField("每笔费用", text: $fee, unit: "元", keyboard: .decimalPad)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("每档预算")
+                            .scaledFont(DS.fsMicro)
+                            .foregroundStyle(palette.ink3)
+                        Text(perRungBudget > 0 ? "¥" + perRungBudget.cny() : "--")
+                            .scaledFont(DS.fsRow, weight: .semibold)
+                            .monospacedDigit()
+                            .foregroundStyle(palette.ink)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
+                    .background { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.cardSoft) }
+                }
+            }
+            Text("每档按 100 份整数手模拟。资金不足一手时档位会显示 0 份，计划仍可保存。")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: 20, padding: 14)
+    }
+
+    private func paramField(_ title: String, text: Binding<String>, unit: String,
+                            keyboard: UIKeyboardType) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+            HStack(spacing: 3) {
+                TextField("0", text: text)
+                    .keyboardType(keyboard)
+                    .textFieldStyle(.plain)
+                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .monospacedDigit()
+                    .foregroundStyle(palette.ink)
+                Text(unit)
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.cardSoft) }
+    }
+
+    // MARK: 挂档表
+
+    private var ladderCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("挂档表")
+                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .foregroundStyle(palette.ink)
+                Spacer(minLength: 6)
+                Text(sharesPerRung > 0 ? "每档 \(sharesPerRung.num(0)) 份" : "资金不足一手")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(sharesPerRung > 0 ? palette.ink3 : CardTone.warn)
+            }
+            .padding(.bottom, 10)
+
+            if rungs.isEmpty {
+                Text("填好中枢价与间距后，这里会列出每一档的挂单价。")
+                    .scaledFont(DS.fsLabel)
+                    .foregroundStyle(palette.ink2)
+                    .padding(.vertical, 6)
+            } else {
+                ForEach(sellRungs) { rung in
+                    rungRow(rung)
+                }
+                currentPriceRow
+                ForEach(buyRungs) { rung in
+                    rungRow(rung)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: 20, padding: 14)
+    }
+
+    private var currentPriceRow: some View {
+        let price = currentInstrument?.price ?? 0
+        return HStack(spacing: 8) {
+            Image(systemName: "arrowtriangle.right.fill")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(palette.accent)
+            Text("现价")
+                .scaledFont(DS.fsMicro, weight: .semibold)
+                .foregroundStyle(palette.accent)
+            Spacer(minLength: 4)
+            Text(price > 0 ? price.num(4) : "--")
+                .scaledFont(DS.fsRow, weight: .bold)
+                .monospacedDigit()
+                .foregroundStyle(palette.ink)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background { RoundedRectangle(cornerRadius: 9, style: .continuous).fill(palette.accentDim) }
+        .padding(.vertical, 6)
+    }
+
+    private func rungRow(_ rung: GridRung) -> some View {
+        // 卖出档在上、买入档在下：颜色跟中文账户一致 —— 红是卖出方向（价格在上），
+        // 绿是买入方向（价格在下）。这里表达的是动作方向，不是当日涨跌。
+        let tone = rung.isBuy ? PnLColor.down : PnLColor.up
+        return HStack(spacing: 8) {
+            Text(rung.isBuy ? "买" : "卖")
+                .scaledFont(9.5, weight: .bold)
+                .foregroundStyle(tone)
+                .frame(width: 16, height: 16)
+                .background { RoundedRectangle(cornerRadius: 4, style: .continuous).fill(tone.opacity(palette.isLight ? 0.12 : 0.18)) }
+            Text("\(rung.level)")
+                .scaledFont(DS.fsMicro)
+                .monospacedDigit()
+                .foregroundStyle(palette.ink3)
+                .frame(width: 12, alignment: .leading)
+            Text(rung.price.num(4))
+                .scaledFont(DS.fsRow, weight: .semibold)
+                .monospacedDigit()
+                .foregroundStyle(palette.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text((rung.distance >= 0 ? "+" : "") + (rung.distance * 100).num(2) + "%")
+                .scaledFont(DS.fsMicro, weight: .medium)
+                .monospacedDigit()
+                .foregroundStyle(tone)
+                .frame(width: 56, alignment: .trailing)
+            Text(rung.shares > 0 ? rung.shares.num(0) + " 份" : "—")
+                .scaledFont(DS.fsMicro)
+                .monospacedDigit()
+                .foregroundStyle(palette.ink3)
+                .frame(width: 52, alignment: .trailing)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: 操作
+
+    private var actionRow: some View {
+        HStack(spacing: 10) {
+            Button {
+                suggestParameters()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "wand.and.stars").font(.system(size: 11, weight: .semibold))
+                    Text("按历史分时给建议").scaledFont(DS.fsLabel, weight: .semibold)
+                }
+                .foregroundStyle(palette.ink)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(palette.cardSoft) }
+            }
+            .buttonStyle(.plain)
+            .disabled(code.isEmpty)
+            .opacity(code.isEmpty ? 0.45 : 1)
+
+            Button {
+                savePlan()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "square.and.arrow.down").font(.system(size: 11, weight: .semibold))
+                    Text("保存计划").scaledFont(DS.fsLabel, weight: .semibold)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(palette.accent) }
+            }
+            .buttonStyle(.plain)
+            .disabled(code.isEmpty)
+            .opacity(code.isEmpty ? 0.45 : 1)
+        }
+    }
+
+    private func noteCard(_ text: String, tone: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(tone)
+                .padding(.top, 1)
+            Text(text)
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(tone.opacity(palette.isLight ? 0.07 : 0.10)) }
+    }
+
+    // MARK: 回放结果
+
+    private func resultCard(_ result: GridReplayResult) -> some View {
+        let tone = PnLColor.of(result.profit)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("路径回放")
+                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .foregroundStyle(palette.ink2)
+                Spacer(minLength: 4)
+                Text(result.day)
+                    .scaledFont(DS.fsMicro)
+                    .monospacedDigit()
+                    .foregroundStyle(palette.ink3)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(result.profit.directionMark() + result.profit.cny())
+                    .scaledFont(28, weight: .bold)
+                    .monospacedDigit()
+                    .foregroundStyle(tone)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 14) {
+                miniStat("买 / 卖", "\(result.buyCount) / \(result.sellCount)")
+                miniStat("估算费用", result.fees.cny())
+                miniStat("分时覆盖", (result.coverage * 100).pct(0))
+            }
+            Text(result.fills == 0
+                 ? "该日没有触发网格成交。若资金不足以买入 100 份一手、网格间距超出当日波动，或数据缺点，结果可能没有代表性。"
+                 : "按时间顺序计算，含逐笔固定费用；不含排队、成交量、滑点、涨跌停与真实券商规则。历史最佳参数会有过拟合，不能直接当作明日建议。")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: 20, padding: 14, glow: tone)
+    }
+
+    // MARK: 已保存计划
+
+    private var plansCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            DsSectionHeader(palette: palette, title: "已保存计划")
+            VStack(spacing: 8) {
+                ForEach(store.data.dayGridPlans) { plan in
+                    planRow(plan)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: 20, padding: 14)
+    }
+
+    private func planRow(_ plan: DayGridPlan) -> some View {
+        let perRung = plan.capital / Double(plan.levelsEachSide * 2 + 2)
+        let shares = (perRung / (plan.anchor * 100)).rounded(.down) * 100
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(plan.name)
+                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .foregroundStyle(palette.ink)
+                    .lineLimit(1)
+                Text(plan.code)
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                Spacer(minLength: 4)
+                Button {
+                    loadPlan(plan)
+                } label: {
+                    Text("载入")
+                        .scaledFont(DS.fsMicro, weight: .semibold)
+                        .foregroundStyle(palette.accent)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background { Capsule().fill(palette.accentDim) }
+                }
+                .buttonStyle(.plain)
+                Button {
+                    store.removeGridPlan(plan)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.ink3)
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.plain)
+            }
+            Text("资金 \(plan.capital.num(0)) · 中枢 \(plan.anchor.num(4)) · 间距 \((plan.stepPercent * 100).num(2))% · 各 \(plan.levelsEachSide) 档 · 每档 \(shares.num(0)) 份")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.cardSoft) }
+    }
+
+    // MARK: 分时数据
+
+    private var intradayCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            DsSectionHeader(palette: palette, title: "分时数据")
+            Button {
+                showImporter = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.down.on.square")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("导入分时 CSV")
+                        .scaledFont(DS.fsLabel, weight: .semibold)
+                    Spacer(minLength: 0)
+                    Text("\(store.gridBarCount) 个采样点")
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink3)
+                }
+                .foregroundStyle(palette.ink)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 10)
+                .background { RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.cardSoft) }
+            }
+            .buttonStyle(.plain)
+
+            if !store.gridTradingDays.isEmpty {
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(store.gridTradingDays, id: \.self) { day in
+                            Button(day) { selectedDay = day }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(selectedDay.isEmpty ? "选择日期" : selectedDay)
+                                .scaledFont(DS.fsLabel, weight: .medium)
+                                .monospacedDigit()
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundStyle(palette.ink)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 8)
+                        .background { Capsule().fill(palette.cardSoft) }
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        runReplay()
+                    } label: {
+                        Text("复盘所选日期")
+                            .scaledFont(DS.fsLabel, weight: .semibold)
+                            .foregroundStyle(palette.accent)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background { Capsule().fill(palette.accentDim) }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(code.isEmpty || selectedDay.isEmpty)
+                    .opacity(code.isEmpty || selectedDay.isEmpty ? 0.45 : 1)
+                }
+            }
+            Text("CSV 支持 code,date,time,price,volume 或 code,timestamp,price；无 code 列时使用当前标的。只在 App 前台且取得有效报价时采集。")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: 20, padding: 14)
+    }
+
+    // MARK: 中长期规划
+
+    private var strategicCard: some View {
+        Button {
+            showStrategicGridPlanner = true
+        } label: {
+            HStack(spacing: 12) {
+                DsIconTile(symbol: "chart.xyaxis.line", tint: palette.accent, size: 36, palette: palette)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("中长期网格规划")
+                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .foregroundStyle(palette.ink)
+                    Text("按近 60 日区间生成上下买卖档，独立于日内回放")
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink2)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(palette.ink3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .dsSurface(palette, radius: 18, padding: 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: 旧版归档
+
+    private var legacyCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(store.data.legacyGridArchives) { record in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(record.name) · \(record.code)")
+                                .scaledFont(DS.fsLabel, weight: .semibold)
+                                .foregroundStyle(palette.ink)
+                            Text("\(record.horizon) · \(record.mode) · \(record.status) · \(record.created)")
+                                .scaledFont(DS.fsMicro)
+                                .foregroundStyle(palette.ink3)
+                            if record.capital > 0 {
+                                Text("计划资金 \(record.capital.cny()) · 原网格 \(record.lower.num(3))–\(record.upper.num(3)) · 每档 \(record.quantity.num(0)) 份")
+                                    .scaledFont(DS.fsMicro)
+                                    .foregroundStyle(palette.ink3)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(store.data.legacyShadowArchives) { record in
+                        shadowRow(record)
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.ink2)
+                    Text("旧版网格与影子盘（只读）")
+                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .foregroundStyle(palette.ink2)
+                    Spacer(minLength: 4)
+                    Text("\(store.data.legacyGridArchives.count + store.data.legacyShadowArchives.count) 条")
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink3)
+                }
+            }
+            .tint(palette.ink2)
+            Text("旧版记录以原始 JSON 保留，符合日内参数条件的已转换为可载入回放的计划。影子盘使用隔离虚拟资金，不计入真实持仓。")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsSurface(palette, radius: 18, padding: 13)
+    }
+
+    private func shadowRow(_ record: LegacyShadowArchive) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("\(record.name) · \(record.code)")
+                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .foregroundStyle(palette.ink)
+                Spacer(minLength: 4)
+                Text(record.closed ? "已结束" : (record.active ? "运行中" : "已暂停"))
+                    .scaledFont(9.5, weight: .semibold)
+                    .foregroundStyle(record.active && !record.closed ? CardTone.ok : palette.ink3)
+            }
+            Text("影子盈亏 \(record.lastEquityChange.cny()) · 累计已实现 \(record.realizedPnL.cny()) · 买/卖 \(record.buys)/\(record.sells)")
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink2)
+                .fixedSize(horizontal: false, vertical: true)
+            if !record.closed {
+                Button(record.active ? "暂停影子模拟" : "恢复影子模拟") {
+                    store.setLegacyShadowActive(record, active: !record.active)
+                }
+                .scaledFont(DS.fsMicro, weight: .semibold)
+                .foregroundStyle(palette.accent)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background { RoundedRectangle(cornerRadius: 10, style: .continuous).fill(palette.cardSoft) }
+    }
+
+    // MARK: 动作
+
+    private func select(_ item: GridInstrument) {
+        code = item.code
+        name = item.name
+        anchor = item.price > 0 ? String(format: "%.4f", item.price) : ""
+        result = nil
+        recommendationText = "已切换到\(item.name)（\(item.code)），中枢价已按该标的最新行情重置。"
     }
 
     private func savePlan() {
@@ -6049,6 +6562,12 @@ struct SettingsView: View {
         self.mode = mode
     }
 
+    /// 设计令牌。设置页仍然用 Form（表单控件的键盘、选择器行为都是系统给的，
+    /// 自绘一遍只会丢功能），但底色、强调色、卡片形状跟其它页保持一致。
+    private var palette: DsPalette {
+        DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
+    }
+
     var body: some View {
         formContent
             .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
@@ -6130,9 +6649,13 @@ struct SettingsView: View {
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .appListLayout()
-            .listRowBackground(Color.clear)
+            // 卡片底色跟新设计体系走：之前这里是 .clear，整页的行全是裸的，
+            // 看上去就是「一堆系统设置项」而不是 App 自己的卡片。改成 card 之后
+            // insetGrouped 会把相邻行合并成一张圆角卡，和其它页一致。
+            .listRowBackground(palette.card)
             .buttonStyle(.plain)
-            .background(.clear)
+            .tint(palette.accent)
+            .background(palette.canvas.ignoresSafeArea())
         }
         // presentationBackground 要挂在 sheet 的导航根上；挂在 Form 内层会留下系统默认的不透明白底。
         .themedSheetBackground()
