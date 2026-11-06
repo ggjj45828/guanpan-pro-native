@@ -1,0 +1,77 @@
+name: Guanpan Pro native iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Sources/**'
+      - 'project.yml'
+      - '.github/workflows/guanpan-pro-ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guanpan-pro-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build unsigned iOS app
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Apple toolchain
+        run: |
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild -list -project GuanpanProNative.xcodeproj
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project GuanpanProNative.xcodeproj \
+            -scheme GuanpanProNative \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/Device \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build-device.log
+
+      - name: Package unsigned IPA
+        run: |
+          set -eu
+          APP=$(find build/Device/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          echo "app: $APP"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry GuanpanPro-unsigned.ipa Payload
+          ls -lh GuanpanPro-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: guanpan-pro-ipa
+          path: GuanpanPro-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guanpan-pro-build-log
+          path: build-device.log
+          if-no-files-found: ignore
