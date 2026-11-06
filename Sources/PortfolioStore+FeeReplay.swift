@@ -74,6 +74,9 @@ extension PortfolioStore {
         let delta = actualFee - oldFee
         guard delta.isFinite, abs(delta) > 1e-9 else { return }   // 没变化，不写审计
 
+        // 先把可能被改动的两处都留一份底，任何一步失败就原样退回去 ——
+        // 只回滚 fee 而把 cash 留在改过一半的状态，是最糟的结果。
+        let cashBackup = data.cash
         data.ledger[index].fee = actualFee
         if fill.linkedCash {
             switch fill.side {
@@ -81,8 +84,8 @@ extension PortfolioStore {
             case .sell: data.cash += delta
             }
             guard data.cash.isFinite, data.cash >= -1e-6 else {
-                // 回滚，避免留下半截状态。
                 data.ledger[index].fee = oldFee
+                data.cash = cashBackup
                 throw StoreError.insufficientCashForFeeCorrection
             }
             if data.cash < 0 { data.cash = 0 }
@@ -90,6 +93,7 @@ extension PortfolioStore {
 
         guard rebuildDerivedLedgerValues() else {
             data.ledger[index].fee = oldFee
+            data.cash = cashBackup
             throw StoreError.invalidImportedLedger
         }
 

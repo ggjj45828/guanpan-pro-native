@@ -149,6 +149,9 @@ enum AIAnalysisService {
             ? "只使用输入数据。这里没有外部新闻、基本面和盘口深度；缺少它们时明确写出，不能编造或假装已搜索。若报价较旧或缺失，先指出并把操作建议降级为条件观察。技术判断以已完成日线为主，分时只是当日短线背景，不可据此推翻中期趋势。"
             : "只使用输入数据。文末给的是公开网页接口的新闻**标题与摘要**，不是核实过的正文：只能当背景，不得据此断言因果、影响方向或幅度，引用时必须带媒体与时间；没有提供基本面与盘口深度。若报价较旧或缺失，先指出并把操作建议降级为条件观察。技术判断以已完成日线为主，分时只是当日短线背景，不可据此推翻中期趋势。"
         let newsBlock = newsEvidence.map { "\n【市场快讯（标题，未核实正文）】\n\($0)" } ?? ""
+        // NAS 研究证据：拿到了也要过门槛；不合格就明说被丢弃，
+        // 而不是装作没有 —— 后者会让人以为「服务端没数据」。
+        let researchBlock = await researchEvidenceBlock(code: holding.code)
         let multiTimeframeBlock = multiTimeframe.map { "\n\($0)" } ?? ""
         let prompt = """
         不要把均线、MACD、KDJ、RSI、布林和分时逐项念一遍。判断趋势延续、转弱、震荡或信号不足；解释价格位置、动能和量能之间的关键印证/背离及支撑压力对判断的意义，只引用 1–3 个关键数字作为推理证据。
@@ -167,6 +170,7 @@ enum AIAnalysisService {
         【本机分时样本】（最多 180 点）：
         \(minuteHistoryText)
         \(multiTimeframeBlock)
+        \(researchBlock)
         \(newsBlock)
         """
         // 个股页同样要机器可读建议（这里最可能给出具体价位），
@@ -174,6 +178,47 @@ enum AIAnalysisService {
         let suggestionTail = "\n\n" + AISuggestionParser.formatInstruction
             + "\n本次只分析这一个标的，建议行的代码列只能填 \(holding.code)，名称只能填 \(holding.name)。"
         return try await request(config: config, prompt: prompt + suggestionTail)
+    }
+
+    /// NAS 研究证据段。
+    ///
+    /// 三种情况必须分开说：
+    /// ① NAS 没配 / 没这个接口 —— 返回 nil，prompt 里不出现这一段（不制造噪音）；
+    /// ② 拿到了但没过门槛 —— 明确写「已丢弃」并说清是哪一条不达标；
+    /// ③ 过了门槛 —— 只给压缩统计量，不给原始分钟线，也不给交易计划。
+    static func researchEvidenceBlock(code: String) async -> String? {
+        guard FNASBridge.isConfigured else { return nil }
+        guard let envelope = await FNASBridge.researchEvidence(code: code) else { return nil }
+        let capturedAt = Date()
+        guard envelope.isUsableForAI(capturedAt: capturedAt,
+                                     contextCreatedAt: capturedAt,
+                                     now: capturedAt) else {
+            var reasons: [String] = []
+            if envelope.minimumQuality < ResearchEvidenceEnvelope.minimumQualityGate {
+                reasons.append("质量分 \(envelope.minimumQuality) < \(ResearchEvidenceEnvelope.minimumQualityGate)")
+            }
+            if envelope.qualifiedIndependentDays < ResearchEvidenceEnvelope.minimumIndependentDays {
+                reasons.append("独立交易日 \(envelope.qualifiedIndependentDays) < \(ResearchEvidenceEnvelope.minimumIndependentDays)")
+            }
+            if (try? envelope.validate(capturedAt: capturedAt, contextCreatedAt: capturedAt)) == nil {
+                reasons.append("字段校验未通过")
+            }
+            if capturedAt.timeIntervalSince(envelope.observedAt) > ResearchEvidenceEnvelope.maximumAge {
+                reasons.append("数据超过 7 天")
+            }
+            return """
+            【NAS 研究证据】
+            服务端确实返回了一份证据（\(envelope.compactSummary)），但没有通过可用门槛：\(reasons.isEmpty ? "未达到要求" : reasons.joined(separator: "、"))。已丢弃，不得引用其中任何数字。
+            """
+        }
+        let allowed = envelope.evidence.keys.sorted().joined(separator: "、")
+        return """
+        【NAS 研究证据（压缩统计量，已通过来源与样本门槛）】
+        \(envelope.compactSummary)
+        可用研究类型：\(allowed)
+        \(envelope.limitations.isEmpty ? "" : "服务端声明的局限：" + envelope.limitations.joined(separator: "；"))
+        说明：这是历史分钟的统计回放结果，不是对未来方向的预测；不得据此断言收益或给出无条件买卖。
+        """
     }
 
     private static func request(config: AIAnalysisConfig, prompt: String) async throws -> String {

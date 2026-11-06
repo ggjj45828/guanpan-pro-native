@@ -760,6 +760,25 @@ struct DecisionScorecardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // 只显示被降级或拦截的那几层。全显示的噪音太大，
+            // 而「哪一层曾经不同意」才是复盘时真正想看的东西。
+            if !record.trace.filter({ $0.isBlocking || $0.isDegrading }).isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(record.trace.filter { $0.isBlocking || $0.isDegrading }.prefix(2)) { item in
+                        HStack(alignment: .top, spacing: 5) {
+                            Text(item.action)
+                                .scaledFont(9, weight: .bold)
+                                .foregroundStyle(item.isBlocking ? PnLColor.down : PnLColor.up)
+                            Text("\(item.layer)：\(item.note)")
+                                .scaledFont(9.5)
+                                .foregroundStyle(palette.ink3)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+
             HStack(spacing: 6) {
                 Text(recordedText(record))
                     .scaledFont(9.5)
@@ -768,6 +787,11 @@ struct DecisionScorecardView: View {
                     Text("· \(record.source)")
                         .scaledFont(9.5)
                         .foregroundStyle(palette.ink3)
+                }
+                if record.hasTrace {
+                    Text("· \(record.quality.shortTitle)")
+                        .scaledFont(9.5, weight: .medium)
+                        .foregroundStyle(record.quality == .complete ? palette.ink3 : PnLColor.up)
                 }
                 Spacer(minLength: 0)
                 Menu {

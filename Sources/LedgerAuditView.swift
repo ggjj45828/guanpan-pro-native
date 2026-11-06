@@ -20,6 +20,7 @@ struct LedgerAuditView: View {
     @State private var showOpeningRewrite = false
     @State private var showLateAdopt = false
     @State private var showLiquidate = false
+    @State private var showFeeCorrection = false
     @State private var toast: String?
 
     private var palette: DsPalette {
@@ -119,6 +120,9 @@ struct LedgerAuditView: View {
                         ? "已清仓 \(result.sold) 只。"
                         : "已清仓 \(result.sold) 只；\(result.skipped.joined(separator: "、")) 没有可用行情，未处理。"
                 }
+            }
+            .sheet(isPresented: $showFeeCorrection) {
+                FeeCorrectionView().themedSheetBackground()
             }
             .alert("完成", isPresented: Binding(get: { toast != nil }, set: { if !$0 { toast = nil } })) {
                 Button("好", role: .cancel) { toast = nil }
@@ -540,7 +544,17 @@ struct LedgerAuditView: View {
             .disabled(!store.canUndoLatestOperation)
             .opacity(store.canUndoLatestOperation ? 1 : 0.45)
 
-            Text("撤回是整份账本回到改动之前，会同时撤销那一次的所有连带影响。")
+            Button {
+                showFeeCorrection = true
+            } label: {
+                actionLabel("更正手续费", symbol: "percent",
+                            tone: store.data.ledger.isEmpty ? palette.ink3 : palette.ink)
+            }
+            .buttonStyle(.plain)
+            .disabled(store.data.ledger.isEmpty)
+            .opacity(store.data.ledger.isEmpty ? 0.45 : 1)
+
+            Text("撤回是整份账本回到改动之前，会同时撤销那一次的所有连带影响。更正手续费只改费用，然后按新费用把此后所有成本与已实现重算一遍。")
                 .scaledFont(DS.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
