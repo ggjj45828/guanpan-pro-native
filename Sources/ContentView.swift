@@ -7064,7 +7064,7 @@ struct SettingsView: View {
             if !fminuteStatus.isEmpty {
                 Text(fminuteStatus).font(.footnote).foregroundStyle(.secondary)
             }
-            Text("观盘max（guanpan-f）的 NAS 是 f-minute-archive，独立进程、多数部署在 8788。它提供**已完成交易日**的证券日 K、指数交易日、分钟归档和研究证据：直连腾讯全失败时用它补日线，AI 分析附上分钟统计证据（质量分 ≥ 90 且独立交易日 ≥ 25 才进 prompt，不达标整段不出现）。\n\n**它不提供实时报价接口**，所以不能替代上面的观盘Next 服务端，也不会把归档收盘价当成实时价。较旧的部署包只有分钟线/研究证据路由；日线接口不存在时自动降级，不影响原有链路。")
+            Text("观盘max（guanpan-f）的 NAS 是 f-minute-archive，独立进程、多数部署在 8788。它提供**已完成交易日**的证券日 K、指数交易日、分钟归档和研究证据：直连腾讯全失败时用它补日线；「我的 → 分时档案」里可按交易日回读归档分钟线（只读回放，不写进本机采集档案，Partial 会如实标注）；AI 分析附上分钟统计证据（质量分 ≥ 90 且独立交易日 ≥ 25 才进 prompt，不达标整段不出现）。\n\n**它不提供实时报价接口**，所以不能替代上面的观盘Next 服务端，也不会把归档收盘价当成实时价。较旧的部署包只有分钟线/研究证据路由；日线接口不存在时自动降级，不影响原有链路。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
@@ -7301,8 +7301,12 @@ struct SettingsView: View {
         checkingFMinute = true
         Task { @MainActor in
             defer { checkingFMinute = false }
+            guard GuanpanMaxNAS.validateAddress() != nil else {
+                fminuteStatus = "地址无效：请填 http(s)://主机:8788，不要带查询参数、片段或额外路径。"
+                return
+            }
             do {
-                let summary = try await GuanpanMaxNAS.probe()
+                var lines = [try await GuanpanMaxNAS.probe()]
                 let candidate = store.data.holdings.first(where: {
                     GuanpanMaxNAS.normalizedSecurityCode($0.code) != nil
                 })?.code ?? store.data.quotes.first(where: {
@@ -7310,14 +7314,18 @@ struct SettingsView: View {
                 })?.code
                 if let candidate,
                    let coverage = try? await GuanpanMaxNAS.minuteDiagnostics(code: candidate) {
-                    fminuteStatus = summary + "\n" + coverage
+                    lines.append(coverage)
                 } else {
-                    fminuteStatus = summary + "\n目前没有 A 股标的，暂时无法检查分钟归档覆盖。"
+                    lines.append("目前没有 A 股标的，暂时无法检查分钟归档覆盖。")
                 }
+                if let queue = try? await GuanpanMaxNAS.backfillQueue() {
+                    lines.append(queue)
+                }
+                fminuteStatus = lines.joined(separator: "\n")
             } catch let error as URLError where error.code == .cannotParseResponse {
-                fminuteStatus = "这个地址能连上，但不是观盘max 的 f-minute-archive：service 字段对不上。"
+                fminuteStatus = "这个地址能连上，但不是观盘max 的 f-minute-archive：service 字段或 /readyz 结构对不上。"
             } catch {
-                fminuteStatus = "连接失败：\(error.localizedDescription)。确认地址带端口，且归档容器已启动。"
+                fminuteStatus = GuanpanMaxNAS.connectionHint(for: error)
             }
         }
     }

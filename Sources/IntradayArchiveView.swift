@@ -12,6 +12,12 @@ struct IntradayArchiveView: View {
     @State private var subchart: Subchart = .volume
     @State private var selectedTime: Date?
 
+    /// NAS 归档是「只读回放」，不写进 store.intradayBars。
+    @State private var nasArchive: MaxNASArchivedIntraday?
+    @State private var nasDay: Date = .now
+    @State private var nasLoading = false
+    @State private var nasMessage = ""
+
     private enum Subchart: String, CaseIterable, Identifiable {
         case volume = "分时量"
         case macd = "分时 MACD"
@@ -146,6 +152,71 @@ struct IntradayArchiveView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .toneCard(store.effectiveAccentColor, isLight: isLight)
+
+                Section("观盘max NAS 归档（只读）") {
+                    if !GuanpanMaxNAS.isConfigured {
+                        Text("还没有配置观盘max NAS。到「我的 → 数据源设置」填写 f-minute-archive 地址（多数部署在 8788），就能按交易日回读任意已归档的分钟线。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        if !instruments.isEmpty {
+                            Picker("标的", selection: $selectedCode) {
+                                ForEach(instruments) { Text("\($0.name) · \($0.code)").tag($0.code) }
+                            }
+                            .onChange(of: selectedCode) { _, _ in
+                                nasArchive = nil
+                                nasMessage = ""
+                            }
+                        }
+                        DatePicker("交易日", selection: $nasDay, displayedComponents: .date)
+                        Button {
+                            Task { await loadNASArchive() }
+                        } label: {
+                            Label(nasLoading ? "正在读取…" : "从 NAS 读取该交易日",
+                                  systemImage: "externaldrive.badge.timemachine")
+                        }
+                        .disabled(nasLoading || selectedCode.isEmpty)
+
+                        if !nasMessage.isEmpty {
+                            Text(nasMessage).font(.footnote).foregroundStyle(.secondary)
+                        }
+                        if let archive = nasArchive {
+                            HStack {
+                                Text(archive.coverageStatus)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(nasStatusColor(archive))
+                                Spacer()
+                                Text("\(archive.samples.count) 个真实分钟点")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(archive.coverageSummary)
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text("来源：\(archive.sourceSummary)")
+                                .font(.caption2).foregroundStyle(.secondary)
+
+                            if archive.hasSamples {
+                                Chart(archive.samples) { point in
+                                    LineMark(x: .value("时间", point.timestamp),
+                                             y: .value("价格", point.price))
+                                        .foregroundStyle(store.effectiveAccentColor)
+                                        .interpolationMethod(.linear)
+                                }
+                                .frame(height: 170)
+                                .chartXAxis {
+                                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                                        AxisValueLabel(format: .dateTime.hour().minute())
+                                    }
+                                }
+                            } else {
+                                Text("该交易日没有可用的归档分钟点，图上不画任何东西 —— 缺口不会用插值补齐。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Text("NAS 归档只读回放，不写入本机分时档案：本机档案只记 iPhone 实际采到的分钟点，两者口径不能混。标注为 Partial / legacy-unassessed 的归档明确表示完整度未知，不能当整日行情用。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .plainCard(isLight: isLight)
 
                 Section("覆盖状态") {
                     if instruments.isEmpty {
@@ -294,6 +365,9 @@ struct IntradayArchiveView: View {
                 if selectedCode.isEmpty { selectedCode = instruments.first?.code ?? "" }
                 subchart = store.data.intradaySubchartMode == "macd" ? .macd : .volume
                 selectLatestDay()
+                // 默认选本机已有归档的最新交易日，省得每次都从「今天」（多半没有归档）开始翻。
+                if let latest = store.intradayBars.map({ $0.day }).max(),
+                   let parsed = dateFromShanghaiDay(latest) { nasDay = parsed }
             }
             .onChange(of: subchart) { _, value in
                 store.data.intradaySubchartMode = value == .macd ? "macd" : "volume"
@@ -333,6 +407,43 @@ struct IntradayArchiveView: View {
             .font(.subheadline)
             .padding(.vertical, 5)
         }
+    }
+
+    @MainActor private func loadNASArchive() async {
+        guard !selectedCode.isEmpty else {
+            nasMessage = "先选一只标的。"
+            return
+        }
+        nasLoading = true
+        defer { nasLoading = false }
+        let day = shanghaiDay(nasDay)
+        do {
+            let archive = try await GuanpanMaxNASMinuteArchive.fetch(code: selectedCode,
+                                                                     tradingDate: day)
+            nasArchive = archive
+            nasMessage = archive.hasSamples
+                ? "读取成功 · \(day)"
+                : "该交易日暂无归档分钟点 · \(archive.coverageStatus)"
+        } catch {
+            nasArchive = nil
+            nasMessage = error.localizedDescription
+        }
+    }
+
+    private func nasStatusColor(_ archive: MaxNASArchivedIntraday) -> Color {
+        if archive.isComplete { return Color.green }
+        if !archive.hasSamples { return Color.gray }
+        return Color.orange
+    }
+
+    private func dateFromShanghaiDay(_ text: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.isLenient = false
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: text)
     }
 
     private func selectLatestDay() {

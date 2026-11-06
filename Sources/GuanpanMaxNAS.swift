@@ -43,7 +43,7 @@ enum GuanpanMaxNAS {
         return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
     }
 
-    static var isConfigured: Bool { normalizedBase != nil }
+    static var isConfigured: Bool { validateAddress() != nil }
 
     static func save(_ address: String) {
         UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: urlKey)
@@ -62,17 +62,102 @@ enum GuanpanMaxNAS {
 
     // MARK: 请求与解析工具
 
-    private static func request(path: String,
-                                query: [URLQueryItem] = [],
-                                timeout: TimeInterval = 15) async throws -> (Data, Int) {
-        guard let base = normalizedBase,
-              var components = URLComponents(string: base + path) else { throw URLError(.badURL) }
+    /// 地址严格校验，沿用观盘max 客户端的口径。
+    /// 带 user/password/query/fragment 或多余路径的地址看起来「能连上」，
+    /// 实际每个接口都会落到错误路径 —— 这类错比连不上更难查，录入时就拒。
+    static func validateAddress(_ raw: String? = nil) -> URL? {
+        let text = (raw ?? baseURLString).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: text),
+              let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              components.host?.isEmpty == false,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/" || components.path == "/readyz" else { return nil }
+        components.path = "/"
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    enum BoundedHTTPError: Error, LocalizedError {
+        case invalidLimit
+        case responseTooLarge(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidLimit: return "HTTP 响应字节上限无效。"
+            case let .responseTooLarge(limit): return "NAS 响应超过 \(limit) 字节上限，已停止读取。"
+            }
+        }
+    }
+
+    /// 逐字节读响应，超限就停。
+    /// 某个接口若误返回一整页 HTML 或全量分钟序列，不该把整个响应体塞进内存。
+    static func boundedData(for request: URLRequest,
+                            maximumBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        guard maximumBytes > 0 else { throw BoundedHTTPError.invalidLimit }
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.expectedContentLength > Int64(maximumBytes) {
+            throw BoundedHTTPError.responseTooLarge(maximumBytes)
+        }
+        var data = Data()
+        if http.expectedContentLength > 0 {
+            data.reserveCapacity(min(Int(http.expectedContentLength), maximumBytes))
+        }
+        for try await byte in bytes {
+            guard data.count < maximumBytes else { throw BoundedHTTPError.responseTooLarge(maximumBytes) }
+            data.append(byte)
+        }
+        return (data, http)
+    }
+
+    /// 所有归档接口共用的入口。返回完整 HTTPURLResponse，
+    /// 调用方才能区分「404 接口不存在」与「200 但形状不对」。
+    static func rawRequest(path: String,
+                           query: [URLQueryItem] = [],
+                           timeout: TimeInterval = 15,
+                           maximumBytes: Int = 4_000_000) async throws -> (Data, HTTPURLResponse) {
+        guard let base = validateAddress(),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw URLError(.badURL)
+        }
+        components.path = path
         if !query.isEmpty { components.queryItems = query }
         guard let url = components.url else { throw URLError(.badURL) }
         var req = URLRequest(url: url, timeoutInterval: timeout)
+        req.httpMethod = "GET"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: req)
-        return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+        return try await boundedData(for: req, maximumBytes: maximumBytes)
+    }
+
+    static func request(path: String,
+                        query: [URLQueryItem] = [],
+                        timeout: TimeInterval = 15) async throws -> (Data, Int) {
+        let (data, http) = try await rawRequest(path: path, query: query, timeout: timeout)
+        return (data, http.statusCode)
+    }
+
+    /// 把网络错误翻成「下一步该做什么」，而不是把 URLError 的原始描述丢给用户。
+    static func connectionHint(for error: Error) -> String {
+        guard let urlError = error as? URLError else { return error.localizedDescription }
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "找不到 NAS 主机。请核对地址，并确认 iPhone 与 NAS 在同一局域网或已连接 VPN。"
+        case .cannotConnectToHost:
+            return "无法建立到 NAS 的连接。请核对穿透域名和 8788 端口映射；局域网地址请确认 App 已获本地网络权限。"
+        case .timedOut:
+            return "连接 NAS 超时。请检查穿透链路或归档容器是否仍在响应。"
+        case .networkConnectionLost:
+            return "连接 NAS 时网络中断，请检查当前网络后重试。"
+        case .appTransportSecurityRequiresSecureConnection:
+            return "iOS 阻止了不安全的远程 HTTP 连接。远程 NAS 请配置 HTTPS，或通过可信 VPN 连接。"
+        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+             .serverCertificateHasBadDate, .clientCertificateRejected:
+            return "NAS 的 HTTPS 证书校验失败，请检查穿透域名与证书是否匹配、有效并受 iOS 信任。"
+        default:
+            return "NAS 网络请求失败：\(urlError.localizedDescription)"
+        }
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -110,35 +195,80 @@ enum GuanpanMaxNAS {
 
     // MARK: 探活与能力摘要
 
+    /// /readyz 的完整结构。旧部署包字段较少，所以全部按可选解码 —— 少给几项
+    /// 不能判成「服务不可用」，但也不能凭空补出来。
+    struct ReadinessSnapshot: Decodable {
+        struct Worker: Decodable { let status: String? }
+        struct HistoryItem: Decodable { let status: String?; let sampleCount: Int? }
+        struct HistoryCollection: Decodable {
+            let indexes: [String: HistoryItem]?
+            let securities: [String: HistoryItem]?
+        }
+        let status: String?
+        let archive: String?
+        let configuredMarkets: [String]?
+        let realtimeWorker: Worker?
+        let backfillWorker: Worker?
+        let indexDailyHistory: HistoryCollection?
+        let securityDailyHistory: HistoryCollection?
+
+        var isReady: Bool { status == "ready" && archive == "ok" }
+
+        var summaryParts: [String] {
+            var parts: [String] = []
+            if let markets = configuredMarkets, !markets.isEmpty {
+                parts.append("市场 " + markets.joined(separator: "/"))
+            }
+            if let value = realtimeWorker?.status { parts.append("实时采集 " + value) }
+            if let value = backfillWorker?.status { parts.append("历史补采 " + value) }
+            if let items = indexDailyHistory?.indexes {
+                let ok = items.values.filter { $0.status == "available" }.count
+                parts.append("指数日K \(ok)/\(items.count) 可用")
+            }
+            if let items = securityDailyHistory?.securities {
+                let ok = items.values.filter { $0.status == "available" }.count
+                parts.append("证券日K \(ok)/\(items.count) 可用")
+            }
+            return parts
+        }
+    }
+
+    static func readiness() async throws -> ReadinessSnapshot {
+        let (data, http) = try await rawRequest(path: "/readyz", timeout: 20)
+        guard http.statusCode == 200,
+              let snapshot = try? JSONDecoder().decode(ReadinessSnapshot.self, from: data) else {
+            throw URLError(.cannotParseResponse)
+        }
+        return snapshot
+    }
+
     /// /livez 验身份，/readyz 只用来补充能力描述。
     /// 身份校验必须硬：同一个端口上挂别的服务时，「能连上」比「连不上」更难查。
     static func probe() async throws -> String {
-        let (liveData, liveStatus) = try await request(path: "/livez", timeout: 8)
-        guard liveStatus == 200,
+        let (liveData, liveHttp) = try await rawRequest(path: "/livez", timeout: 8)
+        guard liveHttp.statusCode == 200,
               let live = (try? JSONSerialization.jsonObject(with: liveData)) as? [String: Any],
               live["service"] as? String == serviceIdentifier else {
             throw URLError(.cannotParseResponse)
         }
         var parts = ["连接正常 · \(serviceIdentifier) 在线"]
-        // 旧部署包的 /readyz 字段较少，拿不到不能判失败。
-        if let (readyData, readyStatus) = try? await request(path: "/readyz", timeout: 12),
-           readyStatus == 200,
-           let ready = (try? JSONSerialization.jsonObject(with: readyData)) as? [String: Any] {
-            if let markets = ready["configuredMarkets"] as? [String], !markets.isEmpty {
-                parts.append("市场 " + markets.joined(separator: "/"))
-            }
-            if let state = ready["status"] as? String {
-                parts.append(state == "ready" ? "归档已就绪" : "归档未就绪")
-            }
-            if let worker = ready["realtimeWorker"] as? [String: Any],
-               let value = worker["status"] as? String { parts.append("实时采集 " + value) }
-            if let worker = ready["backfillWorker"] as? [String: Any],
-               let value = worker["status"] as? String { parts.append("历史补采 " + value) }
-            if let history = ready["indexDailyHistory"] as? [String: Any],
-               let value = history["status"] as? String { parts.append("日K " + value) }
+        if let snapshot = try? await readiness() {
+            parts.append(snapshot.isReady ? "归档已就绪" : "归档未就绪")
+            parts.append(contentsOf: snapshot.summaryParts)
         }
         ResearchEvidenceProbe.clear()
         return parts.joined(separator: " · ")
+    }
+
+    /// 补采队列。旧部署包没有这条路由时 404 静默降级。
+    static func backfillQueue() async throws -> String {
+        let (data, http) = try await rawRequest(path: "/api/v1/minute-history/backfill-queue", timeout: 12)
+        guard http.statusCode == 200,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let queued = object["queuedSessions"] as? Int else {
+            throw URLError(.badServerResponse)
+        }
+        return "待补采 \(queued) 个交易日"
     }
 
     // MARK: 证券日 K
@@ -243,6 +373,24 @@ enum GuanpanMaxNAS {
                   let closeText = row["close"] as? String,
                   let close = Double(closeText), close > 0 else {
                 throw URLError(.cannotParseResponse)
+            }
+            // 指数归档允许 OHLCV 整段缺失（只有 close 必填），但不允许只给一半：
+            // 半份 OHLC 会让下游误以为能算振幅与量能，实际是残缺数据。
+            let optionalKeys = ["open", "high", "low", "volume"]
+            let present = optionalKeys.map { key -> Bool in
+                guard let value = row[key], !(value is NSNull) else { return false }
+                return true
+            }
+            let allPresent = present.allSatisfy { $0 }
+            let nonePresent = present.allSatisfy { !$0 }
+            guard allPresent || nonePresent else { throw URLError(.cannotParseResponse) }
+            if allPresent {
+                guard let openText = row["open"] as? String, let open = Double(openText),
+                      let highText = row["high"] as? String, let high = Double(highText),
+                      let lowText = row["low"] as? String, let low = Double(lowText),
+                      let volumeText = row["volume"] as? String, let volume = Double(volumeText),
+                      high >= max(open, close), low <= min(open, close), high >= low,
+                      volume >= 0 else { throw URLError(.cannotParseResponse) }
             }
             if let previous, previous >= day { throw URLError(.cannotParseResponse) }
             previous = day
