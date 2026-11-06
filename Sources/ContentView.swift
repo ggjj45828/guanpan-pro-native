@@ -5504,6 +5504,10 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
+    /// 观盘F（Next）服务端地址：只作为行情/日线的兜底数据源，不参与账本同步。
+    @AppStorage(FNASBridge.urlKey) private var fnasURL = ""
+    @State private var checkingFNAS = false
+    @State private var fnasStatus = ""
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var confirmNASDownload = false
@@ -5836,6 +5840,30 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var nasSection: some View {
+        Section("观盘F 服务端（行情兜底）") {
+            HStack {
+                TextField("例如 http://192.168.1.20:30001", text: $fnasURL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL)
+                PasteButton(payloadType: String.self) { values in
+                    if let value = values.first { fnasURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("从剪贴板粘贴观盘F 服务端地址")
+            }
+            Button {
+                testFNAS()
+            } label: {
+                Label(checkingFNAS ? "正在检查…" : "测试连接", systemImage: "antenna.radiowaves.left.and.right")
+            }
+            .disabled(checkingFNAS || fnasURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if !fnasStatus.isEmpty {
+                Text(fnasStatus).font(.footnote).foregroundStyle(.secondary)
+            }
+            Text("这是观盘F（Next）自己那套 NAS 服务端，和上面的 Pro 同步服务不是同一个：它只提供行情与日线。填了以后直连腾讯失败时用它兜底，不会读取或覆盖本机账本；Pro 的账本同步仍然走上方的地址。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+
         Section("NAS 多设备同步") {
             HStack {
                 TextField("服务器地址，例如 http://192.168.1.20:8788", text: $nasURL)
@@ -6047,6 +6075,20 @@ struct SettingsView: View {
                 _ = try await NASSyncService.ping(base: nasURL, token: nasToken)
                 store.nasSyncStatus = "NAS 连接正常，原生同步接口可用"
             } catch { store.nasSyncStatus = "连接失败：\(error.localizedDescription)" }
+        }
+    }
+
+    /// 只探测 F 服务端的 /health：确认地址填对了、服务端在线，不改动任何数据。
+    private func testFNAS() {
+        checkingFNAS = true
+        Task { @MainActor in
+            defer { checkingFNAS = false }
+            do {
+                let version = try await FNASBridge.health()
+                fnasStatus = version.map { "连接正常 · 服务端版本 \($0)" } ?? "连接正常（服务端未返回版本号）"
+            } catch {
+                fnasStatus = "连接失败：\(error.localizedDescription)。确认地址带端口（例如 :30001）且服务端已启动。"
+            }
         }
     }
 

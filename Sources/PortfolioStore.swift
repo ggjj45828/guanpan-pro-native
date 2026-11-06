@@ -412,7 +412,11 @@ final class PortfolioStore: ObservableObject {
                 dailyBars[code] = result; saveDailyBars(); return result
             } catch { lastError = error }
         }
-        // 直连全部失败后，最后才尝试 NAS 行情代理兜底
+        // 直连全部失败后：先试观盘F 服务端（结构化 JSON），再试 Pro 自己的 NAS 行情代理。
+        if !isPrefixed, FNASBridge.isConfigured,
+           let bridged = try? await FNASBridge.daily(code: code, count: count), !bridged.isEmpty {
+            dailyBars[code] = bridged; saveDailyBars(); return bridged
+        }
         if let proxyBytes = try? await NASSyncService.marketProxyData(path: "daily", queryItems: [
             URLQueryItem(name: "symbol", value: symbol),
             URLQueryItem(name: "count", value: String(min(max(count, 30), 640)))
@@ -1364,21 +1368,29 @@ final class PortfolioStore: ObservableObject {
         defer { isRefreshingQuotes = false }
         do {
             var request = URLRequest(url: url); request.timeoutInterval = 12
-            let bytes: Data
+            var values: [String: (name: String, price: Double, changePct: Double, timestamp: Date?)] = [:]
             var usedNASProxy = false
+            var usedFNASBridge = false
             do {
                 let (directBytes, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                bytes = directBytes
+                values = parseTencent(decodeTencent(directBytes))
             } catch {
                 // 直连失败时才走 NAS 行情代理兜底
                 if let proxied = try? await NASSyncService.marketProxyData(path: "quote", queryItems: [URLQueryItem(name: "codes", value: requestCodes.joined(separator: ","))]) {
-                    bytes = proxied
+                    values = parseTencent(decodeTencent(proxied))
                     usedNASProxy = true
+                } else if FNASBridge.isConfigured,
+                          let bridged = try? await FNASBridge.quotes(codes: symbols.map { $0 }),
+                          !bridged.isEmpty {
+                    // 观盘F 服务端给的是结构化 JSON，不用再解腾讯文本。
+                    values = bridged.reduce(into: [:]) { result, pair in
+                        let quote = pair.value
+                        result[tencentSymbol(pair.key)] = (quote.name, quote.price, quote.changePct, quote.updatedAt)
+                    }
+                    usedFNASBridge = true
                 } else { throw error }
             }
-            let text = decodeTencent(bytes)
-            let values = parseTencent(text)
             guard !values.isEmpty else {
                 sourceStatus = "接口未返回可识别报价"
                 Task { await NativeNotifications.sendSourceHealthOnce(category: "market", body: "行情接口没有返回可识别报价。请检查数据源状态或 NAS 网络连接。") }
@@ -1443,7 +1455,7 @@ final class PortfolioStore: ObservableObject {
                     advanceLegacyShadowSimulations(shadowQuotes)
                 }
             }
-            let route = usedNASProxy ? "NAS 代理" : "iPhone 直连"
+            let route = usedFNASBridge ? "观盘F 服务端" : (usedNASProxy ? "NAS 代理" : "iPhone 直连")
             saveAutomaticMarketState()
             sourceStatus = "行情已更新（\(route)）· \(Date.now.formatted(date: .omitted, time: .shortened))"
             // 不把整批分时下载塞进刷新按钮的等待时间里；后台补全结束后单独更新状态。

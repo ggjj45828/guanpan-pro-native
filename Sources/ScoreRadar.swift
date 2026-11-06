@@ -272,11 +272,27 @@ struct ScoreRadarView: View {
 
 struct ScoreRadarCard: View {
     let result: RadarResult
+    /// 放进 List 的 Section 里时关掉自带底色，避免「卡片套卡片」。
+    var showsBackground: Bool = true
     @Environment(\.appAppearance) private var appearance
 
     private var theme: AppTheme { AppTheme.palette(for: AppAppearance.resolved(appearance)) }
 
     var body: some View {
+        if showsBackground {
+            content
+                .padding(AppLayout.cardPadding)
+                .background(RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous).fill(theme.surface))
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
+                        .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 0.7)
+                }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("六维评分").scaledFont(15, weight: .bold)
@@ -311,12 +327,6 @@ struct ScoreRadarCard: View {
                 .scaledFont(10)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(AppLayout.cardPadding)
-        .background(RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous).fill(theme.surface))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 0.7)
         }
     }
 }
