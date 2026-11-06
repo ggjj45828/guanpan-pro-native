@@ -28,35 +28,57 @@ extension PortfolioStore {
         verifiedTotalAsset ?? totalAsset
     }
 
-    /// 总资产下面那行小字。要么说「估值截至什么时候」，要么说清为什么不可信。
-    var valuationCaption: String {
+    /// 一次算完、一次交给视图。
+    ///
+    /// 首页总资产卡要同时知道「数字」「可不可信」「那行小字」。分成三个属性各调一次，
+    /// 就是每次 body 重绘跑三遍全量估值 —— 持仓几十只时这已经在丢帧了。
+    struct ValuationDisplay {
+        let total: Double
+        let verified: Bool
+        let caption: String
+    }
+
+    var valuationDisplay: ValuationDisplay {
         switch valuation() {
         case .success(let value):
-            var text: String
-            if let asOf = value.quotesAsOf {
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: "zh_CN")
-                formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-                switch sessionStatus {
-                case .continuous, .callAuction:
-                    formatter.dateFormat = "HH:mm:ss"
-                    text = "估值截至 \(formatter.string(from: asOf))"
-                default:
-                    formatter.dateFormat = "M月d日 HH:mm"
-                    text = "按 \(formatter.string(from: asOf)) 报价估值"
-                }
-            } else {
-                text = "仅现金，无持仓"
-            }
-            if !value.degradedReasons.isEmpty {
-                text += " · " + value.degradedReasons.joined(separator: "、")
-            }
-            return text
+            return ValuationDisplay(total: value.total, verified: true, caption: caption(for: value))
         case .failure(let failure):
-            let codes = failure.codes.prefix(3).joined(separator: "、")
-            let suffix = failure.codes.count > 3 ? " 等 \(failure.codes.count) 只" : ""
-            return "\(failure.title)：\(codes)\(suffix) · 下方数字为缓存价估算"
+            return ValuationDisplay(total: totalAsset, verified: false, caption: caption(for: failure))
         }
+    }
+
+    private func caption(for value: PortfolioValuation) -> String {
+        var text: String
+        if let asOf = value.quotesAsOf {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+            switch sessionStatus {
+            case .continuous, .callAuction:
+                formatter.dateFormat = "HH:mm:ss"
+                text = "估值截至 \(formatter.string(from: asOf))"
+            default:
+                formatter.dateFormat = "M月d日 HH:mm"
+                text = "按 \(formatter.string(from: asOf)) 报价估值"
+            }
+        } else {
+            text = "仅现金，无持仓"
+        }
+        if !value.degradedReasons.isEmpty {
+            text += " · " + value.degradedReasons.joined(separator: "、")
+        }
+        return text
+    }
+
+    private func caption(for failure: PortfolioValuationFailure) -> String {
+        let codes = failure.codes.prefix(3).joined(separator: "、")
+        let suffix = failure.codes.count > 3 ? " 等 \(failure.codes.count) 只" : ""
+        return "\(failure.title)：\(codes)\(suffix) · 下方数字为缓存价估算"
+    }
+
+    /// 总资产下面那行小字。要么说「估值截至什么时候」，要么说清为什么不可信。
+    var valuationCaption: String {
+        valuationDisplay.caption
     }
 
     /// 估值是否可信。界面据此决定数字要不要灰化。

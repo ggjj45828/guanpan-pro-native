@@ -65,18 +65,17 @@ struct DataTrustView: View {
                 Section("估值口径") {
                     // 这一块是「总资产那个数敢不敢信」的直接答案。
                     // 之前整页只谈「行情时间」，但从来没说过「这些价能不能加成一个总资产」。
-                    LabeledContent("账户估值", value: store.isValuationVerified ? "全部持仓报价可信" : "不可信，已降级为缓存估算")
-                    if let value = store.verifiedTotalAsset {
-                        LabeledContent("严格估值总额", value: value.cny())
-                    }
-                    LabeledContent("说明", value: store.valuationCaption)
+                    let display = store.valuationDisplay
+                    LabeledContent("账户估值", value: display.verified ? "全部持仓报价可信" : "不可信，已降级为缓存估算")
+                    LabeledContent("当前总额", value: display.total.cny())
+                    LabeledContent("说明", value: display.caption)
                     LabeledContent("当前时段", value: store.sessionStatus.title)
                     if store.isAfterMarketClose {
                         Text("已过 15:00：报价按最近一个交易日处理，不再要求秒级新鲜。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
-                .toneCard(store.isValuationVerified ? CardTone.ok : CardTone.warn, isLight: isLight)
+                .toneCard(store.valuationDisplay.verified ? CardTone.ok : CardTone.warn, isLight: isLight)
                 Section("行情更新时间") {
                     LabeledContent("交易时段", value: sessionDescription)
                     LabeledContent("刷新状态", value: store.sourceStatus)

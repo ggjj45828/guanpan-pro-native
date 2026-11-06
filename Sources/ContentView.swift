@@ -521,8 +521,11 @@ struct DashboardView: View {
     private var heroCard: some View {
         let dayValue = store.hasDayPnLGross ? store.dayPnLGross : 0
         let tone = store.hasDayPnLGross ? PnLColor.of(dayValue) : palette.ink2
-        let verified = store.isValuationVerified
-        let total = store.displayedTotalAsset
+        // 一次算完：「数字 / 可不可信 / 那行小字」来自同一次估值，
+        // 否则每次重绘都要跑三遍全量扫描。
+        let display = store.valuationDisplay
+        let verified = display.verified
+        let total = display.total
         let amountText = total > 0 ? total.cny() : "--"
         let deltaText: String
         if store.hasDayPnLGross {
@@ -542,7 +545,7 @@ struct DashboardView: View {
                           amount: amountText,
                           deltaText: deltaText,
                           deltaTone: tone,
-                          footnote: total > 0 ? (verified ? "\(store.valuationCaption)\n\(note)" : store.valuationCaption) : note,
+                          footnote: total > 0 ? (verified ? "\(display.caption)\n\(note)" : display.caption) : note,
                           sparkline: equityCurve,
                           onOpen: onOpenAssets,
                           amountTone: verified ? nil : palette.ink3,
