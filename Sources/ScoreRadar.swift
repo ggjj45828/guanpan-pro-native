@@ -310,64 +310,94 @@ struct ScoreRadarCard: View {
     var showsBackground: Bool = true
     @Environment(\.appAppearance) private var appearance
 
-    private var theme: AppTheme { AppTheme.palette(for: AppAppearance.resolved(appearance)) }
+    private var palette: DsPalette { DsPalette.of(AppAppearance.resolved(appearance)) }
 
     /// 分数配色：66 分以上按「偏强」染红（国内红涨），33 以下按「偏弱」染绿。
     /// 写成函数而不是嵌套三元，避免在 ViewBuilder 里拖慢类型检查。
     private func scoreColor(_ value: Double) -> Color {
         if value >= 66 { return PnLColor.up }
-        if value >= 33 { return Color.primary }
+        if value >= 33 { return palette.ink }
         return PnLColor.down
     }
 
     var body: some View {
         if showsBackground {
-            content
-                .padding(AppLayout.cardPadding)
-                .background(RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous).fill(theme.surface))
-                .overlay {
-                    RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 0.7)
-                }
+            content.dsSurface(palette, radius: DS.radius, padding: DS.pad)
         } else {
             content
         }
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("六维评分").scaledFont(15, weight: .bold)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                DsIconTile(symbol: "hexagon", tint: palette.accent, size: 30, palette: palette)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("值不值得买 · 六维")
+                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .foregroundStyle(palette.ink)
+                    Text("本机规则计算，不联网")
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink3)
+                }
+                Spacer(minLength: 4)
                 if let total = result.total {
                     Text(total.num(0))
-                        .scaledFont(20, weight: .bold, design: .rounded)
-                        .foregroundStyle(CardTone.accent)
+                        .scaledFont(26, weight: .bold, design: .rounded)
+                        .monospacedDigit()
+                        .foregroundStyle(scoreColor(total))
                 }
-                Spacer(minLength: 0)
-                Text("本机规则").scaledFont(9).foregroundStyle(.secondary)
             }
+
             if result.hasEnoughData {
-                ScoreRadarView(dimensions: result.dimensions)
-                ForEach(result.dimensions) { dimension in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(dimension.kind.title)
-                            .scaledFont(11, weight: .semibold)
-                            .frame(width: 34, alignment: .leading)
-                        Text(dimension.note)
-                            .scaledFont(10)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 4)
-                        Text(dimension.value.num(0))
-                            .scaledFont(11, weight: .semibold, design: .rounded)
-                            .foregroundStyle(scoreColor(dimension.value))
+                // 尺寸由 ScoreRadarView 自己定（内部 210pt），这里不要再套一层 frame，
+                // 否则内层的固定高度会顶出外层，标签被裁掉。
+                ScoreRadarView(dimensions: result.dimensions, accent: palette.accent)
+                VStack(spacing: 8) {
+                    ForEach(result.dimensions) { dimension in
+                        dimensionRow(dimension)
                     }
                 }
+            } else {
+                Text("日线不足，六维里能算的维度少于 3 个。补足历史行情再来看分数。")
+                    .scaledFont(DS.fsLabel)
+                    .foregroundStyle(palette.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+
             Text(result.summary)
-                .scaledFont(10)
-                .foregroundStyle(.secondary)
+                .scaledFont(DS.fsMicro)
+                .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// 一维一行：名称 + 说明 + 迷你条 + 分值。条比数字更好扫读，
+    /// 但分数值仍保留 —— 条只能看相对大小，看不出 62 与 66 这种边界。
+    private func dimensionRow(_ dimension: RadarDimension) -> some View {
+        let tint = scoreColor(dimension.value)
+        let ratio = min(1, max(0, dimension.value / 100))
+        return HStack(alignment: .center, spacing: 8) {
+            Text(dimension.kind.title)
+                .scaledFont(DS.fsMicro, weight: .semibold)
+                .foregroundStyle(palette.ink2)
+                .frame(width: 40, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(palette.cardSoft)
+                    Capsule()
+                        .fill(tint.opacity(0.85))
+                        .frame(width: max(3, geo.size.width * CGFloat(ratio)))
+                }
+            }
+            .frame(height: 4)
+            Text(dimension.value.num(0))
+                .scaledFont(DS.fsMicro, weight: .semibold)
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .frame(width: 24, alignment: .trailing)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(dimension.kind.title) \(dimension.value.num(0)) 分，\(dimension.note)")
     }
 }

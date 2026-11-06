@@ -207,16 +207,15 @@ struct AIDecisionCard: View {
     let decision: AIDecision
     @Environment(\.appAppearance) private var appearance
 
-    private var theme: AppTheme { AppTheme.palette(for: AppAppearance.resolved(appearance)) }
-    private var accent: Color { CardTone.accent }
+    private var palette: DsPalette { DsPalette.of(AppAppearance.resolved(appearance)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if !decision.headline.isEmpty {
                 Text(decision.headline)
-                    .scaledFont(17, weight: .semibold)
-                    .foregroundStyle(.primary)
+                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .foregroundStyle(palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(decision.sections) { section in
@@ -224,33 +223,22 @@ struct AIDecisionCard: View {
             }
             footer
         }
-        .padding(AppLayout.cardPadding)
-        .background(
-            RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
-                .fill(theme.surface)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
-                .strokeBorder(accent.opacity(theme.isLight ? 0.22 : 0.30), lineWidth: 0.8)
-        }
+        .dsSurface(palette, radius: DS.radius, padding: DS.pad, glow: palette.accent)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("今日判断：\(decision.headline)。置信度 \(decision.confidenceLabel)。\(decision.evidenceNote)")
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 9) {
-            Image(systemName: "sparkles")
-                .scaledFont(13, weight: .semibold)
-                .foregroundStyle(accent)
-                .frame(width: 28, height: 28)
-                .background(accent.opacity(0.13),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("今日判断").scaledFont(15, weight: .bold)
+            DsIconTile(symbol: "sparkles", tint: palette.accent, size: 30, palette: palette)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("今日判断")
+                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .foregroundStyle(palette.ink)
                 if let asOf = decision.asOf {
                     Text(asOf.formatted(date: .omitted, time: .shortened) + " 生成")
-                        .scaledFont(10)
-                        .foregroundStyle(.secondary)
+                        .scaledFont(DS.fsMicro)
+                        .foregroundStyle(palette.ink3)
                 }
             }
             Spacer(minLength: 0)
@@ -269,49 +257,54 @@ struct AIDecisionCard: View {
         let tint = confidenceTint(decision.confidence)
         return VStack(alignment: .trailing, spacing: 1) {
             Text(decision.confidenceLabel)
-                .scaledFont(11, weight: .semibold)
+                .scaledFont(DS.fsMicro, weight: .semibold)
                 .foregroundStyle(tint)
             Text("置信度 \(Int((decision.confidence * 100).rounded()))%")
                 .scaledFont(9)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(palette.ink3)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(tint.opacity(0.12), in: Capsule())
-        .overlay(Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 0.7))
+        .padding(.vertical, 4)
+        .background { Capsule().fill(tint.opacity(palette.isLight ? 0.10 : 0.15)) }
     }
 
     private func sectionView(_ section: AIDecisionSection) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Image(systemName: section.kind.symbol)
-                    .scaledFont(10, weight: .semibold)
-                    .foregroundStyle(section.kind.tone)
-                Text(section.kind.title)
-                    .scaledFont(11, weight: .semibold)
-                    .foregroundStyle(section.kind.tone)
-                Spacer(minLength: 0)
-            }
-            ForEach(Array(section.lines.enumerated()), id: \.offset) { _, line in
-                HStack(alignment: .top, spacing: 6) {
-                    Text("·").scaledFont(11).foregroundStyle(.secondary)
+        let tint = section.kind.tone
+        return HStack(alignment: .top, spacing: 8) {
+            // 左侧细竖条：分段靠颜色区分，但不整块铺底色 —— 五块都带底色会显得花。
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(tint.opacity(0.8))
+                .frame(width: 2.5)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Image(systemName: section.kind.symbol)
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(section.kind.title)
+                        .scaledFont(DS.fsMicro, weight: .semibold)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(tint)
+                ForEach(Array(section.lines.enumerated()), id: \.offset) { _, line in
                     Text(line)
-                        .scaledFont(12)
-                        .foregroundStyle(.primary)
+                        .scaledFont(DS.fsLabel)
+                        .foregroundStyle(palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .padding(9)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(section.kind.tone.opacity(theme.isLight ? 0.06 : 0.09),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(palette.cardSoft.opacity(palette.isLight ? 0.9 : 1))
+        }
     }
 
     private var footer: some View {
         Text(decision.evidenceNote)
-            .scaledFont(10)
-            .foregroundStyle(.secondary)
+            .scaledFont(DS.fsMicro)
+            .foregroundStyle(palette.ink3)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

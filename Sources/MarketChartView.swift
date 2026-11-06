@@ -1598,6 +1598,8 @@ struct MarketChartView: View {
             instrumentAIResult = result
             store.data.savedInstrumentAIAnalyses[holding.code] = SavedAIAnalysis(text: result)
             store.saveAIAnalysisCache()
+            // 同一天对同一只标的反复分析只留一票，避免把「多问几次」当成「多份证据」。
+            store.recordDecisions(from: AISuggestionParser.parse(result), source: "个股分析")
             // 只有新结果成功返回后，上一轮建议的处理状态才作废。
             handledSuggestionIDs.removeAll()
             suggestionNote = ""

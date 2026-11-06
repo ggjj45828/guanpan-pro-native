@@ -1102,6 +1102,7 @@ struct MoreHubView: View {
     @State private var showPortfolioAdvice = false
     @State private var showLedgerAudit = false
     @State private var showOperationHistory = false
+    @State private var showDecisionScorecard = false
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -1172,6 +1173,18 @@ struct MoreHubView: View {
                 }
 
                 Section {
+                    MoreHubCard(title: "决策成绩单", subtitle: "AI 带价位的建议逐条留档，之后用真实日线判对错",
+                                icon: "checkmark.seal.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
+                        showDecisionScorecard = true
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                } header: { Text("复盘") } footer: {
+                    Text("判读只用记录日之后的日线；「还在等」不计入命中率。这里只评估判断，不放收益承诺。")
+                        .scaledFont(10)
+                }
+
+                Section {
                     VStack(spacing: 10) {
                         HStack(spacing: 10) {
                             MoreHubTile(title: "分析工具", subtitle: "风险、信号\n账户体检", icon: "chart.bar.xaxis", tint: .blue) {
@@ -1229,6 +1242,7 @@ struct MoreHubView: View {
             .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
             .sheet(isPresented: $showLedgerAudit) { LedgerAuditView() .themedSheetBackground() }
             .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
+            .sheet(isPresented: $showDecisionScorecard) { DecisionScorecardView() .themedSheetBackground() }
         }
     }
 }
@@ -5055,6 +5069,8 @@ struct AIAnalysisView: View {
     @State private var suggestionNote = ""
     @State private var showProfileSettings = false
     @State private var showModelSettings = false
+    /// 决策成绩单：把 AI 带价位的建议留档，事后用真实日线判读。
+    @State private var showDecisionScorecard = false
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
@@ -5214,6 +5230,28 @@ struct AIAnalysisView: View {
                         }
                         .plainCard(isLight: isLight)
                     }
+                    Section {
+                        Button {
+                            Haptics.tap()
+                            showDecisionScorecard = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "checkmark.seal")
+                                    .foregroundStyle(store.effectiveAccentColor)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("决策成绩单")
+                                    Text("已留档 \(store.data.decisionJournal.count) 条 · 用真实日线判对错")
+                                        .scaledFont(10)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .plainCard(isLight: isLight)
                     Section("分析结果") {
                         if let saved = store.data.savedAccountAIAnalysis {
                             Label("保存于 \(saved.updatedAt.formatted(date: .abbreviated, time: .shortened)) · 下次成功分析后替换",
@@ -5249,6 +5287,9 @@ struct AIAnalysisView: View {
             .background(.clear)
             .themedSheetBackground()
             .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
+            .sheet(isPresented: $showDecisionScorecard) {
+                DecisionScorecardView() .themedSheetBackground()
+            }
             .sheet(item: $planPrefill) { suggestion in
                 // 显式写 onSave: —— TradePlanEditor 的参数顺序是 (onSave, prefill)，
                 // 尾随闭包语法会绑到最后一个参数（prefill）上，类型对不上。
@@ -5338,6 +5379,12 @@ struct AIAnalysisView: View {
             // 只有新答案成功后，旧建议的处理状态才作废。
             handledSuggestionIDs.removeAll()
             suggestionNote = ""
+            // 带价位的建议顺手留档：之后用真实日线判「说对了没有」。
+            // 只记不催 —— 这里不会替用户下单，也不会改持仓。
+            let recorded = store.recordDecisions(from: AISuggestionParser.parse(newResult), source: "组合分析")
+            if recorded > 0 {
+                suggestionNote = "已记入决策成绩单 \(recorded) 条。之后按真实日线判读，不用靠记忆回想。"
+            }
         } catch {
             message = result.isEmpty ? error.localizedDescription : "\(error.localizedDescription)；上次分析结果仍已保留。"
         }
