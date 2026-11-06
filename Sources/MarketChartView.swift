@@ -198,6 +198,9 @@ struct MarketChartView: View {
 
     private var allBars: [DailyBar] { store.dailyBars[holding.code] ?? [] }
     private var bars: [DailyBar] { allBars }
+    /// 六维评分固定用未聚合的日线：切到周/月周期时样本会只剩几根，
+    /// 拿聚合序列算波动率和分位会给出看着精确、其实没意义的分。
+    private var radarScore: RadarResult? { RadarEngine.evaluate(bars: allBars) }
     /// 日 K 始终基于完整历史；屏幕上显示多少根只由捏合缩放与拖动决定。
     private var periodBars: [DailyBar] { aggregated(allBars) }
     /// 当前周期、但用**本机全部**日线聚合。
@@ -803,13 +806,16 @@ struct MarketChartView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Section("值不值得买 · 条件复核") {
+                        if let radarScore {
+                            ScoreRadarCard(result: radarScore, showsBackground: false)
+                        }
                         if let assessment = decisionAssessment {
                             LabeledContent("复核分", value: "\(assessment.score) · \(assessment.label)")
                             ForEach(assessment.factors, id: \.self) { Text("• \($0)").font(.subheadline) }
                         } else {
                             Text("日线数据不足，暂时无法复核。")
                         }
-                        Text("高分不等于立即买入：它把统一技术分与近 60 日位置、超买超卖和历史撑压合并；没有可靠 ETF 估值数据时，不虚构“估值分”。")
+                        Text("高分不等于立即买入：六维分只衡量趋势、位置、量能、动量、风险和赔率，不含 PE/PB 等基本面；缺数据的维度直接不显示，不用 50 分凑数。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Section("历史指标") {

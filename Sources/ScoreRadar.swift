@@ -188,18 +188,8 @@ struct ScoreRadarView: View {
             let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
             let radius = size / 2 - 18
             ZStack {
-                gridPath(center: center, radius: radius)
-                    .stroke(Color.secondary.opacity(0.22), lineWidth: 0.7)
-                ForEach(Array(stride(from: 0.33, through: 1.0, by: 0.33)), id: \.self) { ratio in
-                    gridPath(center: center, radius: radius * ratio)
-                        .stroke(Color.secondary.opacity(0.12), lineWidth: 0.5)
-                }
-                axisPath(center: center, radius: radius)
-                    .stroke(Color.secondary.opacity(0.16), lineWidth: 0.5)
-                valuePath(center: center, radius: radius)
-                    .fill(accent.opacity(0.22))
-                valuePath(center: center, radius: radius)
-                    .stroke(accent, lineWidth: 1.6)
+                ringLayer(center: center, radius: radius)
+                dataLayer(center: center, radius: radius)
                 ForEach(Array(dimensions.enumerated()), id: \.element.id) { index, dimension in
                     labelView(dimension, index: index, center: center, radius: radius)
                 }
@@ -208,6 +198,26 @@ struct ScoreRadarView: View {
         .frame(height: 210)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(dimensions.map { "\($0.kind.title) \($0.value.num(0)) 分" }.joined(separator: "，"))
+    }
+
+    private func ringLayer(center: CGPoint, radius: CGFloat) -> some View {
+        ZStack {
+            gridPath(center: center, radius: radius)
+                .stroke(Color.secondary.opacity(0.22), lineWidth: 0.7)
+            ForEach(Array(stride(from: 0.33, through: 1.0, by: 0.33)), id: \.self) { ratio in
+                gridPath(center: center, radius: radius * ratio)
+                    .stroke(Color.secondary.opacity(0.12), lineWidth: 0.5)
+            }
+            axisPath(center: center, radius: radius)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 0.5)
+        }
+    }
+
+    private func dataLayer(center: CGPoint, radius: CGFloat) -> some View {
+        ZStack {
+            valuePath(center: center, radius: radius).fill(accent.opacity(0.22))
+            valuePath(center: center, radius: radius).stroke(accent, lineWidth: 1.6)
+        }
     }
 
     private func points(center: CGPoint, radius: CGFloat) -> [CGPoint] {
@@ -244,9 +254,13 @@ struct ScoreRadarView: View {
         guard count >= 3 else { return path }
         let angles = (0..<count).map { -Double.pi / 2 + Double($0) * 2 * Double.pi / Double(count) }
         for (index, dimension) in dimensions.enumerated() {
-            let ratio = CGFloat(min(100, max(0, dimension.value)) / 100)
-            let point = CGPoint(x: center.x + radius * ratio * CGFloat(cos(angles[index])),
-                                y: center.y + radius * ratio * CGFloat(sin(angles[index])))
+            // 拆成三个局部量：写成一行嵌套表达式会让类型检查器直接超时（已在 CI 上踩过）。
+            let clamped = min(100.0, max(0.0, dimension.value))
+            let ratio = CGFloat(clamped / 100)
+            let angle = angles[index]
+            let dx = radius * ratio * CGFloat(cos(angle))
+            let dy = radius * ratio * CGFloat(sin(angle))
+            let point = CGPoint(x: center.x + dx, y: center.y + dy)
             if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
         path.closeSubpath()
@@ -256,8 +270,10 @@ struct ScoreRadarView: View {
     private func labelView(_ dimension: RadarDimension, index: Int, center: CGPoint, radius: CGFloat) -> some View {
         let count = max(3, dimensions.count)
         let angle = -Double.pi / 2 + Double(index) * 2 * Double.pi / Double(count)
-        let point = CGPoint(x: center.x + (radius + 14) * CGFloat(cos(angle)),
-                            y: center.y + (radius + 14) * CGFloat(sin(angle)))
+        let offset = radius + 14
+        let dx = offset * CGFloat(cos(angle))
+        let dy = offset * CGFloat(sin(angle))
+        let point = CGPoint(x: center.x + dx, y: center.y + dy)
         return VStack(spacing: 0) {
             Text(dimension.kind.title)
                 .scaledFont(9, weight: .medium)
