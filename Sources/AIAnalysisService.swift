@@ -95,7 +95,8 @@ enum AIAnalysisService {
                                   priceLevels: String? = nil,
                                   profile: InvestmentProfile? = nil,
                                   totalAsset: Double = 0,
-                                  newsEvidence: String? = nil) async throws -> String {
+                                  newsEvidence: String? = nil,
+                                  multiTimeframe: String? = nil) async throws -> String {
         let fmt: (Double) -> String = { String(format: "%.4f", $0) }
         let history = bars.suffix(120).map {
             "\($0.date): 开 \(fmt($0.open)) 高 \(fmt($0.high)) 低 \(fmt($0.low)) 收 \(fmt($0.close)) 量 \(Int($0.volume))"
@@ -148,6 +149,7 @@ enum AIAnalysisService {
             ? "只使用输入数据。这里没有外部新闻、基本面和盘口深度；缺少它们时明确写出，不能编造或假装已搜索。若报价较旧或缺失，先指出并把操作建议降级为条件观察。技术判断以已完成日线为主，分时只是当日短线背景，不可据此推翻中期趋势。"
             : "只使用输入数据。文末给的是公开网页接口的新闻**标题与摘要**，不是核实过的正文：只能当背景，不得据此断言因果、影响方向或幅度，引用时必须带媒体与时间；没有提供基本面与盘口深度。若报价较旧或缺失，先指出并把操作建议降级为条件观察。技术判断以已完成日线为主，分时只是当日短线背景，不可据此推翻中期趋势。"
         let newsBlock = newsEvidence.map { "\n【市场快讯（标题，未核实正文）】\n\($0)" } ?? ""
+        let multiTimeframeBlock = multiTimeframe.map { "\n\($0)" } ?? ""
         let prompt = """
         不要把均线、MACD、KDJ、RSI、布林和分时逐项念一遍。判断趋势延续、转弱、震荡或信号不足；解释价格位置、动能和量能之间的关键印证/背离及支撑压力对判断的意义，只引用 1–3 个关键数字作为推理证据。
         严格使用四个二级标题输出：## 核心判断、## 关键依据、## 条件化行动、## 失效与核对。核心判断最多 3 句话；关键依据只列 3–5 条最重要证据；条件化行动把“已有持仓”和“未持有”分开，每条写清“什么信号出现后做什么”；最后只列真正会改变结论的风险。只能使用实际提供的 MA、支撑压力、成本和现价，不得编造价位。不承诺收益，不发无条件买卖指令，也不要重复同一判断。
@@ -164,6 +166,7 @@ enum AIAnalysisService {
         \(historyText)
         【本机分时样本】（最多 180 点）：
         \(minuteHistoryText)
+        \(multiTimeframeBlock)
         \(newsBlock)
         """
         // 个股页同样要机器可读建议（这里最可能给出具体价位），

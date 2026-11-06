@@ -14,19 +14,34 @@ struct Quote: Codable, Identifiable {
     /// 仍然调用 `decode(_:forKey:)`，老备份里没有这个 key 会直接抛错、整份账本打不开。
     /// 所以这里手写一次解码，缺 key 时回落到空串。
     var group: String = ""
+    /// 这条报价是谁给的（白名单见 `QuoteSourceTrust`）。
+    ///
+    /// 之前只有 `updatedAt`，于是「本地刚请求过」和「行情刚成交过」在数据层毫无区别：
+    /// 网络卡住十分钟，界面照样显示「刚刚更新」。来源标签是可信度分级的前提。
+    var source: String?
+    /// 本地取到这条报价的时刻。与 `updatedAt`（交易所时间）严格分开。
+    var fetchedAt: Date?
+
+    /// 时间与来源的可信度视图。`session` 由调用方按当时时段传入。
+    func temporal(in session: MarketSessionStatus) -> QuoteTemporal {
+        QuoteTemporal(quote: self, session: session)
+    }
 
     private enum CodingKeys: String, CodingKey {
-        case code, name, price, changePct, updatedAt, group
+        case code, name, price, changePct, updatedAt, group, source, fetchedAt
     }
 
     init(code: String, name: String, price: Double, changePct: Double,
-         updatedAt: Date? = nil, group: String = "") {
+         updatedAt: Date? = nil, group: String = "",
+         source: String? = nil, fetchedAt: Date? = nil) {
         self.code = code
         self.name = name
         self.price = price
         self.changePct = changePct
         self.updatedAt = updatedAt
         self.group = group
+        self.source = source
+        self.fetchedAt = fetchedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +52,8 @@ struct Quote: Codable, Identifiable {
         changePct = try c.decodeIfPresent(Double.self, forKey: .changePct) ?? 0
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
         group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+        fetchedAt = try c.decodeIfPresent(Date.self, forKey: .fetchedAt)
     }
 }
 

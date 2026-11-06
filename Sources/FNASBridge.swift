@@ -94,7 +94,11 @@ enum FNASBridge {
                   price > 0, previous > 0 else { continue }
             result[row.code] = Quote(code: row.code, name: row.name, price: price,
                                      changePct: (price - previous) / previous,
-                                     updatedAt: parseTimestamp(row.time))
+                                     updatedAt: parseTimestamp(row.time),
+                                     // 观盘F 服务端转发的行情也要打来源标签，
+                                     // 否则估值门禁无法区分「可信的 NAS 报价」与「来路不明的缓存」。
+                                     source: QuoteSourceTrust.guanpanFNAS,
+                                     fetchedAt: Date())
         }
         return result
     }

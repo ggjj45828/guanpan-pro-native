@@ -35,6 +35,21 @@ struct DecisionRecord: Codable, Identifiable {
     var settledAt: Date? = nil
     var settleNote: String = ""
 
+    // MARK: 留痕（全部 Optional）
+    //
+    // 这里刻意全用 Optional：`DecisionRecord` 用的是合成 `Decodable`，
+    // 给「有默认值但非 Optional」的属性加字段会让老记录整条解码失败 ——
+    // Swift 对这种情况仍然会调 `decode`，默认值不参与兜底。
+    /// 逐层裁决：数据质量 / 技术数据 / 市场状态 / 资金与仓位。
+    var layerTrace: [DecisionLayerTrace]? = nil
+    /// 记录那一刻屏幕上的真实报价（与 `entryPrice` 分开，两者可能不同）。
+    var observation: DecisionObservation? = nil
+    /// 数据质量分级。老记录为 nil，按 `.unknown` 处理。
+    var dataQuality: String? = nil
+    /// 事后人工复核。
+    var reviewNote: String? = nil
+    var reviewedAt: Date? = nil
+
     var isBuy: Bool { side == "buy" }
     var sideLabel: String { isBuy ? "买入" : "卖出" }
 }
@@ -294,6 +309,8 @@ extension PortfolioStore {
     @discardableResult
     func recordDecisions(from suggestions: [AISuggestion], source: String) -> Int {
         let today = DecisionEvaluator.dayKey(.now)
+        // 市场状态整批只算一次：它在循环里每算一次都要重扫一遍日线并写缓存。
+        let regime = marketRegime()
         var added = 0
         for suggestion in suggestions {
             guard suggestion.price != nil || suggestion.target != nil || suggestion.invalid != nil else { continue }
@@ -308,9 +325,20 @@ extension PortfolioStore {
             if duplicated { continue }
 
             // 参考价缺失时用当前行情兜底；两者都没有就留空，收益率统计会跳过这条。
-            let marketPrice = data.quotes.first { normalizedDecisionCode($0.code) == code }?.price
+            let matchedQuote = data.quotes.first { normalizedDecisionCode($0.code) == code }
+            let marketPrice = matchedQuote?.price
             var entry = suggestion.price
             if entry == nil, let marketPrice, marketPrice > 0 { entry = marketPrice }
+
+            // 装配留痕：数据质量、技术数据、市场状态、仓位。
+            // 这样事后才能分清「判断错了」和「当时数据本来就不可信」。
+            let holding = data.holdings.first { normalizedDecisionCode($0.code) == code }
+            let trace = DecisionTraceBuilder.build(quote: matchedQuote,
+                                                   session: sessionStatus,
+                                                   regime: regime,
+                                                   hasDailyBars: !(dailyBars[code] ?? []).isEmpty,
+                                                   heldQuantity: holding?.quantity ?? 0,
+                                                   positionLimitPercent: data.globalPositionLimitPercent)
 
             data.decisionJournal.append(DecisionRecord(
                 recordedAt: .now,
@@ -321,7 +349,10 @@ extension PortfolioStore {
                 target: suggestion.target,
                 invalid: suggestion.invalid,
                 reason: suggestion.reason,
-                source: source))
+                source: source,
+                layerTrace: trace.traces,
+                observation: trace.observation,
+                dataQuality: trace.quality.rawValue))
             added += 1
         }
         if added > 0 { save(label: "记录决策") }

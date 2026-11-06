@@ -513,10 +513,17 @@ struct DashboardView: View {
     }
 
     /// 总资产主卡。曲线取快照序列 —— 没有快照就不画线，不拿分时凑。
+    ///
+    /// 数字来源改走 `displayedTotalAsset`：严格估值通过时它就是可信总额；
+    /// 有任何一只持仓报价过期，会回落成缓存估算，**同时**把标题标成「缓存估算」、
+    /// 数字降成灰色、脚注写明哪几只过期。原来这里是无条件把缓存价加起来当总资产，
+    /// 一个三天前的报价会一路污染到仓位百分比和 AI 建议里。
     private var heroCard: some View {
         let dayValue = store.hasDayPnLGross ? store.dayPnLGross : 0
         let tone = store.hasDayPnLGross ? PnLColor.of(dayValue) : palette.ink2
-        let amountText = store.totalAsset > 0 ? store.totalAsset.cny() : "--"
+        let verified = store.isValuationVerified
+        let total = store.displayedTotalAsset
+        let amountText = total > 0 ? total.cny() : "--"
         let deltaText: String
         if store.hasDayPnLGross {
             let rate = store.dayPnLGrossRate.map { $0.pct(2) } ?? "--"
@@ -524,17 +531,23 @@ struct DashboardView: View {
         } else {
             deltaText = "今日盈亏待行情补齐"
         }
-        let note = store.totalAsset > 0
-            ? "持仓市值 \(store.totalMarketValue.cny()) + 现金 \(store.data.cash.cny()) · \(dayPnLLabel)"
-            : "先在「持仓」里录入真实持仓，这里就开始算。"
+        let note: String
+        if total > 0 {
+            note = "持仓市值 \(store.totalMarketValue.cny()) + 现金 \(store.data.cash.cny()) · \(dayPnLLabel)"
+        } else {
+            note = "先在「持仓」里录入真实持仓，这里就开始算。"
+        }
         return DsHeroCard(palette: palette,
                           title: "总资产（人民币）",
                           amount: amountText,
                           deltaText: deltaText,
                           deltaTone: tone,
-                          footnote: note,
+                          footnote: total > 0 ? (verified ? "\(store.valuationCaption)\n\(note)" : store.valuationCaption) : note,
                           sparkline: equityCurve,
-                          onOpen: onOpenAssets)
+                          onOpen: onOpenAssets,
+                          amountTone: verified ? nil : palette.ink3,
+                          badge: verified ? nil : "缓存估算",
+                          badgeTone: verified ? nil : PnLColor.down)
     }
 
     /// 快照收益曲线的取样点：最近 30 个快照。
@@ -1191,6 +1204,7 @@ struct MoreHubView: View {
     @State private var showEpisodes = false
     @State private var showExpenses = false
     @State private var showNewsHub = false
+    @State private var showMarketState = false
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -1285,6 +1299,12 @@ struct MoreHubView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
+                    MoreHubCard(title: "市场状态与战绩", subtitle: "大盘处于什么状态，已实现与做 T 到底赚没赚",
+                                icon: "waveform.path.ecg", tint: Color(red: 0.52, green: 0.44, blue: 0.96)) {
+                        showMarketState = true
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
                 } header: { Text("复盘") } footer: {
                     Text("判读只用记录日之后的日线；「还在等」不计入命中率。这里只评估判断，不放收益承诺。")
                         .scaledFont(10)
@@ -1352,6 +1372,7 @@ struct MoreHubView: View {
             .sheet(isPresented: $showEpisodes) { EpisodeView() .themedSheetBackground() }
             .sheet(isPresented: $showExpenses) { ExpenseView() .themedSheetBackground() }
             .sheet(isPresented: $showNewsHub) { NewsHubView() .themedSheetBackground() }
+            .sheet(isPresented: $showMarketState) { MarketStateView() .themedSheetBackground() }
         }
     }
 }

@@ -1597,7 +1597,11 @@ struct MarketChartView: View {
                 profile: store.data.investmentProfile, totalAsset: store.totalAsset,
                 // 只有点名了这只标的代码的快讯才会进 prompt；没有就传 nil，
                 // 让模型如实说「没有外部新闻」，而不是自己编一条。
-                newsEvidence: NewsCenter.shared.evidenceText(forCodes: [holding.code], limit: 6))
+                newsEvidence: NewsCenter.shared.evidenceText(forCodes: [holding.code], limit: 6),
+                // 日线 / 周线 / 60 分三个周期一起给，缺的周期会如实写「不可用」。
+                multiTimeframe: AIContextBuilder.multiTimeframeMACDLine(store: store,
+                                                                        code: holding.code,
+                                                                        name: holding.name))
             instrumentAIResult = result
             store.data.savedInstrumentAIAnalyses[holding.code] = SavedAIAnalysis(text: result)
             store.saveAIAnalysisCache()

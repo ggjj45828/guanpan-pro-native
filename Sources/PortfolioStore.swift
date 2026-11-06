@@ -1423,12 +1423,26 @@ final class PortfolioStore: ObservableObject {
                 if let quote = values[tencentSymbol(code)] { changes[code] = quote.changePct }
             }
             var updated = data
+            // 来源要跟着**实际走通的路由**记，不能一律写成「腾讯」：
+            // 直连失败走 NAS 代理、再失败走观盘F 服务端，三条路的可信度不同，
+            // 事后排查「这个数是哪来的」全靠这个标签。
+            let quoteSource: String
+            if usedFNASBridge {
+                quoteSource = QuoteSourceTrust.guanpanFNAS
+            } else if usedNASProxy {
+                quoteSource = QuoteSourceTrust.tencentNASProxy
+            } else {
+                quoteSource = QuoteSourceTrust.tencentDirect
+            }
+            let fetchedAt = Date()
             for i in updated.quotes.indices {
                 if let q = values[tencentSymbol(updated.quotes[i].code)] {
                     if updated.quotes[i].name.isEmpty || updated.quotes[i].name == updated.quotes[i].code { updated.quotes[i].name = q.name }
                     updated.quotes[i].price = q.price
                     updated.quotes[i].changePct = q.changePct
                     updated.quotes[i].updatedAt = q.timestamp
+                    updated.quotes[i].source = quoteSource
+                    updated.quotes[i].fetchedAt = fetchedAt
                 }
             }
             for i in updated.holdings.indices where updated.holdings[i].kind == .etf {
@@ -1509,6 +1523,10 @@ final class PortfolioStore: ObservableObject {
                 target.quotes[index].price = override.price
                 if let change { target.quotes[index].changePct = change }
                 target.quotes[index].updatedAt = nil
+                // 打上来源标签：这个价是用户照券商界面手填的，不是行情。
+                // 不标的话它会被当成可信新鲜报价，估值门禁就直接失效了。
+                target.quotes[index].source = QuoteSourceTrust.manualOverride
+                target.quotes[index].fetchedAt = nil
             }
             for index in target.holdings.indices where target.holdings[index].code == code && target.holdings[index].kind == .etf {
                 target.holdings[index].current = override.price
@@ -1556,14 +1574,13 @@ final class PortfolioStore: ObservableObject {
         if changed { save() }
     }
 
+    /// 是否处于连续竞价（会不断产生新成交价）的时段。
+    ///
+    /// 之前这里只判了 `weekday ∈ 2…6` 和时间窗，于是国庆、春节这类**休市日**
+    /// 也会被当成交易中：后台轮询照跑、每 30 秒发一次「报价缺失」告警。
+    /// 现在统一走 `TradingSession`，节假日与自定义休市日都算进去。
     private static func isRegularTradingSession(_ date: Date) -> Bool {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        let weekday = calendar.component(.weekday, from: date)
-        guard (2...6).contains(weekday) else { return false }
-        let c = calendar.dateComponents([.hour, .minute], from: date)
-        let minute = (c.hour ?? 0) * 60 + (c.minute ?? 0)
-        return (570...690).contains(minute) || (780...900).contains(minute)
+        TradingSession.status(at: date) == .continuous
     }
 
     private static func isFreshQuote(_ timestamp: Date?, now: Date) -> Bool {
@@ -2540,7 +2557,7 @@ final class PortfolioStore: ObservableObject {
 }
 
 enum StoreError: LocalizedError {
-    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, invalidAccountExpense, insufficientCashForExpense
+    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, invalidAccountExpense, insufficientCashForExpense, invalidFeeCorrection
     var errorDescription: String? {
         switch self {
         case .invalidTrade: return "请检查份额、价格、费用和标的。"
@@ -2560,6 +2577,7 @@ enum StoreError: LocalizedError {
         case .invalidImportedLedger: return "无法安全计算成交流水：请导入包含完整买入起点的历史记录，并检查卖出数量是否超过此前买入。"
         case .invalidAccountExpense: return "请填写大于 0 的金额和说明；说明是这笔费用唯一的来由，不能空着。"
         case .insufficientCashForExpense: return "参考现金不足，无法同时扣减。可以关掉「同步扣现金」，只做统计。"
+        case .invalidFeeCorrection: return "新的手续费无效：必须大于等于 0、不超过这笔成交金额，并填写更正原因。"
         }
     }
 }

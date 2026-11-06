@@ -22,9 +22,23 @@ struct LedgerOpeningSnapshot: Codable, Equatable {
     var source: Source = .recorded
     var cash: Double = 0
     var positions: [LedgerOpeningPosition] = []
+    /// 录入那一刻处在哪个交易时段（盘中 / 午休 / 收盘后 / 休市）。
+    ///
+    /// 这件事直接决定「今天算不算本轮」：14:30 盘中录入，当天剩下的涨跌确实属于
+    /// 这批持仓；收盘后 20:00 录入，当天的涨跌已经发生完了，不该再记到「起点之后」。
+    /// 之前只有一个精确到毫秒的 `capturedAt`，两种情形在数据层毫无区别。
+    var session: MarketSessionStatus?
+    /// 起点归属的交易日（"yyyy-MM-dd"，上海时区）。老快照没有，用 `capturedAt` 推。
+    var tradingDayKey: String?
 
     var positionCount: Int { positions.count }
     var marketCostValue: Double { positions.reduce(0) { $0 + $1.quantity * $1.cost } }
+
+    /// 起点归属交易日。为 nil 时由调用方自己按 `capturedAt` 推。
+    var resolvedTradingDay: String? {
+        if let tradingDayKey, !tradingDayKey.isEmpty { return tradingDayKey }
+        return MarketCalendar.isoDay(capturedAt)
+    }
 
     // MARK: 两个域分开看
     //

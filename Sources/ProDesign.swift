@@ -62,6 +62,8 @@ enum DS {
 
     // 字号：只留六级，避免每页各写一个数。
     static let fsHero: CGFloat = 34
+    /// 次级大数字（卡片内的汇总值，比 hero 小一档）。
+    static let fsStat: CGFloat = 26
     static let fsTitle: CGFloat = 17
     static let fsRow: CGFloat = 15
     static let fsLabel: CGFloat = 12
@@ -264,6 +266,12 @@ struct DsHeroCard: View {
     var footnote: String = ""
     var sparkline: [Double] = []
     var onOpen: (() -> Void)? = nil
+    /// 总额可不可信：不可信时传灰色，让数字在视觉上就低一档，
+    /// 而不是「数字一模一样、只有小字不同」—— 后者没人会注意。
+    var amountTone: Color? = nil
+    /// 标题旁的小标记，例如「缓存估算」。
+    var badge: String? = nil
+    var badgeTone: Color? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -271,6 +279,16 @@ struct DsHeroCard: View {
                 Text(title)
                     .scaledFont(DS.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
+                if let badge {
+                    Text(badge)
+                        .scaledFont(9.5, weight: .semibold)
+                        .foregroundStyle(badgeTone ?? palette.ink2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background {
+                            Capsule().fill((badgeTone ?? palette.ink2).opacity(palette.isLight ? 0.12 : 0.18))
+                        }
+                }
                 Spacer(minLength: 6)
                 if let onOpen {
                     Button {
@@ -291,7 +309,7 @@ struct DsHeroCard: View {
             Text(amount)
                 .scaledFont(DS.fsHero, weight: .bold)
                 .monospacedDigit()
-                .foregroundStyle(palette.ink)
+                .foregroundStyle(amountTone ?? palette.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
 
@@ -317,7 +335,7 @@ struct DsHeroCard: View {
                 Text(footnote)
                     .scaledFont(DS.fsMicro)
                     .foregroundStyle(palette.ink3)
-                    .lineLimit(2)
+                    .lineLimit(3)
             }
         }
         .dsSurface(palette, radius: DS.heroRadius, padding: 18)

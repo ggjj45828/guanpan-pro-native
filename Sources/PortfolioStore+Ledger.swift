@@ -91,14 +91,19 @@ extension PortfolioStore {
     }
 
     private func makeOpeningSnapshot(source: LedgerOpeningSnapshot.Source) -> LedgerOpeningSnapshot {
-        LedgerOpeningSnapshot(
-            capturedAt: .now,
+        let now = Date()
+        return LedgerOpeningSnapshot(
+            capturedAt: now,
             source: source,
             cash: data.cash,
             positions: data.holdings.map { holding in
                 LedgerOpeningPosition(code: holding.code, name: holding.name,
                                       kind: holding.kind, quantity: holding.quantity, cost: holding.cost)
-            })
+            },
+            // 记下录入时段：收盘后录入与盘中录入的含义不同，
+            // 之后算「第一轮拿了几天」「当天涨跌算不算本轮」都要靠它。
+            session: TradingSession.status(at: now, custom: data.customMarketHolidays),
+            tradingDayKey: MarketCalendar.isoDay(now))
     }
 
     /// 改写起点快照。账本已经有过成交就直接拒绝 —— 那种情况下诚实的做法是记一笔卖出。

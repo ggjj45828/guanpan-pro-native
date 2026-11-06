@@ -35,6 +35,7 @@ struct LedgerAuditView: View {
                 VStack(alignment: .leading, spacing: DS.sectionGap) {
                     healthCard
                     openingCard
+                    replayCard
                     domainCard
                     cashCard
                     auditCard
@@ -307,6 +308,60 @@ struct LedgerAuditView: View {
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+        }
+    }
+
+    // MARK: 重放自检
+
+    /// 按「起点 + 逐笔」重算一遍持仓，与存储值比对。
+    ///
+    /// 正常情况下应该完全一致。不一致只有两种可能：
+    /// ① 有代码绕过了 `recordTrade` 直接改持仓；
+    /// ② 导入了历史流水但没有对应起点，份额本来就不该对上。
+    /// 两种都要让人看见，而不是让人以为账本一直是自洽的。
+    private var replayCard: some View {
+        let rows = store.ledgerReplayDiscrepancies()
+        return VStack(alignment: .leading, spacing: 10) {
+            DsSectionHeader(palette: palette, title: "重放自检",
+                            trailing: rows.isEmpty ? "一致" : "\(rows.count) 处不一致")
+            if rows.isEmpty {
+                Text("按起点快照 + 逐笔成交重算，持仓份额与单位成本都和账本一致。")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(rows.prefix(4)) { row in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(row.name)
+                                    .scaledFont(DS.fsRow, weight: .medium)
+                                    .foregroundStyle(palette.ink)
+                                    .lineLimit(1)
+                                Text(row.key.code)
+                                    .scaledFont(DS.fsMicro)
+                                    .foregroundStyle(palette.ink3)
+                                Spacer(minLength: 4)
+                                Text(row.isQuantityMismatch ? "份额不符" : "成本不符")
+                                    .scaledFont(9.5, weight: .semibold)
+                                    .foregroundStyle(PnLColor.down)
+                            }
+                            Text(row.isQuantityMismatch
+                                 ? "账面 \(row.storedUnits.num(2)) 份，重放 \(row.replayedUnits.num(2)) 份"
+                                 : "账面成本 \(row.storedCost.num(4))，重放 \(row.replayedCost.num(4))")
+                                .scaledFont(DS.fsMicro)
+                                .foregroundStyle(palette.ink2)
+                        }
+                        .padding(.vertical, 8)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .dsSurface(palette, radius: 16, padding: 0)
+                Text("多数情况是导入了历史流水但没记起点 —— 重放只能看到「从某天开始的买卖」，看不到之前的持仓，所以份额对不上。这种情况补记一次起点即可，不要手改持仓。")
+                    .scaledFont(DS.fsMicro)
+                    .foregroundStyle(palette.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

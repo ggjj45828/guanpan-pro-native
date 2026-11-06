@@ -22,14 +22,172 @@ enum AIContextBuilder {
     static func portfolioSections(store: PortfolioStore) -> [String] {
         var sections: [String] = [behaviorSection(store: store)]
         if let market = marketSection(store: store) { sections.append(market) }
+        // 市场状态放在最前面：后面所有结论都要在这个背景下读。
+        if let regime = regimeSection(store: store) { sections.insert(regime, at: 1) }
         if let risk = portfolioRiskSection(store: store) { sections.append(risk) }
         if let tech = technicalSection(store: store, codes: store.data.holdings.map(\.code)) {
             sections.append(tech)
         }
+        if let macd = multiTimeframeMACDSection(store: store) { sections.append(macd) }
         if let episodes = episodeSection(store: store) { sections.append(episodes) }
+        if let realized = realizedSection(store: store) { sections.append(realized) }
+        if let intraday = intradayTradeSection(store: store) { sections.append(intraday) }
         if let cost = expenseSection(store: store) { sections.append(cost) }
         if let news = newsSection(store: store) { sections.append(news) }
+        if let memory = decisionMemorySection(store: store) { sections.append(memory) }
         return sections
+    }
+
+    // MARK: - 市场状态
+
+    /// 指数状态 + 风险等级。这一段决定「今天该不该动手」，
+    /// 比任何单只标的的信号都靠前。
+    static func regimeSection(store: PortfolioStore) -> String? {
+        guard let assessment = store.marketRegime() else {
+            return """
+            【市场状态】
+            本机没有足够的上证指数日线（至少需要 60 个交易日），无法判断大盘状态。不要用其它标的的走势代替。
+            """
+        }
+        var lines: [String] = []
+        lines.append("状态：\(assessment.regime.title) · \(assessment.riskLevel.title) · 置信度 \(assessment.confidenceLabel)")
+        if let date = assessment.dataAsOf {
+            lines.append("数据截至：\(MarketCalendar.isoDay(date))")
+        }
+        if let ret5 = assessment.return5Sessions { lines.append("近 5 日：\(ret5.pct(2))") }
+        if let ret20 = assessment.return20Sessions { lines.append("近 20 日：\(ret20.pct(2))") }
+        if let drawdown = assessment.drawdown20Sessions {
+            lines.append("20 日回撤：\(drawdown.pct(2))")
+        }
+        if let vol = assessment.realizedVolatility20Sessions {
+            lines.append("20 日年化波动率：\(vol.pct(1))")
+        }
+        if !assessment.reasons.isEmpty {
+            lines.append("判据：" + assessment.reasons.prefix(4).joined(separator: "；"))
+        }
+        // 这一条很重要：状态是观察用的，不是操作指令。
+        if assessment.observationOnly {
+            lines.append("该状态属于「观察级别」：可以据此调整仓位节奏，但不构成买卖指令。")
+        }
+        if !assessment.ordinaryTBuyAllowed {
+            lines.append("当前状态下不建议按「普通做 T」思路操作。")
+        }
+        return """
+        【市场状态（本机按上证指数日线计算，含两个交易日的防抖）】
+        · \(lines.joined(separator: "\n· "))
+        """
+    }
+
+    // MARK: - 多周期 MACD
+
+    /// 日线 + 周线 + 60 分。缺哪个周期就说哪个不可用，不拿别的周期代填。
+    static func multiTimeframeMACDSection(store: PortfolioStore) -> String? {
+        var lines: [String] = []
+        for holding in store.data.holdings.prefix(8) {
+            guard let result = store.multiTimeframeMACD(code: holding.code) else { continue }
+            var parts: [String] = ["日线 \(result.daily.trend.title)"]
+            if let weekly = result.weekly { parts.append("周线 \(weekly.trend.title)") }
+            else { parts.append("周线不可用") }
+            if let intraday = result.intraday { parts.append("60 分 \(intraday.trend.title)") }
+            else { parts.append("60 分不可用") }
+            var line = "\(holding.name)（\(holding.code)）：\(parts.joined(separator: " · "))"
+            let crosses = [result.daily.cross, result.weekly?.cross, result.intraday?.cross]
+                .compactMap { $0 }
+                .filter { $0 != .none }
+            if !crosses.isEmpty {
+                line += "；交叉：\(crosses.map(\.title).joined(separator: "、"))"
+            }
+            line += "；\(result.resonance)"
+            if !result.daily.signalConfirmed { line += "（最新一根未走完）" }
+            lines.append(line)
+        }
+        guard !lines.isEmpty else { return nil }
+        return """
+        【多周期 MACD（日线由本机日 K 计算，周线按自然周聚合，60 分由分钟快照分桶）】
+        · \(lines.joined(separator: "\n· "))
+        说明：60 分线用的是分钟快照的收盘价（不是真 OHLC），方向可参考，幅度不可精读。未走完的那根不算确认信号。
+        """
+    }
+
+    /// 单只标的的多周期摘要，给个股分析用。
+    static func multiTimeframeMACDLine(store: PortfolioStore, code: String, name: String) -> String? {
+        guard let result = store.multiTimeframeMACD(code: code) else { return nil }
+        func describe(_ assessment: MACDTimeframeAssessment?) -> String {
+            guard let assessment else { return "不可用" }
+            var text = assessment.trend.title
+            if assessment.cross != .none { text += " · \(assessment.cross.title)" }
+            if !assessment.signalConfirmed { text += "（未走完，未确认）" }
+            if assessment.dataQuality < 0.98 { text += "（数据\(assessment.qualityLabel)）" }
+            return text
+        }
+        var lines: [String] = []
+        lines.append("\(name)（\(code)）")
+        lines.append("日线：\(describe(result.daily))")
+        lines.append("周线：\(describe(result.weekly))")
+        lines.append("60 分：\(describe(result.intraday))")
+        lines.append("关系：\(result.relationship)；\(result.resonance)")
+        return """
+        【多周期 MACD（本机计算，不是外部信号服务）】
+        \(lines.joined(separator: "\n"))
+        说明：60 分线由分钟快照分桶得到，只用收盘价，不是真 OHLC；未走完的 K 线不算确认信号。
+        """
+    }
+
+    // MARK: - 已实现业绩
+
+    static func realizedSection(store: PortfolioStore) -> String? {
+        let snapshot = store.realizedPerformance
+        guard snapshot.sellFillCount > 0 else { return nil }
+        var lines: [String] = []
+        lines.append("累计卖出 \(snapshot.sellFillCount) 笔，已实现净额 \(snapshot.netRealizedProfit.cny())")
+        if let rate = snapshot.instrumentWinRate {
+            lines.append("按标的算的卖出胜率 \(rate.pct(0))（赚的标的数 / 有卖出的标的数，不是按笔）")
+        }
+        if let average = snapshot.averageReturnOnCost {
+            lines.append("平均已实现收益率 \(average.pct(2))（分母是卖出的成本基础，不是卖出金额）")
+        }
+        let top = snapshot.byInstrument.prefix(3)
+        if !top.isEmpty {
+            lines.append("贡献最大：" + top.map { "\($0.name) \($0.netRealizedProfit.cny())" }.joined(separator: "、"))
+        }
+        let worst = snapshot.byInstrument.last
+        if let worst, worst.netRealizedProfit < 0 {
+            lines.append("亏损最大：\(worst.name) \(worst.netRealizedProfit.cny())")
+        }
+        return """
+        【已实现业绩（本机账本按起点 + 逐笔重放，只统计已经卖出的部分）】
+        · \(lines.joined(separator: "\n· "))
+        """
+    }
+
+    // MARK: - 做 T 贡献
+
+    /// 只认「先卖后回补」的配对。先买后卖属于调仓，不算日内回转。
+    static func intradayTradeSection(store: PortfolioStore) -> String? {
+        let summaries = store.dailyTradeSummaries(limitDays: 30)
+        let trips = summaries.flatMap { $0.roundTrips }
+        guard !trips.isEmpty else { return nil }
+        let total = trips.reduce(0) { $0 + $1.contribution }
+        let wins = trips.filter { $0.contribution > 0.01 }.count
+        let days = Set(summaries.filter { !$0.roundTrips.isEmpty }.map(\.day)).count
+        var lines: [String] = []
+        lines.append("近 30 个交易日里，\(days) 天有先卖后回补，共 \(trips.count) 笔配对")
+        lines.append("这些配对合计贡献 \(total.cny())，其中 \(wins) 笔为正")
+        if let best = trips.first {
+            lines.append("最大单笔：\(best.name) \(best.quantity.num(0)) 份，卖 \(best.sellPrice.num(3)) 买回 \(best.buyBackPrice.num(3))，贡献 \(best.contribution.cny())")
+        }
+        return """
+        【日内做 T 贡献（本机账本，只算同日同标的「先卖后回补」）】
+        · \(lines.joined(separator: "\n· "))
+        说明：先买后卖属于调仓，没有计入；配对部分按比例分摊了两边手续费。
+        """
+    }
+
+    // MARK: - 决策记忆
+
+    static func decisionMemorySection(store: PortfolioStore) -> String? {
+        let entries = DecisionMemoryProjection.build(store.decisionVerdicts())
+        return DecisionMemoryProjection.promptText(entries)
     }
 
     // MARK: - 持仓周期
