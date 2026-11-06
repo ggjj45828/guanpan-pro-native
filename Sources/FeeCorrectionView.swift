@@ -196,7 +196,9 @@ struct FeeCorrectionView: View {
             } label: {
                 Text("按新费用重算")
                     .scaledFont(DS.fsLabel, weight: .semibold)
-                    .foregroundStyle(palette.isLight ? .white : palette.canvas)
+                    // 显式写 Color：三元里 `.white` 会被推断成 palette 另一侧的样式类型，
+                    // 编译报「LinearGradient 与 Color 不等价」。
+                    .foregroundStyle(Color.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 13)
                     .background { RoundedRectangle(cornerRadius: 16, style: .continuous).fill(palette.accent) }
