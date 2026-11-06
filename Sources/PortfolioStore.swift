@@ -632,6 +632,9 @@ final class PortfolioStore: ObservableObject {
         return (success, failure)
     }
     func save(label: String? = nil) {
+        // 起点必须落成交之前：只要这一次保存时账本还是干净的，就把当下定为起点。
+        // 顺序不能挪到 encode 之后，否则起点会带上这一次刚写入的内容。
+        captureOpeningSnapshotIfNeeded()
         guard let raw = try? JSONEncoder().encode(data) else { return }
         let defaults = UserDefaults.standard
         if !isUndoingSave, let previous = defaults.data(forKey: key), previous != raw {

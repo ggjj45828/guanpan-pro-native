@@ -20,6 +20,8 @@ enum PadTab: String, CaseIterable, Identifiable {
     case watchlist
     case holdings
     case funds
+    case grid
+    case income
     case assets
     case more
 
@@ -30,6 +32,8 @@ enum PadTab: String, CaseIterable, Identifiable {
         case .watchlist: return "自选"
         case .holdings: return "持仓"
         case .funds: return "基金"
+        case .grid: return "网格"
+        case .income: return "收息"
         case .assets: return "资产"
         case .more: return "更多"
         }
@@ -40,6 +44,8 @@ enum PadTab: String, CaseIterable, Identifiable {
         case .watchlist: return "chart.xyaxis.line"
         case .holdings: return "briefcase.fill"
         case .funds: return "building.columns.fill"
+        case .grid: return "square.grid.2x2.fill"
+        case .income: return "yensign.circle.fill"
         case .assets: return "chart.pie.fill"
         case .more: return "ellipsis.circle.fill"
         }
@@ -55,6 +61,11 @@ struct ContentView: View {
     /// 必须是可选型：iOS 上 `List(selection:)` 只接受 `Binding<SelectionValue?>`，
     /// 写死成非可选会匹配到 macOS 专用的重载，编译报 "unavailable in iOS"。
     @State private var padTab: PadTab? = .watchlist
+    /// iPhone 底栏的当前页签。7 个入口超过了系统 TabView 的 5 个上限，所以自绘底栏。
+    @State private var phoneTab: ProTab = .watchlist
+    /// 已经打开过的页签。只有它们才会被真正构建 —— 否则一启动就会把七个页面
+    /// 连同各自的行情请求一起拉起来（HoldingsView 的 onAppear 里就有净值刷新）。
+    @State private var visitedTabs: Set<ProTab> = [.watchlist]
     /// 定时自动切换深浅时，需要一个随时间推进的驱动器，否则计划时间到了也不会变。
     @State private var themeTick = 0
     private let themeTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -108,17 +119,40 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var phoneTabRoot: some View {
-        TabView {
-            DashboardView().tabItem { Label("自选", systemImage: "chart.xyaxis.line") }
-            HoldingsView(kind: .etf).tabItem { Label("持仓", systemImage: "briefcase.fill") }
-            HoldingsView(kind: .fund).tabItem { Label("基金", systemImage: "building.columns.fill") }
-            AssetsView().tabItem { Label("资产", systemImage: "chart.pie.fill") }
-            MoreHubView().tabItem { Label("更多", systemImage: "ellipsis.circle.fill") }
+        ZStack {
+            tabPage(.watchlist) { DashboardView() }
+            tabPage(.holdings) { HoldingsView(kind: .etf) }
+            tabPage(.funds) { HoldingsView(kind: .fund) }
+            // 网格页直接把日内网格 / 复盘表嵌进来：它就是用户要的那个工具本体，
+            // 再包一层「点进去看」的入口页只是多一次点击。
+            tabPage(.grid) { DayGridView(embedded: true) }
+            tabPage(.income) { IncomeHubView() }
+            tabPage(.assets) { AssetsView() }
+            tabPage(.more) { MoreHubView() }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ProTabBar(selection: tabBinding,
+                      surface: currentTheme.surface,
+                      accent: store.effectiveAccentColor,
+                      isLight: currentTheme.isLight)
         }
         .scrollContentBackground(.hidden)
         .background(.clear)
-        .toolbarBackground(currentTheme.surface, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
+        .onChange(of: phoneTab) { _, tab in
+            visitedTabs.insert(tab)
+        }
+    }
+
+    private var tabBinding: Binding<ProTab> {
+        Binding(get: { phoneTab }, set: { phoneTab = $0 })
+    }
+
+    /// 只在第一次访问时构建页面内容，之后靠透明度切换保留状态。
+    @ViewBuilder private func tabPage<Content: View>(_ tab: ProTab,
+                                                    @ViewBuilder content: () -> Content) -> some View {
+        if visitedTabs.contains(tab) {
+            ProTabPage(isActive: phoneTab == tab, content: content)
+        }
     }
 
     /// iPad 上底部五个 Tab 会挤在中间、列表也只剩窄窄一条，观感很差；
@@ -147,6 +181,8 @@ struct ContentView: View {
         case .watchlist: DashboardView()
         case .holdings: HoldingsView(kind: .etf)
         case .funds: HoldingsView(kind: .fund)
+        case .grid: DayGridView(embedded: true)
+        case .income: IncomeHubView()
         case .assets: AssetsView()
         case .more: MoreHubView()
         }
@@ -780,6 +816,8 @@ struct MoreHubView: View {
     @State private var showAIAnalysis = false
     @State private var showQuantEngine = false
     @State private var showPortfolioAdvice = false
+    @State private var showLedgerAudit = false
+    @State private var showOperationHistory = false
 
     var body: some View {
         NavigationStack {
@@ -819,11 +857,19 @@ struct MoreHubView: View {
                             }
                         }
                         HStack(spacing: 10) {
+                            MoreHubTile(title: "账本与审计", subtitle: "起点快照\n现金对账", icon: "text.book.closed.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
+                                showLedgerAudit = true
+                            }
                             MoreHubTile(title: "应用设置", subtitle: "配色、行情\n成本口径", icon: "gearshape.fill", tint: .gray) {
                                 showAppSettings = true
                             }
+                        }
+                        HStack(spacing: 10) {
                             MoreHubTile(title: "数据与同步", subtitle: "备份、NAS\n通知权限", icon: "externaldrive.fill", tint: .purple) {
                                 showDataSync = true
+                            }
+                            MoreHubTile(title: "操作记录", subtitle: "逐条改动\n可撤回", icon: "clock.arrow.circlepath", tint: Color(red: 0.40, green: 0.72, blue: 0.50)) {
+                                showOperationHistory = true
                             }
                         }
                     }
@@ -856,6 +902,8 @@ struct MoreHubView: View {
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
             .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
+            .sheet(isPresented: $showLedgerAudit) { LedgerAuditView() .themedSheetBackground() }
+            .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
         }
     }
 }
@@ -1096,8 +1144,10 @@ struct HoldingsView: View {
     /// 「基金工具」原来直接用 Menu 嵌在行内 —— List 行内嵌 Menu 会抢走横向平移手势，
     /// 导致整行左滑失效（swipeActions 弹不出来）。改成按钮 + confirmationDialog。
     @State private var fundToolTarget: Holding?
-    /// 长按菜单删除的确认目标
+    /// 长按菜单 / 左滑删除的确认目标（走 HoldingRemovalSheet 表单）
     @State private var removeTarget: Holding?
+    /// 删除完成后的结论文案，用 alert 交代账本到底发生了什么。
+    @State private var removalMessage: String?
     @State private var searchText = ""
     /// 驱动“最新净值已更新”彩虹强调在下一交易日 09:30 准时恢复普通卡片。
     @State private var fundFreshnessClock = Date.now
@@ -1163,6 +1213,13 @@ struct HoldingsView: View {
             .sheet(isPresented: $showFundQuant) { FundQuantView() .themedSheetBackground() }
             .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
             .sheet(item: $archivedFundTarget) { ArchivedFundHistoryView(item: $0) .themedSheetBackground() }
+            .sheet(item: $removeTarget) { target in
+                HoldingRemovalSheet(holding: target) { removalMessage = $0 }
+                    .themedSheetBackground()
+            }
+            .alert("持仓已更新", isPresented: Binding(get: { removalMessage != nil }, set: { if !$0 { removalMessage = nil } })) {
+                Button("好", role: .cancel) { removalMessage = nil }
+            } message: { Text(removalMessage ?? "") }
             .confirmationDialog(fundToolTarget?.name ?? "基金工具", isPresented: Binding(get: { fundToolTarget != nil }, set: { if !$0 { fundToolTarget = nil } }), titleVisibility: .visible) {
                 Button("净值走势") { if let t = fundToolTarget { fundHistoryTarget = t }; fundToolTarget = nil }
                 Button("赎回费率") { if let t = fundToolTarget { feePolicyTarget = t }; fundToolTarget = nil }
@@ -1450,8 +1507,10 @@ struct HoldingsView: View {
         // 左滑动作对齐养基宝的「后面有很多」：删除仍是全滑直达，
         // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
         // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button("删除", role: .destructive) { Haptics.heavy(); store.removeHolding(h) }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            // 不再用全滑直达删除：账本已经有成交时，「删」有三种完全不同的后果，
+            // 必须让用户在表单里选，而不是靠一次手滑替他决定。
+            Button("删除", role: .destructive) { Haptics.tap(); removeTarget = h }
             Button("编辑") { Haptics.tap(); editTarget = h }.tint(.blue)
             Button("交易") { Haptics.tap(); tradeTarget = h }.tint(.orange)
             if kind == .fund {
@@ -1479,10 +1538,9 @@ struct HoldingsView: View {
                 removeTarget = h
             } label: { Label("删除持仓", systemImage: "trash") }
         }
-        .confirmationDialog("删除「\(h.name)」？", isPresented: Binding(get: { removeTarget?.id == h.id }, set: { if !$0 { removeTarget = nil } }), titleVisibility: .visible) {
-            Button("删除持仓", role: .destructive) { store.removeHolding(h); removeTarget = nil }
-            Button("取消", role: .cancel) { removeTarget = nil }
-        } message: { Text("持仓会被移除，相关交易流水保留。删除后可用设置里的撤销操作找回最近一次。") }
+        // 删除走表单（见 HoldingsView 根视图上的 sheet）：
+        // 那里会先问「这一下到底该记卖出、还是改起点」，并要求填一句审计说明。
+
     }
 
     /// 从该净值日开始保持彩虹强调，直到它之后的首个交易日 09:30。
@@ -5033,6 +5091,9 @@ struct DayGridView: View {
     @State private var recommendationText = ""
     @State private var showImporter = false
     @State private var showStrategicGridPlanner = false
+    /// 作为底栏页签直接嵌入时不需要「完成」按钮 —— 那是给弹窗用的关闭入口，
+    /// 在页签里点它什么也不会发生，看起来像坏了。
+    var embedded: Bool = false
 
     private var instruments: [GridInstrument] {
         let quotes = store.data.quotes.map { GridInstrument(code: $0.code, name: $0.name, price: $0.price) }
@@ -5198,7 +5259,11 @@ struct DayGridView: View {
             .themedSheetBackground()
             .listRowBackground(Color.clear)
             .buttonStyle(.plain)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar {
+                if !embedded {
+                    ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                }
+            }
             .onAppear {
                 if code.isEmpty, let first = instruments.first { code = first.code; name = first.name; anchor = first.price > 0 ? String(format: "%.4f", first.price) : "" }
                 if selectedDay.isEmpty { selectedDay = store.gridTradingDays.first ?? "" }
