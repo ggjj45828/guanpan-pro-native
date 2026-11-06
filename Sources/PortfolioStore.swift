@@ -412,7 +412,14 @@ final class PortfolioStore: ObservableObject {
                 dailyBars[code] = result; saveDailyBars(); return result
             } catch { lastError = error }
         }
-        // 直连全部失败后：先试观盘F 服务端（结构化 JSON），再试 Pro 自己的 NAS 行情代理。
+        // 直连全部失败后：先试观盘max NAS 的归档日 K（来源/复权/样本数都核对过），
+        // 再试观盘Next 服务端的结构化 JSON，最后才走 Pro 自己的 NAS 行情代理。
+        // 归档日 K 是已完成交易日的历史数据，不是实时报价 —— 只补日线，不进 Quote。
+        if !isPrefixed, GuanpanMaxNAS.isConfigured,
+           let archived = try? await GuanpanMaxNAS.securityDaily(code: code), !archived.isEmpty {
+            let trimmed = Array(archived.suffix(min(max(count, 30), 640)))
+            dailyBars[code] = trimmed; saveDailyBars(); return trimmed
+        }
         if !isPrefixed, FNASBridge.isConfigured,
            let bridged = try? await FNASBridge.daily(code: code, count: count), !bridged.isEmpty {
             dailyBars[code] = bridged; saveDailyBars(); return bridged
@@ -443,7 +450,19 @@ final class PortfolioStore: ObservableObject {
             MarketCalendar.saveTradingDays(days)
             MarketCalendar.markFetched()
             return true
-        } catch { return false }
+        } catch {
+            // 整条行情链都断了时，用观盘max NAS 的指数归档反推交易日历。
+            // 只取日期：指数归档的 OHLCV 允许整段缺失，拿它生成 DailyBar 就是编造数据，
+            // 而日历需要的恰恰只有「哪天有 K 线」这一件事。
+            if GuanpanMaxNAS.isConfigured,
+               let archived = try? await GuanpanMaxNAS.indexTradingDays(indexCode: MarketCalendar.probeSymbol),
+               archived.count > 120 {
+                MarketCalendar.saveTradingDays(Set(archived))
+                MarketCalendar.markFetched()
+                return true
+            }
+            return false
+        }
     }
 
     private func parseDailyBars(_ bytes: Data, code: String, symbol: String) -> [DailyBar]? {

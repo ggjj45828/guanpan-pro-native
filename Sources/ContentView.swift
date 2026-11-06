@@ -6668,11 +6668,12 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
-    /// 观盘F（Next）服务端地址：只作为行情/日线的兜底数据源，不参与账本同步。
+    /// 观盘Next 服务端（30001）：可选的实时行情兜底，只在直连腾讯全失败时用。
+    /// 它和下面观盘max 的归档服务不是同一套协议，也不是同一个进程。
     @AppStorage(FNASBridge.urlKey) private var fnasURL = ""
-    /// 观盘F 的分钟归档服务（f-minute-archive）：AI 分析的「分钟级研究证据」从这里取。
-    /// 它和上面的行情兜底服务不是同一个进程，端口也常常不同，所以单独填。
-    @AppStorage(FMinuteArchive.urlKey) private var fminuteURL = ""
+    /// 观盘max NAS（f-minute-archive，8788）：归档日线、交易日、分钟线与研究证据。
+    /// **不提供实时报价** —— 这条地址只用于历史数据，不能填到上面那栏。
+    @AppStorage(GuanpanMaxNAS.urlKey) private var fminuteURL = ""
     @State private var checkingFNAS = false
     @State private var fnasStatus = ""
     @State private var checkingFMinute = false
@@ -7019,7 +7020,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var nasSection: some View {
-        Section("观盘F 服务端（行情兜底）") {
+        Section("观盘Next 服务端（可选 · 实时行情兜底）") {
             HStack {
                 TextField("例如 http://192.168.1.20:30001", text: $fnasURL)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -7028,7 +7029,7 @@ struct SettingsView: View {
                     if let value = values.first { fnasURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
                 }
                 .labelStyle(.iconOnly)
-                .accessibilityLabel("从剪贴板粘贴观盘F 服务端地址")
+                .accessibilityLabel("从剪贴板粘贴观盘Next 服务端地址")
             }
             Button {
                 testFNAS()
@@ -7039,11 +7040,11 @@ struct SettingsView: View {
             if !fnasStatus.isEmpty {
                 Text(fnasStatus).font(.footnote).foregroundStyle(.secondary)
             }
-            Text("这是观盘F（Next）自己那套 NAS 服务端，和上面的 Pro 同步服务不是同一个：它只提供行情与日线。填了以后直连腾讯失败时用它兜底，不会读取或覆盖本机账本；Pro 的账本同步仍然走上方的地址。")
+            Text("这是观盘Next 的 30001 服务端，只有它能转发实时报价：/v1/market/quotes 与日线。直连腾讯失败时用它兜底，不读取或覆盖本机账本。**它不是观盘max 的 NAS**，两者的接口路径完全不同，地址不能互换。没部署这套服务就留空。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
-        Section("观盘F 分钟归档（研究证据）") {
+        Section("观盘max NAS（历史数据 · 研究证据）") {
             HStack {
                 TextField("例如 http://192.168.1.20:8788", text: $fminuteURL)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -7052,7 +7053,7 @@ struct SettingsView: View {
                     if let value = values.first { fminuteURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
                 }
                 .labelStyle(.iconOnly)
-                .accessibilityLabel("从剪贴板粘贴分钟归档服务地址")
+                .accessibilityLabel("从剪贴板粘贴观盘max NAS 地址")
             }
             Button {
                 testFMinute()
@@ -7063,7 +7064,7 @@ struct SettingsView: View {
             if !fminuteStatus.isEmpty {
                 Text(fminuteStatus).font(.footnote).foregroundStyle(.secondary)
             }
-            Text("f-minute-archive 是独立进程，多数部署在 8788，但和上面两个服务的端口没有关系，按实际部署填。填了以后，AI 分析会附上「这只票在归档分钟线上」的统计证据 —— 必须同时满足质量分 ≥ 90、独立交易日 ≥ 25 才会进 prompt，不达标就整段不出现，不会拿半成品数据凑数。")
+            Text("观盘max（guanpan-f）的 NAS 是 f-minute-archive，独立进程、多数部署在 8788。它提供**已完成交易日**的证券日 K、指数交易日、分钟归档和研究证据：直连腾讯全失败时用它补日线，AI 分析附上分钟统计证据（质量分 ≥ 90 且独立交易日 ≥ 25 才进 prompt，不达标整段不出现）。\n\n**它不提供实时报价接口**，所以不能替代上面的观盘Next 服务端，也不会把归档收盘价当成实时价。较旧的部署包只有分钟线/研究证据路由；日线接口不存在时自动降级，不影响原有链路。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
@@ -7295,15 +7296,26 @@ struct SettingsView: View {
         }
     }
 
-    /// 只探归档服务的 /livez，确认地址填对了、对面真的是 f-minute-archive。
+    /// 探活 + 顺手报归档覆盖：地址通了不等于样本够。
     private func testFMinute() {
         checkingFMinute = true
         Task { @MainActor in
             defer { checkingFMinute = false }
             do {
-                fminuteStatus = try await FMinuteArchive.probe()
+                let summary = try await GuanpanMaxNAS.probe()
+                let candidate = store.data.holdings.first(where: {
+                    GuanpanMaxNAS.normalizedSecurityCode($0.code) != nil
+                })?.code ?? store.data.quotes.first(where: {
+                    GuanpanMaxNAS.normalizedSecurityCode($0.code) != nil
+                })?.code
+                if let candidate,
+                   let coverage = try? await GuanpanMaxNAS.minuteDiagnostics(code: candidate) {
+                    fminuteStatus = summary + "\n" + coverage
+                } else {
+                    fminuteStatus = summary + "\n目前没有 A 股标的，暂时无法检查分钟归档覆盖。"
+                }
             } catch let error as URLError where error.code == .cannotParseResponse {
-                fminuteStatus = "这个地址能连上，但不是 f-minute-archive：返回的 service 字段对不上。"
+                fminuteStatus = "这个地址能连上，但不是观盘max 的 f-minute-archive：service 字段对不上。"
             } catch {
                 fminuteStatus = "连接失败：\(error.localizedDescription)。确认地址带端口，且归档容器已启动。"
             }

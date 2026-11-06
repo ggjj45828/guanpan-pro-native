@@ -372,128 +372,23 @@ enum ResearchEvidenceProbe {
     }
 }
 
-/// 观盘F 的分钟归档服务（f-minute-archive，默认端口 8788）。
-///
-/// 它跟 Pro 的 NAS 同步服务、观盘Next 的行情服务都是**不同的进程**，
-/// 端口也不能假设相同 —— 所以单独配置地址，不从别的地址推导。
-/// 猜错的代价是每只票都发一次注定失败的请求，还让人以为功能坏了。
+/// 观盘max NAS 的旧入口。2.20.0 里它自己管地址和请求，
+/// 2.21.0 起全部收敛到 `GuanpanMaxNAS` —— 一个服务、一份契约、一个地址。
+/// 保留这个类型只是兼容既有调用点（AI 分析、设置页、抑制标记），不再有自己的实现。
 enum FMinuteArchive {
-    static let urlKey = "guanpan.pro.fminute.url"
+    static var urlKey: String { GuanpanMaxNAS.urlKey }
+    static var baseURLString: String { GuanpanMaxNAS.baseURLString }
+    static var normalizedBase: String? { GuanpanMaxNAS.normalizedBase }
+    static var isConfigured: Bool { GuanpanMaxNAS.isConfigured }
 
-    static var baseURLString: String {
-        UserDefaults.standard.string(forKey: urlKey) ?? ""
-    }
-
-    static var normalizedBase: String? {
-        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let url = URL(string: trimmed),
-              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              url.host != nil else { return nil }
-        return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
-    }
-
-    static var isConfigured: Bool { normalizedBase != nil }
-
-    static func save(_ address: String) {
-        UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: urlKey)
-        // 换了地址就该重新探测：上一次「不支持」的结论是旧地址得出的。
-        ResearchEvidenceProbe.clear()
-    }
-
-    /// 归档服务只认 6 位纯数字 A 股代码（它的 provider 会自己拼 sh/sz 前缀）。
-    ///
-    /// App 内部持仓码是带市场前缀的 `sh600519` 形态，直接传过去服务端会抛
-    /// "securityCode must be a six-digit mainland security code" 然后 400 ——
-    /// 表现与「归档样本不够」一模一样，很难查。这里先剥前缀再请求。
-    /// 非 A 股（港股、美股、场外基金）直接返回 nil，连请求都不发。
+    static func save(_ address: String) { GuanpanMaxNAS.save(address) }
     static func normalizedSecurityCode(_ raw: String) -> String? {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let digits = value.replacingOccurrences(of: "^(sh|sz|bj|hk|us)", with: "", options: .regularExpression)
-        guard digits.count == 6, digits.allSatisfy({ $0.isNumber }) else { return nil }
-        return digits
+        GuanpanMaxNAS.normalizedSecurityCode(raw)
     }
-
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
-    /// 只探 `/livez`：确认地址填对了、而且对面真的是归档服务。
-    ///
-    /// 光看「有响应」不够 —— 同一个端口可能挂着别的服务，
-    /// 填错时能连上却拿不到证据，比连不上更难查。
-    static func probe() async throws -> String {
-        guard let base = normalizedBase,
-              let url = URL(string: base + "/livez") else { throw URLError(.badURL) }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 8
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        let service = object?["service"] as? String
-        guard service == "f-minute-archive" else {
-            throw URLError(.cannotParseResponse)
-        }
-        // 探测通过说明对面有接口，但历史够不够 25 个交易日是另一回事。
-        ResearchEvidenceProbe.clear()
-        return "连接正常 · f-minute-archive 在线"
-    }
-
-    /// 拉一只标的的研究证据。拿不到就返回 nil —— 不报错、不阻塞、不编造。
-    ///
-    /// 契约以 NAS 上实际部署的那个服务为准：
-    /// `GET /api/v1/minute-history/research?securityCode=&market=&startDate=&endDate=&asOf=`
+    static func probe() async throws -> String { try await GuanpanMaxNAS.probe() }
     static func researchEvidence(code: String,
                                  lookbackDays: Int = 120,
                                  now: Date = .now) async -> ResearchEvidenceEnvelope? {
-        guard !ResearchEvidenceProbe.isSuppressed,
-              let base = normalizedBase,
-              let securityCode = normalizedSecurityCode(code) else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = dayFormatter.timeZone
-        guard let start = calendar.date(byAdding: .day, value: -lookbackDays, to: now),
-              var components = URLComponents(string: base + "/api/v1/minute-history/research") else { return nil }
-        // 服务端要求 asOf 不晚于它自己盖章的 generatedAt。手机时钟比 NAS 快几秒就会 400，
-        // 留 30 秒余量 —— 这点差别不影响「证据是哪一刻的快照」这个语义。
-        let asOf = now.addingTimeInterval(-30)
-        components.queryItems = [
-            URLQueryItem(name: "securityCode", value: securityCode),
-            URLQueryItem(name: "market", value: "CN"),
-            URLQueryItem(name: "startDate", value: dayFormatter.string(from: start)),
-            URLQueryItem(name: "endDate", value: dayFormatter.string(from: now)),
-            URLQueryItem(name: "asOf", value: ISO8601DateFormatter().string(from: asOf)),
-            URLQueryItem(name: "minimumIndependentDays", value: String(ResearchEvidenceEnvelope.minimumIndependentDays)),
-            URLQueryItem(name: "minimumQuality", value: String(ResearchEvidenceEnvelope.minimumQualityGate))
-        ]
-        guard let url = components.url else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 20
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse else { return nil }
-        switch http.statusCode {
-        case 200:
-            break
-        case 404, 501:
-            // 这个服务上根本没有 research 路由 —— 记下来，6 小时内别再问。
-            ResearchEvidenceProbe.markUnsupported()
-            return nil
-        default:
-            // 400 是参数或区间边界问题（例如当天没有达标样本），
-            // 属于「这次没数据」而不是「能力不存在」，不抑制。
-            return nil
-        }
-        guard data.count <= 1_048_576 else { return nil }
-        // 服务端可能按别的键缓存过响应。拿回来先对一次标的与市场，
-        // 否则「A 票的证据」会被写进 B 票的 prompt —— 这种错比没有证据更糟。
-        guard let envelope = try? JSONDecoder().decode(ResearchEvidenceEnvelope.self, from: data),
-              envelope.securityCode.trimmingCharacters(in: .whitespacesAndNewlines) == securityCode,
-              envelope.market == "CN" else { return nil }
-        return envelope
+        await GuanpanMaxNAS.researchEvidence(code: code, lookbackDays: lookbackDays, now: now)
     }
 }

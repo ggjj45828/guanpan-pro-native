@@ -1,14 +1,19 @@
 import Foundation
 
-// MARK: - 观盘F NAS 桥接
+// MARK: - 观盘Next 服务端桥接（可选实时行情源）
 //
-// 观盘 Pro 原本只认自家 NAS 服务端（/api/native/*、/api/quote 这类「原样转发上游字节」的接口）。
-// 而观盘F（Next）的服务端是另一套 REST：/health、/v1/market/quotes、/v1/market/daily/<code>。
-// 两者协议不同，不能混用同一个地址。
+// 三套 NAS 协议互不相通，地址绝不能混填：
+//   · Pro 账本同步    /api/native/*    NASSyncService
+//   · 观盘Next        /v1/market/*     本文件，30001，**有实时报价**
+//   · 观盘max NAS     /api/v1/*        GuanpanMaxNAS，8788，只有归档历史
 //
-// 这一层只做一件事：把 F 服务端的 JSON 翻成 Pro 的 Quote / DailyBar。
-// 它**不写账本、不碰同步**：F 服务端的 /api/data 是 F App 自己的数据结构，
-// 把 Pro 的账本塞过去只会互相覆盖，所以这里不做备份同步，设置页也如实写明。
+// 观盘max（guanpan-f）的 f-minute-archive 上**没有** /v1/market/quotes，
+// 把 8788 的地址填到这一栏会全部 404。反过来，把 30001 填到观盘max 那栏
+// 也拿不到研究证据。两个地址分别存，设置页分别标注。
+//
+// 这一层只做一件事：把观盘Next 服务端的 JSON 翻成 Pro 的 Quote / DailyBar。
+// 它**不写账本、不碰同步**：/api/data 是另一套数据结构，
+// 把 Pro 的账本塞过去只会互相覆盖。
 
 struct FNASQuoteRow: Decodable {
     let code: String
