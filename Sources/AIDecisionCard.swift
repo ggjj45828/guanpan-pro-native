@@ -258,9 +258,15 @@ struct AIDecisionCard: View {
         }
     }
 
+    /// 置信度配色抽成函数：嵌套三元 + Color 在 ViewBuilder 里很容易拖慢类型检查。
+    private func confidenceTint(_ value: Double) -> Color {
+        if value >= 0.85 { return PnLColor.up }
+        if value >= 0.6 { return CardTone.ok }
+        return CardTone.warn
+    }
+
     private var confidenceBadge: some View {
-        let tint = decision.confidence >= 0.85 ? PnLColor.up
-            : decision.confidence >= 0.6 ? CardTone.ok : CardTone.warn
+        let tint = confidenceTint(decision.confidence)
         return VStack(alignment: .trailing, spacing: 1) {
             Text(decision.confidenceLabel)
                 .scaledFont(11, weight: .semibold)

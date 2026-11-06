@@ -220,13 +220,29 @@ struct ScoreRadarView: View {
         }
     }
 
+    /// 第 index 个顶点的角度（从 12 点方向起，顺时针）。
+    ///
+    /// 单独抽成函数是因为：这个角度表达式直接写在 `Path` / `View` 的构造里时，
+    /// Swift 的类型检查器会推断到超时（CI 上已连续踩两次 "unable to type-check"）。
+    /// 给它一个明确的返回类型，推断就有落点了。
+    private func angle(at index: Int, count: Int) -> Double {
+        let safeCount = max(3, count)
+        let step: Double = 2.0 * Double.pi / Double(safeCount)
+        let base: Double = -Double.pi / 2.0
+        return base + Double(index) * step
+    }
+
     private func points(center: CGPoint, radius: CGFloat) -> [CGPoint] {
         let count = max(3, dimensions.count)
-        return (0..<count).map { index in
-            let angle = -Double.pi / 2 + Double(index) * 2 * Double.pi / Double(count)
-            return CGPoint(x: center.x + radius * CGFloat(cos(angle)),
-                           y: center.y + radius * CGFloat(sin(angle)))
+        var result: [CGPoint] = []
+        result.reserveCapacity(count)
+        for index in 0..<count {
+            let radians = angle(at: index, count: count)
+            let dx: CGFloat = radius * CGFloat(cos(radians))
+            let dy: CGFloat = radius * CGFloat(sin(radians))
+            result.append(CGPoint(x: center.x + dx, y: center.y + dy))
         }
+        return result
     }
 
     private func gridPath(center: CGPoint, radius: CGFloat) -> Path {
@@ -252,7 +268,9 @@ struct ScoreRadarView: View {
         var path = Path()
         let count = dimensions.count
         guard count >= 3 else { return path }
-        let angles = (0..<count).map { -Double.pi / 2 + Double($0) * 2 * Double.pi / Double(count) }
+        var angles: [Double] = []
+        angles.reserveCapacity(count)
+        for index in 0..<count { angles.append(angle(at: index, count: count)) }
         for (index, dimension) in dimensions.enumerated() {
             // 拆成三个局部量：写成一行嵌套表达式会让类型检查器直接超时（已在 CI 上踩过）。
             let clamped = min(100.0, max(0.0, dimension.value))
@@ -269,10 +287,10 @@ struct ScoreRadarView: View {
 
     private func labelView(_ dimension: RadarDimension, index: Int, center: CGPoint, radius: CGFloat) -> some View {
         let count = max(3, dimensions.count)
-        let angle = -Double.pi / 2 + Double(index) * 2 * Double.pi / Double(count)
-        let offset = radius + 14
-        let dx = offset * CGFloat(cos(angle))
-        let dy = offset * CGFloat(sin(angle))
+        let radians = angle(at: index, count: count)
+        let offset: CGFloat = radius + 14
+        let dx: CGFloat = offset * CGFloat(cos(radians))
+        let dy: CGFloat = offset * CGFloat(sin(radians))
         let point = CGPoint(x: center.x + dx, y: center.y + dy)
         return VStack(spacing: 0) {
             Text(dimension.kind.title)
@@ -293,6 +311,14 @@ struct ScoreRadarCard: View {
     @Environment(\.appAppearance) private var appearance
 
     private var theme: AppTheme { AppTheme.palette(for: AppAppearance.resolved(appearance)) }
+
+    /// 分数配色：66 分以上按「偏强」染红（国内红涨），33 以下按「偏弱」染绿。
+    /// 写成函数而不是嵌套三元，避免在 ViewBuilder 里拖慢类型检查。
+    private func scoreColor(_ value: Double) -> Color {
+        if value >= 66 { return PnLColor.up }
+        if value >= 33 { return Color.primary }
+        return PnLColor.down
+    }
 
     var body: some View {
         if showsBackground {
@@ -334,8 +360,7 @@ struct ScoreRadarCard: View {
                         Spacer(minLength: 4)
                         Text(dimension.value.num(0))
                             .scaledFont(11, weight: .semibold, design: .rounded)
-                            .foregroundStyle(dimension.value >= 66 ? PnLColor.up
-                                             : dimension.value >= 33 ? Color.primary : PnLColor.down)
+                            .foregroundStyle(scoreColor(dimension.value))
                     }
                 }
             }
