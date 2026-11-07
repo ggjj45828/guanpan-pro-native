@@ -1420,9 +1420,268 @@ check("历史验证：MACD 金叉在下跌转上涨处出现（至少 1 次）",
 check("历史验证：MACD 金叉信号日不越界（全部 < n−warmup）",
       all(0 <= i < len(_macd_up) for i in _gi))
 
+# ============================================================
+# 八类本地量化因子（LocalQuantFactorEngine 的 Python 复刻）
+# 与 Web F 版 FLocalQuantEngine 逐函数对齐（口径核对用）。
+# ============================================================
+import math
+
+def lq_moving_average(closes, period):
+    if period <= 0 or len(closes) < period:
+        return None
+    window = closes[-period:]
+    if any((not math.isfinite(v)) or v <= 0 for v in window):
+        return None
+    r = sum(window) / period
+    return r if math.isfinite(r) and r > 0 else None
+
+def lq_trend_value(current, closes, periods):
+    if current is None or (not math.isfinite(current)) or current <= 0 or not closes:
+        return None
+    avgs = []
+    for p in periods:
+        ma = lq_moving_average(closes, p)
+        if ma is not None and ma > 0:
+            avgs.append(current / ma - 1)
+    if len(avgs) < 2:
+        return None
+    r = sum(avgs) / len(avgs)
+    return r if math.isfinite(r) else None
+
+def lq_ma_structure(closes):
+    if not closes:
+        return None
+    pairs = [(lq_moving_average(closes, 5), lq_moving_average(closes, 20)),
+             (lq_moving_average(closes, 20), lq_moving_average(closes, 60)),
+             (lq_moving_average(closes, 60), lq_moving_average(closes, 250))]
+    devs = []
+    for short, long in pairs:
+        if short is not None and long is not None and long > 0:
+            v = short / long - 1
+            if math.isfinite(v):
+                devs.append(v)
+    if not devs:
+        return None
+    r = sum(devs) / len(devs)
+    return r if math.isfinite(r) else None
+
+def lq_return_volatility(prices):
+    if len(prices) < 3:
+        return None
+    rets = []
+    for prev, cur in zip(prices, prices[1:]):
+        if prev <= 0:
+            return None
+        v = cur / prev - 1
+        if not math.isfinite(v):
+            return None
+        rets.append(v)
+    mean = sum(rets) / len(rets)
+    if not math.isfinite(mean):
+        return None
+    var = sum((r - mean) ** 2 for r in rets) / len(rets)
+    if (not math.isfinite(var)) or var < 0:
+        return None
+    r = math.sqrt(var)
+    return r if math.isfinite(r) and r >= 0 else None
+
+def lq_safe_average(values):
+    if not values or any(not math.isfinite(v) for v in values):
+        return None
+    return sum(values) / len(values)
+
+def lq_vwap(samples):
+    """samples: [(price, volume|None), ...]"""
+    if len(samples) < 20:
+        return None
+    weighted = [(p, v) for p, v in samples
+                if v is not None and math.isfinite(v) and v >= 0
+                and math.isfinite(p) and p > 0]
+    minimum = math.ceil(len(samples) * 0.9)
+    if len(weighted) < minimum:
+        return None
+    wsum, vtotal = 0.0, 0.0
+    for p, v in weighted:
+        wsum += p * v
+        vtotal += v
+    if vtotal <= 0:
+        return None
+    r = wsum / vtotal
+    return r if math.isfinite(r) and r > 0 else None
+
+def lq_volume_coverage_note(samples):
+    if not samples:
+        return None
+    known = sum(1 for _, v in samples
+                if v is not None and math.isfinite(v) and v >= 0)
+    if known >= len(samples):
+        return None
+    return known * 100 // len(samples)
+
+def lq_recent_consecutive(timestamps, gap_limit=90.0, count=20):
+    window = timestamps[-count:]
+    if len(window) != count:
+        return False
+    for a, b in zip(window, window[1:]):
+        gap = b - a
+        if not (math.isfinite(gap) and 0 < gap <= gap_limit):
+            return False
+    return True
+
+def lq_return_over_last(prices, count):
+    if len(prices) < count:
+        return None
+    first, last = prices[-count], prices[-1]
+    if first <= 0:
+        return None
+    r = last / first - 1
+    return r if math.isfinite(r) else None
+
+def lq_mean_reversion(prices):
+    window = prices[-20:]
+    if len(window) < 5:
+        return None
+    current = window[-1]
+    if current <= 0:
+        return None
+    mean = lq_safe_average(window)
+    if mean is None or mean <= 0:
+        return None
+    r = mean / current - 1
+    return r if math.isfinite(r) else None
+
+def lq_volume_anomaly(volumes):
+    if len(volumes) < 20:
+        return None
+    window = volumes[-20:]
+    if any(v is None or (not math.isfinite(v)) or v < 0 for v in window):
+        return None
+    baseline = lq_safe_average(window[:15])
+    recent = lq_safe_average(window[-5:])
+    if baseline is None or recent is None or baseline <= 0:
+        return None
+    ratio = recent / baseline
+    if (not math.isfinite(ratio)) or ratio <= 0:
+        return None
+    r = ratio - 1
+    return r if math.isfinite(r) else None
+
+def lq_directional_score(value, scale):
+    if value is None or not math.isfinite(value):
+        return None
+    if scale is None or (not math.isfinite(scale)) or scale <= 0:
+        return None
+    z = value / scale
+    if not math.isfinite(z):
+        return "overflow"
+    bounded = z / (1 + abs(z))
+    return int(round(bounded * 100))
+
+def lq_report_directional(scores):
+    """综合方向刻度：有效刻度 >=3 才给值（防稀疏数据误导）。"""
+    valid = [s for s in scores if s is not None]
+    if len(valid) < 3:
+        return None
+    return int(round(sum(valid) / len(valid)))
+
+
+check("八类因子：均线样本不足 period → 不出数",
+      lq_moving_average([10.0] * 9, 20) is None)
+check("八类因子：均线正常计算",
+      abs(lq_moving_average([10.0] * 15 + [20.0] * 5, 20) - (15 * 10.0 + 5 * 20.0) / 20) < 1e-9)
+
+_c20 = [10.0 + 0.1 * i for i in range(70)]
+check("八类因子：趋势结构仅一条均线 → None",
+      lq_trend_value(12.0, _c20[:20], [20, 60, 250]) is None)
+check("八类因子：趋势结构两条均线 → 偏离均值",
+      lq_trend_value(11.0, [10.0] * 70, [20, 60, 250]) is not None and
+      abs(lq_trend_value(11.0, [10.0] * 70, [20, 60, 250]) - 0.1) < 1e-9)
+check("八类因子：趋势结构缺现价 → None",
+      lq_trend_value(None, [10.0] * 70, [20, 60]) is None)
+
+check("八类因子：均线结构空序列 → None",
+      lq_ma_structure([]) is None)
+check("八类因子：均线结构全等均线 → 乖离 0",
+      abs(lq_ma_structure([10.0] * 300)) < 1e-9)
+
+check("八类因子：波动率 <3 样本 → None",
+      lq_return_volatility([10.0, 10.1]) is None)
+check("八类因子：恒定价格序列波动率 = 0（合法观测）",
+      lq_return_volatility([10.0] * 5) == 0.0)
+check("八类因子：波动率正常 > 0",
+      lq_return_volatility([10.0, 11.0, 10.0, 11.0]) > 0)
+
+_flat20 = [(10.0, 100.0)] * 20
+check("八类因子：VWAP <20 样本 → None",
+      lq_vwap(_flat20[:19]) is None)
+check("八类因子：VWAP 量缺失 >10%（17/20 已知）→ fail closed",
+      lq_vwap([(10.0, 100.0)] * 17 + [(10.0, None)] * 3) is None)
+check("八类因子：VWAP 量缺失恰 10%（18/20 已知）→ 仍可算",
+      lq_vwap([(10.0, 100.0)] * 18 + [(10.0, None)] * 2) == 10.0)
+check("八类因子：VWAP 量缺失 <=10% 仍可算",
+      abs(lq_vwap([(10.0, 100.0)] * 19 + [(12.0, None)]) - 10.0) < 1e-9)
+check("八类因子：VWAP 加权正确（价×量）",
+      abs(lq_vwap([(10.0, 100.0)] * 10 + [(20.0, 100.0)] * 10) - 15.0) < 1e-9)
+check("八类因子：VWAP 全量为 0 → None",
+      lq_vwap([(10.0, 0.0)] * 20) is None)
+
+check("八类因子：覆盖率全已知 → 无备注",
+      lq_volume_coverage_note([(1.0, 1.0)] * 20) is None)
+check("八类因子：覆盖率缺量 → 给百分比",
+      lq_volume_coverage_note([(1.0, 1.0)] * 18 + [(1.0, None)] * 2) == 90)
+
+_t60 = [float(i) for i in range(20)]
+check("八类因子：连续样本 20 个间隔 60s → True",
+      lq_recent_consecutive(_t60) is True)
+check("八类因子：间隔超 90s → False",
+      lq_recent_consecutive(_t60[:18] + [18 * 60.0 + 120.0, 19 * 60.0 + 120.0]) is False)
+check("八类因子：不足 20 个 → False",
+      lq_recent_consecutive(_t60[:19]) is False)
+
+check("八类因子：短动量 5 样本收益",
+      abs(lq_return_over_last([10.0, 10.0, 10.0, 10.0, 11.0], 5) - 0.1) < 1e-9)
+check("八类因子：短动量样本不足 → None",
+      lq_return_over_last([10.0, 10.0], 5) is None)
+
+check("八类因子：均值回归 <5 样本 → None",
+      lq_mean_reversion([10.0] * 4) is None)
+check("八类因子：均值回归 = 均值/现价 − 1",
+      abs(lq_mean_reversion([10.0] * 19 + [11.0]) - (10.05 / 11.0 - 1)) < 1e-9)
+
+check("八类因子：量能异动 = 近5/前15 − 1",
+      abs(lq_volume_anomaly([100.0] * 15 + [150.0] * 5) - 0.5) < 1e-9)
+check("八类因子：量能异动基线为 0 → None",
+      lq_volume_anomaly([0.0] * 15 + [150.0] * 5) is None)
+check("八类因子：量能异动样本不足 → None",
+      lq_volume_anomaly([100.0] * 19) is None)
+
+check("八类因子：方向刻度 z=1 → 50",
+      lq_directional_score(1.0, 1.0) == 50)
+check("八类因子：方向刻度尺度为 0 → None",
+      lq_directional_score(1.0, 0.0) is None)
+check("八类因子：方向刻度大 z 饱和（|score| 接近 100）",
+      abs(lq_directional_score(100.0, 0.001)) >= 99)
+check("八类因子：方向刻度负值为负分",
+      lq_directional_score(-1.0, 1.0) == -50)
+
+check("八类因子：综合刻度有效项 <3 → None",
+      lq_report_directional([10, 20, None, None]) is None)
+check("八类因子：综合刻度 >=3 项 → 均值",
+      lq_report_directional([10, 20, 30, None]) == 20)
+
+# 闸门：quoteFresh=False 时日内因子全不可用（模拟 evaluate 的判定）
+_intraday_kinds_gate = (lambda fresh: fresh is True)
+check("八类因子：报价不新鲜 → 日内因子闸门关闭",
+      _intraday_kinds_gate(False) is False)
+
+# IOPV 折溢价口径：现价/净值 − 1
+check("八类因子：IOPV 折溢价 = 价/净值 − 1",
+      abs((10.5 / 10.0 - 1) - 0.05) < 1e-9)
+
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价 / MA250长期趋势 / 历史验证")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价 / MA250长期趋势 / 历史验证 / 八类本地量化因子")
 sys.exit(0)

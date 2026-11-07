@@ -89,6 +89,7 @@ struct TechnicalResearchView: View {
                 volumeCard
                 marketRegimeCard
                 historyValidationCard
+                LocalQuantFactorCardView(code: code)
                 disclaimerCard
             }
             .padding(layout.pageInset)
@@ -857,6 +858,131 @@ struct TechnicalResearchView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - 八类因子证据卡（独立私有视图，不与页面 computed var 混排）
+//
+// 只呈现 LocalQuantFactorEngine 的测量结果：因子值、方向刻度、样本与来源。
+// 不加分、不排名、不给买卖建议；不可用的因子如实写原因，不补 0。
+
+private struct LocalQuantFactorCardView: View {
+    @Environment(\.appAppearance) private var appearance
+    @EnvironmentObject private var store: PortfolioStore
+
+    let code: String
+
+    private var bars: [DailyBar] { store.dailyBars[code] ?? [] }
+    private var quote: Quote? { store.data.quotes.first { $0.code == code } }
+
+    /// 已收盘日线：与 F 版同口径——当日那根 bar 也先剔除，
+    /// 墙钟时间不能证明提供方已定稿当日日线（保守做法，宁缺毋滥）。
+    private var completedBars: [DailyBar] {
+        let today = Self.shanghaiDay(Date())
+        return bars.filter { $0.date < today }
+    }
+
+    /// 当日分钟样本（归档分时按天取最新一天）。
+    private var todaySamples: [IntradayBar] {
+        let mine = store.intradayBars.filter { $0.code == code }
+        guard let latestDay = mine.map(\.day).max() else { return [] }
+        return mine.filter { $0.day == latestDay }.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    /// 实时报价是否可用：连续交易时段 + 报价在 90 秒内。
+    private var quoteFresh: Bool {
+        guard TradingSession.status(at: Date(), custom: store.data.customMarketHolidays) == .continuous,
+              let updatedAt = quote?.updatedAt else { return false }
+        return Date().timeIntervalSince(updatedAt) <= 90
+    }
+
+    private var report: LocalQuantFactorReport {
+        LocalQuantFactorEngine.evaluate(
+            code: code,
+            bars: completedBars,
+            samples: todaySamples,
+            price: quote?.price,
+            iopv: store.etfIOPV[code],
+            quoteFresh: quoteFresh)
+    }
+
+    var body: some View {
+        ResearchCard(title: "八类因子证据",
+                     subtitle: "本机 Quant · 与 Web 版口径逐项对齐",
+                     badge: "观察证据 · 非买卖信号") {
+            let sem = ThemeSemantics.of(appearance)
+            let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+            let report = self.report
+            VStack(alignment: .leading, spacing: layout.gap) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("综合方向刻度").font(.caption).foregroundStyle(sem.ink3)
+                    Spacer()
+                    if let score = report.directionalScore {
+                        Text("\(score)")
+                            .font(.title3.bold()).monospacedDigit()
+                            .foregroundStyle(score > 0 ? PnLColor.up : (score < 0 ? PnLColor.down : sem.ink2))
+                        Text("(\(report.scoredFactorCount) 项)")
+                            .font(.caption2).foregroundStyle(sem.ink3)
+                    } else {
+                        Text("有效刻度 < 3，不出综合值").font(.caption).foregroundStyle(sem.ink3)
+                    }
+                }
+
+                Divider().opacity(0.4)
+
+                ForEach(report.factors) { factor in
+                    factorRow(factor, sem: sem)
+                }
+
+                Text("方向刻度 = 因子值 ÷ 波动率 → z/(1+|z|)×100，只描述相对方向，不是概率、不是预期收益。日线类用已收盘 K 线；日内类用当日分钟样本（断档样本不出数）。任何单项都不构成买卖信号、不进评分。")
+                    .font(.caption2).foregroundStyle(sem.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private func factorRow(_ factor: LocalQuantFactorObservation,
+                                        sem: ThemeSemantics) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(factor.kind.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(sem.ink)
+                Spacer()
+                if factor.isAvailable, let value = factor.value {
+                    Text((value * 100).pct(2))
+                        .font(.subheadline.bold()).monospacedDigit()
+                        .foregroundStyle(sem.ink2)
+                    if let score = factor.directionalScore {
+                        Text("→ \(score)")
+                            .font(.caption).monospacedDigit()
+                            .foregroundStyle(score > 0 ? PnLColor.up : (score < 0 ? PnLColor.down : sem.ink3))
+                    }
+                } else {
+                    Text("不可用")
+                        .font(.caption)
+                        .foregroundStyle(sem.ink3)
+                }
+            }
+            if !factor.isAvailable {
+                Text(factor.unavailableReason ?? "数据不足")
+                    .font(.caption2).foregroundStyle(sem.ink3)
+            } else {
+                Text(factor.kind.definition)
+                    .font(.caption2).foregroundStyle(sem.ink3)
+                if let note = factor.qualityNote {
+                    Text(note).font(.caption2).foregroundStyle(sem.warn)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private static func shanghaiDay(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return formatter.string(from: date)
     }
 }
 

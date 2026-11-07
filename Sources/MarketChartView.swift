@@ -1351,6 +1351,10 @@ struct MarketChartView: View {
                 RuleMark(x: .value("选中日期", selected.date))
                     .foregroundStyle(store.effectiveAccentColor.opacity(0.75))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                // 十字线的横线：标在选中根的收盘价上，与竖线交于选中点
+                RuleMark(y: .value("选中收盘", selected.close))
+                    .foregroundStyle(store.effectiveAccentColor.opacity(0.45))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 PointMark(x: .value("选中日期", selected.date), y: .value("收盘", selected.close))
                     .foregroundStyle(store.effectiveAccentColor)
                     .symbolSize(30)
