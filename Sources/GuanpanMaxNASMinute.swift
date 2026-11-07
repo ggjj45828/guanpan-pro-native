@@ -46,7 +46,7 @@ enum MaxNASMinuteError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidAddress:
-            return "观盘max NAS 地址无效；请填写 http(s)://主机:8788。"
+            return "观盘max NAS 地址无效；请填写 http(s)://主机:8790。"
         case let .historyUnavailable(reason):
             return "NAS 分钟归档读取失败：\(reason)"
         }

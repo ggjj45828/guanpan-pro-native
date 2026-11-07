@@ -3,12 +3,12 @@ import Foundation
 // MARK: - 观盘max NAS 适配层
 //
 // 观盘max = 仓库 guanpan-f（App 显示名「观盘max」，代码名 GuanpanF）。
-// 它的 NAS 是 f-minute-archive：独立进程、默认 8788、按交易日归档历史数据。
+// 它的 NAS 是 f-minute-archive：独立进程、默认 8790、按交易日归档历史数据。
 //
 // 三套服务绝不能共用一个地址：
 //   · Pro 账本同步    /api/native/*     Pro 自己的协议
 //   · 观盘Next 服务端 /v1/market/*     30001，实时行情转发（可选）
-//   · 观盘max NAS     /api/v1/*        8788，归档历史 + 研究证据
+//   · 观盘max NAS     /api/v1/*        8790，归档历史 + 研究证据
 //
 // 最重要的口径：**观盘max NAS 没有实时报价接口**。
 // 它给的是已完成交易日的日 K、分钟线与统计证据。直连腾讯失败时可以用它补历史，
@@ -145,7 +145,7 @@ enum GuanpanMaxNAS {
         case .cannotFindHost, .dnsLookupFailed:
             return "找不到 NAS 主机。请核对地址，并确认 iPhone 与 NAS 在同一局域网或已连接 VPN。"
         case .cannotConnectToHost:
-            return "无法建立到 NAS 的连接。请核对穿透域名和 8788 端口映射；局域网地址请确认 App 已获本地网络权限。"
+            return "无法建立到 NAS 的连接。请核对穿透域名和 8790 端口映射；局域网地址请确认 App 已获本地网络权限。"
         case .timedOut:
             return "连接 NAS 超时。请检查穿透链路或归档容器是否仍在响应。"
         case .networkConnectionLost:
@@ -269,6 +269,122 @@ enum GuanpanMaxNAS {
             throw URLError(.badServerResponse)
         }
         return "待补采 \(queued) 个交易日"
+    }
+
+    // MARK: 补采覆盖与手动补采
+    //
+    // 服务端契约来自 `repo/guanpan-f/nas/fminute/http_api.py`：
+    //   GET  /api/v1/backfill-status             → {"status":"observed","backfillStatus":{"CN":{...}}}
+    //   POST /api/v1/minute-history/backfill    → 202 + receipt
+    // POST 的 body 被严格校验为「恰好 5 个字符串键」，多一个键就 400；
+    // priority 只认 holding / watchlist / aiResearch / benchmark；market 固定 CN。
+    // 旧部署包（Downloads/guanpanF）没有这两条路由，404/405 必须静默降级，
+    // 不能把「接口不存在」显示成「覆盖率为 0」。
+
+    struct BackfillMarketStatus: Decodable {
+        let status: String?
+        let error: String?
+        let securityCount: Int?
+        let plannedSessions: Int?
+        let plannedTasks: Int?
+        let coveragePercent: Double?
+        let complete: Int?
+        let partial: Int?
+        let missing: Int?
+        let outOfProviderCoverage: Int?
+        let retryable: Int?
+        let permanentUnavailable: Int?
+        let earliestRealHistoryDate: String?
+        let latestRealHistoryDate: String?
+    }
+
+    struct BackfillStatusSnapshot: Decodable {
+        let status: String?
+        let backfillStatus: [String: BackfillMarketStatus]?
+    }
+
+    struct BackfillReceipt: Decodable {
+        let requestedSessions: Int?
+        let alreadyCoveredSessions: Int?
+        let queuedOrRequeued: Int?
+        let preservedTerminalSessions: Int?
+        let priority: String?
+    }
+
+    enum BackfillRequestError: LocalizedError {
+        case unsupported
+        case rejected(Int, String)
+        case malformed
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupported:
+                return "当前 NAS 部署包没有补采接口（旧版 f-minute-archive），已跳过。"
+            case let .rejected(code, reason):
+                return "补采请求被拒绝（HTTP \(code)）：\(reason)"
+            case .malformed:
+                return "补采响应格式不符合预期，已忽略。"
+            }
+        }
+    }
+
+    /// 滚动分钟归档的覆盖状态。404 / 405 / 形状不对一律返回 nil：
+    /// 「读不到」和「读到 0%」是两件不同的事，绝不能混成一个结论。
+    static func backfillStatus() async -> BackfillStatusSnapshot? {
+        do {
+            let (data, http) = try await rawRequest(path: "/api/v1/backfill-status",
+                                                    timeout: 15, maximumBytes: 1_000_000)
+            guard http.statusCode == 200 else { return nil }
+            return try? JSONDecoder().decode(BackfillStatusSnapshot.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// 手动排入补采任务。写操作：调用方必须先做二次确认。
+    static func enqueueBackfill(code: String,
+                                startDate: String,
+                                endDate: String,
+                                priority: String) async throws -> BackfillReceipt {
+        guard let base = validateAddress(),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw URLError(.badURL)
+        }
+        components.path = "/api/v1/minute-history/backfill"
+        guard let url = components.url else { throw URLError(.badURL) }
+
+        // _validate_identity 要求 6 位纯数字；归一化在 UI 侧已做，这里再挡一道。
+        guard normalizedSecurityCode(code) == code else { throw URLError(.badURL) }
+        let payload: [String: String] = [
+            "securityCode": code,
+            "market": "CN",
+            "startDate": startDate,
+            "endDate": endDate,
+            "priority": priority
+        ]
+        let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        guard body.count <= 16_384 else { throw BackfillRequestError.malformed }
+
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard data.count <= 256_000 else { throw BoundedHTTPError.responseTooLarge(256_000) }
+        if http.statusCode == 404 || http.statusCode == 405 {
+            throw BackfillRequestError.unsupported
+        }
+        guard http.statusCode == 202 else {
+            let detail = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let reason = detail?["error"] as? String ?? "HTTP \(http.statusCode)"
+            throw BackfillRequestError.rejected(http.statusCode, reason)
+        }
+        guard let receipt = try? JSONDecoder().decode(BackfillReceipt.self, from: data) else {
+            throw BackfillRequestError.malformed
+        }
+        return receipt
     }
 
     // MARK: 证券日 K

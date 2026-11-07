@@ -2,6 +2,15 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.25.0 更新（把两套版式做透 + NAS 补采闭环 + 端口 8790）
+
+- **次级页也有两套骨架**。新增 `Sources/OceanSecondaryPages.swift`：`OceanHoldingsView` / `OceanAssetsView` / `OceanMoreView` 三个独立页面，与 tech 的 `HoldingsView` / `AssetsView` / `MoreHubView` 不是同一个 body 换圆角。ocean 用 `List + Section` 分组、系统大标题、紧凑表格行、数字网格、逐行小图标菜单；tech 保持大圆角卡片流 + 九宫格工具砖。`ContentView.phoneTabRoot` 与 iPad `padDetail` 都按主题分流。数据仍共用 `PortfolioStore` 与同一批业务页（图表、编辑器、复盘），弹窗一律单一 enum 驱动，避免同视图多 sheet 只有最后一个生效。
+- **主题版式开关全部接到调用点**（此前只定义没消费）。`statColumns`：tech 3 列 / ocean 2 列，三处 `MetricGrid` 与 ocean 首页数字网格都从主题取；`quickColumns`：tech 首页露 4 个快捷砖、ocean 首页 5 个；`showsSparklines`：tech 画列表迷你走势线、ocean 不画。设置类 `Form` 也分容器形态：tech `.insetGrouped` + inline 标题，ocean `.grouped` + 大标题（`ThemeFormStyle`）。
+- **NAS 补采状态与手动入口**。`GuanpanMaxNAS` 新增 `GET /api/v1/backfill-status`（覆盖状态快照）与 `POST /api/v1/minute-history/backfill`（写队列，body 恰好 5 个字符串键、`market=CN`、优先级 holding/watchlist/aiResearch/benchmark、HTTP 202 receipt）；404/405 静默降级，绝不把「接口不存在」当 0% 覆盖。新 `Sources/MaxNASBackfillView.swift` 提供只读覆盖状态、按市场列出完整/部分/缺失/待重试计数与真实历史日期区间，以及手动补采（标的必须是 6 位纯数字 A 股、日期不能倒序/不能补未来/跨度 ≤90 天、二次确认后才写）。旧部署包没有这两条路由时整段自动跳过，不影响原有链路。
+- **观盘max NAS 端口统一为 8790**。容器内 `F_MINUTE_PORT`、宿主 `F_MINUTE_HOST_PORT`、healthcheck、`EXPOSE`、`server.py` 默认值、`.env.example`、`DEPLOYMENT.md`、dashboard 提示，以及 Pro / 观盘max 两个客户端的地址提示全部改 8790；历史审计文档保留原 8788 记录。另外两套服务不变：观盘Next 行情 30001、Pro 账本同步 `/api/native/*`（仍用原地址），三套协议地址不能互换。同时提供 `观盘max-NAS-8790部署包.zip`（根目录 compose 用 `context: .`，`nas/` 为完整源码含日线/指数/补采/诊断路由，`.sh` 打包为 0755）。
+- **要不要重新部署**：本版改的是 iOS 客户端，不动服务端；旧部署包没有补采路由时会静默降级，App 照常可用。但补采覆盖状态与手动补采要生效，必须用 `repo/guanpan-f/nas` 完整源码重新部署（端口 8790）。
+- 对照 2026-11-07《观盘max F版功能与验收总清单》：Pro 已具备月/年复盘、网格、收息/分红池、汇率换算、新闻证据、研究证据门槛、决策成绩单等（清单里 max 自身标「未完成」的几项）；Pro 仍缺 max 的 `VolumeAnalysis`、Candidate Plan / Shadow Score / Realtime Trigger / Risk Guard、成交截图 OCR 等，且清单中大量项整体处于「外部待验」，不照搬标成完成。四套主题也不套用 —— Pro 按用户要求只保留两套、各做各的版式。
+
 ## 2.24.0 更新（两套主题各做各的布局）
 
 - 用户明确：**主题不同，布局本来就该不同，各自做**。此前 `DS` 是一组全局静态尺寸，注释写着「深浅两套只有色值不同，尺寸与层级完全一致」，换主题只是换色 —— 这一版把「版式」从颜色里拆出来。
@@ -42,7 +51,7 @@
 
 ## 2.21.0 更新（NAS 适配按观盘max 真实契约重做）
 
-- 澄清归属：**观盘max = 仓库 `guanpan-f`**（显示名「观盘max」，代码名 GuanpanF），它的 NAS 是 f-minute-archive（8788）。Pro 里三套服务协议互不相通：账本同步 `/api/native/*`、观盘Next `/v1/market/*`（30001，有实时报价）、观盘max NAS `/api/v1/*`（8788，只有归档历史）。设置页三栏分别标注，地址不再混填。
+- 澄清归属：**观盘max = 仓库 `guanpan-f`**（显示名「观盘max」，代码名 GuanpanF），它的 NAS 是 f-minute-archive（8790）。Pro 里三套服务协议互不相通：账本同步 `/api/native/*`、观盘Next `/v1/market/*`（30001，有实时报价）、观盘max NAS `/api/v1/*`（8790，只有归档历史）。设置页三栏分别标注，地址不再混填。
 - 新增 `Sources/GuanpanMaxNAS.swift` 作为观盘max NAS 的统一适配层：`/livez` 验身份 + `/readyz` 能力摘要、`/api/v1/security-daily-history` 证券日 K、`/api/v1/index-daily-history` 指数交易日、`/api/v1/minute-history/diagnostics` 归档覆盖、研究证据。地址沿用 2.20.0 的 key，升级不用重填。
 - 日线兜底链改为「直连腾讯 → 观盘max 归档日 K → 观盘Next → Pro NAS 代理」；归档日 K 严格校验来源、盖章时间（≤36h）、不复权、样本数一致、日期严格递增且排除当天、最后交易日 ≤5 天，任一不满足整份丢弃。
 - 交易日历在整条行情链断掉时，用观盘max 指数归档的**交易日列表**兜底。指数归档的 OHLCV 允许整段缺失，所以只取日期、不生成 `DailyBar` —— 不拿收盘价冒充开高低量。

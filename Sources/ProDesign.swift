@@ -61,6 +61,8 @@ struct DsPalette {
     var shadowOpacity: Double { layout.shadowOpacity }
     var showsSparklines: Bool { layout.showsSparklines }
     var quickColumns: Int { layout.quickColumns }
+    var statColumns: Int { layout.statColumns }
+    var usesGroupedSettings: Bool { layout.usesGroupedSettings }
 
     // 画布：深色是墨绿近黑，浅色是极淡的冷灰。
     // 深色分支一律引用 TechGreen —— 与 AppTheme 的根背景层、弹窗背板同源，
@@ -364,7 +366,8 @@ struct DsHeroCard: View {
                     .minimumScaleFactor(0.8)
             }
 
-            if sparkline.count > 1 {
+            // ocean 分组列表不画走势线：浅色高密度页里再塞十几条折线只会糊成一片。
+            if palette.showsSparklines, sparkline.count > 1 {
                 DsSparkline(values: sparkline, tint: palette.ink2.opacity(0.8), lineWidth: 1.4)
                     .frame(height: 34)
                     .padding(.top, 2)
@@ -544,7 +547,7 @@ struct DsRowShell<Right: View>: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
-            if sparkline.count > 1 {
+            if palette.showsSparklines, sparkline.count > 1 {
                 DsSparkline(values: sparkline, tint: sparkTint)
                     .frame(width: 54, height: 24)
             }

@@ -129,7 +129,7 @@ struct OceanDashboardView: View {
         let dayText = store.hasDayPnLGross
             ? "\(dayValue.directionMark())\(abs(dayValue).cny())" : "--"
         let dayTone = store.hasDayPnLGross ? PnLColor.of(dayValue) : palette.ink2
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 2)
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: palette.statColumns)
         return rowCard {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(alignment: .center) {
@@ -285,7 +285,7 @@ struct OceanDashboardView: View {
     private var toolGrid: some View {
         rowCard {
             HStack(spacing: 2) {
-                ForEach(tools) { tool in
+                ForEach(Array(tools.prefix(palette.quickColumns))) { tool in
                     Button {
                         Haptics.tap()
                         perform(tool.id)

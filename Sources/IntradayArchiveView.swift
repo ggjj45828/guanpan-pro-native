@@ -155,7 +155,7 @@ struct IntradayArchiveView: View {
 
                 Section("观盘max NAS 归档（只读）") {
                     if !GuanpanMaxNAS.isConfigured {
-                        Text("还没有配置观盘max NAS。到「我的 → 数据源设置」填写 f-minute-archive 地址（多数部署在 8788），就能按交易日回读任意已归档的分钟线。")
+                        Text("还没有配置观盘max NAS。到「我的 → 数据源设置」填写 f-minute-archive 地址（多数部署在 8790），就能按交易日回读任意已归档的分钟线。")
                             .font(.footnote).foregroundStyle(.secondary)
                     } else {
                         if !instruments.isEmpty {

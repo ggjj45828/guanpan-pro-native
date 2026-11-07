@@ -5,10 +5,10 @@ import Foundation
 // 三套 NAS 协议互不相通，地址绝不能混填：
 //   · Pro 账本同步    /api/native/*    NASSyncService
 //   · 观盘Next        /v1/market/*     本文件，30001，**有实时报价**
-//   · 观盘max NAS     /api/v1/*        GuanpanMaxNAS，8788，只有归档历史
+//   · 观盘max NAS     /api/v1/*        GuanpanMaxNAS，8790，只有归档历史
 //
 // 观盘max（guanpan-f）的 f-minute-archive 上**没有** /v1/market/quotes，
-// 把 8788 的地址填到这一栏会全部 404。反过来，把 30001 填到观盘max 那栏
+// 把 8790 的地址填到这一栏会全部 404。反过来，把 30001 填到观盘max 那栏
 // 也拿不到研究证据。两个地址分别存，设置页分别标注。
 //
 // 这一层只做一件事：把观盘Next 服务端的 JSON 翻成 Pro 的 Quote / DailyBar。

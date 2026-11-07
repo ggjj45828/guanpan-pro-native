@@ -78,6 +78,8 @@ struct ThemeLayout {
     let shadowOpacity: Double
     /// AI 块专用渐变（tech 绿系 / ocean 蓝系），白字都能读。
     let aiGradient: LinearGradient
+    /// 设置类 Form 的容器形态：tech 用系统内嵌分组，ocean 用分组列表 + 大标题。
+    let usesGroupedSettings: Bool
 
     static let tech = ThemeLayout(
         style: .tech,
@@ -86,11 +88,12 @@ struct ThemeLayout {
         fsHero: 34, fsStat: 26, fsTitle: 17, fsRow: 15, fsLabel: 12, fsMicro: 10.5,
         usesHeroHome: true, usesFloatingTabBar: true, usesOrb: true,
         flatTabShowsAI: false, usesLargeTitles: false, showsSparklines: true,
-        quickColumns: 4, statColumns: 2, usesOutline: true,
+        quickColumns: 4, statColumns: 3, usesOutline: true,
         shadowRadius: 0, shadowOpacity: 0,
         aiGradient: LinearGradient(colors: [
             Color(hex: 0x4FE0A0), Color(hex: 0xA6E86A), Color(hex: 0xC8F751)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing),
+        usesGroupedSettings: false
     )
 
     static let ocean = ThemeLayout(
@@ -104,7 +107,8 @@ struct ThemeLayout {
         shadowRadius: 7, shadowOpacity: 0.07,
         aiGradient: LinearGradient(colors: [
             Color(hex: 0x2F5BE8), Color(hex: 0x4F7DF0), Color(hex: 0x78A6FF)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        ], startPoint: .topLeading, endPoint: .bottomTrailing),
+        usesGroupedSettings: true
     )
 
     static func of(_ appearance: AppAppearance) -> ThemeLayout {
@@ -123,6 +127,27 @@ extension AppAppearance {
         case .techBlack, .dark, .oled, .blue, .green, .purple, .sakura,
              .cyber, .amber, .coffee, .graphite:
             return .tech
+        }
+    }
+}
+
+/// 设置类 Form 的容器也分两套：tech 用系统内嵌分组（行合并成一张圆角卡），
+/// ocean 用分组列表（Section 之间留大段、行更平）。这是「容器形态」差异，
+/// 不是把同一张卡换个圆角。
+struct ThemeFormStyle: ViewModifier {
+    let style: AppLayoutStyle
+
+    func body(content: Content) -> some View {
+        Group {
+            if style == .ocean {
+                content
+                    .listStyle(.grouped)
+                    .listSectionSpacing(.default)
+            } else {
+                content
+                    .listStyle(.insetGrouped)
+                    .listSectionSpacing(.compact)
+            }
         }
     }
 }

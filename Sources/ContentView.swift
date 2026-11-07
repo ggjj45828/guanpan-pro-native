@@ -129,14 +129,18 @@ struct ContentView: View {
         ZStack {
             if layout.usesHeroHome {
                 tabPage(.home) { DashboardView(onOpenAssets: { openAssets() }) }
+                // 持仓页把 ETF / 场外基金 收在同一个页签里，顶部切换 ——
+                // 两者是同一件事的两种口径，不该占两个底栏位置。
+                tabPage(.holdings) { HoldingsTabView() }
+                tabPage(.assets) { AssetsView() }
+                tabPage(.more) { MoreHubView() }
             } else {
+                // ocean 的四个次级页是另写的骨架，不是上面的页面换圆角。
                 tabPage(.home) { OceanDashboardView(onOpenAssets: { openAssets() }) }
+                tabPage(.holdings) { OceanHoldingsView() }
+                tabPage(.assets) { OceanAssetsView() }
+                tabPage(.more) { OceanMoreView() }
             }
-            // 持仓页把 ETF / 场外基金 收在同一个页签里，顶部切换 ——
-            // 两者是同一件事的两种口径，不该占两个底栏位置。
-            tabPage(.holdings) { HoldingsTabView() }
-            tabPage(.assets) { AssetsView() }
-            tabPage(.more) { MoreHubView() }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if layout.usesFloatingTabBar {
@@ -204,12 +208,15 @@ struct ContentView: View {
             if layout.usesHeroHome { DashboardView() } else { OceanDashboardView() }
         case .watchlist:
             if layout.usesHeroHome { DashboardView() } else { OceanDashboardView() }
-        case .holdings: HoldingsTabView()
+        case .holdings:
+            if layout.usesHeroHome { HoldingsTabView() } else { OceanHoldingsView() }
         case .funds: HoldingsView(kind: .fund)
         case .grid: DayGridView(embedded: true)
         case .income: IncomeHubView()
-        case .assets: AssetsView()
-        case .more: MoreHubView()
+        case .assets:
+            if layout.usesHeroHome { AssetsView() } else { OceanAssetsView() }
+        case .more:
+            if layout.usesHeroHome { MoreHubView() } else { OceanMoreView() }
         }
     }
 
@@ -242,6 +249,25 @@ struct ContentView: View {
 /// 自选分组后的一节。用结构体而不是元组：Swift 的 KeyPath 取不到元组元素，
 /// `ForEach(..., id: \.name)` 对元组会直接编译失败。
 /// 「持仓」页签的入口：ETF / 场外基金 共用一个页签，靠顶部分段切换。
+/// 首页快捷砖的数据项。列数由主题版式的 `quickColumns` 决定，
+/// tech 露 4 个、ocean 露 5 个 —— 不是同一排按钮换个颜色。
+private struct DashboardQuickTool: Identifiable {
+    let id: String
+    let symbol: String
+    let title: String
+    let badge: String?
+    let action: () -> Void
+
+    init(_ id: String, _ symbol: String, _ title: String,
+         badge: String? = nil, action: @escaping () -> Void) {
+        self.id = id
+        self.symbol = symbol
+        self.title = title
+        self.badge = badge
+        self.action = action
+    }
+}
+
 struct HoldingsTabView: View {
     var body: some View {
         HoldingsView(kind: .etf)
@@ -606,10 +632,21 @@ struct DashboardView: View {
     }
 
     private var quickTiles: some View {
-        HStack(spacing: 10) {
-            DsQuickTile(palette: palette, symbol: "square.grid.2x2.fill", title: "网格") { showGrid = true }
-            DsQuickTile(palette: palette, symbol: "yensign.circle.fill", title: "收息") { showIncome = true }
-            DsQuickTile(palette: palette, symbol: "checklist", title: "账本", badge: "审计") { showLedger = true }
+        let all: [DashboardQuickTool] = [
+            DashboardQuickTool("grid", "square.grid.2x2.fill", "网格") { showGrid = true },
+            DashboardQuickTool("income", "yensign.circle.fill", "收息") { showIncome = true },
+            DashboardQuickTool("ledger", "checklist", "账本", badge: "审计") { showLedger = true },
+            DashboardQuickTool("news", "newspaper.fill", "快讯") { showNews = true },
+            DashboardQuickTool("add", "plus.circle.fill", "加自选") { showAdd = true }
+        ]
+        return HStack(spacing: 10) {
+            ForEach(Array(all.prefix(palette.quickColumns))) { tool in
+                DsQuickTile(palette: palette,
+                            symbol: tool.symbol,
+                            title: tool.title,
+                            badge: tool.badge,
+                            action: tool.action)
+            }
         }
     }
 
@@ -1015,7 +1052,7 @@ struct DashboardView: View {
                 }
             }
             Divider().opacity(0.4)
-            MetricGrid(columns: 3, cells: [
+            MetricGrid(columns: palette.statColumns, cells: [
                 MetricCell(title: "持仓市值", value: store.totalMarketValue.cny()),
                 MetricCell(title: "参考现金", value: store.data.cash.cny()),
                 MetricCell(title: "仓位", value: store.positionPercent.pct(1)),
@@ -1908,7 +1945,7 @@ struct HoldingsView: View {
                                                             : Color(red: 0.07, green: 0.77, blue: 0.55))
                     }
                 }
-                MetricGrid(columns: 3, cells: [
+                MetricGrid(columns: DsPalette.of(store.resolvedAppearance).statColumns, cells: [
                     MetricCell(title: "成本收益率", value: store.pnlRate(of: activeKind).map { $0.pct(2) } ?? "--",
                                toneValue: pnlValue),
                     MetricCell(title: dayTitle, value: hasDayValue ? dayValue.cny() : "--",
@@ -3337,7 +3374,7 @@ struct AssetsView: View {
                             }
                         }
                         assetComposition
-                        MetricGrid(columns: 3, cells: [
+                        MetricGrid(columns: palette.statColumns, cells: [
                             MetricCell(title: "持仓市值", value: (store.totalMarketValue).cny()),
                             MetricCell(title: "参考现金", value: (store.data.cash).cny()),
                             MetricCell(title: "仓位", value: (store.positionPercent).pct(1)),
@@ -6698,7 +6735,7 @@ struct SettingsView: View {
     /// 观盘Next 服务端（30001）：可选的实时行情兜底，只在直连腾讯全失败时用。
     /// 它和下面观盘max 的归档服务不是同一套协议，也不是同一个进程。
     @AppStorage(FNASBridge.urlKey) private var fnasURL = ""
-    /// 观盘max NAS（f-minute-archive，8788）：归档日线、交易日、分钟线与研究证据。
+    /// 观盘max NAS（f-minute-archive，8790）：归档日线、交易日、分钟线与研究证据。
     /// **不提供实时报价** —— 这条地址只用于历史数据，不能填到上面那栏。
     @AppStorage(GuanpanMaxNAS.urlKey) private var fminuteURL = ""
     @State private var checkingFNAS = false
@@ -6809,11 +6846,12 @@ struct SettingsView: View {
                 if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
             }
             .navigationTitle(mode == .sync ? "数据与同步" : mode == .app ? "应用设置" : "设置")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(palette.usesGroupedSettings ? .large : .inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
+            .modifier(ThemeFormStyle(style: palette.layout.style))
             .appListLayout()
             // 卡片底色跟新设计体系走：之前这里是 .clear，整页的行全是裸的，
             // 看上去就是「一堆系统设置项」而不是 App 自己的卡片。改成 card 之后
@@ -7074,7 +7112,7 @@ struct SettingsView: View {
 
         Section("观盘max NAS（历史数据 · 研究证据）") {
             HStack {
-                TextField("例如 http://192.168.1.20:8788", text: $fminuteURL)
+                TextField("例如 http://192.168.1.20:8790", text: $fminuteURL)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .keyboardType(.URL)
                 PasteButton(payloadType: String.self) { values in
@@ -7092,7 +7130,8 @@ struct SettingsView: View {
             if !fminuteStatus.isEmpty {
                 Text(fminuteStatus).font(.footnote).foregroundStyle(.secondary)
             }
-            Text("观盘max（guanpan-f）的 NAS 是 f-minute-archive，独立进程、多数部署在 8788。它提供**已完成交易日**的证券日 K、指数交易日、分钟归档和研究证据：直连腾讯全失败时用它补日线；「我的 → 分时档案」里可按交易日回读归档分钟线（只读回放，不写进本机采集档案，Partial 会如实标注）；AI 分析附上分钟统计证据（质量分 ≥ 90 且独立交易日 ≥ 25 才进 prompt，不达标整段不出现）。\n\n**它不提供实时报价接口**，所以不能替代上面的观盘Next 服务端，也不会把归档收盘价当成实时价。较旧的部署包只有分钟线/研究证据路由；日线接口不存在时自动降级，不影响原有链路。")
+            MaxNASBackfillSection()
+            Text("观盘max（guanpan-f）的 NAS 是 f-minute-archive，独立进程、多数部署在 8790。它提供**已完成交易日**的证券日 K、指数交易日、分钟归档和研究证据：直连腾讯全失败时用它补日线；「我的 → 分时档案」里可按交易日回读归档分钟线（只读回放，不写进本机采集档案，Partial 会如实标注）；AI 分析附上分钟统计证据（质量分 ≥ 90 且独立交易日 ≥ 25 才进 prompt，不达标整段不出现）。\n\n**它不提供实时报价接口**，所以不能替代上面的观盘Next 服务端，也不会把归档收盘价当成实时价。较旧的部署包只有分钟线/研究证据路由；日线接口不存在时自动降级，不影响原有链路。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
@@ -7330,7 +7369,7 @@ struct SettingsView: View {
         Task { @MainActor in
             defer { checkingFMinute = false }
             guard GuanpanMaxNAS.validateAddress() != nil else {
-                fminuteStatus = "地址无效：请填 http(s)://主机:8788，不要带查询参数、片段或额外路径。"
+                fminuteStatus = "地址无效：请填 http(s)://主机:8790，不要带查询参数、片段或额外路径。"
                 return
             }
             do {
