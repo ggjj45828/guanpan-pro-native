@@ -124,11 +124,11 @@ enum CandidateFillMatcher {
                 guard capped >= 60 else { continue }
                 let key = "\(plan.id.uuidString)|\(fill.id.uuidString)"
                 if known.contains(key) { continue }
-                let hit = ScoreHit(planID: plan.id, score: capped,
-                                   reasons: reasons, exact: exactWindow, clean: clean)
-                var group = byFill[fill.id] ?? (code: code, side: fill.side.rawValue, hits: [])
-                group.hits.append(hit)
-                byFill[fill.id] = group
+                hits.append(ScoreHit(planID: plan.id, score: capped,
+                                     reasons: reasons, exact: exactWindow, clean: clean))
+            }
+            if !hits.isEmpty {
+                byFill[fill.id] = (code: code, side: fill.side.rawValue, hits: hits)
             }
         }
         // 每笔成交只留最高分候选；多个候选同分时不自动关联。

@@ -2,6 +2,10 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.28.1 更新（补丁：修复成交关联链接证券代码占位 bug）
+
+- `TradeCandidateReview.swift` 的 `CandidateFillLink` 之前错误地把 `planID.uuidString` 写进 `code` 字段（占位值），导致成交关联列表里证券代码显示成 UUID 乱码。改为写入真实成交的归一化代码 `fill.code`。功能、评分、唯一性与 T/HOLD 复盘逻辑不变，仅修正显示字段。
+
 ## 2.28.0 更新（Anti-Overtrading · 生产盯盘 · 成交关联与 T/HOLD 复盘）
 
 按上一轮列出的三项优先级，把观盘max 清单里仍标 `部分实现` / `未完成` 的纯代码部分收口。
