@@ -267,7 +267,7 @@ enum MarketSignalCalculator {
 
         // K 线形态识别：只作为「看见了什么」的观察证据，绝不加分
         // （治理：不新增买卖评分，仅作多信号证据的一层，且只用已收盘 K 线）。
-        let patterns = CandlePatternEngine.analyze(bars)
+        let patterns = CandlePatternEngine.analyze(bars: bars)
         for hit in patterns.hits where hit.detected {
             if let note = hit.notes.first {
                 notes.append("K线·\(hit.kind.title)：\(note)")
