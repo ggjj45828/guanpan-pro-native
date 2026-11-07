@@ -22,7 +22,7 @@ struct TechnicalResearchView: View {
     private var patterns: CandlePatternReport? { store.candlePatterns(code: code) }
     private var volume: VolumeAnalysisResult? {
         guard !bars.isEmpty else { return nil }
-        return VolumeAnalysis.daily(bars)
+        return VolumeAnalysisEngine.daily(bars)
     }
 
     var body: some View {
@@ -200,7 +200,7 @@ struct TechnicalResearchView: View {
             if hit.detected {
                 HStack(spacing: 6) {
                     Capsule().fill(sem.ink3.opacity(0.3))
-                        .frame(maxWidth: .infinity, height: 4)
+                        .frame(maxWidth: .infinity, minHeight: 4, maxHeight: 4)
                         .overlay(alignment: .leading) {
                             Capsule().fill(sem.accent)
                                 .frame(width: max(8, CGFloat(hit.strength) * 140), height: 4)
