@@ -178,12 +178,18 @@ enum PositionDisciplineGuard {
             }
             if let count = snapshot.consecutiveBuyCount, count >= policy.cooldownAfterConsecutiveBuys {
                 findings.append(.init("buy_cooldown", "连续 \(count) 笔买入后需要冷却"))
+            } else if snapshot.consecutiveBuyCount == nil && policy.cooldownAfterConsecutiveBuys > 0 {
+                findings.append(.init("activity_history_unavailable",
+                                      "缺少真实连买历史，冷却规则无法判定（证据降级）", blocking: false))
             }
             if let limit = policy.dailyBuyLimit, snapshot.dailyBuyAmount + cashNeeded > limit {
                 findings.append(.init("daily_buy_limit", "超过当日买入上限 \(limit.num(2))"))
             }
             if let seconds = snapshot.secondsSinceLastFill, seconds < policy.minimumSecondsBetweenTrades {
                 findings.append(.init("trade_too_soon", "距上一笔成交不足 \(Int(policy.minimumSecondsBetweenTrades)) 秒"))
+            } else if snapshot.secondsSinceLastFill == nil && policy.minimumSecondsBetweenTrades > 0 {
+                findings.append(.init("fill_timing_unavailable",
+                                      "缺少上一笔成交时间，间隔规则无法判定（证据降级）", blocking: false))
             }
             if score < requiredScore {
                 findings.append(.init("score_threshold_raised", "高暴露下买入需评分 ≥ \(requiredScore)，当前 \(score)"))
@@ -244,6 +250,7 @@ enum RiskGuard {
                          regime: MarketRegimeAssessment?,
                          snapshot: DisciplineSnapshot,
                          score: Int,
+                         behavior: OvertradingAssessment? = nil,
                          now: Date = Date(),
                          maxQuoteAge: TimeInterval = 120) -> RiskAssessment {
         var findings: [RiskFinding] = []
@@ -304,6 +311,25 @@ enum RiskGuard {
             fee: 0, score: score, snapshot: snapshot)
         for item in discipline.findings {
             findings.append(.init("discipline_" + item.code, item.message, blocking: item.blocking))
+        }
+
+        // Anti-Overtrading：门槛由真实账本推导，缺省时明确降级而不是静默放行。
+        if let behavior {
+            for item in behavior.findings {
+                findings.append(.init("behavior_" + item.code, item.message, blocking: item.blocking))
+            }
+            if behavior.requiredScoreBonus > 0 {
+                let needed = discipline.requiredScore + behavior.requiredScoreBonus
+                if score < needed {
+                    findings.append(.init("behavior_score_threshold_raised",
+                                          "近期交易行为把买入评分门槛提高到 ≥ \(needed)，当前 \(score)"))
+                }
+            }
+            if !behavior.metrics.evidenceComplete { degraded += 1 }
+        } else {
+            findings.append(.init("behavior_history_not_supplied",
+                                  "未提供真实成交历史推导的行为门槛，证据等级降一级", blocking: false))
+            degraded += 1
         }
 
         let blocked = findings.contains { $0.blocking }

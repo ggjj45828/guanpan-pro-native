@@ -1478,6 +1478,9 @@ final class PortfolioStore: ObservableObject {
             applyManualQuoteOverrides(to: &updated, changes: &changes)
             data = updated
             marketChanges = changes
+            // 生产盯盘：报价更新完才评估，保证用的是本次刷新的真实价与时间戳。
+            // 引擎内部对非连续竞价、缺报价、重复/乱序时间戳一律跳过。
+            evaluateTriggerPlansOnRefresh(now: fetchedAt)
             if Self.isRegularTradingSession(Date()) {
                 checkQuoteAlerts(using: values)
                 if captureIntraday && data.intradayCaptureEnabled {
@@ -2185,6 +2188,9 @@ final class PortfolioStore: ObservableObject {
                 redemptionLots: side == .sell ? fundRedemptionLots : nil,
                 feeWasEstimated: side == .sell && fundFeeWasEstimated))
         }
+        // 手工录账同样要重算「成交 ↔ 候选」关联建议；只给复核建议，不写额外账。
+        // 放在 save 之前，保证一次保存落全，撤销点也包含这次关联状态。
+        relinkTradeCandidates()
         save(label: "新增交易流水")
     }
 

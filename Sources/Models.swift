@@ -737,6 +737,14 @@ struct PortfolioData: Codable {
     var rebalanceAlertThreshold = 5
     var investmentProfile = InvestmentProfile()
     var tradePlans: [TradePlan] = []
+    /// 生产盯盘：用户保存的候选计划，行情刷新时由 `TriggerMonitorEngine` 评估。
+    /// 只记录意图与状态，绝不是订单，也不写 Ledger。老备份没有该字段。
+    var triggerPlans: [TriggerPlan] = []
+    /// 盯盘状态变更留痕，只追加、上限 200 条。
+    var triggerEvents: [TriggerEvent] = []
+    /// 成交 ↔ 候选计划的关联建议（高置信自动 / 低置信待人工确认）。
+    /// 关联不是成交事实的证明，也不会改写账本。
+    var candidateLinks: [CandidateFillLink] = []
     /// User-maintained exchange closure dates (YYYY-MM-DD); synced with the portfolio.
     var customMarketHolidays: [String] = []
     /// 自定义强调色名（空串 = 跟随主题自带强调色）。
@@ -745,7 +753,7 @@ struct PortfolioData: Codable {
     var autoThemeSchedule = ""
 
     private enum CodingKeys: String, CodingKey {
-        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, openingSnapshot, ledgerAudits, dividendPool, dividendTargetYield, decisionJournal, accountExpenses, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, customMarketHolidays, accentColorName, autoThemeSchedule
+        case quotes, quoteAlerts, manualQuoteOverrides, etfDividendEvents, holdings, allocationTargets, snapshots, cashFlows, fundNAVHistory, fundTransactions, fundConstituentSnapshots, fundFeePolicies, fundDCAPlans, dayGridPlans, legacyGridArchives, legacyShadowArchives, legacyDCAEvents, legacySettingsArchives, aiAnalysisConfig, savedAccountAIAnalysis, savedPortraitAIAnalysis, savedInstrumentAIAnalyses, ledger, openingSnapshot, ledgerAudits, dividendPool, dividendTargetYield, decisionJournal, accountExpenses, cash, cashLinkedByDefault, appearance, quoteRefreshSeconds, dailyPnLMode, intradaySubchartMode, dailyChartRangeDays, intradayLineColorMode, intradayCaptureEnabled, automaticFundNAVRefreshEnabled, costAccountingMode, globalPositionLimitPercent, positionHintsEnabled, rebalanceAlertThreshold, investmentProfile, tradePlans, triggerPlans, triggerEvents, candidateLinks, customMarketHolidays, accentColorName, autoThemeSchedule
     }
 
     init() {}
@@ -801,6 +809,9 @@ struct PortfolioData: Codable {
         rebalanceAlertThreshold = min(20, max(1, try c.decodeIfPresent(Int.self, forKey: .rebalanceAlertThreshold) ?? 5))
         investmentProfile = try c.decodeIfPresent(InvestmentProfile.self, forKey: .investmentProfile) ?? InvestmentProfile()
         tradePlans = try c.decodeIfPresent([TradePlan].self, forKey: .tradePlans) ?? []
+        triggerPlans = try c.decodeIfPresent([TriggerPlan].self, forKey: .triggerPlans) ?? []
+        triggerEvents = try c.decodeIfPresent([TriggerEvent].self, forKey: .triggerEvents) ?? []
+        candidateLinks = try c.decodeIfPresent([CandidateFillLink].self, forKey: .candidateLinks) ?? []
         customMarketHolidays = Array(Set(try c.decodeIfPresent([String].self, forKey: .customMarketHolidays) ?? [])).sorted()
     }
 }

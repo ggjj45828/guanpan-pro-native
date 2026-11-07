@@ -21,7 +21,9 @@ struct DisciplineLabView: View {
     @State private var assessment: RiskAssessment?
     @State private var trigger: TriggerAssessment?
     @State private var shadow: ShadowEvaluation?
+    @State private var behavior: OvertradingAssessment?
     @State private var errorText: String?
+    @State private var savedMessage: String?
 
     private var s: ThemeSemantics { .of(appearance) }
     private var palette: DsPalette { .of(appearance) }
@@ -75,15 +77,29 @@ struct DisciplineLabView: View {
                             .foregroundStyle(s.onAccent)
                     }
                     .listRowBackground(s.accent)
-                    Text("不写入账本、不发出任何订单；结果只表示「是否进入人工复核」。")
+                    Button {
+                        saveAsMonitoredPlan()
+                    } label: {
+                        Text("保存为盯盘计划（刷新时自动评估）")
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity, minHeight: AppLayout.minimumTapHeight)
+                            .foregroundStyle(s.accent)
+                    }
+                    Text("不写入账本、不发出任何订单；结果只表示「是否进入人工复核」。盯盘计划只记录意图与状态，触发后仍需人工复核。")
                         .font(.footnote)
                         .foregroundStyle(s.ink2)
+                    if let savedMessage {
+                        Text(savedMessage).font(.footnote).foregroundStyle(s.ink2)
+                    }
                 }
 
                 if let errorText {
                     Section("输入问题") {
                         Text(errorText).foregroundStyle(s.danger)
                     }
+                }
+                if let behavior {
+                    behaviorSection(behavior)
                 }
                 if let assessment {
                     riskSection(assessment)
@@ -140,49 +156,68 @@ struct DisciplineLabView: View {
 
     // MARK: 计算
 
-    private func run() {
-        errorText = nil
+    private func buildPlan(now: Date, note: String) -> TradeCandidate? {
         guard let lower = Double(lowerText), let upper = Double(upperText),
               let target = Double(targetText), let quantity = Double(quantityText),
               let minutes = Double(minutesText) else {
             errorText = "价格、数量和有效期都要填有效数字。"
-            assessment = nil; trigger = nil; shadow = nil
-            return
+            return nil
         }
-        let stop = Double(stopText)
-        let now = Date()
         do {
-            let plan = try TradeCandidate(
+            return try TradeCandidate(
                 code: normalizedCode, direction: direction,
                 lowerPrice: lower, upperPrice: upper, targetPrice: target,
                 quantity: quantity, validFrom: now,
                 validUntil: now.addingTimeInterval(max(60, minutes * 60)),
-                invalidationPrice: stop, note: "规则验证台（未保存）", createdAt: now)
-            let quote = store.data.quotes.first { $0.code == plan.code }
-                ?? store.data.quotes.first { $0.code == code }
-            // 会话状态由 TradingSession 计算，不是 MarketSessionStatus 的静态成员；
-            // custom 必须带上用户自定义休市日，否则「今天休假」仍会被当成交易日。
-            let session = TradingSession.status(at: now, custom: store.data.customMarketHolidays)
-            let regime = store.marketRegime(benchmarkCode: "sh000001")
-            let snap = disciplineSnapshot(for: plan.code, price: target)
-            assessment = RiskGuard.evaluate(candidate: plan, quote: quote,
-                                            session: session, regime: regime,
-                                            snapshot: snap, score: 70, now: now)
-            trigger = RealtimeTrigger.evaluate(plan: plan, quote: quote,
-                                               session: session, regime: regime, now: now)
-            let observations = store.intradayBars
-                .filter { $0.code == plan.code || $0.code == code }
-                .map { ShadowObservation(timestamp: $0.timestamp, price: $0.price) }
-            shadow = CandidateShadow.evaluate(plan: plan, triggerAt: now,
-                                              triggerPrice: quote?.price ?? target,
-                                              observations: observations, now: now)
+                invalidationPrice: Double(stopText), note: note, createdAt: now)
         } catch {
             errorText = error.localizedDescription
-            assessment = nil; trigger = nil; shadow = nil
+            return nil
         }
     }
 
-    private func disciplineSnapshot(for rawCode: String, price: Double) -> DisciplineSnapshot {
+    private func run() {
+        errorText = nil
+        savedMessage = nil
+        let now = Date()
+        guard let plan = buildPlan(now: now, note: "规则验证台（未保存）") else {
+            assessment = nil; trigger = nil; shadow = nil; behavior = nil
+            return
+        }
+        let quote = store.data.quotes.first { $0.code == plan.code }
+            ?? store.data.quotes.first { $0.code == code }
+        // 会话状态由 TradingSession 计算，不是 MarketSessionStatus 的静态成员；
+        // custom 必须带上用户自定义休市日，否则「今天休假」仍会被当成交易日。
+        let session = TradingSession.status(at: now, custom: store.data.customMarketHolidays)
+        let regime = store.marketRegime(benchmarkCode: "sh000001")
+        // 2.28.0：连买冷却、当日买入额、成交间隔改由真实账本推导，不再留 nil 让规则空转。
+        let metrics = TradingBehaviorBuilder.metrics(fills: store.data.ledger, now: now)
+        let overtrading = AntiOvertrading.assess(fills: store.data.ledger, now: now)
+        behavior = overtrading
+        let snap = disciplineSnapshot(for: plan.code, metrics: metrics)
+        assessment = RiskGuard.evaluate(candidate: plan, quote: quote,
+                                        session: session, regime: regime,
+                                        snapshot: snap, score: 70,
+                                        behavior: overtrading, now: now)
+        trigger = RealtimeTrigger.evaluate(plan: plan, quote: quote,
+                                           session: session, regime: regime, now: now)
+        let observations = store.intradayBars
+            .filter { $0.code == plan.code || $0.code == code }
+            .map { ShadowObservation(timestamp: $0.timestamp, price: $0.price) }
+        shadow = CandidateShadow.evaluate(plan: plan, triggerAt: now,
+                                          triggerPrice: quote?.price ?? plan.targetPrice,
+                                          observations: observations, now: now)
+    }
+
+    private func saveAsMonitoredPlan() {
+        errorText = nil
+        let now = Date()
+        guard let plan = buildPlan(now: now, note: "规则验证台已保存") else { return }
+        store.saveTriggerPlan(plan, note: "规则验证台保存")
+        savedMessage = "已保存 \(plan.code) 的盯盘计划；行情刷新时自动评估，触发只提示人工复核，不下单、不写账本。"
+    }
+
+    private func disciplineSnapshot(for rawCode: String, metrics: TradingBehaviorMetrics) -> DisciplineSnapshot {
         let cash = store.data.cash
         let securities = store.data.holdings.filter { $0.kind == .etf }
         let totalSecurityValue = securities.reduce(0) { $0 + $1.marketValue }
@@ -196,12 +231,40 @@ struct DisciplineLabView: View {
             currentUnits: held?.quantity ?? 0,
             protectedCoreUnits: 0,
             unmatchedTSoldUnits: 0,
-            dailyBuyAmount: 0,
-            consecutiveBuyCount: nil,
-            secondsSinceLastFill: nil)
+            dailyBuyAmount: metrics.dailyBuyAmount,
+            consecutiveBuyCount: metrics.consecutiveBuyCount,
+            secondsSinceLastFill: metrics.secondsSinceLastFill)
     }
 
     // MARK: 结果
+
+    private func behaviorSection(_ b: OvertradingAssessment) -> some View {
+        let m = b.metrics
+        return Section("Anti-Overtrading（真实账本）") {
+            HStack {
+                Text(b.allowedForReview ? "行为门槛未拦截" : "行为门槛已拦截")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(b.allowedForReview ? s.ok : s.danger)
+                Spacer()
+                Text("证据 \(b.confidence)%").font(.caption).foregroundStyle(s.ink2)
+            }
+            Text("连买 \(m.consecutiveBuyCount) 笔 · 当日 \(m.dailyTradeCount) 笔 / 买入 \(m.dailyBuyAmount.num(2)) · 近 \(m.trailingTradeDays) 日 \(m.trailingTradeCount) 笔 · 追加评分 +\(b.requiredScoreBonus)")
+                .font(.caption).foregroundStyle(s.ink2)
+            ForEach(b.findings) { item in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: item.blocking ? "xmark.circle.fill" : "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(item.blocking ? s.danger : s.warn)
+                    Text(item.message).font(.caption).foregroundStyle(s.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if !b.reasonCodes.isEmpty {
+                Text("口径：" + b.reasonCodes.joined(separator: "、"))
+                    .font(.caption2).foregroundStyle(s.ink3)
+            }
+        }
+    }
 
     private func riskSection(_ a: RiskAssessment) -> some View {
         Section("风控与仓位纪律") {

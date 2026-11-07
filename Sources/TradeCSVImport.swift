@@ -205,6 +205,7 @@ extension PortfolioStore {
         }
         data.ledger.append(contentsOf: entries)
         data.ledger.sort { $0.date < $1.date }
+        relinkTradeCandidates()
         save(label: "导入券商交易流水")
         return entries.count
     }

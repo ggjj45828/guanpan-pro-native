@@ -2,6 +2,20 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.28.0 更新（Anti-Overtrading · 生产盯盘 · 成交关联与 T/HOLD 复盘）
+
+按上一轮列出的三项优先级，把观盘max 清单里仍标 `部分实现` / `未完成` 的纯代码部分收口。
+
+| 项 | 实现 | 诚实边界 |
+|---|---|---|
+| ① Anti-Overtrading | 新增 `AntiOvertrading.swift`：由真实 `data.ledger` 推导连买笔数、距上一笔成交秒数、当日买入额 / 成交笔数、近 5 个交易日换手频率；据此触发连买冷却（含解除时刻）、当日买入 / 笔数上限、成交间隔，并**动态抬高买入所需评分**（最多 +25）。`RiskGuard.evaluate` 新增 `behavior` 参数，缺省时明确降级而不是静默放行；`DisciplineLabView` 的快照不再传 nil，规则真正生效。 | `affectsHoldings == false` 的导入历史只留档，不参与行为判断，但会降低置信度并留原因码；未来时间戳 / 非法价格 → `evidenceComplete = false` 并 fail closed。零成交历史是「确实没有」，不是「不可得」。 |
+| ② RealtimeTrigger 接入刷新循环 | 新增 `TriggerMonitor.swift`：`TriggerPlan` 持久化候选计划、状态、报价时间戳单调水位、触发事件留痕（`TriggerEvent` 自带证券代码，计划删掉仍可追溯）。`performQuoteRefresh` 在 `data.quotes` 更新后调用 `evaluateTriggerPlansOnRefresh`；`PortfolioStore+ProductionLoop.swift` 负责评估、持久化与人工暂停/恢复/删除。新增只读页 `ProductionLoopView`（四段：计划 / 状态留痕 / 成交关联 / 今日复盘），工具页与验证台都能进入；验证台新增「保存为盯盘计划」。 | 非连续竞价、无报价、重复/乱序或未来时间戳报价一律不推进状态；触发后锁存等待人工复核，价格离开区间不会抹掉事件；终态停评估。状态属于行情级缓存，用 `flushAutomaticMarketState()` 落盘，不覆盖账本撤销点。**不下单、不写 Ledger、不发网络请求；iOS 系统级通知仍未接入**（属真机验收项）。 |
+| ③ 成交关联 + 今日 T vs HOLD | 新增 `TradeCandidateReview.swift`：按代码/方向/时间窗/价格区间/数量给 `CandidateFillLink` 打分，唯一且高置信才 `auto`，多候选、同日粗时间、只留档成交或分数不足一律 `pending`；一条成交只关联一条计划。导入成交、手工录账后自动重算，用户可确认 / 排除。`TodayReviewBuilder` 用 `DailyTradeSummary` 的「先卖后回补」配对算净贡献，并给出 T vs HOLD 差额与费用拆分。 | 关联只是复核建议，不是成交事实的证明；确认只标记对应关系，不把计划改成已成交，不改现金 / 持仓 / Ledger。数量配平时做 T 与 HOLD 的持仓数量相同，差额就是含费净贡献；**未配平卖出需要可信当日收盘价，当前没有该证据就留空并标注**，不拿最新价冒充收盘价。 |
+
+- **数据兼容**：`PortfolioData` 新增 `triggerPlans` / `triggerEvents` / `candidateLinks`，全部 `decodeIfPresent`；三个新 Codable 类型都自定义 `init(from:)` 给旧字段默认值，老备份不会解码失败。
+- **静态验证**：`Tools/verify_algorithms.py` 新增 27 项 Python 复刻用例（共 73 项），覆盖连买冷却 / 动态门槛 / 只留档排除 / fail closed、盯盘水位与会话与锁存、关联评分与唯一性、T/HOLD 配平与未配平口径。CI 编译前仍是 `theme_contract.py` → `verify_algorithms.py` → `verify_symbols.py`。
+- **边界**：上述 73 项是 Python 复刻口径，不是 XCTest；Apple CI 只证明能编译出 device app。真实盘中刷新触发、iPhone 通知、券商截图与 Candidate 的实际关联率、当日收盘价可信来源，以及那份长验收清单（四套主题逐页截图、iPhone Air、腾讯 IOPV、NAS / 新闻 / DeepSeek 端到端、样本外回测）**仍全部是外部待验，本版不宣称完成**。
+
 ## 2.27.0 更新（成交导入闭环：逐笔↔汇总对账 + 手续费诚实口径）
 
 - **逐笔 ↔ 汇总交叉对账**（对应 max 清单里标 `未完成` 的「汇总截图 reconciliation」）。

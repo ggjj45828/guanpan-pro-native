@@ -2,7 +2,8 @@
 """离线算法验证（Python 复刻口径，不是 XCTest）。
 
 覆盖 VolumeAnalysis / PositionDiscipline / RealtimeTrigger / CandidateShadow /
-截图行解析、逐笔↔汇总对账、手续费诚实口径的关键分支。
+截图行解析、逐笔↔汇总对账、手续费诚实口径，以及 2.28.0 的
+Anti-Overtrading / 生产盯盘水位 / 成交关联 / 今日 T vs HOLD 关键分支。
 CI 会跑它；本地也可用 python3 Tools/verify_algorithms.py。
 """
 from __future__ import annotations
@@ -311,9 +312,219 @@ check("无效输入不伪装成有效费用，但参考值仍生效", f == 0.10 
 f, known, origin = applied_fee("", False, confirmed_zero=True)
 check("CSV 明确确认按 0 → 允许但来源可追溯", known and f == 0.0 and origin == "confirmed")
 
+# ---- 2.28.0 Anti-Overtrading（真实账本驱动门槛）-------------------------
+def behavior_metrics(fills, now, lookback_days=5):
+    """fills: (timestamp, side, gross, fee, archive_only)；交易日键按 UTC+8 划日。"""
+    def day(ts):
+        return int((ts + 8 * 3600) // 86400)
+    real, invalid, archive = [], False, 0
+    for f in fills:
+        if f[4]:
+            archive += 1
+            continue
+        if f[0] > now or f[2] <= 0 or f[3] < 0:
+            invalid = True
+            continue
+        real.append(f)
+    real.sort(key=lambda f: f[0])
+    today = day(now)
+    daily_count = sum(1 for f in real if day(f[0]) == today)
+    daily_buy = sum(f[2] + max(0, f[3]) for f in real
+                    if day(f[0]) == today and f[1] == "buy")
+    consecutive = 0
+    for f in reversed(real):
+        if f[1] == "buy":
+            consecutive += 1
+        else:
+            break
+    elapsed = now - real[-1][0] if real else None
+    recent = sorted({day(f[0]) for f in real if day(f[0]) <= today})[-lookback_days:]
+    trailing = sum(1 for f in real if day(f[0]) in set(recent))
+    return {"consecutive": consecutive, "elapsed": elapsed, "dailyCount": daily_count,
+            "dailyBuy": daily_buy, "trailing": trailing, "days": len(recent),
+            "archive": archive, "complete": not invalid}
+
+
+def overtrading(fills, now, policy=None):
+    p = policy or {"cooldownBuys": 3, "cooldownSeconds": 1800, "minGap": 0,
+                   "dailyBuyLimit": None, "dailyTradeLimit": 8,
+                   "churnThreshold": 12, "bonusPerBuy": 5, "churnBonus": 10, "maxBonus": 25}
+    m = behavior_metrics(fills, now)
+    findings, bonus, until = [], 0, None
+    if not m["complete"]:
+        findings.append("activity_history_unavailable")
+    else:
+        if m["consecutive"] >= p["cooldownBuys"]:
+            findings.append("buy_cooldown")
+            bonus += (m["consecutive"] - p["cooldownBuys"] + 1) * p["bonusPerBuy"]
+            until = now + p["cooldownSeconds"]
+        if p["minGap"] > 0 and m["elapsed"] is not None and m["elapsed"] < p["minGap"]:
+            findings.append("trade_too_soon")
+        if p["dailyBuyLimit"] is not None and m["dailyBuy"] > p["dailyBuyLimit"]:
+            findings.append("daily_buy_limit")
+        if m["dailyCount"] >= p["dailyTradeLimit"]:
+            findings.append("daily_trade_limit")
+        if m["trailing"] > p["churnThreshold"]:
+            findings.append("recent_churn")
+            bonus += p["churnBonus"]
+    return {"m": m, "findings": findings, "bonus": min(p["maxBonus"], max(0, bonus)),
+            "until": until, "allowed": not any(f != "recent_churn" for f in findings),
+            "confidence": 0 if not m["complete"] else (80 if m["archive"] else 100)}
+
+
+NOW = 1_762_500_000
+fills3 = [(NOW - 3000 + i * 600, "buy", 1000.0, 0.5, False) for i in range(3)]
+r = overtrading(fills3, NOW)
+check("连买 3 笔触发冷却", "buy_cooldown" in r["findings"] and r["bonus"] == 5, str(r["findings"]))
+check("冷却给出解除时刻而非永久禁止", r["until"] == NOW + 1800)
+check("连买 5 笔追加门槛线性抬升",
+      overtrading(fills3 + [(NOW - 900, "buy", 1000.0, 0.5, False),
+                            (NOW - 300, "buy", 1000.0, 0.5, False)], NOW)["bonus"] == 15)
+check("中间一笔卖出会重置连买计数",
+      "buy_cooldown" not in overtrading(fills3 + [(NOW - 100, "sell", 1000.0, 0.5, False)], NOW)["findings"])
+check("无成交历史不能判成「过度交易」",
+      overtrading([], NOW)["m"]["consecutive"] == 0 and overtrading([], NOW)["allowed"])
+check("只留档导入历史不参与行为判断",
+      overtrading([(NOW - 100, "buy", 1000.0, 0.5, True)], NOW)["m"]["consecutive"] == 0)
+check("只留档历史会降置信度并留原因码",
+      overtrading([(NOW - 100, "buy", 1000.0, 0.5, True)], NOW)["confidence"] == 80)
+check("未来时间戳 fail closed",
+      overtrading([(NOW + 60, "buy", 1000.0, 0.5, False)], NOW)["findings"] == ["activity_history_unavailable"])
+check("非法价格 fail closed",
+      overtrading([(NOW - 60, "buy", -1.0, 0.5, False)], NOW)["m"]["complete"] is False)
+check("当日买入上限生效",
+      "daily_buy_limit" in overtrading(fills3, NOW, {"cooldownBuys": 99, "cooldownSeconds": 1800,
+          "minGap": 0, "dailyBuyLimit": 1000.0, "dailyTradeLimit": 99, "churnThreshold": 99,
+          "bonusPerBuy": 5, "churnBonus": 10, "maxBonus": 25})["findings"])
+check("成交间隔门槛生效",
+      "trade_too_soon" in overtrading(fills3, NOW, {"cooldownBuys": 99, "cooldownSeconds": 1800,
+          "minGap": 3600, "dailyBuyLimit": None, "dailyTradeLimit": 99, "churnThreshold": 99,
+          "bonusPerBuy": 5, "churnBonus": 10, "maxBonus": 25})["findings"])
+check("近期高频交易只抬门槛不否决",
+      "recent_churn" in overtrading(
+          [(NOW - i * 900, "buy" if i % 2 else "sell", 100.0, 0.0, False) for i in range(14)], NOW)["findings"])
+
+# ---- 2.28.0 生产盯盘：水位 / 会话 / 终态 / 锁存 --------------------------
+def monitor_step(plan, quote, session, now, max_age=120):
+    """返回 (new_state, watermark, event, reasons)。"""
+    state, watermark = plan["state"], plan["watermark"]
+    if not plan["active"]:
+        return state, watermark, False, ["terminal_plan_state"]
+    if session != "continuous":
+        return state, watermark, False, ["market_not_in_continuous_session"]
+    if quote is None:
+        return state, watermark, False, ["quote_missing_for_plan"]
+    stamp = quote["stamp"]
+    if watermark is not None and stamp <= watermark:
+        return state, watermark, False, ["duplicate_or_out_of_order_quote_ignored"]
+    if stamp > now:
+        return state, watermark, False, ["quote_timestamp_in_future"]
+    if now - stamp > max_age:
+        return ("triggered" if state == "triggered" else "quoteStale"), \
+            max(watermark or stamp, stamp), False, ["quote_stale"]
+    in_zone = plan["lower"] <= quote["price"] <= plan["upper"]
+    to = "triggered" if in_zone else "waiting"
+    reasons = ["price_inside_plan_zone"] if in_zone else ["price_below_buy_zone"]
+    if state == "triggered" and to != "triggered":
+        to = "triggered"
+        reasons.append("trigger_latched_awaiting_user_review")
+    event = to != state and to not in ("quoteStale", "sessionClosed", "paused")
+    return to, max(watermark or stamp, stamp), event, reasons
+
+
+def plan(state="waiting", watermark=None, active=True):
+    return {"state": state, "watermark": watermark, "active": active,
+            "lower": 3.98, "upper": 4.00}
+
+
+q1 = {"price": 3.99, "stamp": NOW - 10}
+st, wm, ev, _ = monitor_step(plan(), q1, "continuous", NOW)
+check("价格落入区间 → 触发并写一条事件", st == "triggered" and ev and wm == NOW - 10)
+st2, wm2, ev2, rs = monitor_step(plan("triggered", NOW - 10),
+                                 {"price": 4.20, "stamp": NOW - 5}, "continuous", NOW)
+check("触发后离开区间仍锁存、不重复写事件",
+      st2 == "triggered" and not ev2 and "trigger_latched_awaiting_user_review" in rs)
+st3, wm3, ev3, rs3 = monitor_step(plan("waiting", NOW - 5),
+                                  {"price": 3.99, "stamp": NOW - 5}, "continuous", NOW)
+check("重复/乱序报价不推进状态、不推进水位",
+      st3 == "waiting" and wm3 == NOW - 5 and not ev3
+      and rs3 == ["duplicate_or_out_of_order_quote_ignored"])
+st4, wm4, ev4, _ = monitor_step(plan(), q1, "closed", NOW)
+check("非连续竞价跳过评估", st4 == "waiting" and wm4 is None and not ev4)
+st5, _, ev5, _ = monitor_step(plan(), None, "continuous", NOW)
+check("无报价不凭空判定触发", st5 == "waiting" and not ev5)
+st6, wm6, _, _ = monitor_step(plan(), {"price": 3.99, "stamp": NOW + 60}, "continuous", NOW)
+check("未来报价时间戳被拦截", st6 == "waiting" and wm6 is None)
+st7, _, ev7, _ = monitor_step(plan("triggered", NOW - 10), q1, "continuous", NOW, max_age=5)
+check("过期报价不会把已触发状态洗掉", st7 == "triggered" and not ev7)
+
+# ---- 2.28.0 成交 ↔ 候选关联 ---------------------------------------------
+def link_score(fill, cand, same_day=True, exact=True, unique=True, clean=True):
+    if fill["code"] != cand["code"] or fill["side"] != cand["side"] or not (exact or same_day):
+        return None
+    score = 45 + (25 if exact else 10)
+    if cand["lower"] <= fill["price"] <= cand["upper"]:
+        score += 20
+    elif abs(fill["price"] - cand["target"]) <= cand["target"] * 0.005:
+        score += 10
+    gap = abs(fill["quantity"] - cand["quantity"]) / max(1e-9, cand["quantity"])
+    score += 15 if gap <= 0.10 else (5 if gap <= 0.50 else 0)
+    score = min(100, score)
+    if score < 60:
+        return None
+    auto = score >= 85 and exact and unique and clean
+    return {"score": score, "status": "auto" if auto else "pending",
+            "reasons": ["code_and_side_match"] + (["same_day_coarse_timestamp"] if not exact else [])
+            + (["archive_only_fill"] if not clean else [])
+            + (["multiple_candidate_plans"] if not unique else [])}
+
+
+cand = {"code": "510300", "side": "buy", "lower": 3.98, "upper": 4.00,
+        "target": 3.99, "quantity": 1000}
+fill = {"code": "510300", "side": "buy", "price": 3.99, "quantity": 1000}
+check("价量时间全匹配且唯一 → 高置信自动关联",
+      link_score(fill, cand)["status"] == "auto" and link_score(fill, cand)["score"] == 100)
+check("只有同日粗时间 → 降为待人工确认",
+      link_score(fill, cand, exact=False)["status"] == "pending"
+      and "same_day_coarse_timestamp" in link_score(fill, cand, exact=False)["reasons"])
+check("多个候选同分 → 不自动关联", link_score(fill, cand, unique=False)["status"] == "pending")
+check("只留档历史成交 → 不自动关联",
+      link_score(fill, cand, clean=False)["status"] == "pending"
+      and "archive_only_fill" in link_score(fill, cand, clean=False)["reasons"])
+check("代码或方向不符不生成关联", link_score({**fill, "code": "159915"}, cand) is None
+      and link_score({**fill, "side": "sell"}, cand) is None)
+check("既不在窗口内也不同日不生成关联", link_score(fill, cand, same_day=False, exact=False) is None)
+check("低分不匹配不生成关联",
+      link_score({**fill, "price": 5.5, "quantity": 10}, cand, exact=False) is None)
+
+# ---- 2.28.0 今日 T vs HOLD 复盘 -----------------------------------------
+def today_review(trips, fees_total, unpaired=0.0):
+    contribution = sum(t["contribution"] for t in trips)
+    allocated = sum(t["feeShare"] for t in trips)
+    return {"contribution": contribution,
+            "holdDifferential": contribution if trips else None,
+            "feesTotal": fees_total, "feesAllocated": allocated,
+            "coverageComplete": unpaired <= 1e-9,
+            "reasons": ["ledger_only_no_market_price"]
+            + ([] if trips else ["no_round_trips_today"])
+            + (["unpaired_sells_need_trusted_closing_price"] if unpaired > 0 else [])}
+
+
+trips = [{"contribution": 0.02 * 1000 - 1.0, "feeShare": 1.0},
+         {"contribution": -0.01 * 500 - 0.5, "feeShare": 0.5}]
+rv = today_review(trips, 4.0)
+check("配平回合：T vs HOLD 差额等于含费净贡献", rv["holdDifferential"] == rv["contribution"])
+check("费用只把配对部分算进 T 贡献", rv["feesAllocated"] == 1.5 and rv["feesTotal"] == 4.0)
+check("未配平卖出不假装覆盖完整",
+      not today_review(trips, 4.0, unpaired=200.0)["coverageComplete"]
+      and "unpaired_sells_need_trusted_closing_price" in today_review(trips, 4.0, 200.0)["reasons"])
+check("没有配对回合时差额留 nil 而不是 0", today_review([], 2.0)["holdDifferential"] is None)
+check("复盘证据等级只来自账本，不编造行情",
+      "ledger_only_no_market_price" in today_review(trips, 4.0)["reasons"])
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD")
 sys.exit(0)

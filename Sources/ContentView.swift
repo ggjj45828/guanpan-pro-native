@@ -3836,6 +3836,7 @@ struct ToolsView: View {
     @State private var showVolumeAnalysis = false
     @State private var showDisciplineLab = false
     @State private var showScreenshotImport = false
+    @State private var showProductionLoop = false
     @State private var showTradeCSVImport = false
     @State private var showETFIncomeCalendar = false
     @State private var showDividendCalendar = false
@@ -4128,6 +4129,7 @@ struct ToolsView: View {
                 Button("查看量能结构（MA5/10/20/60 与价量关系）") { showVolumeAnalysis = true }
                 Button("规则验证台：候选 / 风控 / 触发 / 影子评估") { showDisciplineLab = true }
                 Button("从成交截图导入（同花顺，需先核对再写入）") { showScreenshotImport = true }
+                Button("生产盯盘与复盘：计划状态 / 成交关联 / 今日 T vs HOLD") { showProductionLoop = true }
                 Text("本地规则因子对自选与持仓排序；每只标的详情内可打开 AI 深度分析。量化扫描不依赖模型密钥，不预测未来，也不自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4214,6 +4216,7 @@ struct ToolsView: View {
             .sheet(isPresented: $showVolumeAnalysis) { VolumeAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showDisciplineLab) { DisciplineLabView() .themedSheetBackground() }
             .sheet(isPresented: $showScreenshotImport) { TradeScreenshotImportView() .themedSheetBackground() }
+            .sheet(isPresented: $showProductionLoop) { ProductionLoopView() .themedSheetBackground() }
             .sheet(isPresented: $showTradeCSVImport) { TradeCSVImportView() .themedSheetBackground() }
             .sheet(isPresented: $showETFIncomeCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
             .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
