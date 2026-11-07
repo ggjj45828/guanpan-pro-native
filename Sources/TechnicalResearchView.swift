@@ -80,6 +80,7 @@ struct TechnicalResearchView: View {
                 header
                 decisionCard
                 pricingCard
+                patientLimitCard
                 macdCard
                 patternCard
                 volumeCard
@@ -284,6 +285,125 @@ struct TechnicalResearchView: View {
         if magnitude >= 3 { return sem.danger }
         if magnitude >= 1 { return sem.warn }
         return sem.ink2
+    }
+
+    // MARK: - 耐心限价（ATR 退让 + 组合风险额度）
+
+    /// 退让幅度由 ATR 决定，数量由组合风险预算决定；数据被阻断时不给任何精确价。
+    private var patientLimit: PatientLimitPlan {
+        PatientLimitEngine.plan(PatientLimitInput(code: code,
+                                                  price: quote?.price,
+                                                  bars: bars,
+                                                  priceQuality: priceQuality,
+                                                  deployableAmount: RiskBudgetEngine.maxDeployable(code: code, assessment: riskBudget),
+                                                  ownedShares: holding?.quantity ?? 0,
+                                                  lotSize: 100,
+                                                  style: .balanced,
+                                                  validityDays: 5,
+                                                  lastBarForming: session.isLivePricing))
+    }
+
+    private var patientLimitCard: some View {
+        let sem = ThemeSemantics.of(appearance)
+        let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+        let plan = patientLimit
+
+        let subtitle: String
+        if let atr = plan.atr {
+            subtitle = "ATR\(atr.period) \(atr.value.num(3)) · \(atr.percent.num(2))% · \(atr.method.title)"
+        } else {
+            subtitle = "无实测 ATR（日线不足），按缺省波动估算"
+        }
+
+        return ResearchCard(title: "耐心限价",
+                            subtitle: subtitle,
+                            badge: plan.blocked ? "暂不给价" : (plan.allowsExactPrice ? "可执行价" : "仅区间")) {
+            VStack(alignment: .leading, spacing: layout.gap) {
+                row(label: "参考价") {
+                    HStack(spacing: 6) {
+                        Text(plan.referencePrice.map { $0.num(3) } ?? "—")
+                            .font(.subheadline.bold()).monospacedDigit()
+                            .foregroundStyle(plan.referencePrice == nil ? sem.ink3 : sem.ink)
+                        Text(plan.referenceSource).font(.caption2).foregroundStyle(sem.ink3)
+                    }
+                }
+                row(label: "可加仓额度（组合风险）") {
+                    Text(plan.deployableAmount > 0 ? plan.deployableAmount.cny(0) : "无额度")
+                        .font(.subheadline.bold()).monospacedDigit()
+                        .foregroundStyle(plan.deployableAmount > 0 ? sem.ink : sem.warn)
+                }
+
+                if plan.blocked {
+                    ForEach(plan.blockedReasons, id: \.self) { reason in
+                        Text("· \(reason)")
+                            .font(.caption).foregroundStyle(sem.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if !plan.bands.isEmpty {
+                    Divider().overlay(sem.hairline)
+                    ForEach(plan.bands) { band in
+                        bandRow(band, plan: plan, sem: sem)
+                    }
+                    Divider().overlay(sem.hairline)
+                    row(label: "合计") {
+                        Text("\(plan.totalShares) 份 · \(plan.totalAmount.cny(0))")
+                            .font(.subheadline.bold()).monospacedDigit().foregroundStyle(sem.ink)
+                    }
+                    row(label: "有效期") {
+                        Text("\(plan.validityDays) 个交易日").font(.caption).foregroundStyle(sem.ink2)
+                    }
+                    if let invalidation = plan.invalidationPrice {
+                        row(label: "失效价（跌破撤单）") {
+                            Text(invalidation.num(3)).font(.subheadline.bold())
+                                .monospacedDigit().foregroundStyle(sem.danger)
+                        }
+                    }
+                }
+
+                ForEach(plan.notes, id: \.self) { note in
+                    Text("· \(note)")
+                        .font(.caption2).foregroundStyle(sem.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("限价只是「愿意在这个价买」，不保证成交；挂单期间基本面或数据失效要主动撤单。退让幅度按 ATR 算，不是目标价倒推，也不预测涨跌。数量受组合风险预算约束，整手向下取整，余额留现金。")
+                    .font(.caption2).foregroundStyle(sem.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func bandRow(_ band: PatientLimitBand, plan: PatientLimitPlan, sem: ThemeSemantics) -> some View {
+        let isRecommended = plan.recommendedBandID == band.id
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(band.title).font(.subheadline).foregroundStyle(sem.ink)
+                if isRecommended {
+                    Text("推荐")
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(sem.accent.opacity(0.18)))
+                        .foregroundStyle(sem.accent)
+                }
+                Spacer(minLength: 0)
+                Text(band.price.num(3))
+                    .font(.subheadline.bold()).monospacedDigit()
+                    .foregroundStyle(sem.ink)
+            }
+            HStack(spacing: 8) {
+                Text("低于参考 \(band.discountPercent.num(2))% · 退让 \(band.atrMultiple.num(1))×ATR")
+                Spacer(minLength: 0)
+                Text(band.isAffordable ? "\(band.shares) 份 · \(band.amount.cny(0))" : "不足一手")
+                    .foregroundStyle(band.isAffordable ? sem.ink2 : sem.warn)
+            }
+            .font(.caption2)
+            .foregroundStyle(sem.ink3)
+            Text("近 \(band.lookback) 个交易日中，有 \(band.touchCount) 天盘中触及该价")
+                .font(.caption2).foregroundStyle(sem.ink3)
+            if let note = band.note {
+                Text(note).font(.caption2).foregroundStyle(sem.ink3)
+            }
+        }
     }
 
     // MARK: - 多周期 MACD

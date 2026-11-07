@@ -1090,9 +1090,118 @@ check("股息率：账本只覆盖 200 天 → 不外推",
 check("股息率：窗口外那笔不计入（只算 0.05 → 1.25%）",
       abs(dividend_yield_trailing([(400, 0.05), (30, 0.05)], 4.00, 400) - 1.25) < 1e-9)
 
+# ===== ATR 与耐心限价（与 Sources/PatientLimitEngine.swift 同口径复刻）=====
+
+
+def true_ranges(bars):
+    """bars: [(high, low, close)]。第一根缺前收，算不出 TR，丢弃。"""
+    out = []
+    for i in range(1, len(bars)):
+        high, low, _ = bars[i]
+        prev_close = bars[i - 1][2]
+        if high <= 0 or low <= 0 or prev_close <= 0:
+            continue
+        out.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return out
+
+
+def atr_wilder(bars, period=14):
+    trs = true_ranges(bars)
+    if len(trs) < period:
+        return None
+    seed = trs[:period]
+    atr = sum(seed) / len(seed)
+    for tr in trs[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return atr
+
+
+def atr_simple(bars, period=14):
+    trs = true_ranges(bars)
+    if len(trs) < period:
+        return None
+    window = trs[-period:]
+    return sum(window) / len(window)
+
+
+def patient_bands(reference, atr, deployable, lot=100,
+                  multipliers=(0.5, 1.0, 1.5), weights=(0.30, 0.35, 0.35)):
+    """返回 [(price, shares, amount)]；不足一手 shares=0，不凑单。"""
+    bands = []
+    for multiple, weight in zip(multipliers, weights):
+        price = reference - atr * multiple
+        if price <= 0:
+            continue
+        budget = deployable * weight
+        lots = 0
+        if budget > 0:
+            lots = int(math.floor(budget / (price * lot)))
+            lots = max(0, min(1_000_000, lots))
+        shares = lots * lot
+        bands.append((price, shares, shares * price))
+    return bands
+
+
+def touch_count(lows, price):
+    return sum(1 for low in lows if 0 < low <= price)
+
+
+flat = [(10.5, 9.5, 10.0)] * 20            # 真实波幅恒为 1.0
+check("ATR：真实波幅恒 1.0 时 Wilder = 1.0",
+      abs(atr_wilder(flat, 14) - 1.0) < 1e-9)
+check("ATR：同序列简单平均也 = 1.0（两口径收敛）",
+      abs(atr_simple(flat, 14) - 1.0) < 1e-9)
+check("ATR：样本不足 14 个真实波幅 → 返回 None（不拿半个月冒充 14 日）",
+      atr_wilder([(10.5, 9.5, 10.0)] * 10, 14) is None)
+
+# 波幅放大后 Wilder 应被抬高，但滞后于最新一根（因为它是平滑值）
+widening = [(10.5, 9.5, 10.0)] * 14 + [(13.0, 9.0, 11.0)] * 6
+check("ATR：波幅放大后 Wilder 上升",
+      atr_wilder(widening, 14) > atr_wilder(flat, 14))
+check("ATR：Wilder 滞后于简单平均（平滑特性）",
+      atr_wilder(widening, 14) < atr_simple(widening, 14))
+
+bands = patient_bands(4.00, 0.08, 10000)
+check("限价：0.5×ATR → 3.96", abs(bands[0][0] - 3.96) < 1e-9)
+check("限价：1.0×ATR → 3.92", abs(bands[1][0] - 3.92) < 1e-9)
+check("限价：1.5×ATR → 3.88", abs(bands[2][0] - 3.88) < 1e-9)
+check("限价：标准档 3500 元 ÷ 3.92 一手 → 8 手 = 800 份",
+      bands[1][1] == 800, f"实得 {bands[1][1]} 份")
+check("限价：份额整手，金额按份额计（不超预算）",
+      bands[1][2] <= 3500 + 1e-9)
+
+tiny = patient_bands(4.00, 0.08, 300)
+check("限价：额度 300 元不足一手 → 各档 0 份（不凑单）",
+      all(share == 0 for _, share, _ in tiny))
+
+check("限价：失效价 = 参考价 − 2.5×ATR = 3.80",
+      abs((4.00 - 0.08 * 2.5) - 3.80) < 1e-9)
+
+lows = [4.10, 3.95, 3.90, 3.85, 3.98, 4.20]
+check("限价：触及统计只数历史事实（≤3.90 有 2 天）",
+      touch_count(lows, 3.90) == 2)
+check("限价：触及统计对 3.80 为 0（该价从未出现）",
+      touch_count(lows, 3.80) == 0)
+
+
+def patient_plan(reference, atr, deployable, blocked=False):
+    """数据被阻断时一个精确价都不给。"""
+    if blocked or reference <= 0 or deployable <= 0:
+        return {"allowsExactPrice": False, "bands": [], "blocked": True}
+    return {"allowsExactPrice": True, "bands": patient_bands(reference, atr, deployable), "blocked": False}
+
+
+blocked_plan = patient_plan(4.00, 0.08, 10000, blocked=True)
+check("限价：数据阻断 → 不给任何挂单价",
+      blocked_plan["blocked"] and not blocked_plan["bands"])
+check("限价：数据阻断 → 连精确价都不宣称",
+      blocked_plan["allowsExactPrice"] is False)
+check("限价：无额度 → 同样不给价（风险优先于技术）",
+      patient_plan(4.00, 0.08, 0)["blocked"] is True)
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价")
 sys.exit(0)
