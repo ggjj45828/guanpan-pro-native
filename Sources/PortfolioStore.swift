@@ -7,6 +7,9 @@ final class PortfolioStore: ObservableObject {
     @Published var data = PortfolioData()
     @Published var intradayBars: [IntradayBar] = []
     @Published var dailyBars: [String: [DailyBar]] = [:]
+    /// ETF 单位净值 / IOPV。只做「补数据」，绝不覆盖行情成交价；
+    /// 拉不到就是空，界面显示「无 IOPV」，不用成交价冒充净值。
+    @Published private(set) var etfIOPV: [String: ETFIOPVSnapshot] = [:]
     @Published var sourceStatus = "等待刷新"
     @Published private(set) var marketChanges: [String: Double] = [:]
     @Published var fundNAVStatus = "尚未更新基金净值"
@@ -380,8 +383,24 @@ final class PortfolioStore: ObservableObject {
               let rows = try? JSONDecoder().decode([DailyBar].self, from: raw) else { return }
         dailyBars = Dictionary(grouping: rows, by: \.code).mapValues { $0.sorted { $0.date < $1.date } }
     }
-    func saveDailyBars() {
-        guard let url = dailyBarsURL() else { return }
+
+    /// 拉取场内基金单位净值 / IOPV（新浪 fu_ 优先，腾讯 jj 兜底）。
+    ///
+    /// 只服务于「折溢价 / 股息率」这类需要净值的读数，不参与行情价刷新；
+    /// 五分钟内已取过的直接跳过，避免反复打扰数据源。失败保持空值，不填假数。
+    func refreshETFIOPV(codes: [String], force: Bool = false) async {
+        let targets = Array(Set(codes.filter { $0.count == 6 && $0.allSatisfy(\.isNumber) })).sorted()
+        guard !targets.isEmpty else { return }
+        for code in targets {
+            if !force, let cached = etfIOPV[code],
+               Date().timeIntervalSince(cached.fetchedAt) < 300 { continue }
+            if let snapshot = await ETFIOPVService.fetch(code: code) {
+                etfIOPV[code] = snapshot
+            }
+        }
+    }
+
+    func saveDailyBars() {        guard let url = dailyBarsURL() else { return }
         // 逐级显式标注类型，避免编译器在链式泛型上做长时间推断。
         let allBars: [DailyBar] = dailyBars.values.flatMap { $0 }
         let rows: [DailyBar] = allBars.sorted { $0.code == $1.code ? $0.date < $1.date : $0.code < $1.code }

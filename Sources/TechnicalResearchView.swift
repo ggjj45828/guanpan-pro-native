@@ -28,11 +28,58 @@ struct TechnicalResearchView: View {
     /// 市场环境（指数）：复用本机 MarketRegime 引擎，与全 App 一致（含防抖记忆）。
     @State private var regime: MarketRegimeAssessment? = nil
 
+    // MARK: - 策略仲裁输入（全部来自既有引擎，不新增数据源）
+
+    private var quote: Quote? {
+        store.data.quotes.first { $0.code == code }
+    }
+
+    private var session: MarketSessionStatus {
+        TradingSession.status(at: Date(), custom: store.data.customMarketHolidays)
+    }
+
+    /// 第 1 关：真实数据有效性。净值来自新浪/腾讯净值接口，拿不到就如实标「缺 IOPV」。
+    private var priceQuality: ETFPriceQuality {
+        let nav = store.etfIOPV[code]
+        let input = ETFPriceInput(code: code,
+                                  price: quote?.price,
+                                  quoteAt: quote?.updatedAt,
+                                  fetchedAt: quote?.fetchedAt,
+                                  source: quote?.source,
+                                  iopv: nav?.nav,
+                                  iopvAt: nav?.navAt,
+                                  isCrossBorder: RiskBudgetEngine.theme(for: code) == "跨境",
+                                  session: session,
+                                  customHolidays: store.data.customMarketHolidays)
+        return ETFPriceQualityEngine.evaluate(input)
+    }
+
+    /// 第 2 关：组合级风险预算（与单笔 RiskGuard 分工不同）。
+    private var riskBudget: RiskBudgetAssessment {
+        let positions = store.data.holdings.map {
+            RiskBudgetPosition(code: $0.code, name: $0.name, value: $0.marketValue)
+        }
+        return RiskBudgetEngine.evaluate(positions: positions, cash: store.data.cash)
+    }
+
+    /// 第 3~6 关：数据 > 组合风险 > 市场状态 > 技术证据 > AI > 候选。
+    private var decision: ArbitrationDecision {
+        StrategyArbitration.decide(ArbitrationInput(code: code,
+                                                    priceQuality: priceQuality,
+                                                    riskBudget: riskBudget,
+                                                    regime: regime,
+                                                    dailyTrend: macd?.daily.trend,
+                                                    divergence: macd?.daily.divergence,
+                                                    patternHitCount: patterns?.detectedKinds.count ?? 0))
+    }
+
     var body: some View {
         let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
         ScrollView {
             VStack(alignment: .leading, spacing: layout.gap * 1.4) {
                 header
+                decisionCard
+                pricingCard
                 macdCard
                 patternCard
                 volumeCard
@@ -41,7 +88,10 @@ struct TechnicalResearchView: View {
             }
             .padding(layout.pageInset)
         }
-        .task { regime = store.marketRegime() }
+        .task {
+            regime = store.marketRegime()
+            await store.refreshETFIOPV(codes: [code])
+        }
         .themedFormBackground(ThemeSemantics.of(appearance))
         .navigationTitle("技术研究")
         .navigationBarTitleDisplayMode(.inline)
@@ -64,6 +114,170 @@ struct TechnicalResearchView: View {
                 Text("暂无日线数据").font(.caption).foregroundStyle(sem.ink3)
             }
         }
+    }
+
+    // MARK: - 策略仲裁（数据 > 组合风险 > 市场状态 > 技术证据 > AI > 候选）
+
+    private var decisionCard: some View {
+        let sem = ThemeSemantics.of(appearance)
+        let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+        let d = decision
+        let tint = verdictTint(d.verdict, sem)
+
+        var techText = macd?.daily.trend.title ?? "无 MACD 数据"
+        if let div = macd?.daily.divergence, div != .none {
+            techText += " · \(div.title)"
+        }
+        if let count = patterns?.detectedKinds.count, count > 0 {
+            techText += " · 形态 \(count) 项"
+        }
+
+        return ResearchCard(title: "决策闸门",
+                            subtitle: "真实数据 > 组合风险 > 市场状态 > 技术证据 > AI > 候选",
+                            badge: d.title) {
+            VStack(alignment: .leading, spacing: layout.gap) {
+                Text(d.headline)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(sem.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(d.action)
+                    .font(.caption)
+                    .foregroundStyle(tint)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider().overlay(sem.hairline)
+
+                row(label: "数据有效性") {
+                    Text(priceQuality.verdict.title)
+                        .font(.caption.bold())
+                        .foregroundStyle(verdictTint(priceQuality.verdict, sem))
+                }
+                row(label: "组合风险") {
+                    Text(riskBudget.hasVeto ? "否决" : (riskBudget.worstSeverity?.title ?? "正常"))
+                        .font(.caption.bold())
+                        .foregroundStyle(riskBudget.hasVeto ? sem.danger : sem.ink2)
+                }
+                row(label: "市场状态") {
+                    Text(regime.map { "\($0.regime.title) · \($0.riskLevel.title)" } ?? "不可用")
+                        .font(.caption)
+                        .foregroundStyle(sem.ink2)
+                }
+                row(label: "技术证据") {
+                    Text(techText).font(.caption).foregroundStyle(sem.ink2)
+                }
+
+                if !d.reasons.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(d.reasons.prefix(5).indices, id: \.self) { index in
+                            Text("· \(d.reasons[index])")
+                                .font(.caption2)
+                                .foregroundStyle(sem.ink3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                Text("本次由「\(d.decidedBy.title)」这一关定案。\(d.allowsExactLimitPrice ? "允许给精确限价。" : "只能给区间，不给精确价。")系统不自动下单，Candidate 一律需人工确认。")
+                    .font(.caption2)
+                    .foregroundStyle(sem.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func verdictTint(_ v: ArbitrationVerdict, _ sem: ThemeSemantics) -> Color {
+        switch v {
+        case .blockedByData, .blockedByRisk: return sem.danger
+        case .waitForMarket, .observeOnly: return sem.warn
+        case .candidateEligible, .candidateActive: return sem.ok
+        }
+    }
+
+    private func verdictTint(_ v: PriceDataVerdict, _ sem: ThemeSemantics) -> Color {
+        switch v {
+        case .usable: return sem.ok
+        case .degraded: return sem.warn
+        case .blocked: return sem.danger
+        }
+    }
+
+    // MARK: - 净值 / IOPV / 折溢价 / 股息率
+
+    private var holding: Holding? {
+        store.data.holdings.first { $0.code == code }
+    }
+
+    private var dividendYield: DividendYieldCalculator.Result? {
+        DividendYieldCalculator.yield(annualDividendPerShare: holding?.annualDividendPerShare,
+                                      price: quote?.price)
+    }
+
+    private var pricingCard: some View {
+        let sem = ThemeSemantics.of(appearance)
+        let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+        let nav = store.etfIOPV[code]
+        let premium = nav?.premiumPercent(price: quote?.price)
+        let dy = dividendYield
+
+        return ResearchCard(title: "净值 · 折溢价 · 股息率",
+                            subtitle: nav?.source ?? "尚未取得净值",
+                            badge: nav == nil ? "无 IOPV" : nil) {
+            VStack(alignment: .leading, spacing: layout.gap) {
+                row(label: "单位净值（IOPV 口径）") {
+                    Text(nav.map { $0.nav.num(4) } ?? "—")
+                        .font(.subheadline.bold()).monospacedDigit()
+                        .foregroundStyle(nav == nil ? sem.ink3 : sem.ink)
+                }
+                row(label: "净值日期") {
+                    Text(nav?.rawDateText ?? "—").font(.caption).foregroundStyle(sem.ink3)
+                }
+                row(label: "成交价") {
+                    Text(quote.map { $0.price.num(3) } ?? "—")
+                        .font(.subheadline.bold()).monospacedDigit()
+                        .foregroundStyle(quote == nil ? sem.ink3 : sem.ink)
+                }
+                row(label: "折溢价") {
+                    if let premium {
+                        Text(premium.pct(2))
+                            .font(.subheadline.bold()).monospacedDigit()
+                            .foregroundStyle(premiumTint(premium, sem))
+                    } else {
+                        Text("—（无净值不猜）").font(.caption).foregroundStyle(sem.ink3)
+                    }
+                }
+                row(label: "股息率") {
+                    if let dy {
+                        Text(dy.yieldPercent.pct(2))
+                            .font(.subheadline.bold()).monospacedDigit()
+                            .foregroundStyle(sem.ink)
+                    } else {
+                        Text("未填年分红").font(.caption).foregroundStyle(sem.ink3)
+                    }
+                }
+
+                if let dy {
+                    Text("股息率口径：\(dy.source)，每份年分红 \(dy.annualDividendPerShare.num(4)) 元。分红是已公告/已派发口径，不是收益承诺。")
+                        .font(.caption2).foregroundStyle(sem.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("股息率缺口：持仓里没填「每份年分红」。可在持仓编辑里补，补了才给数——不按行业均值瞎估。")
+                        .font(.caption2).foregroundStyle(sem.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("折溢价 =（成交价 − 单位净值）÷ 单位净值。盘中单位净值即 IOPV 口径，收盘后为当日净值。折溢价只说明贵或便宜，不是买卖信号。")
+                    .font(.caption2).foregroundStyle(sem.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func premiumTint(_ premium: Double, _ sem: ThemeSemantics) -> Color {
+        let magnitude = abs(premium)
+        if magnitude >= 3 { return sem.danger }
+        if magnitude >= 1 { return sem.warn }
+        return sem.ink2
     }
 
     // MARK: - 多周期 MACD

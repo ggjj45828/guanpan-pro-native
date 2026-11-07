@@ -866,9 +866,198 @@ hb_ok = flat_bars(21) \
     + [{"open": 10.2, "close": 10.0, "high": 10.2, "low": 9.98, "volume": 250.0}]
 check("放量阴线：量比≥2× 且实体有效 → 识别", p_heavyBearish(hb_ok))
 
+# ── ETF 净值 / IOPV / 折溢价（口径与 Swift ETFIOPVService 一致）
+print("ETF 净值 / IOPV / 折溢价")
+
+SINA_FU_SAMPLE = 'var hq_str_fu_510300="华泰柏瑞沪深300ETF,16:05:00,4.1312,4.1909,1.8810,0,-1.4235,2026-11-06,4.0656,-2.989";'
+TENCENT_JJ_SAMPLE = 'v_jj510300="510300~华泰柏瑞沪深300ETF~0.0000~0.0000~~4.1312~1.8589~-1.4245~2026-11-06~";'
+
+
+def parse_sina_fu(text):
+    """0 名称 / 1 时间 / 2 净值 / 3 昨净值 / 6 净值涨跌% / 7 日期。"""
+    if '"' not in text:
+        return None
+    body = text.split('"')[1]
+    f = body.split(",")
+    if len(f) < 8:
+        return None
+    try:
+        nav = float(f[2])
+    except ValueError:
+        return None
+    if nav <= 0:
+        return None
+    return {"nav": nav, "prev": f[3], "change": float(f[6]), "date": f[7].strip()}
+
+
+def parse_tencent_jj(text):
+    """5 净值 / 7 净值涨跌% / 8 日期。"""
+    if '"' not in text:
+        return None
+    f = text.split('"')[1].split("~")
+    if len(f) < 9:
+        return None
+    try:
+        nav = float(f[5])
+    except ValueError:
+        return None
+    return nav if nav > 0 else None
+
+
+def premium_pct(price, nav):
+    if not price or not nav or price <= 0 or nav <= 0:
+        return None
+    return (price - nav) / nav * 100
+
+
+sina = parse_sina_fu(SINA_FU_SAMPLE)
+check("新浪 fu_ 解析：净值 = 4.1312", sina is not None and abs(sina["nav"] - 4.1312) < 1e-9)
+check("新浪 fu_ 解析：净值涨跌幅 = -1.4235", sina is not None and abs(sina["change"] + 1.4235) < 1e-9)
+check("新浪 fu_ 解析：日期 = 2026-11-06", sina is not None and sina["date"] == "2026-11-06")
+check("腾讯 jj 与新浪净值互证一致（4.1312）",
+      abs(parse_tencent_jj(TENCENT_JJ_SAMPLE) - 4.1312) < 1e-9)
+check("折溢价：4.124 vs 4.1312 = -0.174%", abs(premium_pct(4.124, 4.1312) + 0.1743) < 1e-3)
+check("折溢价：缺净值返回 None（绝不填 0 假装平价）", premium_pct(4.124, None) is None)
+
+# ── 价格质量闸门（第 1 优先级）
+print("ETF 价格质量闸门")
+
+BLOCKING_ISSUES = {"priceMissing", "priceInvalid", "quoteStale", "sourceUntrusted",
+                   "manualOverride", "premiumExtreme", "spreadExtreme",
+                   "overseasClosed", "fxUnknown"}
+
+
+def price_quality(price, quote_fresh=True, nav_present=True, nav=4.1312,
+                  cross_border=False, fx_known=True, overseas_open=None):
+    if price is None or price <= 0:
+        return {"verdict": "blocked", "issues": ["priceMissing"]}
+    issues = []
+    if not quote_fresh:
+        issues.append("quoteStale")
+    if not nav_present:
+        issues.append("iopvMissing")
+    else:
+        p = (price - nav) / nav * 100
+        block = 4.5 if cross_border else 3.0
+        warn = 1.5 if cross_border else 1.0
+        if abs(p) >= block:
+            issues.append("premiumExtreme")
+        elif abs(p) >= warn:
+            issues.append("premiumWide")
+    if cross_border:
+        if not fx_known:
+            issues.append("fxUnknown")
+        if overseas_open is False:
+            issues.append("overseasClosed")
+    if any(i in BLOCKING_ISSUES for i in issues):
+        return {"verdict": "blocked", "issues": issues}
+    return {"verdict": "degraded" if issues else "usable", "issues": issues}
+
+
+check("闸门：报价过期 → 阻断（不给精确限价）",
+      price_quality(4.124, quote_fresh=False)["verdict"] == "blocked")
+check("闸门：缺 IOPV → 降级（可看价格，不可称贵贱）",
+      price_quality(4.124, nav_present=False)["verdict"] == "degraded")
+check("闸门：折溢价 +3.4% → 阻断", price_quality(4.27)["verdict"] == "blocked")
+check("闸门：跨境 +3.4% 未破 4.5% → 仅降级",
+      price_quality(4.27, cross_border=True)["verdict"] == "degraded")
+check("闸门：境外休市 → 阻断",
+      price_quality(4.124, cross_border=True, overseas_open=False)["verdict"] == "blocked")
+check("闸门：数据齐备且平价 → 可用", price_quality(4.13)["verdict"] == "usable")
+
+
+# ── 组合风险预算（第 2 优先级）
+print("组合风险预算")
+
+
+def theme_of(code):
+    if code.startswith("511"):
+        return "债券/货币"
+    if code.startswith("518"):
+        return "黄金/商品"
+    if code.startswith("513") or code.startswith("1599"):
+        return "跨境"
+    if code.startswith("51"):
+        return "沪市权益"
+    if code.startswith("159"):
+        return "深市权益"
+    return "其他"
+
+
+def risk_budget(positions, cash, max_single=0.25, max_theme=0.40,
+                min_cash=0.05, max_count=12):
+    invested = sum(v for _, v in positions)
+    total = invested + cash
+    findings = []
+    if total > 0:
+        for code, v in positions:
+            if v / total > max_single:
+                findings.append(("veto", "single-" + code))
+        themes = {}
+        for code, v in positions:
+            themes[theme_of(code)] = themes.get(theme_of(code), 0) + v
+        for t, v in themes.items():
+            if v / total > max_theme:
+                findings.append(("warn", "theme-" + t))
+        if cash / total < min_cash:
+            findings.append(("warn", "cash"))
+        if len(positions) > max_count:
+            findings.append(("note", "count"))
+    return {"has_veto": any(s == "veto" for s, _ in findings),
+            "findings": findings,
+            "headroom": max(0.0, cash - total * min_cash) if total > 0 else 0.0,
+            "total": total}
+
+
+check("风险预算：单标的 40% → 否决",
+      risk_budget([("510300", 4000)], 6000)["has_veto"])
+check("风险预算：单标的 20% → 不否决",
+      not risk_budget([("510300", 2000)], 8000)["has_veto"])
+check("风险预算：现金 2% → 现金下限提醒",
+      any(k == "cash" for _, k in risk_budget([("510300", 9800)], 200)["findings"]))
+check("风险预算：可动用现金 = 现金 − 5% 总资产",
+      abs(risk_budget([], 10000)["headroom"] - 9500) < 1e-9)
+check("风险预算：跨境按代码段识别（513/1599）",
+      theme_of("513100") == "跨境" and theme_of("159920") == "跨境" and theme_of("510300") == "沪市权益")
+
+# ── 策略仲裁（数据 > 组合风险 > 市场 > 技术 > AI > 候选）
+print("策略仲裁优先级")
+
+
+def arbitrate(verdict="usable", risk_veto=False, regime_risk=0,
+              trend="bullishImproving", divergence="none",
+              patterns=1, candidate=False):
+    if verdict == "blocked":
+        return ("blockedByData", "dataValidity")
+    if risk_veto:
+        return ("blockedByRisk", "riskBudget")
+    if regime_risk >= 2:
+        return ("waitForMarket", "marketRegime")
+    if trend in ("bearish", "weakening", "dataInsufficient"):
+        return ("observeOnly", "technicalEvidence")
+    if divergence == "bearish":
+        return ("observeOnly", "technicalEvidence")
+    if trend == "bullishImproving" and patterns > 0:
+        return ("candidateActive" if candidate else "candidateEligible", "candidate")
+    return ("observeOnly", "technicalEvidence")
+
+
+check("仲裁：数据阻断压过一切（组合也超限）",
+      arbitrate(verdict="blocked", risk_veto=True) == ("blockedByData", "dataValidity"))
+check("仲裁：组合否决压过市场与技术（技术再好不翻案）",
+      arbitrate(risk_veto=True, trend="bullishImproving", patterns=2) == ("blockedByRisk", "riskBudget"))
+check("仲裁：市场 R2 高风险 → 只能等",
+      arbitrate(regime_risk=2, trend="bullishImproving", patterns=2) == ("waitForMarket", "marketRegime"))
+check("仲裁：顶背离 → 仅观察",
+      arbitrate(divergence="bearish") == ("observeOnly", "technicalEvidence"))
+check("仲裁：多头动能 + 形态配合 → 可备选（不自动执行）",
+      arbitrate() == ("candidateEligible", "candidate"))
+check("仲裁：单 MACD 多头、无形态 → 仍仅观察",
+      arbitrate(patterns=0) == ("observeOnly", "technicalEvidence"))
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁")
 sys.exit(0)
