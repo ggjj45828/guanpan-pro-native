@@ -153,6 +153,7 @@ private func xAxisLabel(_ date: String, _ bars: [DailyBar]) -> String {
 }
 
 struct MarketChartView: View {
+    @Environment(\.appAppearance) private var appearance
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
@@ -593,7 +594,7 @@ struct MarketChartView: View {
                     if selectedChartPeriod == .intraday {
                         HStack(spacing: 12) {
                             Text("均价 \(intradayAvgPoints.last?.price.num(3) ?? "暂无")").foregroundStyle(.orange)
-                            Text("最新 \(intradayLatestPrice?.num(3) ?? "暂无")").foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                            Text("最新 \(intradayLatestPrice?.num(3) ?? "暂无")").foregroundStyle(ThemeSemantics.of(appearance).ink)
                             Text(intradayChangeText).foregroundStyle((intradayLatestPrice ?? 0) >= (intradayPrevClose ?? .infinity) ? .red : .green)
                         }
                         .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
@@ -626,7 +627,7 @@ struct MarketChartView: View {
                         if selectedIntradayBars.count > 1 {
                             Chart(selectedIntradayBars) { point in
                                 LineMark(x: .value("时间", point.timestamp), y: .value("价格", point.price))
-                                    .foregroundStyle(colorScheme == .dark ? Color.white : Color.black).interpolationMethod(.linear)
+                                    .foregroundStyle(ThemeSemantics.of(appearance).ink).interpolationMethod(.linear)
                                     .lineStyle(StrokeStyle(lineWidth: 1.25))
                                 // 均价线：累计成交额 / 累计成交量
                                 if showIntradayAverage {

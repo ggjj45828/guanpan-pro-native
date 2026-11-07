@@ -13,6 +13,7 @@ private struct OceanTool: Identifiable {
     let id: String
     let title: String
     let symbol: String
+    let tint: Color
 }
 
 struct OceanDashboardView: View {
@@ -32,11 +33,11 @@ struct OceanDashboardView: View {
     private var palette: DsPalette { .of(store.resolvedAppearance) }
 
     private let tools: [OceanTool] = [
-        OceanTool(id: "grid", title: "网格", symbol: "square.grid.2x2"),
-        OceanTool(id: "income", title: "收息", symbol: "yensign.circle"),
-        OceanTool(id: "ledger", title: "账本", symbol: "book.closed"),
-        OceanTool(id: "news", title: "快讯", symbol: "newspaper"),
-        OceanTool(id: "add", title: "加自选", symbol: "plus")
+        OceanTool(id: "grid", title: "网格", symbol: "square.grid.2x2", tint: Color(hex: 0x2F5BE8)),
+        OceanTool(id: "income", title: "收息", symbol: "yensign.circle", tint: Color(hex: 0x1E9E7A)),
+        OceanTool(id: "ledger", title: "账本", symbol: "book.closed", tint: Color(hex: 0x8570F5)),
+        OceanTool(id: "news", title: "快讯", symbol: "newspaper", tint: Color(hex: 0xE08A2E)),
+        OceanTool(id: "add", title: "加自选", symbol: "plus", tint: Color(hex: 0x4E9E5B))
     ]
 
     var body: some View {
@@ -293,9 +294,9 @@ struct OceanDashboardView: View {
                         VStack(spacing: 5) {
                             Image(systemName: tool.symbol)
                                 .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(palette.accent)
+                                .foregroundStyle(tool.tint)
                                 .frame(width: 32, height: 32)
-                                .background { Circle().fill(palette.accentDim) }
+                                .background { RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tool.tint.opacity(0.13)) }
                             Text(tool.title)
                                 .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink2)
@@ -320,24 +321,24 @@ struct OceanDashboardView: View {
             HStack(spacing: 11) {
                 Image(systemName: "sparkles")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(palette.accent)
                     .frame(width: 36, height: 36)
-                    .background { Circle().fill(Color.white.opacity(0.22)) }
+                    .background { Circle().fill(palette.onAccent) }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("AI 组合顾问")
                         .scaledFont(palette.fsRow, weight: .semibold)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(palette.onAccent)
                     Text(store.data.holdings.isEmpty
                          ? "先建立真实持仓，再给出组合判断"
                          : "读真实账本，给结论与风险，不下单")
                         .scaledFont(palette.fsMicro)
-                        .foregroundStyle(.white.opacity(0.88))
+                        .foregroundStyle(palette.onAccentSub)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(palette.onAccent)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)

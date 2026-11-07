@@ -198,7 +198,7 @@ struct FeeCorrectionView: View {
                     .scaledFont(palette.fsLabel, weight: .semibold)
                     // 显式写 Color：三元里 `.white` 会被推断成 palette 另一侧的样式类型，
                     // 编译报「LinearGradient 与 Color 不等价」。
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(palette.onAccent)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 13)
                     .background { RoundedRectangle(cornerRadius: 16, style: .continuous).fill(palette.accent) }

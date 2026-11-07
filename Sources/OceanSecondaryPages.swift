@@ -329,9 +329,9 @@ struct OceanAssetsView: View {
                 }
                 Section("资产构成") { compositionRow.oceanSectionRow(palette) }
                 Section("常用工具") {
-                    toolRow("网格试算", "square.grid.2x2", .grid).oceanSectionRow(palette)
-                    toolRow("收息台账", "yensign.circle", .income).oceanSectionRow(palette)
-                    toolRow("账本审计", "checklist", .ledger).oceanSectionRow(palette)
+                    toolRow("网格试算", "square.grid.2x2", Color(hex: 0x2F5BE8), .grid).oceanSectionRow(palette)
+                    toolRow("收息台账", "yensign.circle", Color(hex: 0x1E9E7A), .income).oceanSectionRow(palette)
+                    toolRow("账本审计", "checklist", Color(hex: 0x8570F5), .ledger).oceanSectionRow(palette)
                 }
                 Section("现金流") {
                     Button {
@@ -406,7 +406,7 @@ struct OceanAssetsView: View {
         }
     }
 
-    private func toolRow(_ title: String, _ symbol: String, _ target: OceanAssetsSheet) -> some View {
+    private func toolRow(_ title: String, _ symbol: String, _ tint: Color, _ target: OceanAssetsSheet) -> some View {
         Button {
             Haptics.push()
             sheetTarget = target
@@ -414,9 +414,9 @@ struct OceanAssetsView: View {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(palette.accent)
+                    .foregroundStyle(tint)
                     .frame(width: 28, height: 28)
-                    .background { Circle().fill(palette.accentDim) }
+                    .background { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(0.13)) }
                 Text(title)
                     .scaledFont(palette.fsRow, weight: .medium)
                     .foregroundStyle(palette.ink)

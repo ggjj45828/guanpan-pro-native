@@ -1196,9 +1196,9 @@ struct DashboardView: View {
                 }
             }
         }
-        .padding(AppLayout.cardPadding)
+        .padding(ThemeLayout.of(store.resolvedAppearance).pad)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
+        .cardPanelBackground(cornerRadius: ThemeLayout.of(store.resolvedAppearance).radius,
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
             tone: nil)
         // 读屏：名称 + 现价 + 涨跌一次念完，而不是 6 个独立焦点各念一遍
@@ -1312,8 +1312,8 @@ struct MoreHubView: View {
             List {
                 Section {
                     profileCard
-                        .listRowInsets(EdgeInsets(top: 4, leading: AppLayout.pageHorizontalInset,
-                                                  bottom: 8, trailing: AppLayout.pageHorizontalInset))
+                        .listRowInsets(EdgeInsets(top: 4, leading: ThemeLayout.of(store.resolvedAppearance).pageInset,
+                                                  bottom: 8, trailing: ThemeLayout.of(store.resolvedAppearance).pageInset))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -1457,9 +1457,9 @@ private struct MoreHubCard: View {
             HStack(spacing: 12) {
                 Image(systemName: icon)
                     .scaledFont(20, weight: .semibold)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(tint)
                     .frame(width: 46, height: 46)
-                    .background(tint.gradient, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).scaledFont(15, weight: .semibold).foregroundStyle(.primary)
                     Text(subtitle).scaledFont(11).foregroundStyle(.secondary)
@@ -1793,8 +1793,8 @@ struct HoldingsView: View {
         }
         .padding(4)
         .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(palette.cardSoft) }
-        .listRowInsets(EdgeInsets(top: 4, leading: AppLayout.pageHorizontalInset,
-                                  bottom: 8, trailing: AppLayout.pageHorizontalInset))
+        .listRowInsets(EdgeInsets(top: 4, leading: ThemeLayout.of(store.resolvedAppearance).pageInset,
+                                  bottom: 8, trailing: ThemeLayout.of(store.resolvedAppearance).pageInset))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
     }
@@ -3169,107 +3169,6 @@ struct HoldingEditor: View {
     }
 }
 
-struct TradeEditor: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let holding: Holding
-    @State private var side: LedgerEntry.Side = .buy
-    @State private var quantity = ""
-    @State private var price = ""
-    @State private var fee = "0"
-    @State private var linkCash = false
-    @State private var tradeDate = Date.now
-    @State private var settlementDate = Date.now
-    @State private var error = ""
-    @State private var feeEstimateText = ""
-    @State private var estimatedRedemptionLots: [FundLotRedemption]?
-    @State private var estimatedFeeValue: Double?
-    @State private var estimatedQuantity = ""
-    @State private var estimatedTradeDay = ""
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section(holding.name) {
-                    Picker("方向", selection: $side) { Text("买入").tag(LedgerEntry.Side.buy); Text("卖出").tag(LedgerEntry.Side.sell) }.pickerStyle(.segmented)
-                    TextField("份额", text: $quantity).keyboardType(.decimalPad)
-                    TextField("成交价/净值", text: $price).keyboardType(.decimalPad)
-                    TextField("手续费", text: $fee).keyboardType(.decimalPad)
-                    if holding.kind == .fund {
-                        if side == .sell {
-                            Button("按所选批次策略估算赎回费") { estimateFundFee() }
-                            if !feeEstimateText.isEmpty { Text(feeEstimateText).font(.footnote).foregroundStyle(.secondary) }
-                        }
-                        DatePicker("申请日期", selection: $tradeDate, displayedComponents: .date)
-                        DatePicker("确认/净值生效日", selection: $settlementDate, displayedComponents: .date)
-                    } else {
-                        DatePicker("成交日期", selection: $tradeDate, displayedComponents: .date)
-                    }
-                    if holding.kind == .etf { Toggle("联动本程序现金", isOn: $linkCash) }
-                }
-                if !error.isEmpty { Text(error).foregroundStyle(.red) }
-                Text(holding.kind == .etf ? "ETF 手续费默认按每笔 0.10 元填写，可按券商实收修改；卖出盈亏按当前成本价计算。是否联动参考现金逐笔选择。" : "基金申赎费优先以实际扣费为准。可按基金合同配置费率与赎回批次策略；估算不等于销售平台最终扣费，交易不会连接销售平台。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("记一笔交易")
-            .keyboardDoneToolbar()
-            .onChange(of: quantity) { _, _ in clearFundFeeEstimate() }
-            .onChange(of: tradeDate) { _, _ in clearFundFeeEstimate() }
-            .onChange(of: side) { _, _ in clearFundFeeEstimate() }
-            .onAppear {
-                linkCash = holding.kind == .etf && store.data.cashLinkedByDefault
-                fee = holding.kind == .etf ? "0.10" : "0"
-                settlementDate = tradeDate
-            }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("入账") { save() } }
-            }
-        }
-    }
-    private func save() {
-        guard let q = Double(quantity), let p = Double(price), let f = Double(fee) else { error = "请输入有效数字"; return }
-        do { try store.recordTrade(code: holding.code, kind: holding.kind, side: side, quantity: q, price: p,
-            fee: f, linkedCash: linkCash, date: tradeDate,
-            settlementDate: holding.kind == .fund ? settlementDate : nil,
-            fundRedemptionLots: estimatedQuantity == quantity && estimatedTradeDay == dayKey(tradeDate) ? estimatedRedemptionLots : nil,
-            fundFeeWasEstimated: holding.kind == .fund && side == .sell
-                && estimatedFeeValue.map { abs($0 - f) <= 0.005 } == true); dismiss() }
-        catch { self.error = error.localizedDescription }
-    }
-
-    private func estimateFundFee() {
-        guard let shares = Double(quantity), let nav = Double(price), shares > 0, nav > 0 else {
-            feeEstimateText = "先填写有效赎回份额和净值。"; return
-        }
-        guard let estimate = store.estimateFundRedemptionFee(code: holding.code, shares: shares, nav: nav, on: tradeDate) else {
-            feeEstimateText = "无法可靠估算：请先录入完整持有批次，并按基金合同设置全部适用费率档。"; return
-        }
-        fee = String(format: "%.2f", estimate.total)
-        estimatedFeeValue = estimate.total
-        estimatedRedemptionLots = estimate.redemptionLots
-        estimatedQuantity = quantity
-        estimatedTradeDay = dayKey(tradeDate)
-        let detail = estimate.parts.map { String(format: "%@买入 · %d天 %.2f份 × %.3f%%", $0.purchaseDate, $0.days, $0.shares, $0.ratePercent) }.joined(separator: "；")
-        feeEstimateText = "批次估算 \((estimate.total).cny())：\(detail)。请与实际扣费核对后再入账。"
-    }
-
-    private func dayKey(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
-
-    private func clearFundFeeEstimate() {
-        estimatedRedemptionLots = nil
-        estimatedFeeValue = nil
-        estimatedQuantity = ""
-        estimatedTradeDay = ""
-    }
-}
-
 private struct FundFeeReconciliationEditor: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
@@ -3402,15 +3301,15 @@ struct AssetsView: View {
                 } header: { Text("账户总览") }
                 Section {
                     assetToolsRow
-                        .listRowInsets(EdgeInsets(top: 6, leading: AppLayout.pageHorizontalInset,
-                                                  bottom: 6, trailing: AppLayout.pageHorizontalInset))
+                        .listRowInsets(EdgeInsets(top: 6, leading: ThemeLayout.of(store.resolvedAppearance).pageInset,
+                                                  bottom: 6, trailing: ThemeLayout.of(store.resolvedAppearance).pageInset))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
                 Section {
                     PortfolioStarMapCard()
-                        .listRowInsets(EdgeInsets(top: 6, leading: AppLayout.pageHorizontalInset,
-                                                  bottom: 6, trailing: AppLayout.pageHorizontalInset))
+                        .listRowInsets(EdgeInsets(top: 6, leading: ThemeLayout.of(store.resolvedAppearance).pageInset,
+                                                  bottom: 6, trailing: ThemeLayout.of(store.resolvedAppearance).pageInset))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -3894,6 +3793,9 @@ struct ToolsView: View {
     @State private var showAddCash = false
     @State private var showFundReplay = false
     @State private var showQuantEngine = false
+    @State private var showVolumeAnalysis = false
+    @State private var showDisciplineLab = false
+    @State private var showScreenshotImport = false
     @State private var showTradeCSVImport = false
     @State private var showETFIncomeCalendar = false
     @State private var showDividendCalendar = false
@@ -4183,6 +4085,9 @@ struct ToolsView: View {
             .id("tools-ai")
             Section("日线量化信号") {
                 Button("打开量化引擎并扫描全部自选/持仓") { showQuantEngine = true }
+                Button("查看量能结构（MA5/10/20/60 与价量关系）") { showVolumeAnalysis = true }
+                Button("规则验证台：候选 / 风控 / 触发 / 影子评估") { showDisciplineLab = true }
+                Button("从成交截图导入（同花顺，需先核对再写入）") { showScreenshotImport = true }
                 Text("本地规则因子对自选与持仓排序；每只标的详情内可打开 AI 深度分析。量化扫描不依赖模型密钥，不预测未来，也不自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4266,6 +4171,9 @@ struct ToolsView: View {
             .sheet(isPresented: $showAddCash) { AddCashSimulationView() .themedSheetBackground() }
             .sheet(isPresented: $showFundReplay) { FundDCAReplayView() .themedSheetBackground() }
             .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
+            .sheet(isPresented: $showVolumeAnalysis) { VolumeAnalysisView() .themedSheetBackground() }
+            .sheet(isPresented: $showDisciplineLab) { DisciplineLabView() .themedSheetBackground() }
+            .sheet(isPresented: $showScreenshotImport) { TradeScreenshotImportView() .themedSheetBackground() }
             .sheet(isPresented: $showTradeCSVImport) { TradeCSVImportView() .themedSheetBackground() }
             .sheet(isPresented: $showETFIncomeCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
             .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
@@ -5294,7 +5202,7 @@ struct AIAnalysisView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
+                            .cardPanelBackground(cornerRadius: ThemeLayout.of(store.resolvedAppearance).radius,
                                 fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
                                 tone: store.effectiveAccentColor)
                     }
@@ -6136,7 +6044,7 @@ struct DayGridView: View {
                     Image(systemName: "square.and.arrow.down").font(.system(size: 11, weight: .semibold))
                     Text("保存计划").scaledFont(palette.fsLabel, weight: .semibold)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(palette.onAccent)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 11)
                 .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(palette.accent) }

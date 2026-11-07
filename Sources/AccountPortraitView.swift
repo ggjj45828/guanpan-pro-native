@@ -278,7 +278,7 @@ struct AccountPortraitView: View {
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(store.effectiveAccentColor)
                     .frame(width: 48, height: 48)
-                    .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous))
+                    .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: ThemeLayout.of(store.resolvedAppearance).radius, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("你的账户画像").font(.headline)
                     Text(p.sampleSize > 0 ? "依据 \(p.sampleSize) 条交易与定投样本" : "当前按持仓和现金结构生成")

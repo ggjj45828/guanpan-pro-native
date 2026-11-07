@@ -70,6 +70,7 @@ struct LedgerAuditView: View {
                     return delta == 0 ? "账面现金与实际一致，未做改动。"
                         : String(format: "已按实际现金校准，差额 %+.2f 已记入现金流。", delta)
                 }
+                .themedSheetBackground()
             }
             .sheet(isPresented: $showOpeningRewrite) {
                 LedgerConfirmationSheet(
@@ -91,6 +92,7 @@ struct LedgerAuditView: View {
                         throw error
                     }
                 }
+                .themedSheetBackground()
             }
             .sheet(isPresented: $showLateAdopt) {
                 LedgerConfirmationSheet(
@@ -105,6 +107,7 @@ struct LedgerAuditView: View {
                     let snapshot = try store.adoptOpeningSnapshotLate(confirmation)
                     return "已补记起点：现金 ¥\(snapshot.cash.cny())，持仓 \(snapshot.positionCount) 只。"
                 }
+                .themedSheetBackground()
             }
             .sheet(isPresented: $showLiquidate) {
                 LedgerConfirmationSheet(
@@ -120,9 +123,11 @@ struct LedgerAuditView: View {
                         ? "已清仓 \(result.sold) 只。"
                         : "已清仓 \(result.sold) 只；\(result.skipped.joined(separator: "、")) 没有可用行情，未处理。"
                 }
+                .themedSheetBackground()
             }
             .sheet(isPresented: $showFeeCorrection) {
                 FeeCorrectionView().themedSheetBackground()
+                .themedSheetBackground()
             }
             .alert("完成", isPresented: Binding(get: { toast != nil }, set: { if !$0 { toast = nil } })) {
                 Button("好", role: .cancel) { toast = nil }

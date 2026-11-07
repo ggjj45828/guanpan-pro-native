@@ -136,7 +136,9 @@ struct ThemedSheetBackground: View {
     @Environment(\.appAppearance) private var appearance
 
     var body: some View {
-        AppTheme.palette(for: appearance).gradient
+        // 必须先 resolved：`.system` 在 palette(for:) 里是一套写死的深色，
+        // 而它的 colorScheme 跟随系统。浅色系统下就会「深底 + 系统黑字」读不出来。
+        AppTheme.palette(for: AppAppearance.resolved(appearance)).gradient
             .ignoresSafeArea()
     }
 }

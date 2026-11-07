@@ -43,8 +43,8 @@ struct AIFormattedResultView: View {
                 blockView(block, color: style.color)
             }
         }
-        .padding(AppLayout.cardPadding)
-        .background(RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous).fill(theme.surface))
+        .padding(ThemeLayout.of(appearance).pad)
+        .background(RoundedRectangle(cornerRadius: ThemeLayout.of(appearance).radius, style: .continuous).fill(theme.surface))
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(style.color.opacity(0.85))
@@ -52,7 +52,7 @@ struct AIFormattedResultView: View {
                 .padding(.vertical, 12)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: ThemeLayout.of(appearance).radius, style: .continuous)
                 .strokeBorder(style.color.opacity(theme.isLight ? 0.20 : 0.28), lineWidth: 0.8)
         }
     }

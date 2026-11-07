@@ -81,6 +81,9 @@ struct DsPalette {
 
     var accent: Color { isLight ? Color(hex: 0x2F5BE8) : TechGreen.accent }
     var accentDim: Color { accent.opacity(isLight ? 0.12 : 0.18) }
+    /// 强调色 / AI 渐变底上的文字。tech 的渐变是亮绿，必须写深字；ocean 是蓝底写白字。
+    var onAccent: Color { isLight ? Color.white : Color(hex: 0x0A100C) }
+    var onAccentSub: Color { onAccent.opacity(0.82) }
 
     var canvas: LinearGradient {
         LinearGradient(colors: [canvasTop, canvasBottom], startPoint: .top, endPoint: .bottom)
@@ -430,25 +433,25 @@ struct DsAICard: View {
         } label: {
             HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(Color.white.opacity(0.22)).frame(width: 38, height: 38)
+                    Circle().fill(palette.onAccent.opacity(0.14)).frame(width: 38, height: 38)
                     Image(systemName: "sparkles")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(palette.onAccent)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .scaledFont(palette.fsRow, weight: .semibold)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(palette.onAccent)
                     Text(subtitle)
                         .scaledFont(palette.fsMicro)
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(palette.onAccentSub)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(palette.onAccent)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
@@ -481,7 +484,7 @@ struct DsQuickTile: View {
                     if let badge {
                         Text(badge)
                             .scaledFont(8.5, weight: .bold)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(palette.onAccent)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1.5)
                             .background { Capsule().fill(palette.accent) }

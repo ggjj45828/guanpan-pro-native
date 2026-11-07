@@ -72,11 +72,12 @@ struct MetricGrid: View {
 
 /// 不透明卡片底。带 tone 时只叠加轻量色调，不使用毛玻璃或透出下层内容。
 private struct CardSurfaceModifier: ViewModifier {
+    @Environment(\.appAppearance) private var appearance
     var tone: Color? = nil
     func body(content: Content) -> some View {
         content
-            .padding(AppLayout.cardPadding)
-            .cardPanelBackground(cornerRadius: AppLayout.cardRadius,
+            .padding(ThemeLayout.of(appearance).pad)
+            .cardPanelBackground(cornerRadius: ThemeLayout.of(appearance).radius,
                 fallback: .clear,
                 tone: tone)
     }

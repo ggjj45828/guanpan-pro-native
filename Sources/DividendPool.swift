@@ -226,7 +226,7 @@ struct DividendPoolView: View {
             } label: {
                 Text("加入收息池")
                     .scaledFont(13, weight: .semibold)
-                    .foregroundStyle(canAdd ? .white : palette.ink3)
+                    .foregroundStyle(canAdd ? palette.onAccent : palette.ink3)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 11)
                     .background {

@@ -45,7 +45,15 @@ struct OceanTabBar: View {
             VStack(spacing: 3) {
                 Image(systemName: selected ? tab.icon : tab.inactiveIcon)
                     .font(.system(size: 18, weight: selected ? .semibold : .regular))
-                    .frame(height: 26)
+                    .frame(width: 30, height: 26)
+                    .background {
+                        // 选中项给一小块圆角底，未选中项留空；
+                        // 五格的视觉重量才和中间那颗实心 AI 徽章对得上。
+                        if selected {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(accent.opacity(0.12))
+                        }
+                    }
                 Text(tab.title)
                     .font(.system(size: 10, weight: selected ? .semibold : .regular))
                     .lineLimit(1)
@@ -67,16 +75,22 @@ struct OceanTabBar: View {
         } label: {
             VStack(spacing: 3) {
                 ZStack {
-                    Circle().fill(accent.opacity(0.12)).frame(width: 26, height: 26)
+                    // 原来是「淡蓝圆 + 蓝色 sparkles」，两层同色系叠在一起，
+                    // 图标糊成一团、又比旁边四格轻。改成实心蓝徽章 + 白色符号，
+                    // 外圈再留一道极淡的同色环，五格重量才平衡。
+                    Circle().fill(accent).frame(width: 28, height: 28)
                     Image(systemName: "sparkles")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(accent)
+                        .foregroundStyle(palette.onAccent)
+                }
+                .overlay {
+                    Circle().strokeBorder(accent.opacity(0.14), lineWidth: 3)
                 }
                 .frame(height: 26)
                 Text("AI")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(accent)
             }
-            .foregroundStyle(palette.ink2)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }

@@ -2,6 +2,29 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.26.0 更新（主题语义色合同 · 量能 · 风控链 · 截图 OCR）
+
+- **主题语义色合同**：新增 `ThemeSemantics.swift` 作为表单/弹窗/固定确认区的唯一取色入口；
+  `Tools/theme_contract.json` + `Tools/theme_contract.py` 在 CI 里核对两套主题的色值一致性、
+  WCAG 对比度（正文 4.5:1、提示 3:1、强调底前景 4.5:1）、LF 换行、全站硬编码白/黑字、
+  静态版式令牌与弹窗背板。`ThemedSheetBackground` 改为先 `resolved(appearance)`，
+  修掉 `.system` + 浅色系统下「深底黑字」。定时主题切换不再翻转固定主题的 colorScheme。
+- **持仓/成交表单**：`HoldingRemovalSheet` 重写为语义色 + 固定底部确认区（键盘避让）；
+  `TradeEditor` 从 `ContentView.swift` 抽成独立受管文件，同样改为固定底部入账区。
+- **全站配色**：AI 卡、悬浮球、快捷角标、保存计划按钮、图表文字、分红池按钮不再写死白/黑字，
+  一律走 `onAccent` / `ink`；`ink3` 提亮到 tech 4.19:1 / ocean 3.66:1。
+- **蓝海浅色图标**：底栏 AI 改实心蓝徽章 + 白符号，四格补选中圆角底；
+  首页工具行与资产工具行按功能分配不同色相，圆底改圆角方底。
+- **优先级①量能**：`VolumeAnalysis.swift` 移植观盘max 的 MA5/10/20/60、同进度基线、
+  价量关系、连续放缩量口径；`VolumeAnalysisView` 只读展示，evidenceLevel 恒 experimental。
+- **优先级②风控链**：`RiskDiscipline.swift` 提供候选计划、仓位纪律、Risk Guard、
+  实时触发、影子评估；Pro 缺少的交易所时间戳分级 / 逐标的 Regime / 策略资格一律输出降级
+  finding 并压低置信度，不假装通过。`DisciplineLabView` 是只读验证台，不下单、不写账本。
+- **优先级③截图 OCR**：`TradeScreenshotOCR.swift`（Vision，多图行分组 + 指纹去重 +
+  价量金额核对 + 疑似行拦截）→ `TradeCSVParser.parse` → `store.importTradeLedger`；
+  `TradeScreenshotImportView` 先预览勾选再批量写入，只写历史流水，不动当前持仓与现金。
+- 工具页新增三个入口：量能结构、规则验证台、成交截图导入。
+
 ## 2.25.0 更新（把两套版式做透 + NAS 补采闭环 + 端口 8790）
 
 - **次级页也有两套骨架**。新增 `Sources/OceanSecondaryPages.swift`：`OceanHoldingsView` / `OceanAssetsView` / `OceanMoreView` 三个独立页面，与 tech 的 `HoldingsView` / `AssetsView` / `MoreHubView` 不是同一个 body 换圆角。ocean 用 `List + Section` 分组、系统大标题、紧凑表格行、数字网格、逐行小图标菜单；tech 保持大圆角卡片流 + 九宫格工具砖。`ContentView.phoneTabRoot` 与 iPad `padDetail` 都按主题分流。数据仍共用 `PortfolioStore` 与同一批业务页（图表、编辑器、复盘），弹窗一律单一 enum 驱动，避免同视图多 sheet 只有最后一个生效。

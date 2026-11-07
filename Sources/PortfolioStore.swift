@@ -261,7 +261,11 @@ final class PortfolioStore: ObservableObject {
     }
     /// 最终生效的深浅模式：定时自动切换优先于主题自带设置。
     var effectiveColorScheme: ColorScheme? {
-        if let forced = AutoThemeSchedule.override(schedule: data.autoThemeSchedule) {
+        // 定时切换只允许改写「跟随系统」的深浅；固定主题的背景色是写死的，
+        // 强行翻转 colorScheme 会让系统语义色（.secondary 等）与背景错配，
+        // 出现「深色卡片配浅色文字」。固定主题一律用自己的 colorScheme。
+        if data.appearance == .system,
+           let forced = AutoThemeSchedule.override(schedule: data.autoThemeSchedule) {
             return forced ? .dark : .light
         }
         return data.appearance.colorScheme

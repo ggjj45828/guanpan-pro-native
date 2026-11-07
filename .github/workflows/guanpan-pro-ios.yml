@@ -8,6 +8,8 @@ on:
       - 'Sources/**'
       - 'project.yml'
       - '.github/workflows/guanpan-pro-ios.yml'
+      - 'Tools/**'
+      - '.gitattributes'
 
 permissions:
   contents: read
@@ -24,6 +26,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Theme contract and algorithm checks
+        run: |
+          python3 Tools/theme_contract.py
+          python3 Tools/verify_algorithms.py
 
       - name: Show Apple toolchain
         run: |

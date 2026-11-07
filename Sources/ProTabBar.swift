@@ -109,11 +109,11 @@ struct ProTabBar: View {
                 Circle()
                     .fill(palette.aiGradient)
                     .frame(width: 52, height: 52)
-                    .overlay { Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1) }
+                    .overlay { Circle().strokeBorder(palette.onAccent.opacity(0.22), lineWidth: 1) }
                     .shadow(color: TechGreen.orbGlow.opacity(0.55), radius: 14, y: 4)
                 Image(systemName: "sparkles")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(palette.onAccent)
             }
             .frame(maxWidth: .infinity)
             .offset(y: -16)

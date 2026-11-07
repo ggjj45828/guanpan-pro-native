@@ -1,0 +1,91 @@
+{
+  "version": 2,
+  "note": "主题语义色回归合同。换主题/改色值时必须同时改 ThemeSemantics.swift 与本文件，CI 会核对一致性、对比度与源码写法。",
+  "palettes": {
+    "tech": {
+      "pageTop": "#0A100C",
+      "pageBottom": "#030604",
+      "card": "#121916",
+      "cardSoft": "#1A241E",
+      "ink": "#FFFFFF",
+      "ink2": "#8C8C93",
+      "ink3": "#7A7A82",
+      "accent": "#C8F751",
+      "onAccent": "#0A100C",
+      "warn": "#FBA833",
+      "danger": "#F2555A",
+      "ok": "#12C48C"
+    },
+    "ocean": {
+      "pageTop": "#F7F8FA",
+      "pageBottom": "#EDEFF3",
+      "card": "#FFFFFF",
+      "cardSoft": "#F2F3F6",
+      "ink": "#101013",
+      "ink2": "#6E6E76",
+      "ink3": "#85858E",
+      "accent": "#2F5BE8",
+      "onAccent": "#FFFFFF",
+      "warn": "#B26A00",
+      "danger": "#D63A3A",
+      "ok": "#0F9C6C"
+    }
+  },
+  "contrast": {
+    "body": 4.5,
+    "secondary": 4.5,
+    "hint": 3.0,
+    "onAccent": 4.5,
+    "onPage": 4.5
+  },
+  "checks": {
+    "lineEndings": "LF",
+    "forbidTrailingWhitespace": true,
+    "managedFiles": [
+      "HoldingRemovalSheet.swift",
+      "TradeEditor.swift",
+      "ThemeSemantics.swift"
+    ],
+    "managedForbidden": [
+      "foregroundStyle(.secondary)",
+      "foregroundStyle(.primary)",
+      "foregroundStyle(.tertiary)",
+      "Color.secondary",
+      "Color.primary",
+      "foregroundStyle(.white)",
+      "foregroundStyle(.black)",
+      "foregroundStyle(Color.white)",
+      "foregroundStyle(Color.black)",
+      "Color(uiColor:",
+      ".background(Color.white)"
+    ],
+    "globalForbiddenForeground": [
+      "foregroundStyle(.white)",
+      "foregroundStyle(.black)",
+      "foregroundStyle(Color.white)",
+      "foregroundStyle(Color.black)"
+    ],
+    "globalAllowlist": [
+      {
+        "file": "MarketChartView.swift",
+        "token": "foregroundStyle(.white)",
+        "reason": "图表 B/S 角标压在红/绿涨跌语义色块上，白字是图表标注的固定口径"
+      }
+    ],
+    "forbiddenLayoutTokens": [
+      "DS.",
+      "AppLayout.cardRadius",
+      "AppLayout.cardPadding",
+      "AppLayout.pageHorizontalInset",
+      "AppLayout.rowVerticalInset",
+      "AppLayout.cardSpacing"
+    ],
+    "layoutTokenDefinitionFiles": [
+      "ProDesign.swift",
+      "ThemedCard.swift",
+      "ThemeLayout.swift"
+    ],
+    "requireResolvedInSheetBackground": true,
+    "requireSheetBackground": true
+  }
+}
