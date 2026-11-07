@@ -28,6 +28,9 @@ struct TechnicalResearchView: View {
     /// 市场环境（指数）：复用本机 MarketRegime 引擎，与全 App 一致（含防抖记忆）。
     @State private var regime: MarketRegimeAssessment? = nil
 
+    /// 历史验证（样本内 / 样本外）：时间顺序 70/30 切分，只陈述统计事实。
+    @State private var historyReport: HistoricalValidationReport? = nil
+
     // MARK: - 策略仲裁输入（全部来自既有引擎，不新增数据源）
 
     private var quote: Quote? {
@@ -85,6 +88,7 @@ struct TechnicalResearchView: View {
                 patternCard
                 volumeCard
                 marketRegimeCard
+                historyValidationCard
                 disclaimerCard
             }
             .padding(layout.pageInset)
@@ -92,6 +96,9 @@ struct TechnicalResearchView: View {
         .task {
             regime = store.marketRegime()
             await store.refreshETFIOPV(codes: [code])
+            if historyReport == nil {
+                historyReport = HistoricalValidationEngine.validate(bars: bars)
+            }
         }
         .themedFormBackground(ThemeSemantics.of(appearance))
         .navigationTitle("技术研究")
@@ -774,6 +781,82 @@ struct TechnicalResearchView: View {
         case .r1Elevated: return sem.warn
         case .r2High, .r3Severe, .r4Extreme: return sem.danger
         }
+    }
+
+    // MARK: - 历史验证（样本内 / 样本外）
+
+    private var historyValidationCard: some View {
+        ResearchCard(title: "历史验证（样本内 / 样本外）",
+                     subtitle: "时间顺序 70/30 · 与无条件基准对照",
+                     badge: "统计观察") {
+            let sem = ThemeSemantics.of(appearance)
+            let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+            VStack(alignment: .leading, spacing: layout.gap) {
+                if let r = historyReport {
+                    HStack(spacing: 6) {
+                        Text("样本内 \(r.inSampleRange)").font(.caption2).foregroundStyle(sem.ink3)
+                        Spacer(minLength: 0)
+                        Text("样本外 \(r.outOfSampleRange)").font(.caption2).foregroundStyle(sem.ink3)
+                    }
+                    ForEach(Array(r.rules.enumerated()), id: \.offset) { _, rule in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(rule.ruleName).font(.caption.bold()).foregroundStyle(sem.ink)
+                            Text(rule.definition).font(.caption2).foregroundStyle(sem.ink3)
+                                .fixedSize(horizontal: false, vertical: true)
+                            ForEach(Array(rule.horizons.enumerated()), id: \.offset) { _, h in
+                                historyHorizonRow(h, sem: sem)
+                            }
+                            ForEach(Array(rule.notes.enumerated()), id: \.offset) { _, note in
+                                Text("· " + note).font(.caption2).foregroundStyle(sem.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    ForEach(Array(r.notes.prefix(3).enumerated()), id: \.offset) { _, note in
+                        Text("· " + note).font(.caption2).foregroundStyle(sem.ink3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Text("日线数据不足 \(HistoricalValidationEngine.minBars) 根，暂不做历史验证（不拿小样本编结论）。")
+                        .font(.footnote).foregroundStyle(sem.ink3)
+                }
+            }
+        }
+    }
+
+    private func historyHorizonRow(_ h: HistoricalHorizonReport, sem: ThemeSemantics) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(h.horizonDays) 日窗口").font(.caption2.bold()).foregroundStyle(sem.ink2)
+            HStack(spacing: 10) {
+                historySegmentCell("样本内", h.inSample, sem: sem)
+                historySegmentCell("样本外", h.outOfSample, sem: sem)
+            }
+        }
+    }
+
+    private func historySegmentCell(_ title: String, _ s: HistoricalSegmentStats,
+                                    sem: ThemeSemantics) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.caption2).foregroundStyle(sem.ink3)
+            if s.insufficient {
+                Text("样本 \(s.sampleCount) 次 · 不下结论")
+                    .font(.caption2).foregroundStyle(sem.ink3).monospacedDigit()
+            } else if let hit = s.hitRate, let base = s.baselineHitRate {
+                Text("命中 \((hit * 100).num(0))% vs 基准 \((base * 100).num(0))%")
+                    .font(.caption2).foregroundStyle(sem.ink).monospacedDigit()
+                if let avg = s.avgReturnPercent {
+                    Text("均收益 \(avg.pct(2))")
+                        .font(.caption2).foregroundStyle(PnLColor.of(avg)).monospacedDigit()
+                }
+                Text("样本 \(s.sampleCount) 次")
+                    .font(.caption2).foregroundStyle(sem.ink3).monospacedDigit()
+            } else {
+                Text("样本 \(s.sampleCount) 次 · 数据缺失")
+                    .font(.caption2).foregroundStyle(sem.ink3).monospacedDigit()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

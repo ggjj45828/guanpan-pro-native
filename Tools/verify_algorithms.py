@@ -1256,9 +1256,173 @@ falling = [10.0 - 0.01 * i for i in range(300)]
 check("MA250：下行序列斜率为负",
       long_term_trend(falling)["slope"] < 0)
 
+
+# ---- 历史验证（样本内 / 样本外，研究升级：真实历史验证） ----------------
+def hist_split(n, ratio=0.7):
+    """时间顺序切分：前 70% 样本内，后 30% 样本外。绝不随机。"""
+    return int(n * ratio)
+
+
+def hist_forward(closes, i, horizon):
+    """信号日收盘 → horizon 日后收盘的收益（百分数单位）。
+    窗口不足返回 None（剔除，不计成败）。恰好 0 算未命中（由调用方 > 0 判定）。"""
+    n = len(closes)
+    if i + horizon >= n or closes[i] <= 0:
+        return None
+    r = (closes[i + horizon] / closes[i] - 1) * 100
+    return r if math.isfinite(r) else None
+
+
+def hist_segment(closes, signals, horizon, lo, hi, min_samples=8):
+    """分段统计：命中率 + 无条件基准。样本不足则命中率返回 None。"""
+    sample = dropped = hits = 0
+    total = 0.0
+    for i in signals:
+        if not (lo <= i < hi):
+            continue
+        r = hist_forward(closes, i, horizon)
+        if r is None:
+            dropped += 1
+            continue
+        sample += 1
+        if r > 0:
+            hits += 1
+        total += r
+    b_sample = b_hits = 0
+    b_total = 0.0
+    for i in range(lo, hi):
+        r = hist_forward(closes, i, horizon)
+        if r is None:
+            continue
+        b_sample += 1
+        if r > 0:
+            b_hits += 1
+        b_total += r
+    insufficient = sample < min_samples
+    return {
+        "sample": sample, "dropped": dropped,
+        "hit": None if insufficient else hits / sample,
+        "avg": None if insufficient else total / sample,
+        "base_hit": (b_hits / b_sample) if b_sample else None,
+        "base_avg": (b_total / b_sample) if b_sample else None,
+        "insufficient": insufficient,
+    }
+
+
+def hist_rule_notes(in_s, out_s, min_samples=8):
+    """结论备注：只陈述统计事实（过拟合警告 / 样本外无优势 / 均跑赢）。"""
+    notes = []
+    if in_s["insufficient"] and out_s["insufficient"]:
+        return ["两段样本均不足，不下结论"]
+    if in_s["insufficient"] or out_s["insufficient"]:
+        return ["一段样本不足，无法对比样本内外"]
+    a_hit, b_hit = in_s["hit"], out_s["hit"]
+    a_base, b_base = in_s["base_hit"], out_s["base_hit"]
+    if None in (a_hit, b_hit, a_base, b_base):
+        return ["基准缺失，不下结论"]
+    if (a_hit - b_hit) * 100 > 20:
+        notes.append("overfit")
+    if (b_hit - b_base) * 100 <= 0:
+        notes.append("out_no_edge")
+    elif (a_hit - a_base) * 100 > 0 and (b_hit - b_base) * 100 > 0:
+        notes.append("both_edge")
+    return notes
+
+
+def ma_cross_indices(closes, period):
+    out = []
+    def ma(end):
+        if end + 1 < period:
+            return None
+        return sum(closes[end + 1 - period:end + 1]) / period
+    for i in range(period, len(closes)):
+        now, prev = ma(i), ma(i - 1)
+        if now is None or prev is None:
+            continue
+        if closes[i - 1] <= prev and closes[i] > now:
+            out.append(i)
+    return out
+
+
+def macd_golden_indices(closes):
+    pts = ema_calculate(closes, 12, 26, 9)
+    out = []
+    for k in range(1, len(pts)):
+        p, c = pts[k - 1], pts[k]
+        if p["dif"] <= p["dea"] and c["dif"] > c["dea"]:
+            out.append(k)
+    return out
+
+
+_n = 100
+check("历史验证：100 根按 70/30 切分 → splitIndex=70",
+      hist_split(100) == 70)
+check("历史验证：切分只按时间顺序（split=n*ratio 向下取整）",
+      hist_split(85) == 59 and hist_split(80) == 56)
+
+_c = [10.0] * 21 + [20.0]
+check("历史验证：前向收益 = (后收/信号收−1)×100",
+      abs(hist_forward(_c, 20, 1) - 100.0) < 1e-9)
+check("历史验证：窗口不足（i+h >= n）→ None 剔除",
+      hist_forward(_c, 21, 1) is None)
+check("历史验证：窗口不足（信号在 n−1）→ None",
+      hist_forward(_c, 21, 5) is None)
+check("历史验证：恰好 0 收益由 > 0 判未命中（不是引擎特判）",
+      hist_forward([10.0] * 30, 5, 1) == 0.0)
+
+seg = hist_segment([10.0] * 21 + [20.0], [20], 1, 0, 22)
+check("历史验证：1 次样本 < 8 → 样本不足，命中率 None",
+      seg["insufficient"] and seg["hit"] is None and seg["sample"] == 1)
+check("历史验证：样本不足时基准照算（该段 22 天全有窗口）",
+      seg["base_hit"] is not None)
+
+_rise = [10.0 + 0.1 * i for i in range(60)]
+seg2 = hist_segment(_rise, list(range(10, 20)), 5, 0, 60)
+check("历史验证：样本 10 次 ≥ 8 → 给命中率",
+      not seg2["insufficient"] and seg2["hit"] == 1.0)
+check("历史验证：单边上涨段基准命中率也是 1.0（高命中是市场给的）",
+      seg2["base_hit"] == 1.0)
+check("历史验证：均收益为正",
+      seg2["avg"] > 0)
+
+_fall = [20.0 - 0.1 * i for i in range(60)]
+seg3 = hist_segment(_fall, list(range(10, 20)), 5, 0, 60)
+check("历史验证：下跌段信号命中率 0%",
+      seg3["hit"] == 0.0)
+check("历史验证：下跌段基准也是 0%（规则无优势即无超额）",
+      seg3["base_hit"] == 0.0)
+
+check("历史验证：两段样本均不足 → 不下结论",
+      hist_rule_notes(seg, seg) == ["两段样本均不足，不下结论"])
+check("历史验证：样本外跑输样本内 >20pp → 过拟合警告",
+      "overfit" in hist_rule_notes(
+          {"insufficient": False, "hit": 0.9, "base_hit": 0.5},
+          {"insufficient": False, "hit": 0.5, "base_hit": 0.5}))
+check("历史验证：样本外未跑赢基准 → out_no_edge",
+      "out_no_edge" in hist_rule_notes(
+          {"insufficient": False, "hit": 0.7, "base_hit": 0.5},
+          {"insufficient": False, "hit": 0.5, "base_hit": 0.5}))
+check("历史验证：样本内外均跑赢基准 → both_edge",
+      hist_rule_notes(
+          {"insufficient": False, "hit": 0.7, "base_hit": 0.5},
+          {"insufficient": False, "hit": 0.6, "base_hit": 0.5}) == ["both_edge"])
+
+check("历史验证：MA60 上穿识别（前一日线下、当日线上）",
+      60 in ma_cross_indices([5.0] * 60 + [10.0] * 5, 60))
+check("历史验证：一直在线上不重复报上穿",
+      len(ma_cross_indices([10.0] * 70, 60)) == 0)
+
+_macd_up = [10.0 + 0.05 * i for i in range(20)] + [12.0 - 0.3 * i for i in range(10)] + \
+           [9.0 + 0.4 * i for i in range(20)]
+_gi = macd_golden_indices(_macd_up)
+check("历史验证：MACD 金叉在下跌转上涨处出现（至少 1 次）",
+      len(_gi) >= 1)
+check("历史验证：MACD 金叉信号日不越界（全部 < n−warmup）",
+      all(0 <= i < len(_macd_up) for i in _gi))
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价 / MA250长期趋势 / 历史验证")
 sys.exit(0)
