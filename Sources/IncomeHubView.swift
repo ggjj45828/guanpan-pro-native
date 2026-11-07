@@ -81,17 +81,17 @@ struct IncomeHubView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.gap) {
+                VStack(alignment: .leading, spacing: palette.gap) {
                     summaryCard
                     poolCard
                     calendarCard
                     annualCard
                     Text("收息页只做统计与记录，不预测分红、不代下单。分红到账体现在现金里时，请在对应日历中登记实际金额。")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                         .padding(.top, 4)
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.vertical, 12)
             }
             .scrollIndicators(.hidden)
@@ -111,10 +111,10 @@ struct IncomeHubView: View {
         let total = fundMonthProfit + etfMonthDividend
         return VStack(alignment: .leading, spacing: 12) {
             Text("本月已收 · \(monthKey)")
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .foregroundStyle(palette.ink2)
             Text("¥" + total.cny())
-                .scaledFont(DS.fsHero, weight: .bold)
+                .scaledFont(palette.fsHero, weight: .bold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
@@ -128,18 +128,18 @@ struct IncomeHubView: View {
             Text(fundMonthProfit >= 0
                  ? "场外基金含净值波动，不等同于到手现金；场内部分只统计已登记的分红事件。"
                  : "本月场外基金净值回撤大于分红，合计为负属正常，不代表没有收到分红。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18)
     }
 
     private func statCell(_ title: String, _ value: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             Text(value)
                 .scaledFont(13, weight: .medium)
@@ -162,12 +162,12 @@ struct IncomeHubView: View {
                 DsIconTile(symbol: "yensign.circle.fill", tint: accent, size: 38, palette: palette)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("收息池")
-                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .scaledFont(palette.fsRow, weight: .semibold)
                         .foregroundStyle(palette.ink)
                     Text(store.data.dividendPool.isEmpty
                          ? "加入红利标的，填上每份年分红即可算股息率与买点"
                          : "\(store.data.dividendPool.count) 只 · 已达目标 \(poolReached) 只 · 目标 \(store.data.dividendTargetYield.num(1))%")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -188,7 +188,7 @@ struct IncomeHubView: View {
     private var calendarCard: some View {
         VStack(spacing: 0) {
             entryRow(title: "基金收益日历", subtitle: "按日看场外基金的当日收益与累计",
-                     icon: "calendar", tint: TechGreen.accent) {
+                     icon: "calendar", tint: palette.accent) {
                 showFundCalendar = true
             }
             divider
@@ -216,26 +216,26 @@ struct IncomeHubView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("年化股息估算")
-                    .scaledFont(DS.fsLabel, weight: .medium)
+                    .scaledFont(palette.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
                 Spacer()
                 Text(estimatedAnnualIncome > 0 ? "¥" + estimatedAnnualIncome.cny() : "未填写")
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(estimatedAnnualIncome > 0 ? palette.ink : palette.ink3)
             }
             HStack {
                 Text("已填写每份年化分红的持仓")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                 Spacer()
                 Text("\(incomeHoldings) 只")
-                    .scaledFont(DS.fsMicro, weight: .medium)
+                    .scaledFont(palette.fsMicro, weight: .medium)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink2)
             }
             Text("只累加填过「每份年化分红」的标的，填 0 或留空的不参与，不做行业均值推算。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -258,7 +258,7 @@ struct IncomeHubView: View {
                         .scaledFont(14, weight: .medium)
                         .foregroundStyle(palette.ink)
                     Text(subtitle)
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
                         .lineLimit(1)
                 }

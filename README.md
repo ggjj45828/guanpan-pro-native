@@ -2,6 +2,26 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.24.0 更新（两套主题各做各的布局）
+
+- 用户明确：**主题不同，布局本来就该不同，各自做**。此前 `DS` 是一组全局静态尺寸，注释写着「深浅两套只有色值不同，尺寸与层级完全一致」，换主题只是换色 —— 这一版把「版式」从颜色里拆出来。
+- 新增 `Sources/ThemeLayout.swift`：`AppLayoutStyle(.tech / .ocean)` + `ThemeLayout` 一整套版式令牌（圆角、间距、行距、六级字号、卡片描边或阴影、首页骨架、底栏形态、大标题、走势线、快捷入口列数、AI 渐变）。`AppAppearance.layoutStyle` 把主题映射到版式；旧的 14 套历史配色按深浅归到两套，不产生第三套没人维护的布局。
+- `DsPalette` 现在携带 `layout`，并代理出 `radius / gap / pageInset / fsHero / fsRow / aiGradient / usesOutline …`；全站 353 处 `DS.xxx` 静态引用改成 `palette.xxx`，页面一律从当前主题取尺寸。`DS` / `AppLayout` 只保留 tech 基准值做兼容别名。
+- 两套主题的实际差异：
+
+| 维度 | 科技黑绿 · tech | 蓝海浅色 · ocean |
+| --- | --- | --- |
+| 首页骨架 | `ScrollView + LazyVStack` 卡片流，超大 hero 资产数字、绿系 AI 渐变横条、隐藏导航栏 + 自绘问候栏 | `List + Section` 分组列表，系统大标题、2×2 数字网格、紧凑自选行、平铺工具行、蓝色 AI 卡、顶部工具栏 |
+| 底栏 | 悬浮胶囊 + 中央探出的渐变 AI 球（四页签） | 贴底全宽平铺五项，AI 是普通一格，没有球 |
+| 背景 | 墨绿近黑渐变 `#0A100C → #030604` | 极淡冷灰底 + 顶部蓝色光带 |
+| 卡片 | 22pt 大圆角 + 1px 描边、无阴影 | 12pt 小圆角 + 淡投影、无描边 |
+| 节奏 | 页边距 18 / 卡间距 12 / 行距 5 / hero 34pt | 页边距 14 / 卡间距 8 / 行距 2 / 数字 28pt |
+| AI 渐变 | 薄荷绿 → 黄绿 → 柠檬绿 | 深蓝 → 亮蓝 |
+
+- 新增 `Sources/OceanDashboardView.swift` 与 `Sources/OceanTabBar.swift`：蓝海浅色的独立首页与底栏，不复用 `DashboardView` / `ProTabBar` 的 body 换色。数据口径完全共用 `PortfolioStore` / `NewsCenter`，没有复制任何账本或行情计算。
+- 次级页面也分版式：`ToneCardBackground` / `toneCard` / `plainCard` / `appListLayout` 按主题取圆角、描边/阴影、行内边距与最小行高；`dsSurface` 的 radius/padding 默认值改走主题；`CardTone.themedAccent(isLight:)` 让旧 List 行卡在浅色下用蓝而不是柠檬绿。
+- 设置页写明两套主题各带一套版式，主题预览卡显示「卡片流 / 分组列表」标签。主题切换保留已访问页签与滚动状态。
+
 ## 2.23.0 更新（科技黑绿主题全局生效）
 
 - 诊断：此前主题色是**亮蓝 `#4F7CFF`**，而且 `AppTheme`（管根背景、List/Form、弹窗背板）与 `DsPalette`（管新版页面的 canvas/card/accent）**各写一套颜色** —— 改一处就漏一处，于是「首页变了、点进去还是中性黑」。主题名也只是「科技黑」，没有绿。

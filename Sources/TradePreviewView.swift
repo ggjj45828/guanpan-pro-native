@@ -81,7 +81,7 @@ struct TradePreviewView: View {
                         LabeledContent("交易后参考现金", value: (postCash).cny())
                         LabeledContent("交易后资产占比", value: (weight * 100).pct(1))
                     }
-                    .toneCard(CardTone.accent, isLight: isLight)
+                    .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
                 }
                 if let validation {
                     Section { Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(CardTone.warn) }

@@ -490,7 +490,7 @@ struct DecisionScorecardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.sectionGap) {
+                VStack(alignment: .leading, spacing: palette.sectionGap) {
                     heroCard
                     statRow
                     crossCard
@@ -506,7 +506,7 @@ struct DecisionScorecardView: View {
                     }
                     methodNote
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 8)
                 .padding(.bottom, 28)
             }
@@ -556,15 +556,15 @@ struct DecisionScorecardView: View {
         }
         return VStack(alignment: .leading, spacing: 10) {
             Text("目标命中率")
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .foregroundStyle(palette.ink2)
             Text(rateText)
-                .scaledFont(DS.fsHero, weight: .bold)
+                .scaledFont(palette.fsHero, weight: .bold)
                 .monospacedDigit()
                 .foregroundStyle(rateColor)
                 .lineLimit(1)
             Text(subtitle)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
             if let average = board.averageReturn {
@@ -573,12 +573,12 @@ struct DecisionScorecardView: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(PnLColor.of(average))
                     Text("照做平均 \(average.pct(2))")
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .monospacedDigit()
                         .foregroundStyle(PnLColor.of(average))
                     if let days = board.averageDaysToTarget {
                         Text("· 平均 \(Int(days.rounded())) 个交易日到目标")
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink3)
                     }
                 }
@@ -589,7 +589,7 @@ struct DecisionScorecardView: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(palette.accent)
                     Text("已了结的 \(board.resolved) 条里，真的照做了 \(Int((rate * 100).rounded()))%")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
                 }
             }
@@ -597,17 +597,17 @@ struct DecisionScorecardView: View {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
                     Text("正在补拉日线…")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
             } else if !refreshNote.isEmpty {
                 Text(refreshNote)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18, glow: rateColor)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18, glow: rateColor)
     }
 
     private var rateColor: Color {
@@ -634,7 +634,7 @@ struct DecisionScorecardView: View {
         if board.resolved > 0 {
             VStack(alignment: .leading, spacing: 10) {
                 Text("判断 × 执行")
-                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .scaledFont(palette.fsLabel, weight: .semibold)
                     .foregroundStyle(palette.ink2)
                 HStack(spacing: 10) {
                     crossCell(title: "看对了也做了", value: board.hitAndExecuted, tone: CardTone.ok)
@@ -645,7 +645,7 @@ struct DecisionScorecardView: View {
                     crossCell(title: "看错还做了", value: board.missAndExecuted, tone: PnLColor.down)
                 }
                 Text(crossNote)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -695,7 +695,7 @@ struct DecisionScorecardView: View {
                     filter = item
                 } label: {
                     Text(item.title)
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(selected ? palette.ink : palette.ink2)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
@@ -710,7 +710,7 @@ struct DecisionScorecardView: View {
             }
             Spacer(minLength: 0)
             Text("\(shownPairs.count) 条")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
         }
         .padding(.horizontal, 2)
@@ -732,11 +732,11 @@ struct DecisionScorecardView: View {
                             .opacity(palette.isLight ? 0.12 : 0.18))
                     }
                 Text(record.name)
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .foregroundStyle(palette.ink)
                     .lineLimit(1)
                 Text(record.code)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .lineLimit(1)
                 Spacer(minLength: 4)
@@ -754,7 +754,7 @@ struct DecisionScorecardView: View {
 
             if !record.reason.isEmpty {
                 Text(record.reason)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -821,7 +821,7 @@ struct DecisionScorecardView: View {
                 .scaledFont(9.5)
                 .foregroundStyle(palette.ink3)
             Text(value.map { $0.num(3) } ?? "--")
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .monospacedDigit()
                 .foregroundStyle(value == nil ? palette.ink3 : palette.ink)
         }
@@ -912,12 +912,12 @@ struct DecisionScorecardView: View {
     private var emptyCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(filter == .all ? "还没有判读样本" : "这一档是空的")
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
             Text(filter == .all
                  ? "去「AI 账户分析」跑一次。模型给出带参考价 / 目标价 / 失效价的建议时，会自动记进这里，之后用真实日线逐条判读。"
                  : "换一档看，或下拉补拉日线。")
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -928,18 +928,18 @@ struct DecisionScorecardView: View {
     private var methodNote: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("判读口径")
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
                 .foregroundStyle(palette.ink2)
             Text("只用记录日**之后**的日线。买入看最高价是否摸到目标、最低价是否跌破失效，卖出相反。同一根日线两边都碰到时记为「同日双触」，不计入命中率——先后无法确定的事不硬判。命中率分母只算已了结条数，「还在等」不抬高也不拉低它。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
             Text("照做平均收益按参考价到目标 / 失效价计算，不含手续费、滑点与仓位差异，只用来衡量「判断本身」值不值钱。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
             Text("执行情况只认账本里的真实成交：同代码、记录日当天或之后、方向相符。记录日当天算数 —— 盘中给的判断当天下午下单很正常；这与行情判读「记录日当天不算」刻意不同：判读要防事后挑价，执行要认已经发生的事。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }

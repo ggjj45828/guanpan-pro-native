@@ -107,7 +107,7 @@ struct ProTabBar: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(DS.aiGradient)
+                    .fill(palette.aiGradient)
                     .frame(width: 52, height: 52)
                     .overlay { Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1) }
                     .shadow(color: TechGreen.orbGlow.opacity(0.55), radius: 14, y: 4)

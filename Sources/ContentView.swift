@@ -112,6 +112,8 @@ struct ContentView: View {
     }
 
     private var currentTheme: AppTheme { AppTheme.palette(for: store.resolvedAppearance) }
+    /// 主题自带版式：换主题时连页面骨架、底栏形态、卡片圆角一起换。
+    private var layout: ThemeLayout { .of(store.resolvedAppearance) }
 
     // MARK: - 双形态根容器（iPhone 用 TabView，iPad 用分栏）
 
@@ -125,11 +127,10 @@ struct ContentView: View {
 
     @ViewBuilder private var phoneTabRoot: some View {
         ZStack {
-            tabPage(.home) {
-                DashboardView(onOpenAssets: {
-                    visitedTabs.insert(.assets)
-                    phoneTab = .assets
-                })
+            if layout.usesHeroHome {
+                tabPage(.home) { DashboardView(onOpenAssets: { openAssets() }) }
+            } else {
+                tabPage(.home) { OceanDashboardView(onOpenAssets: { openAssets() }) }
             }
             // 持仓页把 ETF / 场外基金 收在同一个页签里，顶部切换 ——
             // 两者是同一件事的两种口径，不该占两个底栏位置。
@@ -138,11 +139,18 @@ struct ContentView: View {
             tabPage(.more) { MoreHubView() }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ProTabBar(selection: tabBinding,
-                      surface: currentTheme.surface,
-                      accent: store.effectiveAccentColor,
-                      isLight: currentTheme.isLight,
-                      onCenterTap: { showAdvisor = true })
+            if layout.usesFloatingTabBar {
+                ProTabBar(selection: tabBinding,
+                          surface: currentTheme.surface,
+                          accent: store.effectiveAccentColor,
+                          isLight: currentTheme.isLight,
+                          onCenterTap: { showAdvisor = true })
+            } else {
+                OceanTabBar(selection: tabBinding,
+                            accent: store.effectiveAccentColor,
+                            isLight: currentTheme.isLight,
+                            onAITap: { showAdvisor = true })
+            }
         }
         .sheet(isPresented: $showAdvisor) { PortfolioAdviceView().themedSheetBackground() }
         .scrollContentBackground(.hidden)
@@ -150,6 +158,11 @@ struct ContentView: View {
         .onChange(of: phoneTab) { _, tab in
             visitedTabs.insert(tab)
         }
+    }
+
+    private func openAssets() {
+        visitedTabs.insert(.assets)
+        phoneTab = .assets
     }
 
     private var tabBinding: Binding<ProTab> {
@@ -187,8 +200,10 @@ struct ContentView: View {
     @ViewBuilder private var padDetail: some View {
         // 侧栏未选中（iPad 上偶发）时回落到首页，不要显示空白详情栏
         switch padTab ?? .home {
-        case .home: DashboardView()
-        case .watchlist: DashboardView()
+        case .home:
+            if layout.usesHeroHome { DashboardView() } else { OceanDashboardView() }
+        case .watchlist:
+            if layout.usesHeroHome { DashboardView() } else { OceanDashboardView() }
         case .holdings: HoldingsTabView()
         case .funds: HoldingsView(kind: .fund)
         case .grid: DayGridView(embedded: true)
@@ -207,8 +222,20 @@ struct ContentView: View {
     /// 老用户本机残留的背景文件由 `NativeBackgroundStore.removeLegacyBackgroundIfNeeded()` 一次性清掉，
     /// 否则设置页里已经没有入口，界面却还铺着那张图，既看不见也撤不掉。
     @ViewBuilder private var backgroundLayer: some View {
-        currentTheme.gradient
-            .ignoresSafeArea()
+        if layout.style == .ocean {
+            // 蓝海浅色：极淡冷灰底 + 顶部一层蓝色光带，
+            // 不是 tech 那张墨绿近黑渐变换个色相 —— 两套背景形态本来就不同。
+            ZStack(alignment: .top) {
+                currentTheme.gradient.ignoresSafeArea()
+                LinearGradient(colors: [Color(hex: 0x2F5BE8).opacity(0.10), Color.clear],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 300)
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+            }
+        } else {
+            currentTheme.gradient.ignoresSafeArea()
+        }
     }
 }
 
@@ -345,7 +372,7 @@ struct DashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: DS.gap) {
+                LazyVStack(alignment: .leading, spacing: palette.gap) {
                     greetingBar
                     if searchActive {
                         searchField
@@ -362,7 +389,7 @@ struct DashboardView: View {
                     watchListBody
                     alertsSection
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 4)
                 .padding(.bottom, 24)
             }
@@ -441,7 +468,7 @@ struct DashboardView: View {
                     .scaledFont(25, weight: .bold)
                     .foregroundStyle(palette.ink)
                 Text(greetingSubtitle)
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
             }
             Spacer(minLength: 6)
@@ -592,7 +619,7 @@ struct DashboardView: View {
             DsSectionHeader(palette: palette, title: "市场脉搏", trailing: pulseTrailing)
             if store.indexQuotes.isEmpty {
                 Text("还没有指数行情。下拉刷新，或检查行情源状态。")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .padding(.vertical, 10)
             } else {
@@ -703,7 +730,7 @@ struct DashboardView: View {
         let percent = (item.changePct * 100).pct(2)
         return VStack(alignment: .leading, spacing: 6) {
             Text(item.name)
-                .scaledFont(DS.fsMicro, weight: .medium)
+                .scaledFont(palette.fsMicro, weight: .medium)
                 .foregroundStyle(palette.ink2)
                 .lineLimit(1)
             Text(item.price.num(3))
@@ -716,7 +743,7 @@ struct DashboardView: View {
                 Image(systemName: item.changePct >= 0 ? "arrow.up.right" : "arrow.down.right")
                     .font(.system(size: 9, weight: .bold))
                 Text(percent)
-                    .scaledFont(DS.fsMicro, weight: .semibold)
+                    .scaledFont(palette.fsMicro, weight: .semibold)
                     .monospacedDigit()
             }
             .foregroundStyle(tone)
@@ -757,7 +784,7 @@ struct DashboardView: View {
             ForEach(watchSections) { section in
                 if !section.name.isEmpty {
                     Text("\(section.name) · \(section.items.count) 只")
-                        .scaledFont(DS.fsMicro, weight: .semibold)
+                        .scaledFont(palette.fsMicro, weight: .semibold)
                         .foregroundStyle(palette.ink2)
                         .padding(.top, 2)
                 }
@@ -786,11 +813,11 @@ struct DashboardView: View {
                        sparkTint: tone) {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(q.price > 0 ? q.price.num(3) : "--")
-                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .scaledFont(palette.fsRow, weight: .semibold)
                         .monospacedDigit()
                         .foregroundStyle(palette.ink)
                     Text("\(q.changePct.directionMark()) \((q.changePct * 100).pct(2))")
-                        .scaledFont(DS.fsMicro, weight: .semibold)
+                        .scaledFont(palette.fsMicro, weight: .semibold)
                         .monospacedDigit()
                         .foregroundStyle(tone)
                 }
@@ -807,17 +834,17 @@ struct DashboardView: View {
                                 actionTitle: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
             Text(detail)
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink2)
             if let action {
                 Button(actionTitle) {
                     Haptics.tap()
                     action()
                 }
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
                 .foregroundStyle(palette.accent)
             }
         }
@@ -839,13 +866,13 @@ struct DashboardView: View {
                                     .scaledFont(13, weight: .medium)
                                     .foregroundStyle(palette.ink)
                                 Text("\(alert.direction == .above ? "上穿" : "下穿") \((alert.target).num(3)) · \(alert.enabled ? "等待触发" : "已触发")")
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .foregroundStyle(palette.ink2)
                             }
                             Spacer(minLength: 6)
                             if !alert.enabled {
                                 Button("重启") { store.reenableQuoteAlert(alert) }
-                                    .scaledFont(DS.fsMicro, weight: .semibold)
+                                    .scaledFont(palette.fsMicro, weight: .semibold)
                                     .foregroundStyle(palette.accent)
                             }
                         }
@@ -1224,16 +1251,16 @@ struct MoreHubView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("观盘 Pro")
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Text("\(store.data.holdings.count) 只持仓 · 总资产 \(store.totalAsset.cny())")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
             Text("本机")
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.ink2)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -4115,7 +4142,7 @@ struct ToolsView: View {
                 Text("本机先计算规则建议和操作画像；只有主动点击大模型深度分析时才会发送画像数据。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            .toneCard(CardTone.accent, isLight: isLight)
+            .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
             .id("tools-ai")
             Section("日线量化信号") {
                 Button("打开量化引擎并扫描全部自选/持仓") { showQuantEngine = true }
@@ -4393,7 +4420,7 @@ struct PortfolioScenarioView: View {
                     Text("波动率只使用所有模拟持仓都有记录的共同日线日期，至少 20 个共同收益点才显示；数据不足时不填默认相关系数。分红只汇总原生账本中的每份年分红设置或近 365 天已录入 ETF 分红事件；缺失的分红不会外推。集中度仅按 ETF/证券市值计算。模拟不会改变账户现金、持仓、交易记录或同步数据。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                .toneCard(CardTone.accent, isLight: isLight)
+                .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)
@@ -4888,7 +4915,7 @@ struct AddCashSimulationView: View {
                             }.padding(.vertical, 3)
                         }
                     }
-                    .toneCard(CardTone.accent, isLight: isLight)
+                    .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -5759,7 +5786,7 @@ struct DayGridView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.sectionGap) {
+                VStack(alignment: .leading, spacing: palette.sectionGap) {
                     instrumentCard
                     paramCard
                     ladderCard
@@ -5774,7 +5801,7 @@ struct DayGridView: View {
                         legacyCard
                     }
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 8)
                 .padding(.bottom, 30)
             }
@@ -5824,11 +5851,11 @@ struct DayGridView: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(currentInstrument?.name ?? "未选择标的")
-                        .scaledFont(DS.fsTitle, weight: .semibold)
+                        .scaledFont(palette.fsTitle, weight: .semibold)
                         .foregroundStyle(palette.ink)
                         .lineLimit(1)
                     Text(code.isEmpty ? "先在自选或持仓里添加标的" : code)
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
                 Spacer(minLength: 6)
@@ -5847,7 +5874,7 @@ struct DayGridView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Text("切换")
-                            .scaledFont(DS.fsLabel, weight: .semibold)
+                            .scaledFont(palette.fsLabel, weight: .semibold)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .bold))
                     }
@@ -5873,16 +5900,16 @@ struct DayGridView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18)
     }
 
     private func miniStat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(title)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
@@ -5908,10 +5935,10 @@ struct DayGridView: View {
                     paramField("每笔费用", text: $fee, unit: "元", keyboard: .decimalPad)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("每档预算")
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink3)
                         Text(perRungBudget > 0 ? "¥" + perRungBudget.cny() : "--")
-                            .scaledFont(DS.fsRow, weight: .semibold)
+                            .scaledFont(palette.fsRow, weight: .semibold)
                             .monospacedDigit()
                             .foregroundStyle(palette.ink)
                             .lineLimit(1)
@@ -5923,7 +5950,7 @@ struct DayGridView: View {
                 }
             }
             Text("每档按 100 份整数手模拟。资金不足一手时档位会显示 0 份，计划仍可保存。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -5935,17 +5962,17 @@ struct DayGridView: View {
                             keyboard: UIKeyboardType) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             HStack(spacing: 3) {
                 TextField("0", text: text)
                     .keyboardType(keyboard)
                     .textFieldStyle(.plain)
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink)
                 Text(unit)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
         }
@@ -5961,18 +5988,18 @@ struct DayGridView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("挂档表")
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Spacer(minLength: 6)
                 Text(sharesPerRung > 0 ? "每档 \(sharesPerRung.num(0)) 份" : "资金不足一手")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(sharesPerRung > 0 ? palette.ink3 : CardTone.warn)
             }
             .padding(.bottom, 10)
 
             if rungs.isEmpty {
                 Text("填好中枢价与间距后，这里会列出每一档的挂单价。")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .padding(.vertical, 6)
             } else {
@@ -5996,11 +6023,11 @@ struct DayGridView: View {
                 .font(.system(size: 7, weight: .bold))
                 .foregroundStyle(palette.accent)
             Text("现价")
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.accent)
             Spacer(minLength: 4)
             Text(price > 0 ? price.num(4) : "--")
-                .scaledFont(DS.fsRow, weight: .bold)
+                .scaledFont(palette.fsRow, weight: .bold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
         }
@@ -6021,22 +6048,22 @@ struct DayGridView: View {
                 .frame(width: 16, height: 16)
                 .background { RoundedRectangle(cornerRadius: 4, style: .continuous).fill(tone.opacity(palette.isLight ? 0.12 : 0.18)) }
             Text("\(rung.level)")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink3)
                 .frame(width: 12, alignment: .leading)
             Text(rung.price.num(4))
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text((rung.distance >= 0 ? "+" : "") + (rung.distance * 100).num(2) + "%")
-                .scaledFont(DS.fsMicro, weight: .medium)
+                .scaledFont(palette.fsMicro, weight: .medium)
                 .monospacedDigit()
                 .foregroundStyle(tone)
                 .frame(width: 56, alignment: .trailing)
             Text(rung.shares > 0 ? rung.shares.num(0) + " 份" : "—")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink3)
                 .frame(width: 52, alignment: .trailing)
@@ -6054,7 +6081,7 @@ struct DayGridView: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "wand.and.stars").font(.system(size: 11, weight: .semibold))
-                    Text("按历史分时给建议").scaledFont(DS.fsLabel, weight: .semibold)
+                    Text("按历史分时给建议").scaledFont(palette.fsLabel, weight: .semibold)
                 }
                 .foregroundStyle(palette.ink)
                 .frame(maxWidth: .infinity)
@@ -6070,7 +6097,7 @@ struct DayGridView: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "square.and.arrow.down").font(.system(size: 11, weight: .semibold))
-                    Text("保存计划").scaledFont(DS.fsLabel, weight: .semibold)
+                    Text("保存计划").scaledFont(palette.fsLabel, weight: .semibold)
                 }
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
@@ -6090,7 +6117,7 @@ struct DayGridView: View {
                 .foregroundStyle(tone)
                 .padding(.top, 1)
             Text(text)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -6108,11 +6135,11 @@ struct DayGridView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("路径回放")
-                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .scaledFont(palette.fsLabel, weight: .semibold)
                     .foregroundStyle(palette.ink2)
                 Spacer(minLength: 4)
                 Text(result.day)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink3)
             }
@@ -6133,7 +6160,7 @@ struct DayGridView: View {
             Text(result.fills == 0
                  ? "该日没有触发网格成交。若资金不足以买入 100 份一手、网格间距超出当日波动，或数据缺点，结果可能没有代表性。"
                  : "按时间顺序计算，含逐笔固定费用；不含排队、成交量、滑点、涨跌停与真实券商规则。历史最佳参数会有过拟合，不能直接当作明日建议。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -6162,18 +6189,18 @@ struct DayGridView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(plan.name)
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .foregroundStyle(palette.ink)
                     .lineLimit(1)
                 Text(plan.code)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                 Spacer(minLength: 4)
                 Button {
                     loadPlan(plan)
                 } label: {
                     Text("载入")
-                        .scaledFont(DS.fsMicro, weight: .semibold)
+                        .scaledFont(palette.fsMicro, weight: .semibold)
                         .foregroundStyle(palette.accent)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4)
@@ -6191,7 +6218,7 @@ struct DayGridView: View {
                 .buttonStyle(.plain)
             }
             Text("资金 \(plan.capital.num(0)) · 中枢 \(plan.anchor.num(4)) · 间距 \((plan.stepPercent * 100).num(2))% · 各 \(plan.levelsEachSide) 档 · 每档 \(shares.num(0)) 份")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -6212,10 +6239,10 @@ struct DayGridView: View {
                     Image(systemName: "square.and.arrow.down.on.square")
                         .font(.system(size: 12, weight: .semibold))
                     Text("导入分时 CSV")
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                     Spacer(minLength: 0)
                     Text("\(store.gridBarCount) 个采样点")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
                 .foregroundStyle(palette.ink)
@@ -6234,7 +6261,7 @@ struct DayGridView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(selectedDay.isEmpty ? "选择日期" : selectedDay)
-                                .scaledFont(DS.fsLabel, weight: .medium)
+                                .scaledFont(palette.fsLabel, weight: .medium)
                                 .monospacedDigit()
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 8, weight: .bold))
@@ -6249,7 +6276,7 @@ struct DayGridView: View {
                         runReplay()
                     } label: {
                         Text("复盘所选日期")
-                            .scaledFont(DS.fsLabel, weight: .semibold)
+                            .scaledFont(palette.fsLabel, weight: .semibold)
                             .foregroundStyle(palette.accent)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
@@ -6261,7 +6288,7 @@ struct DayGridView: View {
                 }
             }
             Text("CSV 支持 code,date,time,price,volume 或 code,timestamp,price；无 code 列时使用当前标的。只在 App 前台且取得有效报价时采集。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -6279,10 +6306,10 @@ struct DayGridView: View {
                 DsIconTile(symbol: "chart.xyaxis.line", tint: palette.accent, size: 36, palette: palette)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("中长期网格规划")
-                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .scaledFont(palette.fsRow, weight: .semibold)
                         .foregroundStyle(palette.ink)
                     Text("按近 60 日区间生成上下买卖档，独立于日内回放")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
                         .lineLimit(1)
                 }
@@ -6307,14 +6334,14 @@ struct DayGridView: View {
                     ForEach(store.data.legacyGridArchives) { record in
                         VStack(alignment: .leading, spacing: 3) {
                             Text("\(record.name) · \(record.code)")
-                                .scaledFont(DS.fsLabel, weight: .semibold)
+                                .scaledFont(palette.fsLabel, weight: .semibold)
                                 .foregroundStyle(palette.ink)
                             Text("\(record.horizon) · \(record.mode) · \(record.status) · \(record.created)")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink3)
                             if record.capital > 0 {
                                 Text("计划资金 \(record.capital.cny()) · 原网格 \(record.lower.num(3))–\(record.upper.num(3)) · 每档 \(record.quantity.num(0)) 份")
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .foregroundStyle(palette.ink3)
                             }
                         }
@@ -6331,17 +6358,17 @@ struct DayGridView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(palette.ink2)
                     Text("旧版网格与影子盘（只读）")
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(palette.ink2)
                     Spacer(minLength: 4)
                     Text("\(store.data.legacyGridArchives.count + store.data.legacyShadowArchives.count) 条")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
             }
             .tint(palette.ink2)
             Text("旧版记录以原始 JSON 保留，符合日内参数条件的已转换为可载入回放的计划。影子盘使用隔离虚拟资金，不计入真实持仓。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -6353,7 +6380,7 @@ struct DayGridView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text("\(record.name) · \(record.code)")
-                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .scaledFont(palette.fsLabel, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Spacer(minLength: 4)
                 Text(record.closed ? "已结束" : (record.active ? "运行中" : "已暂停"))
@@ -6361,14 +6388,14 @@ struct DayGridView: View {
                     .foregroundStyle(record.active && !record.closed ? CardTone.ok : palette.ink3)
             }
             Text("影子盈亏 \(record.lastEquityChange.cny()) · 累计已实现 \(record.realizedPnL.cny()) · 买/卖 \(record.buys)/\(record.sells)")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
             if !record.closed {
                 Button(record.active ? "暂停影子模拟" : "恢复影子模拟") {
                     store.setLegacyShadowActive(record, active: !record.active)
                 }
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.accent)
                 .buttonStyle(.plain)
             }
@@ -6819,7 +6846,7 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.vertical, 6)
-                Text("主题同时决定页面和卡片底色；强调色可在下方单独调整。")
+                Text("每套主题各有一套版式：科技黑绿是卡片流 + 悬浮 AI 球，蓝海浅色是分组列表 + 五项平铺导航；背景、圆角、字号、行距一起换。强调色可单独调整。")
                     .font(.footnote).foregroundStyle(.secondary)
             } label: {
                 HStack {
@@ -6901,8 +6928,9 @@ struct SettingsView: View {
                             .scaledFont(11).foregroundStyle(accent)
                     }
                 }
-                Text(theme.isLight ? "浅色" : "深色")
+                Text("\(theme.isLight ? "浅色" : "深色") · \(appearance.layoutStyle.title)")
                     .scaledFont(9).foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             .padding(7)
             .background(

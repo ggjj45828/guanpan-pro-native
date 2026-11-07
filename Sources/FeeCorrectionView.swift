@@ -34,7 +34,7 @@ struct FeeCorrectionView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.sectionGap) {
+                VStack(alignment: .leading, spacing: palette.sectionGap) {
                     if let selected {
                         editor(for: selected)
                     } else {
@@ -42,13 +42,13 @@ struct FeeCorrectionView: View {
                     }
                     if let message {
                         Text(message)
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(isError ? PnLColor.down : palette.ink2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     noteCard
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.vertical, 14)
             }
             .background(palette.canvas.ignoresSafeArea())
@@ -79,7 +79,7 @@ struct FeeCorrectionView: View {
             DsSectionHeader(palette: palette, title: "最近成交")
             if candidates.isEmpty {
                 Text("账本里还没有可更正的成交。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             } else {
                 VStack(spacing: 0) {
@@ -103,7 +103,7 @@ struct FeeCorrectionView: View {
                                     }
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(fill.name)
-                                        .scaledFont(DS.fsRow, weight: .medium)
+                                        .scaledFont(palette.fsRow, weight: .medium)
                                         .foregroundStyle(palette.ink)
                                         .lineLimit(1)
                                     Text("\(MarketCalendar.isoDay(fill.date)) · \(fill.quantity.num(0)) 份 · \(fill.price.num(3))")
@@ -112,7 +112,7 @@ struct FeeCorrectionView: View {
                                 }
                                 Spacer(minLength: 4)
                                 Text("费 \(fill.fee.cny())")
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .monospacedDigit()
                                     .foregroundStyle(palette.ink2)
                             }
@@ -132,26 +132,26 @@ struct FeeCorrectionView: View {
 
     private func editor(for fill: LedgerEntry) -> some View {
         let preview = store.feeCorrectionPreview(fillID: fill.id, newFee: Double(draftFee) ?? fill.fee)
-        return VStack(alignment: .leading, spacing: DS.sectionGap) {
+        return VStack(alignment: .leading, spacing: palette.sectionGap) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("\(fill.name)（\(fill.code)）")
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Text("\(MarketCalendar.isoDay(fill.date)) · \(fill.side == .buy ? "买入" : "卖出") \(fill.quantity.num(0)) 份 · 成交额 \(fill.gross.cny())")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                 Text("当前记录费用 \(fill.fee.cny())")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
             }
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("实际费用")
-                    .scaledFont(DS.fsLabel, weight: .medium)
+                    .scaledFont(palette.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
                 TextField("0.00", text: $draftFee)
                     .keyboardType(.decimalPad)
-                    .scaledFont(DS.fsStat, weight: .semibold)
+                    .scaledFont(palette.fsStat, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink)
                     .padding(.horizontal, 12)
@@ -160,11 +160,11 @@ struct FeeCorrectionView: View {
                     .keyboardDoneToolbar()
 
                 Text("更正原因（必填）")
-                    .scaledFont(DS.fsLabel, weight: .medium)
+                    .scaledFont(palette.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
                 TextField("例如：券商清算后实际收取 5.32 元", text: $reason, axis: .vertical)
                     .lineLimit(2...4)
-                    .scaledFont(DS.fsRow)
+                    .scaledFont(palette.fsRow)
                     .foregroundStyle(palette.ink)
                     .padding(10)
                     .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(palette.cardSoft) }
@@ -175,14 +175,14 @@ struct FeeCorrectionView: View {
             if let preview {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("影响")
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(palette.ink2)
                     HStack(spacing: 14) {
                         impact("参考现金", preview.cashDelta)
                         impact("已实现", preview.realizedDelta)
                     }
                     Text("这一笔之后同标的还有 \(preview.affectedFollowingFills) 笔成交，会按新费用一起重算成本。份额、价格、日期不变。")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -195,7 +195,7 @@ struct FeeCorrectionView: View {
                 apply(fill)
             } label: {
                 Text("按新费用重算")
-                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .scaledFont(palette.fsLabel, weight: .semibold)
                     // 显式写 Color：三元里 `.white` 会被推断成 palette 另一侧的样式类型，
                     // 编译报「LinearGradient 与 Color 不等价」。
                     .foregroundStyle(Color.white)
@@ -215,7 +215,7 @@ struct FeeCorrectionView: View {
                 .scaledFont(9.5)
                 .foregroundStyle(palette.ink3)
             Text((value > 0 ? "+" : "") + value.cny())
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(PnLColor.of(value))
         }
@@ -243,7 +243,7 @@ struct FeeCorrectionView: View {
 
     private var noteCard: some View {
         Text("只改费用，不改成交。参考现金会按费用差额同步调整（仅限记录了现金联动的成交）。若重算后发现份额与持仓对不上，说明账本本身缺起点，先把起点补上再来改费用。")
-            .scaledFont(DS.fsMicro)
+            .scaledFont(palette.fsMicro)
             .foregroundStyle(palette.ink3)
             .fixedSize(horizontal: false, vertical: true)
     }

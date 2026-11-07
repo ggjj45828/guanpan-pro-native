@@ -322,7 +322,7 @@ struct ScoreRadarCard: View {
 
     var body: some View {
         if showsBackground {
-            content.dsSurface(palette, radius: DS.radius, padding: DS.pad)
+            content.dsSurface(palette, radius: palette.radius, padding: palette.pad)
         } else {
             content
         }
@@ -334,10 +334,10 @@ struct ScoreRadarCard: View {
                 DsIconTile(symbol: "hexagon", tint: palette.accent, size: 30, palette: palette)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("值不值得买 · 六维")
-                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .scaledFont(palette.fsRow, weight: .semibold)
                         .foregroundStyle(palette.ink)
                     Text("本机规则计算，不联网")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
                 Spacer(minLength: 4)
@@ -360,13 +360,13 @@ struct ScoreRadarCard: View {
                 }
             } else {
                 Text("日线不足，六维里能算的维度少于 3 个。补足历史行情再来看分数。")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Text(result.summary)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -379,7 +379,7 @@ struct ScoreRadarCard: View {
         let ratio = min(1, max(0, dimension.value / 100))
         return HStack(alignment: .center, spacing: 8) {
             Text(dimension.kind.title)
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.ink2)
                 .frame(width: 40, alignment: .leading)
             GeometryReader { geo in
@@ -392,7 +392,7 @@ struct ScoreRadarCard: View {
             }
             .frame(height: 4)
             Text(dimension.value.num(0))
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(tint)
                 .frame(width: 24, alignment: .trailing)

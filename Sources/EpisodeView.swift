@@ -36,7 +36,7 @@ struct EpisodeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.gap) {
+                VStack(alignment: .leading, spacing: palette.gap) {
                     heroCard
                     if instruments.isEmpty {
                         emptyCard
@@ -51,7 +51,7 @@ struct EpisodeView: View {
                     }
                     disclaimerCard
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 6)
                 .padding(.bottom, 28)
             }
@@ -73,10 +73,10 @@ struct EpisodeView: View {
     private var heroCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("累计已实现")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             Text(lifetimeRealized.cny())
-                .scaledFont(DS.fsHero, weight: .bold, design: .rounded)
+                .scaledFont(palette.fsHero, weight: .bold, design: .rounded)
                 .monospacedDigit()
                 .foregroundStyle(lifetimeRealized >= 0 ? PnLColor.up : PnLColor.down)
                 .lineLimit(1)
@@ -92,20 +92,20 @@ struct EpisodeView: View {
             if !closedDays.isEmpty {
                 let average = Double(closedDays.reduce(0, +)) / Double(closedDays.count)
                 Text("已了结周期的平均持有时间 \(Int(average.rounded())) 天 · 最长 \(closedDays.max() ?? 0) 天 · 最短 \(closedDays.min() ?? 0) 天")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18, glow: palette.accent)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18, glow: palette.accent)
     }
 
     private func stat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).scaledFont(9.5).foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
         }
@@ -125,7 +125,7 @@ struct EpisodeView: View {
             action()
         } label: {
             Text(title)
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .foregroundStyle(on ? palette.ink : palette.ink2)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
@@ -141,11 +141,11 @@ struct EpisodeView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(instrument.name)
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .foregroundStyle(palette.ink)
                     .lineLimit(1)
                 Text(instrument.code)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                 Text(instrument.kind == .fund ? "场外" : "场内")
                     .scaledFont(9.5, weight: .semibold)
@@ -155,7 +155,7 @@ struct EpisodeView: View {
                     .background { Capsule().fill(palette.cardSoft) }
                 Spacer(minLength: 4)
                 Text("\(instrument.episodes.count) 轮")
-                    .scaledFont(DS.fsMicro, weight: .medium)
+                    .scaledFont(palette.fsMicro, weight: .medium)
                     .foregroundStyle(palette.ink3)
             }
 
@@ -172,7 +172,7 @@ struct EpisodeView: View {
 
             if let rate = instrument.winRate {
                 Text("已了结 \(instrument.wins) 胜 \(instrument.losses) 负 · 胜率 \(Int((rate * 100).rounded()))% · 平均持有 \(Int((instrument.averageClosedDays ?? 0).rounded())) 天")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -185,7 +185,7 @@ struct EpisodeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private func episodeRow(_ episode: PositionEpisode, price: Double) -> some View {
@@ -200,7 +200,7 @@ struct EpisodeView: View {
             } label: {
                 HStack(spacing: 8) {
                     Text("第 \(episode.number) 轮")
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(palette.ink)
                     Text(episode.isActive ? "进行中" : "已了结")
                         .scaledFont(9.5, weight: .semibold)
@@ -210,7 +210,7 @@ struct EpisodeView: View {
                         .background { Capsule().fill(episode.isActive ? palette.accentDim : palette.cardSoft) }
                     Spacer(minLength: 4)
                     Text(episode.realized.cny())
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .monospacedDigit()
                         .foregroundStyle(tone)
                     if unrealized != nil {
@@ -228,11 +228,11 @@ struct EpisodeView: View {
 
             HStack(spacing: 12) {
                 Text(periodText(episode))
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                 if let days = episode.days() {
                     Text("\(days) 天")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
                 if !episode.historyComplete {
@@ -251,11 +251,11 @@ struct EpisodeView: View {
                     if let unrealized {
                         HStack(spacing: 6) {
                             Text("本轮浮动")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink3)
                             Spacer(minLength: 0)
                             Text(unrealized.cny())
-                                .scaledFont(DS.fsMicro, weight: .semibold)
+                                .scaledFont(palette.fsMicro, weight: .semibold)
                                 .monospacedDigit()
                                 .foregroundStyle(unrealized >= 0 ? PnLColor.up : PnLColor.down)
                         }
@@ -322,40 +322,40 @@ struct EpisodeView: View {
     private var emptyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("还没有可以还原的持仓周期")
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
             Text("周期由「账本起点 + 逐笔成交」推算。先录入持仓或补一笔成交，这里才有东西可拆。")
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private var warningCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("数据提示")
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(CardTone.warn)
             ForEach(projection.warnings, id: \.self) { warning in
                 Text("· \(warning)")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: 14)
+        .dsSurface(palette, radius: palette.radius, padding: 14)
     }
 
     private var disclaimerCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("口径")
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.ink3)
             Text("一轮 = 从起点快照（或第一次买入）到份额清零；清零后再买重新计一轮。成本按加权平均逐笔递推，与「记一笔交易」的算法完全一致。账本起点之前的历史买入无法还原，所以第一轮会标成「买入记录不完整」，天数从起点快照那一刻开始算，不假装知道真实建仓日。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }

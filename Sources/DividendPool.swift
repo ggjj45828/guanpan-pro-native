@@ -122,7 +122,7 @@ struct DividendPoolView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.gap) {
+                VStack(alignment: .leading, spacing: palette.gap) {
                     summaryCard
                     targetCard
                     addCard
@@ -134,12 +134,12 @@ struct DividendPoolView: View {
                         }
                     }
                     Text("分红数据没有公开稳定接口，本页不自动抓取也不估算：每份分红请按基金公告 / 年报填写，填错会直接算错股息率。ETF 分红会除权，股息率高不等于总回报高。")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 4)
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.vertical, 14)
             }
             .scrollIndicators(.hidden)
@@ -157,34 +157,34 @@ struct DividendPoolView: View {
     private var summaryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("池内标的")
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .foregroundStyle(palette.ink2)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("\(entries.count)")
-                    .scaledFont(DS.fsHero, weight: .bold)
+                    .scaledFont(palette.fsHero, weight: .bold)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink)
                 Text("只 · 已达目标 \(reachedCount) 只")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
             }
             Text("目标股息率 \(targetYield.num(1))%。现价低于「目标买价」才算到了位置。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18)
     }
 
     private var targetCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("目标股息率")
-                    .scaledFont(DS.fsLabel, weight: .medium)
+                    .scaledFont(palette.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
                 Spacer()
                 Text("\(targetYield.num(1))%")
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink)
             }
@@ -196,7 +196,7 @@ struct DividendPoolView: View {
                    })
                 .tint(palette.accent)
             Text("拖动即保存。每一行会算出「达到该股息率所需的买入价」。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
         }
         .dsSurface(palette, radius: 18, padding: 16)
@@ -205,7 +205,7 @@ struct DividendPoolView: View {
     private var addCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("加入标的")
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
             HStack(spacing: 8) {
                 TextField("六位代码", text: $newCode)
@@ -238,12 +238,12 @@ struct DividendPoolView: View {
 
             if !status.isEmpty {
                 Text(status)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
             if !store.data.quotes.isEmpty {
                 Text("从自选快速加入")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -253,7 +253,7 @@ struct DividendPoolView: View {
                                 Haptics.tap()
                             } label: {
                                 Text(quote.name.isEmpty ? quote.code : quote.name)
-                                    .scaledFont(DS.fsMicro, weight: .medium)
+                                    .scaledFont(palette.fsMicro, weight: .medium)
                                     .foregroundStyle(palette.ink2)
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 6)
@@ -271,10 +271,10 @@ struct DividendPoolView: View {
     private var emptyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("收息池还是空的")
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
             Text("把常看的红利 ETF 或高股息个股加进来，填上最近一次年度分红就能评分。")
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -288,11 +288,11 @@ struct DividendPoolView: View {
                 DsIconTile(symbol: "yensign.circle.fill", tint: tone, size: 36, palette: palette)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.entry.name.isEmpty ? item.entry.code : item.entry.name)
-                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .scaledFont(palette.fsRow, weight: .semibold)
                         .foregroundStyle(palette.ink)
                         .lineLimit(1)
                     Text(item.entry.code)
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .monospacedDigit()
                         .foregroundStyle(palette.ink2)
                 }
@@ -317,7 +317,7 @@ struct DividendPoolView: View {
                 Text(price <= target
                      ? "现价已低于目标买价 \(((target - price) / target * 100).pct(1))"
                      : "还要再跌 \(((price - target) / price * 100).pct(1)) 才到目标买价")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(price <= target ? PnLColor.up : palette.ink3)
             }
         }
@@ -342,7 +342,7 @@ struct DividendPoolView: View {
                 .scaledFont(9.5)
                 .foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
         }

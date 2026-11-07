@@ -21,7 +21,7 @@ struct MarketStateView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.sectionGap) {
+                VStack(alignment: .leading, spacing: palette.sectionGap) {
                     regimeCard
                     if let regime, !regime.reasons.isEmpty {
                         reasonCard(regime)
@@ -32,7 +32,7 @@ struct MarketStateView: View {
                     intradayCard
                     disclaimer
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.vertical, 14)
             }
             .background(palette.canvas.ignoresSafeArea())
@@ -58,7 +58,7 @@ struct MarketStateView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text("上证指数")
-                    .scaledFont(DS.fsLabel, weight: .medium)
+                    .scaledFont(palette.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
                 Spacer(minLength: 4)
                 if let regime {
@@ -75,7 +75,7 @@ struct MarketStateView: View {
 
             if let regime {
                 Text(regime.regime.title)
-                    .scaledFont(DS.fsHero, weight: .bold)
+                    .scaledFont(palette.fsHero, weight: .bold)
                     .foregroundStyle(palette.ink)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -94,11 +94,11 @@ struct MarketStateView: View {
 
                 HStack(spacing: 6) {
                     Text("置信度 \(regime.confidenceLabel)")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                     if let date = regime.dataAsOf {
                         Text("· 数据截至 \(MarketCalendar.isoDay(date))")
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink3)
                     }
                     Spacer(minLength: 0)
@@ -109,23 +109,23 @@ struct MarketStateView: View {
                         Image(systemName: "eye")
                             .font(.system(size: 10, weight: .semibold))
                         Text("观察级别：可以据此调整节奏，不构成买卖指令")
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                     }
                     .foregroundStyle(palette.ink2)
                 }
             } else {
                 Text("日线不足")
-                    .scaledFont(DS.fsHero, weight: .bold)
+                    .scaledFont(palette.fsHero, weight: .bold)
                     .foregroundStyle(palette.ink3)
                 Text("至少需要 60 个交易日的上证指数日线。打开一次行情页并下滑刷新，让它把日 K 拉回来。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 0)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 0)
     }
 
     private func metric(_ title: String, _ value: String, tone: Color) -> some View {
@@ -134,7 +134,7 @@ struct MarketStateView: View {
                 .scaledFont(9.5)
                 .foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(tone)
         }
@@ -160,7 +160,7 @@ struct MarketStateView: View {
                     HStack(alignment: .top, spacing: 6) {
                         Circle().fill(palette.ink3).frame(width: 3, height: 3).padding(.top, 6)
                         Text(regime.reasons[index])
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -179,7 +179,7 @@ struct MarketStateView: View {
             DsSectionHeader(palette: palette, title: "状态变更")
             if recent.isEmpty {
                 Text("确认状态还没有变过。这里只在状态跨过防抖阈值时记一条 —— 记的是结论，不是每天的候选值。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -187,7 +187,7 @@ struct MarketStateView: View {
                     ForEach(recent) { item in
                         HStack(spacing: 10) {
                             Text(String(item.sessionKey.suffix(5)))
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .monospacedDigit()
                                 .foregroundStyle(palette.ink3)
                                 .frame(width: 36, alignment: .leading)
@@ -220,7 +220,7 @@ struct MarketStateView: View {
                 .padding(.horizontal, 14)
                 .dsSurface(palette, radius: 18, padding: 0)
                 Text("风险上调要 2 个交易日确认，下调要 3 个 —— 所以它总是慢半拍地降级，这是刻意的不对称。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -248,12 +248,12 @@ struct MarketStateView: View {
                 .dsSurface(palette, radius: 18, padding: 0)
 
                 Text("点任意一行看它最近 \(MarketRegimeEngine.factorHistoryLength) 个交易日的走势。历史是把每根 K 线当作当天，只用那天之前的数据重算出来的 —— 不是用今天的参数回头修出来的。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("\(factors.filter(\.available).count) 项可用 / 共 \(factors.count) 项")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
         }
@@ -290,7 +290,7 @@ struct MarketStateView: View {
                     }
                     Spacer(minLength: 6)
                     Text(factor.displayValue)
-                        .scaledFont(DS.fsLabel, weight: .medium)
+                        .scaledFont(palette.fsLabel, weight: .medium)
                         .monospacedDigit()
                         .foregroundStyle(factor.available ? factorTint(factor) : palette.ink3)
                 }
@@ -351,17 +351,17 @@ struct MarketStateView: View {
             DsSectionHeader(palette: palette, title: "已实现业绩")
             if snapshot.sellFillCount == 0 {
                 Text("还没有卖出记录。这一栏只统计已经了结的部分，浮盈不计入。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             } else {
                 VStack(spacing: 0) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("已实现净额")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink3)
                             Text(snapshot.netRealizedProfit.cny())
-                                .scaledFont(DS.fsStat, weight: .bold)
+                                .scaledFont(palette.fsStat, weight: .bold)
                                 .monospacedDigit()
                                 .foregroundStyle(PnLColor.of(snapshot.netRealizedProfit))
                         }
@@ -369,12 +369,12 @@ struct MarketStateView: View {
                         VStack(alignment: .trailing, spacing: 2) {
                             if let rate = snapshot.instrumentWinRate {
                                 Text("标的胜率 \(rate.pct(0))")
-                                    .scaledFont(DS.fsLabel, weight: .semibold)
+                                    .scaledFont(palette.fsLabel, weight: .semibold)
                                     .foregroundStyle(palette.ink)
                             }
                             if let average = snapshot.averageReturnOnCost {
                                 Text("平均收益率 \(average.pct(2))")
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .foregroundStyle(palette.ink2)
                             }
                         }
@@ -386,19 +386,19 @@ struct MarketStateView: View {
                         ForEach(snapshot.byInstrument.prefix(8)) { item in
                             HStack(spacing: 8) {
                                 Text(item.name)
-                                    .scaledFont(DS.fsRow, weight: .medium)
+                                    .scaledFont(palette.fsRow, weight: .medium)
                                     .foregroundStyle(palette.ink)
                                     .lineLimit(1)
                                 Text(item.code)
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .foregroundStyle(palette.ink3)
                                 Spacer(minLength: 4)
                                 Text(item.returnOnRemovedCost.map { $0.pct(2) } ?? "--")
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .monospacedDigit()
                                     .foregroundStyle(palette.ink3)
                                 Text(item.netRealizedProfit.cny())
-                                    .scaledFont(DS.fsLabel, weight: .semibold)
+                                    .scaledFont(palette.fsLabel, weight: .semibold)
                                     .monospacedDigit()
                                     .foregroundStyle(PnLColor.of(item.netRealizedProfit))
                             }
@@ -409,7 +409,7 @@ struct MarketStateView: View {
                 .padding(.horizontal, 14)
                 .dsSurface(palette, radius: 18, padding: 0)
                 Text("收益率的分母是这笔卖出移除掉的成本基础，不是卖出金额；按标的算胜率，不是按笔 —— 同一只反复做 T 会把按笔胜率刷得很高。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -426,7 +426,7 @@ struct MarketStateView: View {
             DsSectionHeader(palette: palette, title: "日内做 T 贡献")
             if trips.isEmpty {
                 Text("近 30 个交易日没有「先卖后回补」的配对。先买后卖属于调仓，不计入做 T。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -434,16 +434,16 @@ struct MarketStateView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("合计贡献")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink3)
                             Text(total.cny())
-                                .scaledFont(DS.fsStat, weight: .bold)
+                                .scaledFont(palette.fsStat, weight: .bold)
                                 .monospacedDigit()
                                 .foregroundStyle(PnLColor.of(total))
                         }
                         Spacer(minLength: 8)
                         Text("\(trips.count) 笔配对 · \(trips.filter { $0.contribution > 0.01 }.count) 笔为正")
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink3)
                     }
                     .padding(.vertical, 12)
@@ -452,19 +452,19 @@ struct MarketStateView: View {
                     ForEach(trips.prefix(6)) { trip in
                         HStack(spacing: 8) {
                             Text(trip.name)
-                                .scaledFont(DS.fsRow, weight: .medium)
+                                .scaledFont(palette.fsRow, weight: .medium)
                                 .foregroundStyle(palette.ink)
                                 .lineLimit(1)
                             Text("\(trip.quantity.num(0)) 份")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink3)
                             Spacer(minLength: 4)
                             Text("\(trip.sellPrice.num(3)) → \(trip.buyBackPrice.num(3))")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .monospacedDigit()
                                 .foregroundStyle(palette.ink3)
                             Text(trip.contribution.cny())
-                                .scaledFont(DS.fsLabel, weight: .semibold)
+                                .scaledFont(palette.fsLabel, weight: .semibold)
                                 .monospacedDigit()
                                 .foregroundStyle(PnLColor.of(trip.contribution))
                         }
@@ -479,7 +479,7 @@ struct MarketStateView: View {
 
     private var disclaimer: some View {
         Text("市场状态由本机按上证指数日线计算，含两个交易日的防抖（连续 3 日一致才确认）。它只描述环境，不预测点位。已实现与做 T 数据全部来自本机账本，不含券商实际成交与滑点。")
-            .scaledFont(DS.fsMicro)
+            .scaledFont(palette.fsMicro)
             .foregroundStyle(palette.ink3)
             .fixedSize(horizontal: false, vertical: true)
     }

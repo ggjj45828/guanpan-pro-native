@@ -21,7 +21,7 @@ struct ExpenseView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.gap) {
+                VStack(alignment: .leading, spacing: palette.gap) {
                     heroCard
                     if !yearSummary.byCategory.isEmpty {
                         categoryCard
@@ -29,7 +29,7 @@ struct ExpenseView: View {
                     recordsCard
                     disclaimerCard
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 6)
                 .padding(.bottom, 28)
             }
@@ -93,10 +93,10 @@ struct ExpenseView: View {
     private var heroCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("今年已记录杂费")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             Text(yearTotal.cny())
-                .scaledFont(DS.fsHero, weight: .bold, design: .rounded)
+                .scaledFont(palette.fsHero, weight: .bold, design: .rounded)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
@@ -110,25 +110,25 @@ struct ExpenseView: View {
 
             if let rate = yearSummary.annualizedRate {
                 Text("按最近一年的杂费折算，约占平均总资产的 \(rate.pct(2))\(yearSummary.usedCurrentAssetFallback ? "（快照不足，分母用的是当前总资产）" : "")。这笔钱和买卖手续费一样，是从收益里扣掉的。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("还没有可用的资产快照，算不出占资产的比例；金额与分类统计仍然有效。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18, glow: palette.accent)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18, glow: palette.accent)
     }
 
     private func stat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).scaledFont(9.5).foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
@@ -141,7 +141,7 @@ struct ExpenseView: View {
     private var categoryCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("今年分类")
-                .scaledFont(DS.fsTitle, weight: .semibold)
+                .scaledFont(palette.fsTitle, weight: .semibold)
                 .foregroundStyle(palette.ink)
             ForEach(yearSummary.byCategory) { item in
                 let share = yearTotal > 0 ? item.amount / yearTotal : 0
@@ -151,15 +151,15 @@ struct ExpenseView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(palette.ink2)
                         Text(item.category.title)
-                            .scaledFont(DS.fsLabel)
+                            .scaledFont(palette.fsLabel)
                             .foregroundStyle(palette.ink)
                         Spacer(minLength: 4)
                         Text(item.amount.cny())
-                            .scaledFont(DS.fsLabel, weight: .semibold)
+                            .scaledFont(palette.fsLabel, weight: .semibold)
                             .monospacedDigit()
                             .foregroundStyle(palette.ink)
                         Text(share.pct(0))
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .monospacedDigit()
                             .foregroundStyle(palette.ink3)
                     }
@@ -176,7 +176,7 @@ struct ExpenseView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     // MARK: 记录
@@ -185,24 +185,24 @@ struct ExpenseView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("记录")
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Spacer(minLength: 4)
                 Text("\(store.data.accountExpenses.count) 笔")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
 
             if store.data.accountExpenses.isEmpty {
                 Text("还没有记录。券商 App 里能查到的「其他扣费」「融资利息」都可以记在这里；记一笔只要填金额、类别和一句话说明。")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ForEach(store.expensesByMonth()) { group in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(group.month)
-                            .scaledFont(DS.fsMicro, weight: .semibold)
+                            .scaledFont(palette.fsMicro, weight: .semibold)
                             .foregroundStyle(palette.ink3)
                         ForEach(group.items) { expense in
                             expenseRow(expense)
@@ -212,7 +212,7 @@ struct ExpenseView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private func expenseRow(_ expense: AccountExpense) -> some View {
@@ -225,10 +225,10 @@ struct ExpenseView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(expense.category.title)
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(palette.ink)
                     Text(Self.dayText(expense.date))
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .monospacedDigit()
                         .foregroundStyle(palette.ink3)
                     if !expense.linkedCash {
@@ -241,7 +241,7 @@ struct ExpenseView: View {
                     }
                 }
                 Text(expense.memo)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -249,7 +249,7 @@ struct ExpenseView: View {
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 6) {
                 Text(expense.amount.cny())
-                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .scaledFont(palette.fsLabel, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink)
                 Button {
@@ -273,10 +273,10 @@ struct ExpenseView: View {
     private var disclaimerCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("口径")
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.ink3)
             Text("杂费只做记录与统计：勾了「同步扣现金」会从参考现金里减掉，并补一条 external = false 的现金流，因此不会被算成你转出去的钱；没勾就是账外支付，只进统计。它不会改动持仓、成本或已实现盈亏 —— 想把这些费用摊进持仓成本，请用「记一笔交易」里的费用字段。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -327,19 +327,19 @@ private struct ExpenseEditorSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.gap) {
+                VStack(alignment: .leading, spacing: palette.gap) {
                     amountCard
                     categoryCard
                     detailCard
                     if let errorMessage {
                         Text(errorMessage)
-                            .scaledFont(DS.fsLabel)
+                            .scaledFont(palette.fsLabel)
                             .foregroundStyle(CardTone.warn)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .dsSurface(palette, radius: 14, padding: 12)
                     }
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 6)
                 .padding(.bottom, 24)
             }
@@ -362,7 +362,7 @@ private struct ExpenseEditorSheet: View {
     private var amountCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("金额")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("¥")
@@ -374,17 +374,17 @@ private struct ExpenseEditorSheet: View {
                     .foregroundStyle(palette.ink)
             }
             Text("正数表示从账户支出。退款请在说明里写清，金额仍记正数。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18)
     }
 
     private var categoryCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("类别")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                 ForEach(AccountExpense.Category.allCases) { item in
@@ -396,7 +396,7 @@ private struct ExpenseEditorSheet: View {
                             Image(systemName: item.symbol)
                                 .font(.system(size: 10, weight: .semibold))
                             Text(item.title)
-                                .scaledFont(DS.fsMicro, weight: .medium)
+                                .scaledFont(palette.fsMicro, weight: .medium)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
                         }
@@ -414,38 +414,38 @@ private struct ExpenseEditorSheet: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private var detailCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             DatePicker("发生日期", selection: $date, displayedComponents: .date)
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("说明（必填）")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                 TextField("例如：券商 App 月度平台费", text: $memo, axis: .vertical)
                     .lineLimit(2...4)
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink)
             }
 
             Toggle("同时从参考现金里扣减", isOn: $linkedCash)
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .tint(palette.accent)
 
             Text(linkedCash
                  ? "当前参考现金 \(store.data.cash.cny())。保存后会扣掉这笔金额，并补一条不外转的现金流。"
                  : "只做统计，不动参考现金。适合这笔费用在别的账户里扣的情况。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private func save() {

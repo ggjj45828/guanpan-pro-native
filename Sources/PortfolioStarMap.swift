@@ -54,18 +54,18 @@ struct PortfolioStarMapCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("组合关系")
-                    .scaledFont(DS.fsTitle, weight: .semibold)
+                    .scaledFont(palette.fsTitle, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Spacer(minLength: 6)
                 Text(top3Share > 0 ? "前三占 \(top3Share.pct(1))" : "")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink2)
             }
 
             if total <= 0 {
                 Text("先录入持仓，这里会按市值占比画出每只标的的位置与大小。")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -73,7 +73,7 @@ struct PortfolioStarMapCard: View {
                     .frame(height: 268)
                 if hiddenCount > 0 {
                     Text("另有 \(hiddenCount) 只未画出（合计 \(hiddenShare.pct(1))）")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
             }
@@ -81,10 +81,10 @@ struct PortfolioStarMapCard: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
         .background {
-            RoundedRectangle(cornerRadius: DS.radius, style: .continuous).fill(palette.card)
+            RoundedRectangle(cornerRadius: palette.radius, style: .continuous).fill(palette.card)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: DS.radius, style: .continuous)
+            RoundedRectangle(cornerRadius: palette.radius, style: .continuous)
                 .strokeBorder(palette.hairline, lineWidth: 1)
         }
         .sheet(item: $chartTarget) { holding in

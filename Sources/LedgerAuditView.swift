@@ -33,7 +33,7 @@ struct LedgerAuditView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.sectionGap) {
+                VStack(alignment: .leading, spacing: palette.sectionGap) {
                     healthCard
                     openingCard
                     replayCard
@@ -43,7 +43,7 @@ struct LedgerAuditView: View {
                     actionsCard
                     methodNote
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 8)
                 .padding(.bottom, 30)
             }
@@ -140,7 +140,7 @@ struct LedgerAuditView: View {
     private var healthCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("账本状态指纹")
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .foregroundStyle(palette.ink2)
             Text(store.ledgerDigest)
                 .scaledFont(20, weight: .bold)
@@ -162,17 +162,17 @@ struct LedgerAuditView: View {
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(breaks.isEmpty ? "审计链自洽" : "审计链有 \(breaks.count) 处断点")
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(healthTint)
                     Text(breaks.isEmpty
                          ? "每一次账本改动都记录了前后状态指纹，链上没有缺口。"
                          : "第 \(breaks.map { String($0 + 1) }.joined(separator: "、")) 条起前后指纹对不上，说明有改动绕过了审计入口。")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                     if !health.migrations.isEmpty {
                         Text("第 \(health.migrations.map { String($0 + 1) }.joined(separator: "、")) 条是指纹口径升级点：从那之后基金流水也进指纹，前后算法不同，不算断链。")
-                            .scaledFont(DS.fsMicro)
+                            .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink3)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -181,16 +181,16 @@ struct LedgerAuditView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18, glow: healthTint)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18, glow: healthTint)
     }
 
     private func miniStat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(title)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
@@ -211,7 +211,7 @@ struct LedgerAuditView: View {
                             ForEach(opening.positions) { position in
                                 HStack(spacing: 6) {
                                     Text(position.name)
-                                        .scaledFont(DS.fsMicro, weight: .medium)
+                                        .scaledFont(palette.fsMicro, weight: .medium)
                                         .foregroundStyle(palette.ink)
                                         .lineLimit(1)
                                     Text(position.code)
@@ -229,7 +229,7 @@ struct LedgerAuditView: View {
                         .padding(.top, 6)
                     } label: {
                         Text("起点明细（\(opening.positionCount) 只）")
-                            .scaledFont(DS.fsMicro, weight: .semibold)
+                            .scaledFont(palette.fsMicro, weight: .semibold)
                             .foregroundStyle(palette.ink2)
                     }
                     .tint(palette.ink2)
@@ -243,7 +243,7 @@ struct LedgerAuditView: View {
                     Text(store.hasRecordedFills
                          ? "账本里已经有流水，但起点是空的。这种情况常见于先导入基金申赎、后补持仓的账户 —— 起点这一章需要单独补记一次。"
                          : "还没有记录账本起点。录入第一只持仓或第一笔现金时会自动记下。")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -272,7 +272,7 @@ struct LedgerAuditView: View {
             Text(store.canRewriteOpening
                  ? "账本里还没有任何成交，此时持仓就等于起点，可以直接改写。"
                  : "起点已锁定：\(store.openingLockReason ?? "账本已有流水")。要减仓请记真实卖出，不要改起点。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -303,11 +303,11 @@ struct LedgerAuditView: View {
     private func factRow(_ title: String, _ value: String) -> some View {
         HStack(spacing: 8) {
             Text(title)
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink2)
             Spacer(minLength: 6)
             Text(value)
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
                 .lineLimit(1)
@@ -330,7 +330,7 @@ struct LedgerAuditView: View {
                             trailing: rows.isEmpty ? "一致" : "\(rows.count) 处不一致")
             if rows.isEmpty {
                 Text("按起点快照 + 逐笔成交重算，持仓份额与单位成本都和账本一致。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -339,11 +339,11 @@ struct LedgerAuditView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(row.name)
-                                    .scaledFont(DS.fsRow, weight: .medium)
+                                    .scaledFont(palette.fsRow, weight: .medium)
                                     .foregroundStyle(palette.ink)
                                     .lineLimit(1)
                                 Text(row.key.code)
-                                    .scaledFont(DS.fsMicro)
+                                    .scaledFont(palette.fsMicro)
                                     .foregroundStyle(palette.ink3)
                                 Spacer(minLength: 4)
                                 Text(row.isQuantityMismatch ? "份额不符" : "成本不符")
@@ -353,7 +353,7 @@ struct LedgerAuditView: View {
                             Text(row.isQuantityMismatch
                                  ? "账面 \(row.storedUnits.num(2)) 份，重放 \(row.replayedUnits.num(2)) 份"
                                  : "账面成本 \(row.storedCost.num(4))，重放 \(row.replayedCost.num(4))")
-                                .scaledFont(DS.fsMicro)
+                                .scaledFont(palette.fsMicro)
                                 .foregroundStyle(palette.ink2)
                         }
                         .padding(.vertical, 8)
@@ -362,7 +362,7 @@ struct LedgerAuditView: View {
                 .padding(.horizontal, 12)
                 .dsSurface(palette, radius: 16, padding: 0)
                 Text("多数情况是导入了历史流水但没记起点 —— 重放只能看到「从某天开始的买卖」，看不到之前的持仓，所以份额对不上。这种情况补记一次起点即可，不要手改持仓。")
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -383,7 +383,7 @@ struct LedgerAuditView: View {
                       detail: fundDomainDetail,
                       tint: store.data.fundTransactions.isEmpty ? palette.ink3 : CardTone.ok)
             Text("两个域共用一份现金，但各有各的成本口径：场内按成交加权，场外按份额与净值逐笔确认。指纹同时覆盖两边，任何一边被改动都会让指纹变化。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -404,10 +404,10 @@ struct LedgerAuditView: View {
             DsIconTile(symbol: symbol, tint: tint, size: 32, palette: palette)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .scaledFont(DS.fsMicro, weight: .semibold)
+                    .scaledFont(palette.fsMicro, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 Text(detail)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
             }
             Spacer(minLength: 0)
@@ -428,7 +428,7 @@ struct LedgerAuditView: View {
                     .minimumScaleFactor(0.7)
                 Spacer(minLength: 4)
                 Text("占总资产 " + store.cashPercent.pct(1))
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
             }
             Button {
@@ -438,7 +438,7 @@ struct LedgerAuditView: View {
             }
             .buttonStyle(.plain)
             Text("差额会以「现金对账差额」记成一条现金流，收益归因里能查到来源。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -454,7 +454,7 @@ struct LedgerAuditView: View {
                             trailing: "\(store.data.ledgerAudits.count) 条")
             if store.data.ledgerAudits.isEmpty {
                 Text("还没有账本改动记录。删除持仓、清仓、现金对账、重写起点都会在这里留痕。")
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -468,7 +468,7 @@ struct LedgerAuditView: View {
                 }
             }
             Text("尾部的「前 → 后」是状态指纹片段。相邻两条必须首尾相接。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -496,7 +496,7 @@ struct LedgerAuditView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(event.action)
-                        .scaledFont(DS.fsMicro, weight: .semibold)
+                        .scaledFont(palette.fsMicro, weight: .semibold)
                         .foregroundStyle(palette.ink)
                         .lineLimit(1)
                     Spacer(minLength: 4)
@@ -555,7 +555,7 @@ struct LedgerAuditView: View {
             .opacity(store.data.ledger.isEmpty ? 0.45 : 1)
 
             Text("撤回是整份账本回到改动之前，会同时撤销那一次的所有连带影响。更正手续费只改费用，然后按新费用把此后所有成本与已实现重算一遍。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -568,7 +568,7 @@ struct LedgerAuditView: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
             Text(title)
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
             Spacer(minLength: 0)
         }
         .foregroundStyle(tone)
@@ -583,14 +583,14 @@ struct LedgerAuditView: View {
     private var methodNote: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("指纹口径")
-                .scaledFont(DS.fsLabel, weight: .semibold)
+                .scaledFont(palette.fsLabel, weight: .semibold)
                 .foregroundStyle(palette.ink2)
             Text("指纹由起点快照 + 现金 + 场内成交 + 场外基金流水算得。基金那边连分红模式与确认状态都算在内 —— 把「现金分红」改成「红利再投」会改变份额，属于账本事实，不是显示偏好。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
             Text("起点快照只描述「开始跟踪时的样子」，它不是一笔成交。删除标的时如果账本还干净，改的是起点；一旦有了流水，诚实的做法是记一笔真实卖出。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }

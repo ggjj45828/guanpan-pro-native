@@ -18,11 +18,49 @@ extension Color {
     }
 }
 
-/// 一套设计令牌。深浅两套只有色值不同，尺寸与层级完全一致。
+/// 一套设计令牌：颜色按深浅分支，版式按主题整套切换（tech / ocean）。
+/// 页面一律取 `palette.xxx`，静态 `DS.xxx` 只是 tech 的兼容别名，不会随主题变。
 struct DsPalette {
     let isLight: Bool
+    /// 颜色之外的整套版式。两套主题各持一份，页面取 `palette.xxx` 而不是全局常量。
+    let layout: ThemeLayout
 
-    init(isLight: Bool) { self.isLight = isLight }
+    init(isLight: Bool, layout: ThemeLayout? = nil) {
+        self.isLight = isLight
+        // 老调用点只传深浅，按深浅落到对应版式；新调用点用 of(_:) 精确按主题取。
+        self.layout = layout ?? (isLight ? .ocean : .tech)
+    }
+
+    static func of(_ appearance: AppAppearance) -> DsPalette {
+        let resolved = AppAppearance.resolved(appearance)
+        return DsPalette(isLight: AppTheme.palette(for: resolved).isLight,
+                         layout: .of(resolved))
+    }
+
+    // MARK: - 版式代理（页面统一从 palette 取，主题一换版式就跟着换）
+
+    var radius: CGFloat { layout.radius }
+    var heroRadius: CGFloat { layout.heroRadius }
+    var chipRadius: CGFloat { layout.chipRadius }
+    var pad: CGFloat { layout.pad }
+    var pageInset: CGFloat { layout.pageInset }
+    var gap: CGFloat { layout.gap }
+    var sectionGap: CGFloat { layout.sectionGap }
+    var rowInset: CGFloat { layout.rowInset }
+
+    var fsHero: CGFloat { layout.fsHero }
+    var fsStat: CGFloat { layout.fsStat }
+    var fsTitle: CGFloat { layout.fsTitle }
+    var fsRow: CGFloat { layout.fsRow }
+    var fsLabel: CGFloat { layout.fsLabel }
+    var fsMicro: CGFloat { layout.fsMicro }
+
+    var aiGradient: LinearGradient { layout.aiGradient }
+    var usesOutline: Bool { layout.usesOutline }
+    var shadowRadius: CGFloat { layout.shadowRadius }
+    var shadowOpacity: Double { layout.shadowOpacity }
+    var showsSparklines: Bool { layout.showsSparklines }
+    var quickColumns: Int { layout.quickColumns }
 
     // 画布：深色是墨绿近黑，浅色是极淡的冷灰。
     // 深色分支一律引用 TechGreen —— 与 AppTheme 的根背景层、弹窗背板同源，
@@ -46,51 +84,49 @@ struct DsPalette {
         LinearGradient(colors: [canvasTop, canvasBottom], startPoint: .top, endPoint: .bottom)
     }
 
-    static func of(_ appearance: AppAppearance) -> DsPalette {
-        DsPalette(isLight: AppTheme.palette(for: appearance).isLight)
-    }
 }
 
-/// 尺寸与层级常量。改这里就能整体收紧或放松节奏。
+/// 兼容别名：只保留「科技黑绿」的基准值，供个别默认参数 / 老代码兜底。
+/// 页面里请一律用 `palette.xxx` —— 静态值不会随主题变，ocean 下会拿到 tech 的尺寸。
 enum DS {
-    static let radius: CGFloat = 22
-    static let heroRadius: CGFloat = 26
-    static let chipRadius: CGFloat = 12
-    static let pad: CGFloat = 16
-    static let pageInset: CGFloat = 18
-    static let gap: CGFloat = 12
-    /// 分区之间比卡片之间更松一点，读的时候才有段落感。
-    static let sectionGap: CGFloat = 20
+    static let radius: CGFloat = ThemeLayout.tech.radius
+    static let heroRadius: CGFloat = ThemeLayout.tech.heroRadius
+    static let chipRadius: CGFloat = ThemeLayout.tech.chipRadius
+    static let pad: CGFloat = ThemeLayout.tech.pad
+    static let pageInset: CGFloat = ThemeLayout.tech.pageInset
+    static let gap: CGFloat = ThemeLayout.tech.gap
+    static let sectionGap: CGFloat = ThemeLayout.tech.sectionGap
 
-    // 字号：只留六级，避免每页各写一个数。
-    static let fsHero: CGFloat = 34
-    /// 次级大数字（卡片内的汇总值，比 hero 小一档）。
-    static let fsStat: CGFloat = 26
-    static let fsTitle: CGFloat = 17
-    static let fsRow: CGFloat = 15
-    static let fsLabel: CGFloat = 12
-    static let fsMicro: CGFloat = 10.5
+    static let fsHero: CGFloat = ThemeLayout.tech.fsHero
+    static let fsStat: CGFloat = ThemeLayout.tech.fsStat
+    static let fsTitle: CGFloat = ThemeLayout.tech.fsTitle
+    static let fsRow: CGFloat = ThemeLayout.tech.fsRow
+    static let fsLabel: CGFloat = ThemeLayout.tech.fsLabel
+    static let fsMicro: CGFloat = ThemeLayout.tech.fsMicro
 
-    /// AI 那一块专用的绿系渐变，整个 App 只有它用渐变。
-    static var aiGradient: LinearGradient { TechGreen.aiGradient }
+    static var aiGradient: LinearGradient { ThemeLayout.tech.aiGradient }
 }
 
 // MARK: - 卡片底
 
-/// 统一卡片容器：实色卡面 + 1px 描边 + 连续圆角。
+/// 统一卡片容器：tech 走 1px 描边（近黑底靠描边界定），ocean 走淡阴影（白底靠投影分层）。
 struct DsSurfaceModifier: ViewModifier {
     let palette: DsPalette
-    var radius: CGFloat = DS.radius
-    var padding: CGFloat = DS.pad
+    let radius: CGFloat
+    let padding: CGFloat
     /// 需要重点强调的卡（例如账户主卡）可以叠一层极淡的同色光。
     var glow: Color? = nil
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        content
+        return content
             .padding(padding)
             .background {
                 shape.fill(palette.card)
+                    // 不能在这里 clipShape：它会把阴影一起裁掉。
+                    // 内容自带 padding，不靠裁切也不会溢出圆角。
+                    .shadow(color: Color.black.opacity(palette.shadowOpacity),
+                            radius: palette.shadowRadius, y: 2)
             }
             .overlay {
                 if let glow {
@@ -98,18 +134,23 @@ struct DsSurfaceModifier: ViewModifier {
                 }
             }
             .overlay {
-                shape.strokeBorder(palette.hairline, lineWidth: 1)
+                if palette.usesOutline {
+                    shape.strokeBorder(palette.hairline, lineWidth: 1)
+                }
             }
-            .clipShape(shape)
     }
 }
 
 extension View {
+    /// radius / padding 传 nil 时取当前主题版式的值；显式传值只用于局部特例。
     func dsSurface(_ palette: DsPalette,
-                   radius: CGFloat = DS.radius,
-                   padding: CGFloat = DS.pad,
+                   radius: CGFloat? = nil,
+                   padding: CGFloat? = nil,
                    glow: Color? = nil) -> some View {
-        modifier(DsSurfaceModifier(palette: palette, radius: radius, padding: padding, glow: glow))
+        modifier(DsSurfaceModifier(palette: palette,
+                                   radius: radius ?? palette.radius,
+                                   padding: padding ?? palette.pad,
+                                   glow: glow))
     }
 }
 
@@ -125,7 +166,7 @@ struct DsSectionHeader: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title)
-                .scaledFont(DS.fsTitle, weight: .semibold)
+                .scaledFont(palette.fsTitle, weight: .semibold)
                 .foregroundStyle(palette.ink)
             Spacer(minLength: 6)
             if let trailing {
@@ -135,7 +176,7 @@ struct DsSectionHeader: View {
                     action()
                 } label: {
                     HStack(spacing: 2) {
-                        Text(trailing).scaledFont(DS.fsLabel, weight: .medium)
+                        Text(trailing).scaledFont(palette.fsLabel, weight: .medium)
                         if action != nil {
                             Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                         }
@@ -180,7 +221,7 @@ struct DsDeltaPill: View {
 
     var body: some View {
         Text(text)
-            .scaledFont(DS.fsLabel, weight: .semibold)
+            .scaledFont(palette.fsLabel, weight: .semibold)
             .monospacedDigit()
             .foregroundStyle(tone)
             .padding(.horizontal, 8)
@@ -275,7 +316,7 @@ struct DsHeroCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Text(title)
-                    .scaledFont(DS.fsLabel, weight: .medium)
+                    .scaledFont(palette.fsLabel, weight: .medium)
                     .foregroundStyle(palette.ink2)
                 if let badge {
                     Text(badge)
@@ -305,7 +346,7 @@ struct DsHeroCard: View {
             }
 
             Text(amount)
-                .scaledFont(DS.fsHero, weight: .bold)
+                .scaledFont(palette.fsHero, weight: .bold)
                 .monospacedDigit()
                 .foregroundStyle(amountTone ?? palette.ink)
                 .lineLimit(1)
@@ -316,7 +357,7 @@ struct DsHeroCard: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(deltaTone)
                 Text(deltaText)
-                    .scaledFont(DS.fsLabel, weight: .semibold)
+                    .scaledFont(palette.fsLabel, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(deltaTone)
                     .lineLimit(1)
@@ -331,12 +372,12 @@ struct DsHeroCard: View {
 
             if !footnote.isEmpty {
                 Text(footnote)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .lineLimit(3)
             }
         }
-        .dsSurface(palette, radius: DS.heroRadius, padding: 18)
+        .dsSurface(palette, radius: palette.heroRadius, padding: 18)
     }
 }
 
@@ -356,11 +397,11 @@ struct DsStatTile: View {
                        palette: palette)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .scaledFont(DS.fsMicro, weight: .medium)
+                    .scaledFont(palette.fsMicro, weight: .medium)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(1)
                 Text(value)
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink)
                     .lineLimit(1)
@@ -368,7 +409,7 @@ struct DsStatTile: View {
             }
             Spacer(minLength: 0)
         }
-        .dsSurface(palette, radius: 18, padding: 12)
+        .dsSurface(palette, radius: palette.radius, padding: 12)
     }
 }
 
@@ -393,10 +434,10 @@ struct DsAICard: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .scaledFont(DS.fsRow, weight: .semibold)
+                        .scaledFont(palette.fsRow, weight: .semibold)
                         .foregroundStyle(.white)
                     Text(subtitle)
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(.white.opacity(0.8))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -408,7 +449,7 @@ struct DsAICard: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
-            .background { RoundedRectangle(cornerRadius: 20, style: .continuous).fill(DS.aiGradient) }
+            .background { RoundedRectangle(cornerRadius: palette.radius, style: .continuous).fill(palette.aiGradient) }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -446,12 +487,12 @@ struct DsQuickTile: View {
                 }
                 .frame(height: 22)
                 Text(title)
-                    .scaledFont(DS.fsMicro, weight: .medium)
+                    .scaledFont(palette.fsMicro, weight: .medium)
                     .foregroundStyle(palette.ink2)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .dsSurface(palette, radius: 18, padding: 0)
+            .dsSurface(palette, radius: palette.radius, padding: 0)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -494,11 +535,11 @@ struct DsRowShell<Right: View>: View {
             DsIconTile(symbol: symbol, tint: tint, size: 38, palette: palette)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .foregroundStyle(palette.ink)
                     .lineLimit(1)
                 Text(subtitle)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(1)
             }

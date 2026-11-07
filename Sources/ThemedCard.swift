@@ -12,6 +12,11 @@ import SwiftUI
 enum CardTone {
     /// AI / 顾问区块的强调色，跟主题走（科技黑绿为柠檬绿）。
     static let accent = TechGreen.accent
+    /// 旧 List 页面的强调色：浅色主题用蓝，深色用柠檬绿。
+    /// 直接写死 `CardTone.accent` 会让蓝海浅色的行卡顶着一根绿边。
+    static func themedAccent(isLight: Bool) -> Color {
+        isLight ? Color(hex: 0x2F5BE8) : accent
+    }
     /// 网页版警示/待确认区块的琥珀色。
     static let warn = Color(red: 0.98, green: 0.66, blue: 0.20)
     /// 数据新鲜、对账一致等「状态良好」的蓝绿。
@@ -31,18 +36,18 @@ enum CardTone {
 
 /// 全 App 共用的版式尺寸。把卡片、间距和触控高度集中管理，避免不同页面越改越散。
 enum AppLayout {
-    /// 卡片圆角。参照稿的卡片几乎是「药丸感」的大圆角，16 太小，22 才够。
-    static let cardRadius: CGFloat = 22
-    static let cardPadding: CGFloat = 16
-    /// 相邻卡片之间的空隙；比行内间距大一档，卡片才会「浮」起来。
-    static let cardSpacing: CGFloat = 12
-    static let rowVerticalInset: CGFloat = 5
-    static let pageHorizontalInset: CGFloat = 18
+    /// 兼容别名：旧页面的 tech 基准值。实际圆角 / 行距已改由主题版式决定。
+    static let cardRadius: CGFloat = ThemeLayout.tech.radius
+    static let cardPadding: CGFloat = ThemeLayout.tech.pad
+    static let cardSpacing: CGFloat = ThemeLayout.tech.gap
+    static let rowVerticalInset: CGFloat = ThemeLayout.tech.rowInset
+    static let pageHorizontalInset: CGFloat = ThemeLayout.tech.pageInset
     /// Apple 平台常用的最低触控高度；文字可以紧凑，但按钮不能难点。
     static let minimumTapHeight: CGFloat = 44
 }
 
-/// 彩色卡片底：实色卡面 + 轻量色调 + 同色描边，不使用玻璃材质。
+/// 彩色卡片底：两套主题两种卡面 —— tech 用大圆角 + 1px 同色描边，
+/// ocean 用小圆角 + 淡投影 + 更窄的行距。旧 List / Form 页面因此也各有版式。
 struct ToneCardBackground: View {
     let tone: Color?
     let isLight: Bool
@@ -50,24 +55,63 @@ struct ToneCardBackground: View {
 
     var body: some View {
         let theme = AppTheme.palette(for: AppAppearance.resolved(appearance))
-        let shape = RoundedRectangle(cornerRadius: AppLayout.cardRadius, style: .continuous)
-        let palette = DsPalette(isLight: theme.isLight)
+        let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+        let shape = RoundedRectangle(cornerRadius: layout.radius, style: .continuous)
+        let palette = DsPalette(isLight: theme.isLight, layout: layout)
         Group {
             if let tone {
                 shape
                     .fill(theme.surface)
+                    .shadow(color: Color.black.opacity(layout.shadowOpacity),
+                            radius: layout.shadowRadius, y: 2)
                     .overlay(shape.fill(tone.opacity(isLight ? 0.06 : 0.10)))
-                    .overlay(shape.strokeBorder(tone.opacity(isLight ? 0.26 : 0.32), lineWidth: 1))
+                    .overlay {
+                        if layout.usesOutline {
+                            shape.strokeBorder(tone.opacity(isLight ? 0.26 : 0.32), lineWidth: 1)
+                        }
+                    }
             } else {
                 // 中性卡面：仍然给一张「看得见的卡」，
                 // 否则浅色主题下 Section 会直接融进白底，又变成用户说的「全是白的」。
                 shape
                     .fill(theme.surface)
-                    .overlay(shape.strokeBorder(palette.hairline, lineWidth: 1))
+                    .shadow(color: Color.black.opacity(layout.shadowOpacity),
+                            radius: layout.shadowRadius, y: 2)
+                    .overlay {
+                        if layout.usesOutline {
+                            shape.strokeBorder(palette.hairline, lineWidth: 1)
+                        }
+                    }
             }
         }
-        .padding(.vertical, AppLayout.rowVerticalInset / 2)
+        .padding(.vertical, layout.rowInset / 2)
         .padding(.horizontal, 2)
+    }
+}
+
+/// 行内边距按主题走：ocean 更贴边、更紧凑，tech 留白更松。
+private struct ThemedRowInsets: ViewModifier {
+    @Environment(\.appAppearance) private var appearance
+
+    func body(content: Content) -> some View {
+        let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+        return content.listRowInsets(EdgeInsets(top: layout.rowInset,
+                                                leading: layout.pageInset,
+                                                bottom: layout.rowInset,
+                                                trailing: layout.pageInset))
+    }
+}
+
+private struct ThemedListLayout: ViewModifier {
+    @Environment(\.appAppearance) private var appearance
+
+    func body(content: Content) -> some View {
+        let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+        return content
+            .environment(\.defaultMinListRowHeight,
+                         layout.style == .ocean ? 38 : AppLayout.minimumTapHeight)
+            // 两套都用项目里已验证过的 .compact；分区节奏差靠行内距与行高拉开。
+            .listSectionSpacing(.compact)
     }
 }
 
@@ -75,10 +119,7 @@ extension View {
     /// 给列表行套一张卡片。用 listRowBackground 注入，不参与行内容布局，
     /// 因此不会像背景图那样把页面撑乱。`tone` 为 nil 时只画中性卡面。
     func toneCard(_ tone: Color?, isLight: Bool) -> some View {
-        listRowInsets(EdgeInsets(top: AppLayout.rowVerticalInset,
-                                 leading: AppLayout.pageHorizontalInset,
-                                 bottom: AppLayout.rowVerticalInset,
-                                 trailing: AppLayout.pageHorizontalInset))
+        modifier(ThemedRowInsets())
             .listRowSeparator(.hidden)
             .listRowBackground(ToneCardBackground(tone: tone, isLight: isLight))
     }
@@ -88,10 +129,9 @@ extension View {
         toneCard(nil, isLight: isLight)
     }
 
-    /// 主列表统一使用紧凑分区，但保留 44pt 点击区，减少误触和“看得见点不中”。
+    /// 主列表统一按主题收紧或放松：浅色分组列表更紧凑，深色卡片流更松。
     func appListLayout() -> some View {
-        environment(\.defaultMinListRowHeight, AppLayout.minimumTapHeight)
-            .listSectionSpacing(.compact)
+        modifier(ThemedListLayout())
     }
 }
 

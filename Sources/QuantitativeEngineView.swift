@@ -153,7 +153,7 @@ struct QuantitativeEngineView: View {
                     Text("量化分数由本机即时计算，不需要 API 密钥；AI 分析需要用户主动触发并已配置接口。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                .toneCard(CardTone.accent, isLight: isLight)
+                .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
             }
             .scrollContentBackground(.hidden)
             .background(.clear)

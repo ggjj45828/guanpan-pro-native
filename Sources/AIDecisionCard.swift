@@ -214,7 +214,7 @@ struct AIDecisionCard: View {
             header
             if !decision.headline.isEmpty {
                 Text(decision.headline)
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .foregroundStyle(palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -223,7 +223,7 @@ struct AIDecisionCard: View {
             }
             footer
         }
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad, glow: palette.accent)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad, glow: palette.accent)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("今日判断：\(decision.headline)。置信度 \(decision.confidenceLabel)。\(decision.evidenceNote)")
     }
@@ -233,11 +233,11 @@ struct AIDecisionCard: View {
             DsIconTile(symbol: "sparkles", tint: palette.accent, size: 30, palette: palette)
             VStack(alignment: .leading, spacing: 1) {
                 Text("今日判断")
-                    .scaledFont(DS.fsRow, weight: .semibold)
+                    .scaledFont(palette.fsRow, weight: .semibold)
                     .foregroundStyle(palette.ink)
                 if let asOf = decision.asOf {
                     Text(asOf.formatted(date: .omitted, time: .shortened) + " 生成")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                 }
             }
@@ -257,7 +257,7 @@ struct AIDecisionCard: View {
         let tint = confidenceTint(decision.confidence)
         return VStack(alignment: .trailing, spacing: 1) {
             Text(decision.confidenceLabel)
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(tint)
             Text("置信度 \(Int((decision.confidence * 100).rounded()))%")
                 .scaledFont(9)
@@ -280,13 +280,13 @@ struct AIDecisionCard: View {
                     Image(systemName: section.kind.symbol)
                         .font(.system(size: 9, weight: .semibold))
                     Text(section.kind.title)
-                        .scaledFont(DS.fsMicro, weight: .semibold)
+                        .scaledFont(palette.fsMicro, weight: .semibold)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(tint)
                 ForEach(Array(section.lines.enumerated()), id: \.offset) { _, line in
                     Text(line)
-                        .scaledFont(DS.fsLabel)
+                        .scaledFont(palette.fsLabel)
                         .foregroundStyle(palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -303,7 +303,7 @@ struct AIDecisionCard: View {
 
     private var footer: some View {
         Text(decision.evidenceNote)
-            .scaledFont(DS.fsMicro)
+            .scaledFont(palette.fsMicro)
             .foregroundStyle(palette.ink3)
             .fixedSize(horizontal: false, vertical: true)
     }

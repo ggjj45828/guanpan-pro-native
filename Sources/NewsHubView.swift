@@ -31,7 +31,7 @@ struct NewsHubView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: DS.gap) {
+                VStack(alignment: .leading, spacing: palette.gap) {
                     statusCard
                     filterBar
                     if displayed.isEmpty {
@@ -43,7 +43,7 @@ struct NewsHubView: View {
                     }
                     disclaimerCard
                 }
-                .padding(.horizontal, DS.pageInset)
+                .padding(.horizontal, palette.pageInset)
                 .padding(.top, 6)
                 .padding(.bottom, 28)
             }
@@ -73,10 +73,10 @@ struct NewsHubView: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("快讯来源")
-                        .scaledFont(DS.fsMicro)
+                        .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
                     Text(news.provider)
-                        .scaledFont(DS.fsLabel, weight: .semibold)
+                        .scaledFont(palette.fsLabel, weight: .semibold)
                         .foregroundStyle(palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -92,7 +92,7 @@ struct NewsHubView: View {
                             Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .bold))
                         }
                         Text(news.isFetching ? "获取中" : "刷新")
-                            .scaledFont(DS.fsMicro, weight: .semibold)
+                            .scaledFont(palette.fsMicro, weight: .semibold)
                     }
                     .foregroundStyle(palette.accent)
                     .padding(.horizontal, 10)
@@ -110,17 +110,17 @@ struct NewsHubView: View {
             }
 
             Text(news.freshnessText)
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
 
             if let error = news.lastError {
                 Text(error)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(CardTone.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private func miniStat(_ title: String, _ value: String) -> some View {
@@ -129,7 +129,7 @@ struct NewsHubView: View {
                 .scaledFont(9.5)
                 .foregroundStyle(palette.ink3)
             Text(value)
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(palette.ink)
         }
@@ -151,7 +151,7 @@ struct NewsHubView: View {
             action()
         } label: {
             Text(title)
-                .scaledFont(DS.fsLabel, weight: .medium)
+                .scaledFont(palette.fsLabel, weight: .medium)
                 .foregroundStyle(on ? palette.ink : palette.ink2)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
@@ -171,12 +171,12 @@ struct NewsHubView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(Self.timeText(article.publishedAt))
-                    .scaledFont(DS.fsMicro, weight: .medium)
+                    .scaledFont(palette.fsMicro, weight: .medium)
                     .monospacedDigit()
                     .foregroundStyle(palette.ink3)
-                Text("·").scaledFont(DS.fsMicro).foregroundStyle(palette.ink3)
+                Text("·").scaledFont(palette.fsMicro).foregroundStyle(palette.ink3)
                 Text(article.publisher)
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .lineLimit(1)
                 Spacer(minLength: 4)
@@ -191,13 +191,13 @@ struct NewsHubView: View {
             }
 
             Text(article.title)
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let summary = article.summary, !summary.isEmpty {
                 Text(summary)
-                    .scaledFont(DS.fsLabel)
+                    .scaledFont(palette.fsLabel)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -207,7 +207,7 @@ struct NewsHubView: View {
                 Text(article.relatedSecurities.prefix(4)
                         .map { "\($0.name) \($0.code)" }
                         .joined(separator: " · "))
-                    .scaledFont(DS.fsMicro)
+                    .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink2)
                     .lineLimit(1)
             }
@@ -215,7 +215,7 @@ struct NewsHubView: View {
             if let url = URL(string: article.url) {
                 Link(destination: url) {
                     HStack(spacing: 3) {
-                        Text("查看原文").scaledFont(DS.fsMicro, weight: .semibold)
+                        Text("查看原文").scaledFont(palette.fsMicro, weight: .semibold)
                         Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold))
                     }
                     .foregroundStyle(palette.accent)
@@ -231,26 +231,26 @@ struct NewsHubView: View {
     private var emptyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(onlyRelated ? "这段时间没有点名你持仓的快讯" : "还没有取到可用快讯")
-                .scaledFont(DS.fsRow, weight: .semibold)
+                .scaledFont(palette.fsRow, weight: .semibold)
                 .foregroundStyle(palette.ink)
             Text(onlyRelated
                  ? "切换成「全部快讯」可以看市场背景标题；没有点名代码的条目不往个股上归因。"
                  : "下拉刷新试试；接口不可用时这里会明确报错，不会拿旧标题假装是今天的。")
-                .scaledFont(DS.fsLabel)
+                .scaledFont(palette.fsLabel)
                 .foregroundStyle(palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .dsSurface(palette, radius: DS.radius, padding: DS.pad)
+        .dsSurface(palette, radius: palette.radius, padding: palette.pad)
     }
 
     private var disclaimerCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("口径")
-                .scaledFont(DS.fsMicro, weight: .semibold)
+                .scaledFont(palette.fsMicro, weight: .semibold)
                 .foregroundStyle(palette.ink3)
             Text("来源是同花顺财经 7×24 的公开网页接口，不是签约数据源；这里只有标题与摘要，没有正文核实。只有条目自己列出证券代码时，才算与该标的直接关联。快讯不参与任何买卖指令生成，也不会改动账本。")
-                .scaledFont(DS.fsMicro)
+                .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }

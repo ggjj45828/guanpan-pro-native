@@ -965,7 +965,7 @@ struct MarketChartView: View {
                                     Text(suggestionNote).font(.footnote).foregroundStyle(.secondary)
                                 }
                             }
-                            .toneCard(CardTone.accent, isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
+                            .toneCard(CardTone.themedAccent(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight), isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
                         }
                         Text("只依据本机现有行情、日线/支撑压力参考和所选交易日已有分时点生成分析；缺少的数据不会补造。模型输出可能有误，不构成买卖指令。")
                             .font(.footnote).foregroundStyle(.secondary)
