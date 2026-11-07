@@ -464,7 +464,7 @@ struct OceanMoreView: View {
 
     private var sections: [OceanMenuSection] {
         [
-            OceanMenuSection(id: "ai", title: "AI 与智能分析", items: [
+            OceanMenuSection(id: "ai", title: "AI 与复盘", items: [
                 OceanMenuItem(id: "ai", title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
                               symbol: "sparkles", tint: palette.accent, target: .aiAnalysis),
                 OceanMenuItem(id: "quant", title: "量化信号", subtitle: "本地扫描自选与持仓",
@@ -472,9 +472,7 @@ struct OceanMoreView: View {
                 OceanMenuItem(id: "advice", title: "账户决策提示", subtitle: "仓位上限与现金占比",
                               symbol: "lightbulb.fill", tint: Color(hex: 0xE89A2E), target: .advice),
                 OceanMenuItem(id: "news", title: "市场快讯", subtitle: "公开接口，只给标题与来源",
-                              symbol: "newspaper.fill", tint: Color(hex: 0x5C9EEB), target: .newsHub)
-            ]),
-            OceanMenuSection(id: "review", title: "复盘", items: [
+                              symbol: "newspaper.fill", tint: Color(hex: 0x5C9EEB), target: .newsHub),
                 OceanMenuItem(id: "scorecard", title: "决策成绩单", subtitle: "只用记录日之后的日线判对错",
                               symbol: "checkmark.seal.fill", tint: Color(hex: 0x5C9EEB), target: .scorecard),
                 OceanMenuItem(id: "episodes", title: "持仓周期", subtitle: "几轮买卖、每轮战绩",
@@ -584,24 +582,24 @@ struct OceanMoreView: View {
             .background(.clear)
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.large)
-            .sheet(item: $sheetTarget) { target in
+            .navigationDestination(item: $sheetTarget) { target in
                 switch target {
-                case .aiAnalysis: AIAnalysisView().themedSheetBackground()
-                case .quant: QuantitativeEngineView().themedSheetBackground()
-                case .advice: PortfolioAdviceView().themedSheetBackground()
-                case .newsHub: NewsHubView().themedSheetBackground()
-                case .scorecard: DecisionScorecardView().themedSheetBackground()
-                case .episodes: EpisodeView().themedSheetBackground()
-                case .expenses: ExpenseView().themedSheetBackground()
-                case .marketState: MarketStateView().themedSheetBackground()
+                case .aiAnalysis: AIAnalysisView(embedded: true)
+                case .quant: QuantitativeEngineView(embedded: true)
+                case .advice: PortfolioAdviceView(embedded: true)
+                case .newsHub: NewsHubView(embedded: true)
+                case .scorecard: DecisionScorecardView(embedded: true)
+                case .episodes: EpisodeView(embedded: true)
+                case .expenses: ExpenseView(embedded: true)
+                case .marketState: MarketStateView(embedded: true)
                 case .analysisTools:
-                    ToolsView(initialAnchor: "tools-risk", title: "分析工具").themedSheetBackground()
+                    ToolsView(initialAnchor: "tools-risk", title: "分析工具", embedded: true)
                 case .planningTools:
-                    ToolsView(initialAnchor: "tools-returns", title: "计划与复盘").themedSheetBackground()
-                case .ledgerAudit: LedgerAuditView().themedSheetBackground()
-                case .appSettings: SettingsView(mode: .app).themedSheetBackground()
-                case .dataSync: SettingsView(mode: .sync).themedSheetBackground()
-                case .operationHistory: OperationHistoryView().themedSheetBackground()
+                    ToolsView(initialAnchor: "tools-returns", title: "计划与复盘", embedded: true)
+                case .ledgerAudit: LedgerAuditView(embedded: true)
+                case .appSettings: SettingsView(mode: .app, embedded: true)
+                case .dataSync: SettingsView(mode: .sync, embedded: true)
+                case .operationHistory: OperationHistoryView(embedded: true)
                 }
             }
         }

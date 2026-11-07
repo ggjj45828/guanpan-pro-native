@@ -448,6 +448,8 @@ struct DecisionScorecardView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.appAppearance) private var appearance
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏「完成」按钮。
+    var embedded: Bool = false
 
     @State private var filter: Filter = .all
     @State private var refreshing = false
@@ -488,7 +490,7 @@ struct DecisionScorecardView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.sectionGap) {
                     heroCard
@@ -516,7 +518,7 @@ struct DecisionScorecardView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") { dismiss() }
+                    if !embedded { Button("完成") { dismiss() } }
                 }
             }
             .refreshable {

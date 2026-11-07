@@ -21,6 +21,8 @@ struct QuantitativeEngineView: View {
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成」关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var isScanning = false
     @State private var progress = 0.0
     @State private var scanMessage = ""
@@ -109,7 +111,7 @@ struct QuantitativeEngineView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section {
                     Button {
@@ -160,7 +162,7 @@ struct QuantitativeEngineView: View {
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("量化引擎")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .sheet(item: $selectedInstrument) { item in
                 let holding = store.data.holdings.first(where: { $0.code == item.code && $0.kind == .etf })
                     ?? Holding(code: item.code, name: item.name, quantity: 0, cost: 0, current: item.price, kind: .etf)

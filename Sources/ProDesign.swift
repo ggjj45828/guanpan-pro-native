@@ -560,3 +560,21 @@ struct DsRowShell<Right: View>: View {
         .padding(.vertical, 12)
     }
 }
+
+/// 推入页容器：作为弹窗呈现时自带导航栈；推入已有导航栈时不嵌套第二层。
+/// 「我的」页的工具页此前一律走 .sheet 弹窗，改推入页面后由外层返回按钮退出，
+/// 弹窗里的「完成」关闭按钮不需要再出现（各页用 embedded 判断后自行隐藏）。
+struct PageHost<Content: View>: View {
+    let embedded: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if embedded {
+            content
+        } else {
+            NavigationStack {
+                content
+            }
+        }
+    }
+}

@@ -307,6 +307,7 @@ final class PortfolioStore: ObservableObject {
         guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
         data = value
         migrateChartRangeIfNeeded()
+        migrateDefaultThemeIfNeeded()
     }
 
     /// 一次性迁移：旧默认 250 日会让 K 线细到亚像素（一团灰），
@@ -317,6 +318,17 @@ final class PortfolioStore: ObservableObject {
         UserDefaults.standard.set(true, forKey: flag)
         if data.dailyChartRangeDays == 250 {
             data.dailyChartRangeDays = 120
+            save(label: nil)
+        }
+    }
+    /// 一次性迁移：旧默认主题是科技黑绿，2.29.2 起默认改为蓝海浅色。
+    /// 只迁移一次；之后用户在设置里主动选回科技黑绿不会再被覆盖。
+    private func migrateDefaultThemeIfNeeded() {
+        let flag = "guanpan.native.themeMigratedOcean2026"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        if data.appearance == .techBlack {
+            data.appearance = .oceanBlue
             save(label: nil)
         }
     }
@@ -814,7 +826,7 @@ final class PortfolioStore: ObservableObject {
             !d.allocationTargets.isEmpty || !d.tradePlans.isEmpty || !d.dayGridPlans.isEmpty ||
             !d.legacyGridArchives.isEmpty || !d.legacyShadowArchives.isEmpty || !d.legacyDCAEvents.isEmpty ||
             !d.legacySettingsArchives.isEmpty || d.savedAccountAIAnalysis != nil || d.savedPortraitAIAnalysis != nil ||
-            !d.savedInstrumentAIAnalyses.isEmpty || d.cash != 0 || d.cashLinkedByDefault || d.appearance != .techBlack ||
+            !d.savedInstrumentAIAnalyses.isEmpty || d.cash != 0 || d.cashLinkedByDefault || d.appearance != .oceanBlue ||
             d.quoteRefreshSeconds != 60 || d.dailyPnLMode != .pnl || d.intradaySubchartMode != "macd" || d.dailyChartRangeDays != 250 || d.intradayLineColorMode != .automatic || !d.intradayCaptureEnabled || d.automaticFundNAVRefreshEnabled || d.costAccountingMode != .diluted || d.globalPositionLimitPercent != 0 || !d.positionHintsEnabled || d.rebalanceAlertThreshold != 5 || d.investmentProfile.style != "swing" || d.investmentProfile.risk != "bal" ||
             d.aiAnalysisConfig.endpoint != AIAnalysisConfig().endpoint || d.aiAnalysisConfig.model != AIAnalysisConfig().model || d.aiAnalysisConfig.timeoutSeconds != AIAnalysisConfig().timeoutSeconds || d.aiAnalysisConfig.systemPrompt != AIAnalysisConfig().systemPrompt ||
             d.investmentProfile.maxPositionPercent != 35 || d.investmentProfile.horizon != "1-3个月" ||

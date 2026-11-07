@@ -1336,12 +1336,7 @@ struct MoreHubView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
-                } header: { Text("AI 与智能分析") } footer: {
-                    Text("投资偏好（画像）与模型接口在「AI 账户分析」页内配置；密钥只存本机钥匙串。")
-                        .scaledFont(10)
-                }
 
-                Section {
                     MoreHubCard(title: "决策成绩单", subtitle: "AI 带价位的建议逐条留档，之后用真实日线判对错",
                                 icon: "checkmark.seal.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
                         showDecisionScorecard = true
@@ -1372,8 +1367,8 @@ struct MoreHubView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
-                } header: { Text("复盘") } footer: {
-                    Text("判读只用记录日之后的日线；「还在等」不计入命中率。这里只评估判断，不放收益承诺。")
+                } header: { Text("AI 与复盘") } footer: {
+                    Text("投资偏好与模型接口在「AI 账户分析」页内配置。判读只用记录日之后的日线；「还在等」不计入命中率，只评估判断、不放收益承诺。")
                         .scaledFont(10)
                 }
 
@@ -1426,20 +1421,20 @@ struct MoreHubView: View {
             .background(.clear)
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showAnalysisTools) { ToolsView(initialAnchor: "tools-risk", title: "分析工具") .themedSheetBackground() }
-            .sheet(isPresented: $showPlanningTools) { ToolsView(initialAnchor: "tools-returns", title: "计划与复盘") .themedSheetBackground() }
-            .sheet(isPresented: $showAppSettings) { SettingsView(mode: .app) .themedSheetBackground() }
-            .sheet(isPresented: $showDataSync) { SettingsView(mode: .sync) .themedSheetBackground() }
-            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
-            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
-            .sheet(isPresented: $showLedgerAudit) { LedgerAuditView() .themedSheetBackground() }
-            .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
-            .sheet(isPresented: $showDecisionScorecard) { DecisionScorecardView() .themedSheetBackground() }
-            .sheet(isPresented: $showEpisodes) { EpisodeView() .themedSheetBackground() }
-            .sheet(isPresented: $showExpenses) { ExpenseView() .themedSheetBackground() }
-            .sheet(isPresented: $showNewsHub) { NewsHubView() .themedSheetBackground() }
-            .sheet(isPresented: $showMarketState) { MarketStateView() .themedSheetBackground() }
+            .navigationDestination(isPresented: $showAnalysisTools) { ToolsView(initialAnchor: "tools-risk", title: "分析工具", embedded: true) }
+            .navigationDestination(isPresented: $showPlanningTools) { ToolsView(initialAnchor: "tools-returns", title: "计划与复盘", embedded: true) }
+            .navigationDestination(isPresented: $showAppSettings) { SettingsView(mode: .app, embedded: true) }
+            .navigationDestination(isPresented: $showDataSync) { SettingsView(mode: .sync, embedded: true) }
+            .navigationDestination(isPresented: $showAIAnalysis) { AIAnalysisView(embedded: true) }
+            .navigationDestination(isPresented: $showQuantEngine) { QuantitativeEngineView(embedded: true) }
+            .navigationDestination(isPresented: $showPortfolioAdvice) { PortfolioAdviceView(embedded: true) }
+            .navigationDestination(isPresented: $showLedgerAudit) { LedgerAuditView(embedded: true) }
+            .navigationDestination(isPresented: $showOperationHistory) { OperationHistoryView(embedded: true) }
+            .navigationDestination(isPresented: $showDecisionScorecard) { DecisionScorecardView(embedded: true) }
+            .navigationDestination(isPresented: $showEpisodes) { EpisodeView(embedded: true) }
+            .navigationDestination(isPresented: $showExpenses) { ExpenseView(embedded: true) }
+            .navigationDestination(isPresented: $showNewsHub) { NewsHubView(embedded: true) }
+            .navigationDestination(isPresented: $showMarketState) { MarketStateView(embedded: true) }
         }
     }
 }
@@ -3819,6 +3814,8 @@ struct ToolsView: View {
     let title: String
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @AppStorage("guanpan.native.tools.showAll") private var showAllTools = false
     @State private var shockPercent = 20
     @State private var showShockDetails = false
@@ -3853,9 +3850,10 @@ struct ToolsView: View {
     @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
 
-    init(initialAnchor: String? = nil, title: String = "工具") {
+    init(initialAnchor: String? = nil, title: String = "工具", embedded: Bool = false) {
         self.initialAnchor = initialAnchor
         self.title = title
+        self.embedded = embedded
     }
 
     /// 主题深浅决定卡片色的透明度档位。
@@ -3902,7 +3900,7 @@ struct ToolsView: View {
         ToolShortcut(title: "基金", anchor: "tools-funds")
     ]
     var body: some View {
-        NavigationStack { ScrollViewReader { proxy in List {
+        PageHost(embedded: embedded) { ScrollViewReader { proxy in List {
             Section("常用工具") {
                 Button { showLedgerHealth = true } label: {
                     Label("账本体检", systemImage: "checkmark.shield")
@@ -4202,7 +4200,7 @@ struct ToolsView: View {
         .background(.clear).navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
             .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
             .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
@@ -5198,6 +5196,8 @@ private struct TradePlanReviewEditor: View {
 struct AIAnalysisView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var endpoint = ""
     @State private var model = ""
     @State private var timeoutSeconds = 45
@@ -5226,7 +5226,7 @@ struct AIAnalysisView: View {
     private var suggestions: [AISuggestion] { AISuggestionParser.parse(result) }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section {
                     VStack(spacing: 0) {
@@ -5449,7 +5449,7 @@ struct AIAnalysisView: View {
                 })
                 .themedSheetBackground()
             }
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { if !embedded { Button("关闭") { dismiss() } } } }
             .onAppear {
                 endpoint = store.data.aiAnalysisConfig.endpoint
                 model = store.data.aiAnalysisConfig.model
@@ -6676,6 +6676,8 @@ struct SettingsView: View {
     let mode: SettingsViewMode
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @AppStorage("guanpan.native.backgroundRefresh.enabled") private var backgroundRefreshEnabled = false
     @AppStorage("guanpan.native.fontScale") private var fontScale: Double = 1
     @AppStorage("guanpan.native.themePicker.expanded") private var themePickerExpanded = false
@@ -6712,8 +6714,9 @@ struct SettingsView: View {
     @State private var notificationBusy = false
     @State private var notificationEnabled = false
 
-    init(mode: SettingsViewMode = .all) {
+    init(mode: SettingsViewMode = .all, embedded: Bool = false) {
         self.mode = mode
+        self.embedded = embedded
     }
 
     /// 设计令牌。设置页仍然用 Form（表单控件的键盘、选择器行为都是系统给的，
@@ -6771,7 +6774,7 @@ struct SettingsView: View {
 
     /// 表单主体单独成表达式：与尾部三十余个修饰符分开做类型检查，避免整条 body 超时。
     private var formContent: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 if mode != .sync {
                     appearanceSection
@@ -6799,7 +6802,7 @@ struct SettingsView: View {
             .navigationTitle(mode == .sync ? "数据与同步" : mode == .app ? "应用设置" : "设置")
             .navigationBarTitleDisplayMode(palette.usesGroupedSettings ? .large : .inline)
             .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .keyboardDoneToolbar()
             .scrollContentBackground(.hidden)
             .modifier(ThemeFormStyle(style: palette.layout.style))
@@ -6887,7 +6890,7 @@ struct SettingsView: View {
     private var allThemes: [AppAppearance] {
         // 只保留两套正式主题；旧配色仍可解码老存档，但不再提供选择，
         // 免得 14 套「看着差不多」的深色互相稀释。
-        [.techBlack, .oceanBlue]
+        [.oceanBlue, .techBlack]
     }
 
     /// 主题预览卡：直接画出该主题的底色渐变 + 强调色 + 深浅标记，选中加边框。
@@ -7385,11 +7388,13 @@ struct SettingsView: View {
 struct OperationHistoryView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var confirmUndo = false
     @State private var confirmClear = false
     @State private var message = ""
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section {
                     Text("最多保留 20 条用户主动修改。只有最新一条可撤销；撤销会恢复整份账本，并同步到已配置的 NAS。行情与净值自动刷新不记录。")
@@ -7425,7 +7430,7 @@ struct OperationHistoryView: View {
             .background(.clear)
             .navigationTitle("操作记录")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .confirmationDialog("撤销最近一次“\(store.operationAudit.first?.label ?? "数据修改")”？整份账本将恢复到该操作之前。", isPresented: $confirmUndo, titleVisibility: .visible) {
                 Button("撤销最近操作", role: .destructive) {
                     if let label = store.undoLatestOperation() { message = "已撤销：\(label)" }

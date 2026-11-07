@@ -10,6 +10,8 @@ private struct PortfolioAdviceItem: Identifiable {
 struct PortfolioAdviceView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成」关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     /// 有高优先提示时整卡转琥珀，否则用「状态良好」的蓝绿。
@@ -75,7 +77,7 @@ struct PortfolioAdviceView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("本地规则提示") {
                     if items.isEmpty {
@@ -101,7 +103,7 @@ struct PortfolioAdviceView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("账户决策提示")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
         }
     }
 }

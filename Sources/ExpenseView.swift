@@ -7,6 +7,8 @@ import SwiftUI
 struct ExpenseView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成」关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
 
     @State private var showEditor = false
     @State private var pendingDelete: AccountExpense?
@@ -19,7 +21,7 @@ struct ExpenseView: View {
     private var yearTotal: Double { yearSummary.total }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.gap) {
                     heroCard
@@ -39,7 +41,7 @@ struct ExpenseView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") { dismiss() }
+                    if !embedded { Button("完成") { dismiss() } }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {

@@ -722,7 +722,8 @@ struct PortfolioData: Codable {
     var accountExpenses: [AccountExpense] = []
     var cash: Double = 0
     var cashLinkedByDefault = false
-    var appearance: AppAppearance = .techBlack
+    /// 默认主题：蓝海浅色（黑绿对部分用户太刺眼，2.29.2 起默认改蓝海；科技黑绿仍可在设置手动选回）。
+    var appearance: AppAppearance = .oceanBlue
     var quoteRefreshSeconds = 60
     var dailyPnLMode: DailyPnLMode = .pnl
     var intradaySubchartMode = "macd"
@@ -791,7 +792,7 @@ struct PortfolioData: Codable {
         accountExpenses = try c.decodeIfPresent([AccountExpense].self, forKey: .accountExpenses) ?? []
         cash = try c.decodeIfPresent(Double.self, forKey: .cash) ?? 0
         cashLinkedByDefault = try c.decodeIfPresent(Bool.self, forKey: .cashLinkedByDefault) ?? false
-        appearance = try c.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? .techBlack
+        appearance = try c.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? .oceanBlue
         accentColorName = try c.decodeIfPresent(String.self, forKey: .accentColorName) ?? ""
         autoThemeSchedule = try c.decodeIfPresent(String.self, forKey: .autoThemeSchedule) ?? ""
         quoteRefreshSeconds = min(600, max(0, try c.decodeIfPresent(Int.self, forKey: .quoteRefreshSeconds) ?? 60))

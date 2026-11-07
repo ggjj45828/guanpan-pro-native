@@ -7,6 +7,8 @@ import SwiftUI
 struct MarketStateView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成」关闭按钮（外层返回即可退出）。
+    var embedded: Bool = false
 
     @State private var regime: MarketRegimeAssessment?
     @State private var transitions: [MarketRegimeTransition] = []
@@ -19,7 +21,7 @@ struct MarketStateView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.sectionGap) {
                     regimeCard
@@ -40,7 +42,7 @@ struct MarketStateView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }.tint(palette.accent)
+                    if !embedded { Button("完成") { dismiss() }.tint(palette.accent) }
                 }
             }
             .onAppear {
