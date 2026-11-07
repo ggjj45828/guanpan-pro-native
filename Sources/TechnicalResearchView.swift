@@ -208,9 +208,15 @@ struct TechnicalResearchView: View {
         store.data.holdings.first { $0.code == code }
     }
 
+    /// 股息率：手填年分红优先；没填才用账本里过去 12 个月实际派发（不足一年不外推）。
     private var dividendYield: DividendYieldCalculator.Result? {
-        DividendYieldCalculator.yield(annualDividendPerShare: holding?.annualDividendPerShare,
-                                      price: quote?.price)
+        if let manual = DividendYieldCalculator.yield(annualDividendPerShare: holding?.annualDividendPerShare,
+                                                     price: quote?.price) {
+            return manual
+        }
+        return DividendYieldCalculator.trailingYield(events: store.data.etfDividendEvents,
+                                                     code: code,
+                                                     price: quote?.price)
     }
 
     private var pricingCard: some View {
@@ -261,7 +267,7 @@ struct TechnicalResearchView: View {
                         .font(.caption2).foregroundStyle(sem.ink3)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("股息率缺口：持仓里没填「每份年分红」。可在持仓编辑里补，补了才给数——不按行业均值瞎估。")
+                    Text("股息率缺口：既没填「每份年分红」，账本里的分红记录也不满 12 个月。补齐任一项才给数——不按行业均值瞎估，也不把半年派发乘 2 当年化。")
                         .font(.caption2).foregroundStyle(sem.ink3)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -202,4 +202,44 @@ enum DividendYieldCalculator {
                       source: "按过去 12 个月实际每份派发 ÷ 现价",
                       isUserProvided: false)
     }
+
+    /// 从账本里的分红事件推算过去 12 个月股息率。
+    ///
+    /// 诚实前提：只有「账本里最早的这条分红记录已超过 12 个月」才算窗口完整。
+    /// 否则可能只是用户从半年前才开始记录，加起来会低估 —— 宁可返回 nil 也不外推。
+    static func trailingYield(events: [ETFDividendEvent],
+                              code: String,
+                              price: Double?,
+                              today: Date = Date()) -> Result? {
+        guard let price, price.isFinite, price > 0 else { return nil }
+        let rows: [(date: Date, amount: Double)] = events
+            .filter { $0.code == code }
+            .compactMap { event in
+                guard let day = dayFormatter.date(from: event.date),
+                      event.amountPerShare.isFinite, event.amountPerShare > 0 else { return nil }
+                return (day, event.amountPerShare)
+            }
+        guard let earliest = rows.map(\.date).min() else { return nil }
+
+        let oneYearAgo = today.addingTimeInterval(-365 * 86_400)
+        guard earliest <= oneYearAgo else { return nil }
+
+        let paid = rows
+            .filter { $0.date > oneYearAgo && $0.date <= today }
+            .reduce(0.0) { $0 + $1.amount }
+        guard paid > 0 else { return nil }
+
+        return Result(yieldPercent: paid / price * 100,
+                      annualDividendPerShare: paid,
+                      source: "按账本里过去 12 个月实际每份派发 ÷ 现价",
+                      isUserProvided: false)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }

@@ -1055,6 +1055,41 @@ check("仲裁：多头动能 + 形态配合 → 可备选（不自动执行）",
 check("仲裁：单 MACD 多头、无形态 → 仍仅观察",
       arbitrate(patterns=0) == ("observeOnly", "technicalEvidence"))
 
+
+# ── 股息率（手填优先；实测派发需满 12 个月覆盖，不外推）
+print("股息率")
+
+
+def dividend_yield_manual(per_share, price):
+    if not per_share or per_share <= 0 or not price or price <= 0:
+        return None
+    return per_share / price * 100
+
+
+def dividend_yield_trailing(events, price, ledger_start_days, window_days=365):
+    """events: [(days_ago, amount)]。ledger_start_days = 账本最早一条记录距今天数。
+    覆盖不满一年（<365 天）一律不外推。"""
+    if not price or price <= 0:
+        return None
+    if ledger_start_days < 365:
+        return None
+    paid = sum(a for d, a in events if d <= window_days)
+    if paid <= 0:
+        return None
+    return paid / price * 100
+
+
+check("股息率：手填 0.12 元 / 价 4.00 = 3.00%",
+      abs(dividend_yield_manual(0.12, 4.00) - 3.0) < 1e-9)
+check("股息率：未填年分红返回 None（不用行业均值瞎估）",
+      dividend_yield_manual(None, 4.00) is None)
+check("股息率：一年内派发两次共 0.10 / 价 4.00 = 2.50%",
+      abs(dividend_yield_trailing([(200, 0.05), (30, 0.05)], 4.00, 400) - 2.5) < 1e-9)
+check("股息率：账本只覆盖 200 天 → 不外推",
+      dividend_yield_trailing([(200, 0.05), (30, 0.05)], 4.00, 200) is None)
+check("股息率：窗口外那笔不计入（只算 0.05 → 1.25%）",
+      abs(dividend_yield_trailing([(400, 0.05), (30, 0.05)], 4.00, 400) - 1.25) < 1e-9)
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
