@@ -21,13 +21,25 @@ struct MACDParameters: Equatable {
 }
 
 enum MACDTimeframe: String, CaseIterable {
-    case daily, weekly, minutes60
+    case daily, weekly, monthly, minutes120, minutes60, minutes30, minutes15
 
     var title: String {
         switch self {
         case .daily: return "日线"
         case .weekly: return "周线"
+        case .monthly: return "月线"
+        case .minutes120: return "120 分钟"
         case .minutes60: return "60 分钟"
+        case .minutes30: return "30 分钟"
+        case .minutes15: return "15 分钟"
+        }
+    }
+
+    /// 短周期标识：120/60/30/15 分都算「分钟级」，日/周/月不算。
+    var isIntraday: Bool {
+        switch self {
+        case .minutes120, .minutes60, .minutes30, .minutes15: return true
+        default: return false
         }
     }
 }
@@ -279,12 +291,13 @@ enum MultiTimeframeMACDAnalyzer {
 
         var relationship: String
         if let intradayResult {
+            let t = intradayResult.timeframe.title
             if dailyResult.trend == intradayResult.trend {
-                relationship = "日线与 60 分信号一致（\(dailyResult.trend.title)）"
+                relationship = "日线与 \(t) 信号一致（\(dailyResult.trend.title)）"
             } else if intradayResult.trend == .bullishImproving || intradayResult.trend == .shortTermRebound {
-                relationship = "短周期动能改善，日线尚未确认"
+                relationship = "\(t)动能改善，日线尚未确认"
             } else if intradayResult.trend == .weakening || intradayResult.trend == .bearish {
-                relationship = "短周期转弱，注意日线是否跟随"
+                relationship = "\(t)转弱，注意日线是否跟随"
             } else {
                 relationship = "多周期信号冲突，等待更多证据"
             }
@@ -375,11 +388,61 @@ extension PortfolioStore {
         return MACDEngine.calculate(bars: inputs, timeframe: .minutes60, parameters: parameters)
     }
 
+    /// 按任意分钟窗口把分钟快照分桶取收盘价，构造 MACD 输入。
+    ///
+    /// `IntradayBar` 是快照不是 OHLC，所以只用收盘价 —— 这点对所有分钟级周期都如实标注，
+    /// 出来的 MACD 幅度不可精读，但方向可用。120 分是短周期默认，60/30/15 作为补充。
+    private func macdIntradayBucketedSeries(code: String, bucketMinutes: Int,
+                                           parameters: MACDParameters = .standard) -> MACDSeries? {
+        let samples = intradayBars.filter { $0.code == code }
+        guard samples.count >= max(120, bucketMinutes) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        var buckets: [String: (date: Date, close: Double)] = [:]
+        for bar in samples.sorted(by: { $0.timestamp < $1.timestamp }) {
+            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: bar.timestamp)
+            let minutesOfDay = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+            let slot = minutesOfDay / bucketMinutes
+            let key = String(format: "%04d%02d%02d-%03d", components.year ?? 0, components.month ?? 0,
+                             components.day ?? 0, slot)
+            buckets[key] = (bar.timestamp, bar.price)
+        }
+        let ordered = buckets.values.sorted { $0.date < $1.date }
+        guard ordered.count >= 40 else { return nil }
+        let timeframe: MACDTimeframe = bucketMinutes == 120 ? .minutes120
+            : bucketMinutes == 60 ? .minutes60
+            : bucketMinutes == 30 ? .minutes30 : .minutes15
+        let inputs = ordered.map { MACDBar(timestamp: $0.date, close: $0.close) }
+        return MACDEngine.calculate(bars: inputs, timeframe: timeframe, parameters: parameters)
+    }
+
+    func macdMinutes120Series(code: String, parameters: MACDParameters = .standard) -> MACDSeries? {
+        macdIntradayBucketedSeries(code: code, bucketMinutes: 120, parameters: parameters)
+    }
+
+    func macdMinutes30Series(code: String, parameters: MACDParameters = .standard) -> MACDSeries? {
+        macdIntradayBucketedSeries(code: code, bucketMinutes: 30, parameters: parameters)
+    }
+
+    func macdMinutes15Series(code: String, parameters: MACDParameters = .standard) -> MACDSeries? {
+        macdIntradayBucketedSeries(code: code, bucketMinutes: 15, parameters: parameters)
+    }
+
+    /// 既有组合：日线 + 周线 + 60 分。保留给原有的 AI 顾问段落，不改动其口径。
     func multiTimeframeMACD(code: String) -> MultiTimeframeMACDAssessment? {
         guard let daily = macdDailySeries(code: code) else { return nil }
         return MultiTimeframeMACDAnalyzer.combine(daily: daily,
                                                  weekly: macdWeeklySeries(code: code),
                                                  intraday: macdHourlySeries(code: code))
+    }
+
+    /// 升级组合：日线 + 周线 + 120 分。120 分作为短周期默认（6/13/5），
+    /// 供「技术信号」入口、六维评分与买入机会研究使用。
+    func multiTimeframeMACD120(code: String) -> MultiTimeframeMACDAssessment? {
+        guard let daily = macdDailySeries(code: code) else { return nil }
+        return MultiTimeframeMACDAnalyzer.combine(daily: daily,
+                                                 weekly: macdWeeklySeries(code: code),
+                                                 intraday: macdMinutes120Series(code: code))
     }
 
     private func isToday(_ dayKey: String) -> Bool {

@@ -522,9 +522,281 @@ check("没有配对回合时差额留 nil 而不是 0", today_review([], 2.0)["h
 check("复盘证据等级只来自账本，不编造行情",
       "ledger_only_no_market_price" in today_review(trips, 4.0)["reasons"])
 
+# ---- MACD 多周期（研究升级：120 分默认 6/13/5） -----------------------
+def ema_calculate(closes, fast, slow, signal):
+    fast_a = 2.0 / (fast + 1); slow_a = 2.0 / (slow + 1); sig_a = 2.0 / (signal + 1)
+    points = []; run = []; dif_run = []
+    fe = slow_e = de = None
+    for c in closes:
+        run.append(c)
+        if fe is None:
+            if len(run) >= fast: fe = sum(run[-fast:]) / fast
+        else: fe = fast_a * c + (1 - fast_a) * fe
+        if slow_e is None:
+            if len(run) >= slow: slow_e = sum(run[-slow:]) / slow
+        else: slow_e = slow_a * c + (1 - slow_a) * slow_e
+        if fe is None or slow_e is None: continue
+        dif = fe - slow_e
+        dif_run.append(dif)
+        if de is None:
+            if len(dif_run) >= signal: de = sum(dif_run[-signal:]) / signal
+        else: de = sig_a * dif + (1 - sig_a) * de
+        if de is None: continue
+        points.append({"dif": dif, "dea": de, "hist": 2 * (dif - de)})
+    return points
+
+
+def bucket_120(closes_by_minute):
+    slots = {}
+    for minute, close in closes_by_minute:
+        slots[minute // 120] = close
+    return [slots[k] for k in sorted(slots)]
+
+
+UP = {"bullishImproving", "shortTermRebound"}; DOWN = {"weakening", "bearish"}
+
+
+def signal_fold(base_score, daily_trend, daily_cross, daily_confirmed,
+                daily_hist_inc, daily_dif_above, intraday_trend=None):
+    base_raw = (base_score - 50) // 6
+    bonus = 0; notes = []
+    if daily_trend in UP: bonus += 1; notes.append("daily_up")
+    elif daily_trend in DOWN: bonus -= 1; notes.append("daily_down")
+    if daily_cross == "golden":
+        notes.append("golden")
+        if daily_confirmed: bonus += 1
+    elif daily_cross == "death": bonus -= 1; notes.append("death")
+    if daily_hist_inc and not daily_dif_above: notes.append("green_shrink_no_bonus")
+    if intraday_trend is not None:
+        if intraday_trend in UP and daily_trend in UP: bonus += 1
+        elif intraday_trend in DOWN and daily_trend in DOWN: bonus -= 1
+    return max(0, min(100, 50 + (base_raw + bonus) * 6)), bonus, notes
+
+
+long_series = [10, 10.5, 11, 10.8, 11.2, 11.5, 11.3, 11.8, 12.0, 11.9,
+               12.2, 12.5, 12.3, 12.8, 13.0, 12.9, 13.2, 13.5] * 4
+pts = ema_calculate(long_series, 12, 26, 9)
+check("MACD 柱 = 2×(DIF−DEA)", all(abs(p["hist"] - 2 * (p["dif"] - p["dea"])) < 1e-9 for p in pts))
+check("MACD 历史足够后产出序列", len(pts) > 0)
+check("120 分桶按 120 分钟归并取末根",
+      bucket_120([(0, 1.0), (30, 1.1), (119, 1.2), (120, 2.0), (200, 2.1), (240, 3.0)])
+      == [1.2, 2.1, 3.0])
+_, b_green, _ = signal_fold(50, "neutral", "none", True, True, False)
+check("绿柱缩短（下跌动能减弱）不计入买入加分", b_green == 0)
+_, b_gold, _ = signal_fold(50, "bullishImproving", "golden", True, False, True)
+check("日线金叉确认 + 多头 → 加分", b_gold == 2)
+_, b_same, _ = signal_fold(50, "bullishImproving", "none", True, False, True, "bullishImproving")
+check("日线/120分 MACD 同向改善 → 加分", b_same == 2)
+_, b_conflict, _ = signal_fold(50, "weakening", "none", True, False, False, "bullishImproving")
+check("120分改善但日线仍弱 → 不加分", b_conflict == -1)
+
+
+# ---- K 线六形态（研究升级：离线可测数学规则） ---------------------------
+def candle_features(bars):
+    out = []
+    for b in bars:
+        o, c, h, l, v = b["open"], b["close"], b["high"], b["low"], b["volume"]
+        body = abs(c - o)
+        body_ratio = body / abs(c) if c != 0 else 0
+        upper = h - max(o, c)
+        lower = min(o, c) - l
+        out.append({"open": o, "close": c, "high": h, "low": l, "volume": v,
+                    "bullish": c >= o, "bearish": c < o, "body": body,
+                    "body_ratio": body_ratio, "upper": upper, "lower": lower,
+                    "lower_ratio": (lower / abs(c)) if c != 0 else 0})
+    return out
+
+
+def vol_ma20(vols):
+    if len(vols) < 20:
+        return None
+    w = vols[-20:]
+    if any(v is None or v < 0 for v in w):
+        return None
+    return sum(w) / 20
+
+
+DEFAULT = {"consolidationLookback": 20, "consolidationRangeRatio": 0.08,
+           "breakoutVolumeMultiple": 1.5, "pullbackMaxBars": 5, "pullbackTolerance": 0.02,
+           "panicLookback": 10, "panicDropRatio": 0.10, "panicMaxUpRatio": 0.04,
+           "shrinkBars": 3, "shrinkMinBodyRatio": 0.004, "lowerShadowRatio": 0.02,
+           "smallBodyRatio": 0.015, "lowerShadowDominance": 1.5,
+           "heavyVolumeMultiple": 2.0, "heavyBodyRatio": 0.01}
+
+
+def p_breakout(bars, cfg=DEFAULT):
+    candles = candle_features(bars)
+    n = cfg["consolidationLookback"]
+    if len(candles) <= n:
+        return False
+    window = candles[-(n + 1):]
+    cand = window[-1]
+    base = window[:-1]
+    maxHigh = max(c["high"] for c in base)
+    minLow = min(c["low"] for c in base)
+    avgClose = sum(c["close"] for c in base) / len(base)
+    ratio = (maxHigh - minLow) / abs(avgClose) if avgClose != 0 else 1
+    if ratio >= cfg["consolidationRangeRatio"]:
+        return False
+    vol20 = vol_ma20([b["volume"] for b in bars])
+    broke = cand["close"] > maxHigh
+    volOK = vol20 is not None and cand["volume"] >= vol20 * cfg["breakoutVolumeMultiple"]
+    return bool(broke and volOK and cand["bullish"])
+
+
+def p_pullback(bars, cfg=DEFAULT):
+    candles = candle_features(bars)
+    if len(candles) <= cfg["consolidationLookback"] + cfg["pullbackMaxBars"]:
+        return False
+    bi = None
+    start = cfg["consolidationLookback"]
+    for i in range(start, len(candles) - 1):
+        prior = [c["high"] for c in candles[max(0, i - cfg["consolidationLookback"]):i]]
+        if candles[i]["close"] > max(prior) * 1.001:
+            bi = i
+    if bi is None:
+        return False
+    bl = candles[bi]["close"]
+    held = True
+    pulled = False
+    for j in range(bi + 1, len(candles) - 1):
+        c = candles[j]
+        if c["close"] < bl * (1 - cfg["pullbackTolerance"]):
+            held = False
+        if c["close"] <= bl * 1.005 and c["close"] >= bl * 0.95:
+            pulled = True
+    last = candles[-1]
+    return bool(held and pulled and last["close"] > bl and last["bullish"])
+
+
+def p_panicStop(bars, cfg=DEFAULT):
+    candles = candle_features(bars)
+    p = cfg["panicLookback"]
+    if len(candles) < p + 1:
+        return False
+    window = candles[-(p + 1):]
+    recent = window[:-1]
+    first = recent[0]["close"]
+    lastOfRecent = recent[-1]["close"]
+    drop = (first - lastOfRecent) / abs(first) if first != 0 else 0
+    if drop < cfg["panicDropRatio"]:
+        return False
+    last = candles[-1]
+    rebound = (last["close"] - lastOfRecent) / abs(lastOfRecent) if lastOfRecent != 0 else 0
+    return bool(rebound >= cfg["panicMaxUpRatio"]
+                or (last["bearish"] and last["body_ratio"] < cfg["smallBodyRatio"])
+                or not last["bearish"])
+
+
+def p_shrinkingBearish(bars, cfg=DEFAULT):
+    candles = candle_features(bars)
+    k = cfg["shrinkBars"]
+    if len(candles) < k:
+        return False
+    lastK = candles[-k:]
+    if not all(c["bearish"] and c["body_ratio"] >= cfg["shrinkMinBodyRatio"] for c in lastK):
+        return False
+    bodies = [c["body_ratio"] for c in lastK]
+    return all(bodies[i] > bodies[i + 1] for i in range(len(bodies) - 1))
+
+
+def p_longLowerShadow(bars, cfg=DEFAULT):
+    candles = candle_features(bars)
+    if not candles:
+        return False
+    last = candles[-1]
+    return bool(last["bearish"]
+                and last["body_ratio"] < cfg["smallBodyRatio"]
+                and last["lower_ratio"] >= cfg["lowerShadowRatio"]
+                and last["lower"] >= last["upper"] * cfg["lowerShadowDominance"])
+
+
+def p_heavyBearish(bars, cfg=DEFAULT):
+    candles = candle_features(bars)
+    vol20 = vol_ma20([b["volume"] for b in bars])
+    if not candles or vol20 is None:
+        return False
+    last = candles[-1]
+    return bool(last["volume"] >= vol20 * cfg["heavyVolumeMultiple"]
+                and last["bearish"]
+                and last["body_ratio"] >= cfg["heavyBodyRatio"])
+
+
+def flat_bars(count, close=10.0, high=10.05, low=9.95, volume=100.0):
+    return [{"open": close, "close": close, "high": high, "low": low, "volume": volume}
+            for _ in range(count)]
+
+
+# 1. 放量突破：20 根震荡 + 1 根放量阳线突破
+bo = flat_bars(20) + [{"open": 10.05, "close": 10.5, "high": 10.55, "low": 10.0, "volume": 200.0}]
+check("放量突破：震荡后放量阳线突破 → 识别", p_breakout(bo))
+# 非震荡（高波动）→ 不识别
+hv = [{"open": 10.0, "close": 10.0 + (i % 2) * 1.5, "high": 11.0, "low": 9.0, "volume": 100.0}
+      for i in range(20)] \
+    + [{"open": 10.05, "close": 10.5, "high": 10.55, "low": 10.0, "volume": 200.0}]
+check("放量突破：高波动非震荡 → 不识别", not p_breakout(hv))
+
+# 2. 回踩确认：22 震荡 + 突破 + 2 回踩 + 重新站上
+pb = flat_bars(22) \
+    + [{"open": 10.2, "close": 10.5, "high": 10.6, "low": 10.2, "volume": 200.0}] \
+    + [{"open": 10.45, "close": 10.42, "high": 10.46, "low": 10.38, "volume": 90.0}] \
+    + [{"open": 10.43, "close": 10.42, "high": 10.46, "low": 10.38, "volume": 90.0}] \
+    + [{"open": 10.45, "close": 10.6, "high": 10.62, "low": 10.44, "volume": 150.0}]
+check("回踩确认：突破→回踩不破→重新站上 → 识别", p_pullback(pb))
+# 回踩跌破突破位 → 不识别
+pb_bad = flat_bars(22) \
+    + [{"open": 10.2, "close": 10.5, "high": 10.6, "low": 10.2, "volume": 200.0}] \
+    + [{"open": 10.0, "close": 10.2, "high": 10.25, "low": 10.15, "volume": 90.0}] \
+    + [{"open": 10.2, "close": 10.2, "high": 10.25, "low": 10.15, "volume": 90.0}] \
+    + [{"open": 10.25, "close": 10.6, "high": 10.62, "low": 10.44, "volume": 150.0}]
+check("回踩确认：回踩跌破突破位 → 不识别", not p_pullback(pb_bad))
+
+# 3. 恐慌止跌：急跌 10% 后阳线企稳
+ps = flat_bars(13) \
+    + [{"open": c, "close": c, "high": c, "low": c, "volume": 100.0} for c in
+       [10.0, 9.9, 9.8, 9.7, 9.6, 9.5, 9.4, 9.3, 9.2, 9.0]] \
+    + [{"open": 9.0, "close": 9.05, "high": 9.06, "low": 9.0, "volume": 100.0}]
+check("恐慌止跌：急跌≥10% 后企稳 → 识别", p_panicStop(ps))
+# 跌幅不足 → 不识别
+ps_small = flat_bars(13) \
+    + [{"open": c, "close": c, "high": c, "low": c, "volume": 100.0} for c in
+       [10.0, 9.98, 9.96, 9.94, 9.92, 9.90, 9.88, 9.86, 9.84, 9.82]] \
+    + [{"open": 9.82, "close": 9.85, "high": 9.86, "low": 9.82, "volume": 100.0}]
+check("恐慌止跌：跌幅不足 → 不识别", not p_panicStop(ps_small))
+
+# 4. 阴线实体逐渐缩小
+sb = flat_bars(27) \
+    + [{"open": 10.0, "close": 9.5, "high": 10.0, "low": 9.5, "volume": 100.0}] \
+    + [{"open": 9.5, "close": 9.2, "high": 9.5, "low": 9.2, "volume": 100.0}] \
+    + [{"open": 9.2, "close": 9.05, "high": 9.2, "low": 9.05, "volume": 100.0}]
+check("阴线缩小：连续3根阴线实体递减 → 识别", p_shrinkingBearish(sb))
+# 实体未递减 → 不识别
+sb_bad = flat_bars(27) \
+    + [{"open": 10.0, "close": 9.5, "high": 10.0, "low": 9.5, "volume": 100.0}] \
+    + [{"open": 9.5, "close": 9.2, "high": 9.5, "low": 9.2, "volume": 100.0}] \
+    + [{"open": 9.2, "close": 9.6, "high": 9.6, "low": 9.2, "volume": 100.0}]
+check("阴线缩小：末根转阳 → 不识别", not p_shrinkingBearish(sb_bad))
+
+# 5. 长下影小实体阴线
+ls = flat_bars(20) \
+    + [{"open": 10.0, "close": 9.98, "high": 10.01, "low": 9.5, "volume": 100.0}]
+check("长下影：小实体阴线+长下影占优 → 识别", p_longLowerShadow(ls))
+# 实体过大 → 不识别
+ls_bad = flat_bars(20) \
+    + [{"open": 10.0, "close": 9.6, "high": 10.01, "low": 9.5, "volume": 100.0}]
+check("长下影：实体过大 → 不识别", not p_longLowerShadow(ls_bad))
+
+# 6. 放量阴线
+hb = flat_bars(21) \
+    + [{"open": 10.2, "close": 10.0, "high": 10.2, "low": 9.98, "volume": 150.0}]
+check("放量阴线：量比不足 → 不识别", not p_heavyBearish(hb))
+hb_ok = flat_bars(21) \
+    + [{"open": 10.2, "close": 10.0, "high": 10.2, "low": 9.98, "volume": 250.0}]
+check("放量阴线：量比≥2× 且实体有效 → 识别", p_heavyBearish(hb_ok))
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / K线六形态")
 sys.exit(0)

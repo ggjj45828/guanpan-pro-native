@@ -201,7 +201,9 @@ struct MarketChartView: View {
     private var bars: [DailyBar] { allBars }
     /// 六维评分固定用未聚合的日线：切到周/月周期时样本会只剩几根，
     /// 拿聚合序列算波动率和分位会给出看着精确、其实没意义的分。
-    private var radarScore: RadarResult? { RadarEngine.evaluate(bars: allBars) }
+    private var radarScore: RadarResult? {
+        RadarEngine.evaluate(bars: allBars, macd: store.multiTimeframeMACD120(code: holding.code))
+    }
     /// 日 K 始终基于完整历史；屏幕上显示多少根只由捏合缩放与拖动决定。
     private var periodBars: [DailyBar] { aggregated(allBars) }
     /// 当前周期、但用**本机全部**日线聚合。
@@ -468,7 +470,10 @@ struct MarketChartView: View {
     }
     /// 自选标签、详情页和量化引擎统一使用同一套 0...100 技术观察分。
     /// 旧详情页曾另算一套 -100...100 分数，导致同一标的在两个页面结论相反。
-    private var technicalSignal: MarketSignal? { MarketSignalCalculator.evaluate(bars) }
+    private var technicalSignal: MarketSignal? {
+        let assessment = store.multiTimeframeMACD120(code: holding.code)
+        return MarketSignalCalculator.evaluate(bars, macd: assessment)
+    }
 
     /// “值不值得买”不是第二套趋势分，而是在统一技术分上加入位置与撑压后的条件复核。
     /// 不使用并不存在的 ETF 实时估值字段，避免把猜测包装成“估值分”。

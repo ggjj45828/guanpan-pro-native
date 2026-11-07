@@ -48,7 +48,9 @@ struct RadarResult {
 
 enum RadarEngine {
     /// 全部输入都来自本机已有的日线，不发起请求。
-    static func evaluate(bars: [DailyBar]) -> RadarResult? {
+    /// `macd` 为可选的多周期 MACD 评估（同样本机计算），用于在不新增「第二套评分」的前提下，
+    /// 给趋势 / 动量两维补充 MACD 证据；缺数据就忽略，绝不凑数。
+    static func evaluate(bars: [DailyBar], macd: MultiTimeframeMACDAssessment? = nil) -> RadarResult? {
         let source = Array(bars.suffix(250))
         guard source.count >= 30, let last = source.last else { return nil }
         let close = last.close
@@ -57,7 +59,7 @@ enum RadarEngine {
         var dims: [RadarDimension] = []
         let closes = source.map(\.close)
 
-        if let trend = trendScore(source: source, close: close) {
+        if let trend = trendScore(source: source, close: close, macd: macd) {
             dims.append(RadarDimension(kind: .trend, value: trend.value, note: trend.note))
         }
         if let position = positionScore(closes: closes, close: close) {
@@ -66,7 +68,7 @@ enum RadarEngine {
         if let volume = volumeScore(source: source) {
             dims.append(RadarDimension(kind: .volume, value: volume.value, note: volume.note))
         }
-        if let momentum = momentumScore(closes: closes) {
+        if let momentum = momentumScore(closes: closes, macd: macd) {
             dims.append(RadarDimension(kind: .momentum, value: momentum.value, note: momentum.note))
         }
         if let risk = riskScore(source: source) {
@@ -86,7 +88,7 @@ enum RadarEngine {
         return slice.reduce(0, +) / Double(slice.count)
     }
 
-    private static func trendScore(source: [DailyBar], close: Double) -> (value: Double, note: String)? {
+    private static func trendScore(source: [DailyBar], close: Double, macd: MultiTimeframeMACDAssessment?) -> (value: Double, note: String)? {
         let closes = source.map(\.close)
         guard let ma20 = average(closes, 20), let ma60 = average(closes, 60),
               let ma5 = average(closes, 5), let ma10 = average(closes, 10) else { return nil }
@@ -97,6 +99,28 @@ enum RadarEngine {
         if ma5 >= ma10 && ma10 >= ma20 { score += 25; hits.append("短均线多头排列") }
         let change20 = closes.count > 20 ? (close / closes[closes.count - 21] - 1) * 100 : 0
         if change20 > 0 { score += 25 }
+
+        // 叠加 MACD 多周期证据（诚实：冲突只备注，不强行加分）。
+        if let macd {
+            let daily = macd.daily
+            switch daily.trend {
+            case .bullishImproving: score += 10; hits.append("日线 MACD 多头增强")
+            case .shortTermRebound: score += 10; hits.append("日线 MACD 零轴下反弹")
+            case .weakening: score -= 10; hits.append("日线 MACD 动能转弱")
+            case .bearish: score -= 10; hits.append("日线 MACD 空头延续")
+            case .neutral, .dataInsufficient: break
+            }
+            if daily.cross == .golden, daily.signalConfirmed { hits.append("日线 MACD 金叉确认") }
+            if let intraday = macd.intraday {
+                let intradayUp = intraday.trend == .bullishImproving || intraday.trend == .shortTermRebound
+                let dailyUp = daily.trend == .bullishImproving || daily.trend == .shortTermRebound
+                if intradayUp, dailyUp { hits.append("日/\(intraday.timeframe.title) MACD 共振") }
+                else if (intraday.trend == .weakening || intraday.trend == .bearish),
+                        (daily.trend == .weakening || daily.trend == .bearish) {
+                    hits.append("日/\(intraday.timeframe.title) MACD 同向转弱")
+                } else { hits.append("日/\(intraday.timeframe.title) MACD 未共振") }
+            }
+        }
         return (min(100, score), "近 20 日 \(change20.num(1))%；" + hits.joined(separator: "、"))
     }
 
@@ -116,12 +140,23 @@ enum RadarEngine {
         return (value, "当日量能为 20 日均量的 \(ratio.num(2)) 倍")
     }
 
-    private static func momentumScore(closes: [Double]) -> (value: Double, note: String)? {
+    private static func momentumScore(closes: [Double], macd: MultiTimeframeMACDAssessment?) -> (value: Double, note: String)? {
         guard closes.count >= 6 else { return nil }
         let change5 = (closes[closes.count - 1] / closes[closes.count - 6] - 1) * 100
-        // 把 -5%…+5% 映射到 0…100，超出部分截断。
+        // 把 -5%…+5% 映射到 0…100，超出部分截断。动量分只反映价格本身，不替 MACD 下结论。
         let value = min(100, max(0, (change5 + 5) / 10 * 100))
-        return (value, "近 5 日 \(change5.num(2))%")
+        var note = "近 5 日 \(change5.num(2))%"
+        if let macd {
+            let daily = macd.daily
+            if let increasing = daily.histogramIncreasing, increasing, daily.difAboveZero == false {
+                note += "；绿柱缩短（动能减弱中，非买）"
+            } else if daily.cross == .golden, daily.signalConfirmed {
+                note += "；日线金叉确认"
+            } else if daily.cross == .death {
+                note += "；日线死叉"
+            }
+        }
+        return (value, note)
     }
 
     private static func riskScore(source: [DailyBar]) -> (value: Double, note: String)? {

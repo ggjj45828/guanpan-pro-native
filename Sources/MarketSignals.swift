@@ -208,6 +208,79 @@ enum MarketSignalCalculator {
         signal.isOverbought = rsiOverbought || jOverbought
         return signal
     }
+
+    /// 在既有日线统一评分基础上叠加「多周期 MACD」证据。
+    ///
+    /// 诚实规则（来自研究约束，绝不妥协）：
+    /// · 绿柱缩短只说明下跌动能可能减弱，绝不计入买入加分；
+    /// · 120 分与日线冲突时必须说明，不因短周期改善就加分；
+    /// · 未收盘的那根 K 线不算确认信号；
+    /// · 任何单项信号都不能单独把分数翻成「买入」。
+    static func evaluate(_ bars: [DailyBar], macd: MultiTimeframeMACDAssessment?) -> MarketSignal? {
+        guard var signal = evaluate(bars) else { return nil }
+        guard let macd else { return signal }
+
+        var notes = signal.notes
+        var rawBonus = 0
+        let daily = macd.daily
+
+        switch daily.trend {
+        case .bullishImproving: notes.append("日线 MACD 多头动能增强"); rawBonus += 1
+        case .shortTermRebound: notes.append("日线 MACD 零轴下反弹"); rawBonus += 1
+        case .weakening: notes.append("日线 MACD 动能转弱"); rawBonus -= 1
+        case .bearish: notes.append("日线 MACD 空头延续"); rawBonus -= 1
+        case .neutral, .dataInsufficient: break
+        }
+
+        if daily.cross == .golden {
+            notes.append(daily.signalConfirmed ? "日线 MACD 金叉（已收盘确认）" : "日线 MACD 金叉雏形（未收盘确认）")
+            if daily.signalConfirmed { rawBonus += 1 }
+        } else if daily.cross == .death {
+            notes.append("日线 MACD 死叉"); rawBonus -= 1
+        }
+
+        // 绿柱缩短：下跌动能可能减弱，但绝不是买入信号 —— 只备注，不加分。
+        if let increasing = daily.histogramIncreasing, increasing, daily.difAboveZero == false {
+            notes.append("日线 MACD 绿柱缩短，下跌动能可能减弱（非买入信号）")
+        }
+
+        if let intraday = macd.intraday {
+            let t = intraday.timeframe.title
+            let intradayUp = intraday.trend == .bullishImproving || intraday.trend == .shortTermRebound
+            let intradayDown = intraday.trend == .weakening || intraday.trend == .bearish
+            let dailyUp = daily.trend == .bullishImproving || daily.trend == .shortTermRebound
+            let dailyDown = daily.trend == .weakening || daily.trend == .bearish
+            if intradayUp, dailyUp {
+                notes.append("日线 / \(t) MACD 同向改善"); rawBonus += 1
+            } else if intradayDown, dailyDown {
+                notes.append("日线 / \(t) MACD 同向转弱"); rawBonus -= 1
+            } else if intradayUp, dailyDown {
+                notes.append("\(t) 改善但日线仍弱，动能未共振（不加分）")
+            } else if intradayDown, dailyUp {
+                notes.append("\(t) 转弱但日线仍强，注意背离（不加分）")
+            }
+            if !intraday.signalConfirmed { notes.append("\(t) 最新一根未走完，信号未确认") }
+        } else {
+            notes.append("120 分数据不可用，仅以日线 MACD 判断")
+        }
+        if !daily.signalConfirmed { notes.append("日线最新一根未走完，MACD 信号未收盘确认") }
+
+        // K 线形态识别：只作为「看见了什么」的观察证据，绝不加分
+        // （治理：不新增买卖评分，仅作多信号证据的一层，且只用已收盘 K 线）。
+        let patterns = CandlePatternEngine.analyze(bars)
+        for hit in patterns.hits where hit.detected {
+            if let note = hit.notes.first {
+                notes.append("K线·\(hit.kind.title)：\(note)")
+            }
+        }
+
+        // 与 evaluate 同口径重算：分数 = clamp(0...100, 50 + raw*6)。
+        let baseRaw = (signal.score - 50) / 6
+        let newScore = min(100, max(0, 50 + (baseRaw + rawBonus) * 6))
+        signal.score = newScore
+        signal.notes = notes
+        return signal
+    }
 }
 
 // MARK: - 支撑压力（网页版「撑压分析」，此前 App 没有）
