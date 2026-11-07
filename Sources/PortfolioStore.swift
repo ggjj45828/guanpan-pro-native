@@ -1517,6 +1517,11 @@ final class PortfolioStore: ObservableObject {
                     advanceLegacyShadowSimulations(shadowQuotes)
                 }
             }
+            // ETF 净值 / IOPV：跟行情一起补，5 分钟节流。失败不影响行情结果，只是没有净值可算折溢价。
+            let etfCodes = data.holdings.filter { $0.kind == .etf }.map(\.code)
+            if !etfCodes.isEmpty {
+                await refreshETFIOPV(codes: etfCodes)
+            }
             let route = usedFNASBridge ? "观盘F 服务端" : (usedNASProxy ? "NAS 代理" : "iPhone 直连")
             saveAutomaticMarketState()
             sourceStatus = "行情已更新（\(route)）· \(Date.now.formatted(date: .omitted, time: .shortened))"
