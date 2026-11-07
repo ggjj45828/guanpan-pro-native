@@ -824,6 +824,22 @@ struct MarketChartView: View {
                         Text("高分不等于立即买入：六维分只衡量趋势、位置、量能、动量、风险和赔率，不含 PE/PB 等基本面；缺数据的维度直接不显示，不用 50 分凑数。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    Section {
+                        NavigationLink {
+                            TechnicalResearchView(code: holding.code, name: holding.name)
+                        } label: {
+                            let sem = ThemeSemantics.of(appearance)
+                            HStack(spacing: 10) {
+                                Image(systemName: "waveform")
+                                Text("K 线形态 · 多周期 MACD · 量价分析").foregroundStyle(sem.ink)
+                                Spacer(minLength: 0)
+                                Text("实验级").font(.caption2).foregroundStyle(sem.ink3)
+                            }
+                        }
+                    } header: {
+                        Text("技术研究")
+                    }
+
                     Section("历史指标") {
                         LabeledContent("最新收盘（\(latest.date)）", value: (latest.close).num(3))
                         if let signal = technicalSignal {
