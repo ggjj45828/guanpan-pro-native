@@ -1199,6 +1199,63 @@ check("限价：数据阻断 → 连精确价都不宣称",
 check("限价：无额度 → 同样不给价（风险优先于技术）",
       patient_plan(4.00, 0.08, 0)["blocked"] is True)
 
+# ===== 长期趋势（日线 MA250，与 Sources/LongTermTrendEngine.swift 同口径）=====
+
+
+def moving_average(values, period):
+    if period <= 0 or len(values) < period:
+        return None
+    window = values[-period:]
+    total = sum(window)
+    if total <= 0:
+        return None
+    return total / period
+
+
+def long_term_trend(closes, price=None, long_period=250, mid_period=60,
+                    slope_lookback=20, near_band=2.0):
+    ref = price if (price and price > 0) else (closes[-1] if closes else None)
+    ma250 = moving_average(closes, long_period)
+    slope = None
+    if ma250 is not None and len(closes) >= long_period + slope_lookback:
+        earlier = moving_average(closes[:-slope_lookback], long_period)
+        if earlier and earlier > 0:
+            slope = (ma250 - earlier) / earlier * 100
+    position = "unavailable"
+    distance = None
+    if ma250 and ma250 > 0 and ref:
+        gap = (ref - ma250) / ma250 * 100
+        distance = gap
+        position = "near" if abs(gap) <= near_band else ("above" if gap > 0 else "below")
+    return {"ma250": ma250, "position": position, "distance": distance, "slope": slope}
+
+
+check("MA250：只有 249 根 → 不给长期均线（不拿 MA120 冒充）",
+      long_term_trend([10.0] * 249)["ma250"] is None)
+check("MA250：不足 250 根 → 位置判定为不可判断",
+      long_term_trend([10.0] * 249)["position"] == "unavailable")
+
+flat250 = [10.0] * 250
+check("MA250：250 根恒 10 元 → MA250 = 10.0",
+      abs(long_term_trend(flat250)["ma250"] - 10.0) < 1e-9)
+check("MA250：现价 11 元 → 判定为线上",
+      long_term_trend(flat250, price=11.0)["position"] == "above")
+check("MA250：现价 9 元 → 判定为线下",
+      long_term_trend(flat250, price=9.0)["position"] == "below")
+check("MA250：现价 10.1 元（+1%）→ 判定为贴合，不是「突破」",
+      long_term_trend(flat250, price=10.1)["position"] == "near")
+check("MA250：距均线 +10%",
+      abs(long_term_trend(flat250, price=11.0)["distance"] - 10.0) < 1e-9)
+
+check("MA250：260 根不够算斜率（需要 270）",
+      long_term_trend([10.0] * 260)["slope"] is None)
+rising = [10.0 + 0.01 * i for i in range(300)]
+check("MA250：上行序列斜率为正",
+      long_term_trend(rising)["slope"] > 0)
+falling = [10.0 - 0.01 * i for i in range(300)]
+check("MA250：下行序列斜率为负",
+      long_term_trend(falling)["slope"] < 0)
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")

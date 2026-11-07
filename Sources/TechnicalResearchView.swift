@@ -433,7 +433,62 @@ struct TechnicalResearchView: View {
                 } else {
                     Text("日线数据不足，暂无法计算 MACD。").font(.footnote).foregroundStyle(sem.ink3)
                 }
+                Divider().background(sem.hairline)
+                longTermTrendRows(sem: sem)
             }
+        }
+    }
+
+    // MARK: - 长期趋势（日线 MA250）
+
+    private var longTermTrend: LongTermTrend {
+        LongTermTrendEngine.evaluate(dailyBars: bars, price: quote?.price)
+    }
+
+    @ViewBuilder
+    private func longTermTrendRows(sem: ThemeSemantics) -> some View {
+        let trend = longTermTrend
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("长期趋势（日线 MA250）").font(.caption.bold()).foregroundStyle(sem.ink2)
+                Spacer(minLength: 0)
+                Text(trend.position.title)
+                    .font(.caption.bold())
+                    .foregroundStyle(longTermTint(trend.position, sem))
+            }
+            row(label: "MA250") {
+                Text(trend.ma250.map { $0.num(3) } ?? "数据不足")
+                    .font(.subheadline.bold()).monospacedDigit()
+                    .foregroundStyle(trend.ma250 == nil ? sem.ink3 : sem.ink)
+            }
+            row(label: "距 MA250") {
+                Text(trend.distancePercent.map { $0.pct(2) } ?? "—")
+                    .font(.subheadline.bold()).monospacedDigit()
+                    .foregroundStyle(trend.distancePercent == nil ? sem.ink3 : sem.ink)
+            }
+            row(label: "MA250 近 20 日") {
+                if let slope = trend.ma250SlopePercent, let rising = trend.isRising {
+                    Text("\(rising ? "上行" : "下行") \(slope.pct(2))")
+                        .font(.subheadline).monospacedDigit()
+                        .foregroundStyle(rising ? sem.ok : sem.warn)
+                } else {
+                    Text("样本不足").font(.caption).foregroundStyle(sem.ink3)
+                }
+            }
+            ForEach(trend.notes, id: \.self) { note in
+                Text("· \(note)")
+                    .font(.caption2).foregroundStyle(sem.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func longTermTint(_ position: LongTermTrend.Position, _ sem: ThemeSemantics) -> Color {
+        switch position {
+        case .above: return sem.ok
+        case .below: return sem.warn
+        case .near: return sem.ink2
+        case .unavailable: return sem.ink3
         }
     }
 
