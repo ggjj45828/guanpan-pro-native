@@ -591,6 +591,78 @@ _, b_conflict, _ = signal_fold(50, "weakening", "none", True, False, False, "bul
 check("120分改善但日线仍弱 → 不加分", b_conflict == -1)
 
 
+def macd_divergence(points):
+    """复刻 Swift MACDAnalysis.detectDivergence：仅观察，未收尾/不足 40 点不判。
+    points: list of {close, hist}，hist = 2×(DIF−DEA)。"""
+    if len(points) < 40:
+        return "undetermined"
+    pts = points
+    window = 3
+
+    def pivots(lows):
+        res = []
+        for i in range(window, len(pts) - window):
+            center = pts[i]
+            neigh = [pts[j] for j in range(i - window, i + window + 1) if j != i]
+            if lows:
+                if all(n["close"] > center["close"] for n in neigh):
+                    res.append(center)
+            else:
+                if all(n["close"] < center["close"] for n in neigh):
+                    res.append(center)
+        return res
+
+    lows = pivots(True)
+    highs = pivots(False)
+    if len(lows) >= 2:
+        a, b = lows[-2], lows[-1]
+        if b["close"] < a["close"] and b["hist"] > a["hist"]:
+            return "bullish"
+    if len(highs) >= 2:
+        a, b = highs[-2], highs[-1]
+        if b["close"] > a["close"] and b["hist"] < a["hist"]:
+            return "bearish"
+    return "none"
+
+
+def _divergence_points(peaks):
+    # peaks=True → 构造顶背离（两段高点，后高更高但柱值更低）
+    # peaks=False → 构造底背离（两段低点，后低更低但柱值更高）
+    if not peaks:
+        segA = [12.0,12.2,12.4,12.6,12.8,13.0,13.0,13.0,13.0,13.0]
+        dip1 = 10.0
+        segB = [10.5,11.0,11.5,12.0,12.5,13.0,13.0,13.0,13.0,13.0,13.0]
+        segC = [13.0,12.8,12.6,12.4,12.2,12.0,11.5,11.0,10.2]
+        dip2 = 9.5
+        segD = [9.8,10.0,10.2,10.4,10.6,10.8,11.0,11.2,11.4,11.6,11.8,12.0,12.2,12.4]
+        closes = segA + [dip1] + segB + segC + [dip2] + segD
+        hist = [0.0] * len(closes)
+        hist[len(segA)] = -2.0
+        hist[len(segA) + 1 + len(segB) + len(segC)] = -1.2
+    else:
+        segA = [11.0,11.2,11.4,11.6,11.8,12.0,12.0,12.0,12.0,12.0]
+        peak1 = 14.0
+        segB = [13.5,13.0,12.5,12.0,11.5,11.0,11.0,11.0,11.0,11.0,11.0]
+        segC = [11.0,11.2,11.4,11.6,11.8,12.0,12.5,13.0,13.5]
+        peak2 = 15.0
+        segD = [14.8,14.6,14.4,14.2,14.0,13.8,13.6,13.4,13.2,13.0,12.8,12.6,12.4,12.2]
+        closes = segA + [peak1] + segB + segC + [peak2] + segD
+        hist = [0.0] * len(closes)
+        hist[len(segA)] = 2.0
+        hist[len(segA) + 1 + len(segB) + len(segC)] = 1.2
+    return [{"close": c, "hist": h} for c, h in zip(closes, hist)]
+
+
+check("MACD 背离：点数不足 40 → undetermined", macd_divergence([{"close": 1, "hist": 0}] * 10) == "undetermined")
+_bull = _divergence_points(False)
+check("MACD 背离：底背离识别", macd_divergence(_bull) == "bullish")
+check("MACD 背离：底背离后低更低", _bull[31]["close"] < _bull[10]["close"])
+check("MACD 背离：底背离后柱值更高", _bull[31]["hist"] > _bull[10]["hist"])
+check("MACD 背离：顶背离识别", macd_divergence(_divergence_points(True)) == "bearish")
+check("MACD 背离：无背离（单调下跌）",
+      macd_divergence([{"close": c, "hist": -i * 0.1} for i, c in enumerate(range(50, 10, -1))]) == "none")
+
+
 # ---- K 线六形态（研究升级：离线可测数学规则） ---------------------------
 def candle_features(bars):
     out = []
@@ -798,5 +870,5 @@ print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / K线六形态")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态")
 sys.exit(0)

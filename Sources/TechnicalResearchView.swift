@@ -25,6 +25,9 @@ struct TechnicalResearchView: View {
         return VolumeAnalysisEngine.daily(bars)
     }
 
+    /// 市场环境（指数）：复用本机 MarketRegime 引擎，与全 App 一致（含防抖记忆）。
+    @State private var regime: MarketRegimeAssessment? = nil
+
     var body: some View {
         let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
         ScrollView {
@@ -33,10 +36,12 @@ struct TechnicalResearchView: View {
                 macdCard
                 patternCard
                 volumeCard
+                marketRegimeCard
                 disclaimerCard
             }
             .padding(layout.pageInset)
         }
+        .task { regime = store.marketRegime() }
         .themedFormBackground(ThemeSemantics.of(appearance))
         .navigationTitle("技术研究")
         .navigationBarTitleDisplayMode(.inline)
@@ -121,6 +126,15 @@ struct TechnicalResearchView: View {
                         .foregroundStyle(inc ? sem.ok : sem.ink3)
                 }
                 Spacer(minLength: 0)
+            }
+            if a.divergence == .bullish || a.divergence == .bearish {
+                HStack(spacing: 6) {
+                    Image(systemName: a.divergence == .bullish ? "arrow.up.right" : "arrow.down.right")
+                        .font(.caption2)
+                    Text(a.divergence.title)
+                        .font(.caption2.bold())
+                }
+                .foregroundStyle(a.divergence == .bullish ? sem.ok : sem.danger)
             }
             HStack(spacing: 8) {
                 if !a.signalConfirmed {
@@ -292,6 +306,79 @@ struct TechnicalResearchView: View {
                 .font(.caption2).foregroundStyle(sem.ink3)
         }
         .padding(.horizontal, 4)
+    }
+
+    // MARK: - 市场环境（复用本机 MarketRegime 引擎）
+
+    private var marketRegimeCard: some View {
+        ResearchCard(title: "市场环境（上证指数）",
+                     subtitle: "指数环境 · 多周期均线结构",
+                     badge: "观察级别") {
+            let sem = ThemeSemantics.of(appearance)
+            let layout = ThemeLayout.of(AppAppearance.resolved(appearance))
+            VStack(alignment: .leading, spacing: layout.gap) {
+                if let r = regime {
+                    HStack {
+                        Text(r.regime.title)
+                            .font(.headline.bold())
+                            .foregroundStyle(sem.ink)
+                        Spacer(minLength: 0)
+                        Text(r.riskLevel.title)
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Capsule().fill(riskTint(r.riskLevel, sem: sem).opacity(0.16)))
+                            .foregroundStyle(riskTint(r.riskLevel, sem: sem))
+                    }
+                    HStack(spacing: 16) {
+                        if let v = r.return5Sessions { metric("近 5 日", v, sem: sem) }
+                        if let v = r.return20Sessions { metric("近 20 日", v, sem: sem) }
+                        if let v = r.drawdown20Sessions { metric("20 日回撤", v, sem: sem) }
+                    }
+                    HStack(spacing: 6) {
+                        Text("置信度 \(r.confidenceLabel)")
+                            .font(.caption2).foregroundStyle(sem.ink3)
+                        if let d = r.dataAsOf {
+                            Text("· 截至 \(MarketCalendar.isoDay(d))")
+                                .font(.caption2).foregroundStyle(sem.ink3)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if r.observationOnly {
+                        HStack(spacing: 6) {
+                            Image(systemName: "eye").font(.caption2)
+                            Text("观察级别：可据此调整节奏，不构成买卖指令")
+                                .font(.caption2).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .foregroundStyle(sem.ink2)
+                    }
+                    if !r.reasons.isEmpty {
+                        ForEach(Array(r.reasons.prefix(3).enumerated()), id: \.offset) { _, reason in
+                            Text("· " + reason).font(.caption2).foregroundStyle(sem.ink3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } else {
+                    Text("上证指数日线不足 60 个交易日，暂无法判定市场环境（去行情页刷新一次即可）。")
+                        .font(.footnote).foregroundStyle(sem.ink3)
+                }
+            }
+        }
+    }
+
+    private func metric(_ title: String, _ value: Double, sem: ThemeSemantics) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(sem.ink3)
+            Text(value.pct(2)).font(.subheadline.bold()).monospacedDigit()
+                .foregroundStyle(PnLColor.of(value))
+        }
+    }
+
+    private func riskTint(_ level: MarketRiskLevel, sem: ThemeSemantics) -> Color {
+        switch level {
+        case .r0Normal: return sem.ink2
+        case .r1Elevated: return sem.warn
+        case .r2High, .r3Severe, .r4Extreme: return sem.danger
+        }
     }
 }
 

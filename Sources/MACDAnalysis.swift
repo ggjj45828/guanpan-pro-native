@@ -205,6 +205,20 @@ enum MACDCross: String {
     }
 }
 
+/// MACD 背离：仅在已收盘（信号确认）后判定，属观察证据，不得单独翻成买卖。
+enum MACDDivergence: String, Equatable, Sendable {
+    case none, bullish, bearish, undetermined
+
+    var title: String {
+        switch self {
+        case .none: return "无背离"
+        case .bullish: return "底背离（观察）"
+        case .bearish: return "顶背离（观察）"
+        case .undetermined: return "背离待确认"
+        }
+    }
+}
+
 struct MACDTimeframeAssessment {
     let timeframe: MACDTimeframe
     let trend: MACDTrend
@@ -213,6 +227,7 @@ struct MACDTimeframeAssessment {
     let histogramIncreasing: Bool?
     let cross: MACDCross
     let signalConfirmed: Bool
+    let divergence: MACDDivergence
     let dataQuality: Double
     let reasonCodes: [String]
 
@@ -241,7 +256,7 @@ enum MultiTimeframeMACDAnalyzer {
             return MACDTimeframeAssessment(timeframe: series.timeframe, trend: .dataInsufficient,
                                            difAboveZero: nil, deaAboveZero: nil,
                                            histogramIncreasing: nil, cross: .none,
-                                           signalConfirmed: false, dataQuality: series.completeness,
+                                           signalConfirmed: false, divergence: .undetermined, dataQuality: series.completeness,
                                            reasonCodes: ["历史长度不足，尚未完成预热"])
         }
         let previous = points[points.count - 2]
@@ -250,7 +265,7 @@ enum MultiTimeframeMACDAnalyzer {
             return MACDTimeframeAssessment(timeframe: series.timeframe, trend: .dataInsufficient,
                                            difAboveZero: last.dif > 0, deaAboveZero: last.dea > 0,
                                            histogramIncreasing: nil, cross: .none,
-                                           signalConfirmed: false, dataQuality: series.completeness,
+                                           signalConfirmed: false, divergence: .undetermined, dataQuality: series.completeness,
                                            reasonCodes: ["最新两点之间存在缺口，交叉不可确认"])
         }
         let increasing = last.histogram > previous.histogram
@@ -276,11 +291,56 @@ enum MultiTimeframeMACDAnalyzer {
         if cross == .golden { reasons.append("DIF 上穿 DEA") }
         if cross == .death { reasons.append("DIF 下穿 DEA") }
         if !series.finalized { reasons.append("最新一根未走完，信号未确认") }
+        let div = Self.detectDivergence(series)
         return MACDTimeframeAssessment(timeframe: series.timeframe, trend: trend,
                                        difAboveZero: last.dif > 0, deaAboveZero: last.dea > 0,
                                        histogramIncreasing: increasing, cross: cross,
-                                       signalConfirmed: series.finalized,
+                                       signalConfirmed: series.finalized, divergence: div,
                                        dataQuality: series.completeness, reasonCodes: reasons)
+    }
+
+    // MARK: - 背离检测（仅观察，不得单独翻成买卖）
+
+    /// 在最近窗口内找局部拐点（枢轴）。`lows=true` 找局部低点，`false` 找局部高点。
+    private static func pivotPoints(_ points: [MACDPoint], window: Int, lows: Bool) -> [MACDPoint] {
+        guard points.count > window * 2 else { return [] }
+        var result: [MACDPoint] = []
+        for i in window..<(points.count - window) {
+            let center = points[i]
+            let neighbors = points[(i - window)...(i + window)].filter { $0.inputIndex != center.inputIndex }
+            if lows {
+                if neighbors.allSatisfy({ $0.close > center.close }) { result.append(center) }
+            } else {
+                if neighbors.allSatisfy({ $0.close < center.close }) { result.append(center) }
+            }
+        }
+        return result
+    }
+
+    /// 常规背离：价格创新低/高，但 MACD 柱（动能）未同步创新低/高。
+    /// 仅在已收盘（`series.finalized`）后判定，未收盘一律 `undetermined`。
+    private static func detectDivergence(_ series: MACDSeries) -> MACDDivergence {
+        guard series.finalized, series.points.count >= 40 else { return .undetermined }
+        let points = series.points
+        let lows = pivotPoints(points, window: 3, lows: true)
+        let highs = pivotPoints(points, window: 3, lows: false)
+        if lows.count >= 2 {
+            let earlier = lows[lows.count - 2]
+            let later = lows[lows.count - 1]
+            // 底背离：价格更低，但 MACD 柱更高 —— 下跌动能减弱。
+            if later.close < earlier.close, later.histogram > earlier.histogram {
+                return .bullish
+            }
+        }
+        if highs.count >= 2 {
+            let earlier = highs[highs.count - 2]
+            let later = highs[highs.count - 1]
+            // 顶背离：价格更高，但 MACD 柱更低 —— 上涨动能减弱。
+            if later.close > earlier.close, later.histogram < earlier.histogram {
+                return .bearish
+            }
+        }
+        return .none
     }
 
     /// 日线 + 周线 + 60 分。缺哪个就说哪个不可用，不拿别的周期代填。
