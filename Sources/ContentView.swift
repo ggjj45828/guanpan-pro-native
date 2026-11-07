@@ -4882,7 +4882,7 @@ struct AddCashSimulationView: View {
         let currentTotal = store.totalAsset
         investable = cash * (1 - reserve / 100)
         let postInvestmentTotal = currentTotal + investable
-        var candidates: [(holding: Holding, target: Double, gap: Double, desired: Double)] = holdings.map { holding in
+        let candidates: [(holding: Holding, target: Double, gap: Double, desired: Double)] = holdings.map { holding in
             let configured = store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent
             let target = configured ?? (currentTotal > 0 ? holding.marketValue / currentTotal * 100 : 0)
             let gap = postInvestmentTotal * target / 100 - holding.marketValue

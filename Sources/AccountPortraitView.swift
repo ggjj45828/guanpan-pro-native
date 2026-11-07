@@ -87,7 +87,6 @@ enum PortraitEngine {
         let feeRate: Double? = turnover > 0 ? fees / turnover * 100 : nil
 
         // ---- 集中度与现金 ----
-        let marketValue = data.holdings.reduce(0) { $0 + $1.marketValue }
         let maxWeight: Double = totalAsset > 0
             ? (data.holdings.map { $0.marketValue / totalAsset }.max() ?? 0) * 100 : 0
         let cashRatio: Double = totalAsset > 0 ? data.cash / totalAsset * 100 : 0

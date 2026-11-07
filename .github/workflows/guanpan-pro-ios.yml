@@ -27,10 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Theme contract and algorithm checks
+      - name: Static contracts and algorithm checks
         run: |
           python3 Tools/theme_contract.py
           python3 Tools/verify_algorithms.py
+          python3 Tools/verify_symbols.py
 
       - name: Show Apple toolchain
         run: |

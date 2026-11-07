@@ -160,7 +160,9 @@ struct DisciplineLabView: View {
                 invalidationPrice: stop, note: "规则验证台（未保存）", createdAt: now)
             let quote = store.data.quotes.first { $0.code == plan.code }
                 ?? store.data.quotes.first { $0.code == code }
-            let session = MarketSessionStatus.status(at: now)
+            // 会话状态由 TradingSession 计算，不是 MarketSessionStatus 的静态成员；
+            // custom 必须带上用户自定义休市日，否则「今天休假」仍会被当成交易日。
+            let session = TradingSession.status(at: now, custom: store.data.customMarketHolidays)
             let regime = store.marketRegime(benchmarkCode: "sh000001")
             let snap = disciplineSnapshot(for: plan.code, price: target)
             assessment = RiskGuard.evaluate(candidate: plan, quote: quote,

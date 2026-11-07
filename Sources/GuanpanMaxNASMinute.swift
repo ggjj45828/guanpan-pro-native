@@ -336,7 +336,7 @@ enum GuanpanMaxNASMinuteArchive {
             guard let stamp = parseTimestamp(bar.timestamp),
                   stamp >= dayStart, stamp < dayEnd, stamp <= validationTime,
                   bar.price > 0, bar.price.isFinite,
-                  bar.minuteVolume.map { $0 >= 0 && $0.isFinite } ?? true else { return nil }
+                  (bar.minuteVolume.map { $0 >= 0 && $0.isFinite }) ?? true else { return nil }
             if let fetchedAtText = bar.fetchedAt {
                 guard let fetchedAt = parseTimestamp(fetchedAtText),
                       fetchedAt >= stamp, fetchedAt <= validationTime else { return nil }
@@ -518,6 +518,8 @@ enum GuanpanMaxNASMinuteArchive {
             return "字段 \(path(context)) 值为空（期望 \(String(describing: type))）"
         case let DecodingError.dataCorrupted(context):
             return "字段 \(path(context)) 数据损坏"
+        @unknown default:
+            return "响应无法解码（未知解码错误）"
         }
     }
 

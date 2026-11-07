@@ -24,6 +24,15 @@
   价量金额核对 + 疑似行拦截）→ `TradeCSVParser.parse` → `store.importTradeLedger`；
   `TradeScreenshotImportView` 先预览勾选再批量写入，只写历史流水，不动当前持仓与现金。
 - 工具页新增三个入口：量能结构、规则验证台、成交截图导入。
+- **CI 首跑修复 + 静态符号合同**：首次 macOS 构建报 `DisciplineLabView.swift:163`
+  `MarketSessionStatus.status(at:)` 不存在 —— 真正入口是
+  `TradingSession.status(at:custom:)`，且必须带 `customMarketHolidays`，否则用户手填的
+  休市日仍被当交易日。同时清掉 4 处会在 Swift 6 升级为错误的警告（未使用变量、
+  `var`→`let`、尾随闭包歧义、缺 `@unknown default`）。新增 `Tools/verify_symbols.py`：
+  按花括号配对收集本工程类型的静态成员与 enum case，核对 `Type.member(...)` 调用，
+  并自带「已知误用必须被拦住」的自检；CI 编译前依次跑
+  `theme_contract` / `verify_algorithms` / `verify_symbols`。它只拦源码层名字错误，
+  **不替代 Apple 编译**。
 
 ## 2.25.0 更新（把两套版式做透 + NAS 补采闭环 + 端口 8790）
 
