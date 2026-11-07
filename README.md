@@ -2,6 +2,35 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.27.0 更新（成交导入闭环：逐笔↔汇总对账 + 手续费诚实口径）
+
+- **逐笔 ↔ 汇总交叉对账**（对应 max 清单里标 `未完成` 的「汇总截图 reconciliation」）。
+  `TradeScreenshotOCR` 新增 `ScreenshotSummaryRow`、`extractSummaryRows(from:)`、
+  `reconcile(details:summary:)`；导入页把「逐笔截图」和「按股票汇总截图」分成两个选择器，
+  不让程序猜哪张是汇总页。两边按证券代码聚合数量 / 金额再比：任一代码只在一边出现、
+  数量不等、金额差超过 `max(¥0.05, 金额×0.02%)` 都整批拦截。
+  汇总行解析剔除 6 位代码和 `yyyyMMdd` 日期列，方向可为空；
+  选了汇总图却识别不出内容、或有疑似汇总行解析失败，同样拦截（fail closed）。
+  未提供汇总截图时不做对账，结果文字里明确写出「未做交叉核对」，不假装核对过。
+- **手续费不再把「不知道」记成 0**（对应 max 清单的「批次缺失手续费」）。
+  `TradeImportDraft` 增加 `feeKnown` / `feeOrigin` / `feeText`；
+  `TradeCSVParser` 只有在表格明确有手续费列且该行有值时才标 `confirmed`；
+  `importTradeLedger` 对任何 `feeKnown == false` 的选中行整批拒绝（`StoreError.missingImportedFee`），
+  避免买入成本被系统性低估。截图导入页提供逐笔补录输入框，以及默认关闭的
+  「每笔 ¥0.10 参考值」开关（明确标注不是券商实际收费）；CSV 导入页提供
+  「缺手续费，确认按 ¥0 计入」开关。两条路径都必须用户显式动作才能写账。
+- **CSV 导入页顺手收口**：此前仍用系统 `.secondary` / `.orange` 且弹窗背板是 `.clear`，
+  现改为 `ThemeSemantics`，补 `themedSheetBackground()`、键盘收起工具条与交互式收键盘；
+  截图导入页同样补齐键盘避让。
+- **静态验证**：`Tools/verify_algorithms.py` 新增 19 项 Python 复刻用例，覆盖汇总聚合、
+  缺代码 / 数量不符 / 金额超容差 / 容差内放行、日期列剔除，以及四种手续费来源判定；
+  CI 编译前与 `theme_contract.py`、`verify_symbols.py` 一起跑。
+- **边界**：真实同花顺长截图、多图重叠、汇总页版式差异、OCR 精度、批量原子写入在真机
+  Ledger 上的结果，以及今日 T/HOLD 复盘，仍属外部待验，本版不宣称完成。
+- 2.26.0 的 macOS CI 已 `success`（run `42327991998`），产物
+  `GuanpanPro-2.26.0-unsigned.ipa` 解包核对为 2.26.0 / 28 / iOS 17；
+  本版是在它之上继续做的功能增量。
+
 ## 2.26.0 更新（主题语义色合同 · 量能 · 风控链 · 截图 OCR）
 
 - **主题语义色合同**：新增 `ThemeSemantics.swift` 作为表单/弹窗/固定确认区的唯一取色入口；

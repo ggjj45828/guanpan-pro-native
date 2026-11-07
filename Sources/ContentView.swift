@@ -2309,13 +2309,32 @@ struct ArchivedFundItem: Identifiable {
 struct TradeCSVImportView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appAppearance) private var appearance
     @State private var text = ""
     @State private var drafts: [TradeImportDraft] = []
     @State private var message = ""
     @State private var showImporter = false
     @State private var isImporting = false
+    @State private var confirmZeroFee = false
+    private var s: ThemeSemantics { .of(appearance) }
     private var validSelected: Int { drafts.filter { $0.selected && $0.isValid }.count }
     private var invalidCount: Int { drafts.filter { !$0.isValid }.count }
+    private var missingFeeCount: Int { drafts.filter { $0.selected && $0.isValid && !$0.feeKnown }.count }
+    private var feeReady: Bool { missingFeeCount == 0 || confirmZeroFee }
+
+    private func appliedDrafts() -> [TradeImportDraft] {
+        guard confirmZeroFee else { return drafts }
+        return drafts.map { draft in
+            var copy = draft
+            if !copy.feeKnown {
+                // 用户明确确认「本表没有手续费列，按 0 计入」，才允许写成 0。
+                copy.feeKnown = true
+                copy.fee = 0
+                copy.feeOrigin = .confirmed
+            }
+            return copy
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -2325,8 +2344,8 @@ struct TradeCSVImportView: View {
                     TextEditor(text: $text).frame(minHeight: 110)
                     Button("识别并预览") { drafts = TradeCSVParser.parse(text); message = "识别到 \(drafts.count) 行，其中 \(drafts.filter(\.isValid).count) 行可导入。" }
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Text("需要列名：日期、代码、买卖方向、价格、数量；手续费可选。支持逗号 CSV 和制表符表格。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("需要列名：日期、代码、买卖方向、价格、数量；手续费可选，但缺列时必须明确确认，不能默认按 0 计入成本。支持逗号 CSV 和制表符表格。")
+                        .font(.footnote).foregroundStyle(s.ink2)
                 }
                 if !drafts.isEmpty {
                     Section("预览 · 可导入 \(validSelected) 行 · 未识别 \(invalidCount) 行") {
@@ -2335,29 +2354,46 @@ struct TradeCSVImportView: View {
                                 Toggle(isOn: $draft.selected) {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text("第 \(draft.rowNumber) 行 · \(draft.name) · \(draft.code)")
+                                            .foregroundStyle(s.ink)
                                         if let date = draft.date {
                                             Text("\(date.formatted(date: .numeric, time: .omitted)) · \(draft.side == .buy ? "买入" : "卖出") · \((draft.quantity).num(4)) × \((draft.price).num(4)) · 费 \((draft.fee).num(2))")
-                                                .font(.caption).foregroundStyle(.secondary)
+                                                .font(.caption).foregroundStyle(s.ink2)
+                                        }
+                                        if draft.error == nil && !draft.feeKnown {
+                                            Text("本表没有给这笔的手续费")
+                                                .font(.caption2).foregroundStyle(s.warn)
                                         }
                                     }
                                 }.disabled(!draft.isValid)
-                                if let error = draft.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                                if let error = draft.error { Text(error).font(.caption).foregroundStyle(s.danger) }
                             }.padding(.vertical, 3)
                         }
+                        if missingFeeCount > 0 {
+                            Toggle(isOn: $confirmZeroFee) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(missingFeeCount) 笔缺手续费，确认按 ¥0 计入")
+                                        .font(.subheadline).foregroundStyle(s.ink)
+                                    Text("仅在你确认券商确实不收费时勾选；否则请补上手续费列再导入。")
+                                        .font(.caption2).foregroundStyle(s.ink3)
+                                }
+                            }
+                        }
                         Text("导入后只写历史流水，不变更当前份额和参考现金。卖出盈亏按完整买入历史的加权成本计算；若记录缺少更早买入、卖出超出累计买入，会拒绝整批导入。相同日期、代码、方向、数量和价格的已有流水会跳过。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(s.ink2)
                     }
                     Button { importSelected() } label: {
                         Label(isImporting ? "正在导入…" : "确认导入所选 \(validSelected) 行", systemImage: "square.and.arrow.down")
-                    }.disabled(validSelected == 0 || isImporting)
+                    }.disabled(validSelected == 0 || isImporting || !feeReady)
                 }
-                if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
+                if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(s.ink2) } }
             }
             .scrollContentBackground(.hidden)
-            .background(.clear)
+            .themedSheetBackground()
             .navigationTitle("导入成交历史")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .keyboardDoneToolbar()
+            .scrollDismissesKeyboard(.interactively)
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { result in
                 do {
                     guard let url = try result.get().first else { return }
@@ -2376,8 +2412,12 @@ struct TradeCSVImportView: View {
     private func importSelected() {
         isImporting = true
         defer { isImporting = false }
+        guard feeReady else {
+            message = "有成交缺少手续费数据：请补上手续费列，或明确确认按 ¥0 计入。"
+            return
+        }
         do {
-            let count = try store.importTradeLedger(drafts)
+            let count = try store.importTradeLedger(appliedDrafts())
             message = count == 0 ? "所选流水均已存在，没有重复写入。" : "已导入 \(count) 笔历史成交流水；当前持仓和现金未改动。"
             drafts.removeAll()
         } catch { message = error.localizedDescription }

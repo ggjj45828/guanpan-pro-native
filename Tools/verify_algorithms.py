@@ -2,7 +2,8 @@
 """离线算法验证（Python 复刻口径，不是 XCTest）。
 
 覆盖 VolumeAnalysis / PositionDiscipline / RealtimeTrigger / CandidateShadow /
-截图行解析的关键分支。CI 会跑它；本地也可用 python3 Tools/verify_algorithms.py。
+截图行解析、逐笔↔汇总对账、手续费诚实口径的关键分支。
+CI 会跑它；本地也可用 python3 Tools/verify_algorithms.py。
 """
 from __future__ import annotations
 
@@ -193,9 +194,126 @@ check("金额不符会被拦截", abs(3.982 * 100 - 400.00) > max(0.02, 400.00 *
 check("多图行指纹去重口径", len({"510300|买入|09:35:02|3.982|100|398.20",
                                 "510300|买入|09:35:02|3.982|100|398.20"}) == 1)
 
+# ---- 逐笔 ↔ 汇总截图对账 -----------------------------------------------
+def reconcile(details, summary):
+    """与 Swift TradeScreenshotOCR.reconcile 同口径：按代码聚合数量 / 金额再比。"""
+    def bucket(rows):
+        out = {}
+        for r in rows:
+            b = out.setdefault(r["code"], {"units": 0.0, "amount": 0.0})
+            b["units"] += float(r["units"])
+            b["amount"] += float(r["amount"])
+        return out
+    left, right = bucket(details), bucket(summary)
+    if not left or not right:
+        return False, ["无可核对数据"]
+    bad = sorted(set(left) ^ set(right))
+    for code, a in left.items():
+        b = right.get(code)
+        if b is None:
+            continue
+        tol = max(0.05, abs(a["amount"]) * 0.0002)
+        if abs(a["units"] - b["units"]) > 1e-6 or abs(a["amount"] - b["amount"]) > tol:
+            if code not in bad:
+                bad.append(code)
+    return not bad, sorted(bad)
+
+
+detail_rows = [
+    {"code": "510300", "units": "100", "amount": "398.20"},
+    {"code": "510300", "units": "200", "amount": "796.60"},
+    {"code": "159915", "units": "100", "amount": "212.30"},
+]
+ok, bad = reconcile(detail_rows, [
+    {"code": "510300", "units": "300", "amount": "1194.80"},
+    {"code": "159915", "units": "100", "amount": "212.30"},
+])
+check("逐笔多笔同代码聚合后与汇总一致", ok, str(bad))
+ok, bad = reconcile(detail_rows, [{"code": "510300", "units": "300", "amount": "1194.80"}])
+check("汇总缺代码会被整批拦截", not ok and bad == ["159915"], str(bad))
+ok, bad = reconcile(detail_rows, [
+    {"code": "510300", "units": "200", "amount": "1194.80"},
+    {"code": "159915", "units": "100", "amount": "212.30"},
+])
+check("数量不符会被拦截", not ok and bad == ["510300"], str(bad))
+ok, bad = reconcile(detail_rows, [
+    {"code": "510300", "units": "300", "amount": "1195.80"},
+    {"code": "159915", "units": "100", "amount": "212.30"},
+])
+check("金额超容差会被拦截", not ok and bad == ["510300"], str(bad))
+ok, bad = reconcile(detail_rows, [
+    {"code": "510300", "units": "300", "amount": "1194.82"},
+    {"code": "159915", "units": "100", "amount": "212.30"},
+])
+check("金额在容差内放行", ok, str(bad))
+
+# ---- 汇总行解析：日期不能被当成数量 ------------------------------------
+def parse_summary(texts):
+    joined = " ".join(texts)
+    m = re.search(r"(?<!\d)\d{6}(?!\d)", joined)
+    if not m:
+        return None
+    code = m.group(0)
+    cleaned = [re.sub(r"[,，¥￥\s]", "", x) for x in texts]
+    nums = [x for x in cleaned
+            if re.fullmatch(r"\d+(?:\.\d+)?", x)
+            and x != code and code not in x
+            and not (len(x) == 8 and x.startswith("20"))]
+    if len(nums) < 2:
+        return None
+    idx = next((i for i, v in enumerate(nums) if re.fullmatch(r"\d+", v) and int(v) >= 1), None)
+    if idx is None:
+        return None
+    units, amount = nums[idx], nums[-1]
+    if amount == units or float(units) <= 0 or float(amount) <= 0:
+        return None
+    return {"code": code, "units": units, "amount": amount,
+            "side": "卖出" if "卖" in joined else ("买入" if "买" in joined else "")}
+
+
+srow = parse_summary(["20261107", "沪深300ETF", "510300", "2.000", "300", "1194.80"])
+check("汇总行剔除 yyyyMMdd 日期与 6 位代码",
+      srow is not None and srow["units"] == "300" and srow["amount"] == "1194.80", str(srow))
+check("汇总行方向可为空", srow is not None and srow["side"] == "")
+
+# ---- 手续费诚实口径 ----------------------------------------------------
+def fee_from_table(has_fee_column, fee_cell=""):
+    return has_fee_column and fee_cell != ""
+
+
+def applied_fee(fee_text, use_reference, confirmed_zero=False):
+    """返回 (fee, feeKnown, origin)，对应两个导入视图的 appliedDrafts。"""
+    raw = fee_text.strip().replace("¥", "")
+    try:
+        value = float(raw) if raw else None
+    except ValueError:
+        value = None
+    if value is not None and math.isfinite(value) and value >= 0:
+        return value, True, "confirmed"
+    if use_reference:
+        return 0.10, True, "reference"
+    if confirmed_zero:
+        return 0.0, True, "confirmed"
+    return 0.0, False, "missing"
+
+
+check("截图表没有手续费列 → 不可直接写账", fee_from_table(False) is False)
+check("表格有手续费列且填了值 → 可直接写账", fee_from_table(True, "1.50") is True)
+check("表格有手续费列但某行为空 → 仍需确认", fee_from_table(True, "") is False)
+f, known, origin = applied_fee("", False)
+check("未补录且未勾选参考值 → 拒绝写入", not known and origin == "missing")
+f, known, origin = applied_fee("1.20", False)
+check("逐笔补录 1.20 → 确认写入", known and f == 1.20 and origin == "confirmed")
+f, known, origin = applied_fee("", True)
+check("明确勾选参考值 → 每笔 ¥0.10 且标记 reference", known and f == 0.10 and origin == "reference")
+f, known, origin = applied_fee("abc", True)
+check("无效输入不伪装成有效费用，但参考值仍生效", f == 0.10 and origin == "reference")
+f, known, origin = applied_fee("", False, confirmed_zero=True)
+check("CSV 明确确认按 0 → 允许但来源可追溯", known and f == 0.0 and origin == "confirmed")
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径")
 sys.exit(0)

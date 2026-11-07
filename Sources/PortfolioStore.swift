@@ -2580,7 +2580,7 @@ final class PortfolioStore: ObservableObject {
 }
 
 enum StoreError: LocalizedError {
-    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, invalidAccountExpense, insufficientCashForExpense, invalidFeeCorrection
+    case invalidTrade, insufficientShares, insufficientCash, insufficientCashToUndoTrade, insufficientCashForFeeCorrection, noUndoableTrade, invalidCashFlow, invalidFundBackfill, invalidDividend, invalidAlert, invalidManualPrice, invalidFundFeePolicy, invalidFundFeeCorrection, invalidAllocationTarget, invalidImportedLedger, invalidAccountExpense, insufficientCashForExpense, invalidFeeCorrection, missingImportedFee
     var errorDescription: String? {
         switch self {
         case .invalidTrade: return "请检查份额、价格、费用和标的。"
@@ -2601,6 +2601,7 @@ enum StoreError: LocalizedError {
         case .invalidAccountExpense: return "请填写大于 0 的金额和说明；说明是这笔费用唯一的来由，不能空着。"
         case .insufficientCashForExpense: return "参考现金不足，无法同时扣减。可以关掉「同步扣现金」，只做统计。"
         case .invalidFeeCorrection: return "新的手续费无效：必须大于等于 0、不超过这笔成交金额，并填写更正原因。"
+        case .missingImportedFee: return "这批成交没有可靠的手续费数据。请逐笔补录，或明确确认使用参考值；不能把「不知道」记成 0。"
         }
     }
 }

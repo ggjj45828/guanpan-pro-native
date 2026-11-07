@@ -1,5 +1,15 @@
 import Foundation
 
+/// 一笔成交的手续费是从哪来的。截图里没有手续费列，不能默认当成 0。
+enum TradeFeeOrigin: String {
+    /// 表格明确给了手续费列、用户逐笔补录了数值，或用户明确确认「按 0 计入」。
+    case confirmed
+    /// 用户明确勾选「每笔 ¥0.10 参考值」，不是券商实际收费。
+    case reference
+    /// 还没有任何可靠来源。
+    case missing
+}
+
 struct TradeImportDraft: Identifiable {
     var id = UUID()
     var rowNumber: Int
@@ -10,6 +20,11 @@ struct TradeImportDraft: Identifiable {
     var quantity: Double
     var price: Double
     var fee: Double
+    /// 手续费是否有可靠来源；false 时禁止写账本，避免把「不知道」记成 0。
+    var feeKnown: Bool = true
+    var feeOrigin: TradeFeeOrigin = .confirmed
+    /// 截图导入里用户逐笔补录的费用文本（视图层状态）。
+    var feeText: String = ""
     var error: String?
     var selected = true
 
@@ -61,7 +76,11 @@ enum TradeCSVParser {
                 price = numerics.first(where: { $0 < 100_000 && $0.rounded() != $0 }) ?? numerics.first ?? 0
                 quantity = numerics.first(where: { $0 >= 1 && $0.rounded() == $0 }) ?? 0
             }
-            let fee = abs(number(hasHeader ? cell("fee") : ""))
+            let feeCell = hasHeader ? cell("fee") : ""
+            let fee = abs(number(feeCell))
+            // 没有明确手续费列时不能默认 0：截图 / 无表头导入必须人工确认，
+            // 否则买入成本会被系统性低估。
+            let feeKnown = hasHeader && columns["fee"] != nil && !feeCell.isEmpty
             var problems: [String] = []
             if code.isEmpty { problems.append("代码未识别") }
             if date == nil { problems.append("日期未识别") }
@@ -70,6 +89,7 @@ enum TradeCSVParser {
             if quantity <= 0 { problems.append("数量无效") }
             return TradeImportDraft(rowNumber: row.offset + 1, code: code, name: name.isEmpty ? code : name,
                 date: date, side: parsedSide, quantity: quantity, price: price, fee: fee,
+                feeKnown: feeKnown, feeOrigin: feeKnown ? .confirmed : .missing,
                 error: problems.isEmpty ? nil : problems.joined(separator: "、"), selected: problems.isEmpty)
         }
     }
@@ -126,6 +146,7 @@ extension PortfolioStore {
     func importTradeLedger(_ drafts: [TradeImportDraft]) throws -> Int {
         let chosen = drafts.filter { $0.selected && $0.isValid }
         guard !chosen.isEmpty else { throw StoreError.invalidTrade }
+        guard chosen.allSatisfy({ $0.feeKnown }) else { throw StoreError.missingImportedFee }
         let dayFormatter = DateFormatter(); dayFormatter.locale = Locale(identifier: "en_US_POSIX")
         dayFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); dayFormatter.dateFormat = "yyyy-MM-dd"
         func sameTrade(_ lhs: LedgerEntry, code: String, side: LedgerEntry.Side, quantity: Double, price: Double, date: Date) -> Bool {
