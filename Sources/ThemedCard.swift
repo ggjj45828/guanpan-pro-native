@@ -10,8 +10,8 @@ import SwiftUI
 /// 页面级配色：把「某段数值该用什么颜色」收敛到一处，
 /// 免得每个页面各写一遍红涨绿跌的阈值（阈值不一致时同一页会出现两种红）。
 enum CardTone {
-    /// 网页版 `.ai` 区块的强调紫，用于顾问/AI 结果卡。
-    static let accent = Color(red: 0.61, green: 0.42, blue: 1.0)
+    /// AI / 顾问区块的强调色，跟主题走（科技黑绿为柠檬绿）。
+    static let accent = TechGreen.accent
     /// 网页版警示/待确认区块的琥珀色。
     static let warn = Color(red: 0.98, green: 0.66, blue: 0.20)
     /// 数据新鲜、对账一致等「状态良好」的蓝绿。

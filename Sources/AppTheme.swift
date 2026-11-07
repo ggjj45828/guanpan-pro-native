@@ -1,6 +1,40 @@
 import SwiftUI
 import UIKit
 
+// MARK: - 科技黑绿：唯一色值源
+//
+// 「换主题」不是给卡片换个色，而是画布、卡片、描边、强调色、AI 球一起变。
+// 此前 `AppTheme`（管 List / Form / 弹窗背板 / 根背景）与 `DsPalette`
+// （管新版页面的 canvas / card / accent）各写了一套颜色，改一处就漏一处，
+// 于是出现「首页变了、点进去还是中性黑」的割裂。这里收敛成单一来源，
+// 两套体系都引用它 —— 主题才是真正全局生效。
+//
+// 强调色刻意选偏黄的**柠檬绿 #C8F751**，不用薄荷绿/翠绿：
+// A 股「跌」是青绿 #12C48C，同色相的强调色会被读成亏损色。
+enum TechGreen {
+    /// 画布：近黑带极轻的墨绿，不是中性灰黑。
+    static let canvasTop = Color(hex: 0x0A100C)
+    static let canvasBottom = Color(hex: 0x030604)
+    /// 卡片只比画布亮一级，边界靠 1px 描边而不是阴影。
+    static let surface = Color(hex: 0x121916)
+    static let surfaceSoft = Color(hex: 0x1A241E)
+
+    static let accent = Color(hex: 0xC8F751)
+
+    /// AI 球 / AI 卡专用渐变：薄荷绿 → 黄绿 → 柠檬绿。
+    static let aiStart = Color(hex: 0x4FE0A0)
+    static let aiMiddle = Color(hex: 0xA6E86A)
+    static let aiEnd = Color(hex: 0xC8F751)
+    /// 悬浮球的绿色光晕。
+    static let orbGlow = Color(hex: 0x8CE05A)
+
+    static var aiGradient: LinearGradient {
+        LinearGradient(colors: [aiStart, aiMiddle, aiEnd],
+                       startPoint: .topLeading,
+                       endPoint: .bottomTrailing)
+    }
+}
+
 /// 每个外观主题一套独立底色，让「换主题」在视觉上立刻可分辨。
 ///
 /// 背景：此前主题只影响 `preferredColorScheme`（深/浅）与 `tint`（强调色），
@@ -18,12 +52,12 @@ struct AppTheme {
             Color(red: r / 255, green: g / 255, blue: b / 255)
         }
         switch appearance {
-        // 科技黑（默认）：近纯黑画布 + 只比画布亮一级的卡片。
-        // 参照稿的设计意图是「卡片靠描边界定、不靠阴影」，所以画布压到 #0B0B0C，
-        // 卡片 #141416 —— 差 9 个色阶，足以分清，又不会把纯黑的高级感冲淡。
+        // 科技黑绿（默认）：墨绿近黑画布 + 只比画布亮一级的卡片。
+        // 参照稿的意图是「卡片靠描边界定、不靠阴影」，所以画布压到 #0A100C，
+        // 卡片 #121916 —— 差 9 个色阶，既分得清，又不会把近黑的质感冲淡。
         case .techBlack:
-            return AppTheme(top: Color(hex: 0x0B0B0C), bottom: Color(hex: 0x040405),
-                            surface: Color(hex: 0x141416), isLight: false)
+            return AppTheme(top: TechGreen.canvasTop, bottom: TechGreen.canvasBottom,
+                            surface: TechGreen.surface, isLight: false)
         // 蓝海浅色：同一套层级的浅色版 —— 极淡冷灰画布 + 纯白卡片。
         case .oceanBlue:
             return AppTheme(top: Color(hex: 0xF7F8FA), bottom: Color(hex: 0xEDEFF3),
@@ -133,7 +167,10 @@ extension AppAppearance {
     /// 注意：设置页的主题预览卡**不能**用它 —— 那里要如实画出 `.system` 这一档本身。
     static func resolved(_ appearance: AppAppearance) -> AppAppearance {
         guard appearance == .system else { return appearance }
-        return UITraitCollection.current.userInterfaceStyle == .light ? .light : .dark
+        // 落到两套正式主题上，而不是旧的 .dark / .light：
+        // 否则老存档里的「跟随系统」会拿到一套中性深空灰，
+        // 换主题时背景、卡片、强调色全都跟不上。
+        return UITraitCollection.current.userInterfaceStyle == .light ? .oceanBlue : .techBlack
     }
 }
 
@@ -142,7 +179,7 @@ extension AppAppearance {
 extension AppAppearance {
     var title: String {
         switch self {
-        case .techBlack: return "科技黑"
+        case .techBlack: return "科技黑绿"
         case .oceanBlue: return "蓝海浅色"
         case .system: return "跟随系统"
         case .dark: return "深空灰"
@@ -171,9 +208,9 @@ extension AppAppearance {
 
     var accentColor: Color {
         switch self {
-        // 科技黑主色：亮蓝 #4F7CFF。参照稿里强调色只出现在 AI 块与选中态，
-        // 所以它必须够亮才能在纯黑上跳出来，同时又不能抢走红涨绿跌。
-        case .techBlack: return Color(hex: 0x4F7CFF)
+        // 科技黑绿主色：柠檬绿 #C8F751。偏黄是为了和「跌绿」#12C48C 拉开色相，
+        // 同时够亮，能在墨绿近黑画布上跳出来；只出现在 AI 块与选中态。
+        case .techBlack: return TechGreen.accent
         // 蓝海主色：#2F5BE8，白底上压得住。
         case .oceanBlue: return Color(hex: 0x2F5BE8)
         case .oled, .dark, .graphite: return Color(red: 0.31, green: 0.55, blue: 1.0)

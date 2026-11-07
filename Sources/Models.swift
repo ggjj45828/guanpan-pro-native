@@ -210,7 +210,7 @@ struct AllocationTarget: Codable, Identifiable {
 
 enum AppAppearance: String, Codable {
     /// 两套正式主题。旧的 14 套配色只保留 rawValue 以兼容老存档，
-    /// 不再出现在设置页里 —— 用户只需要「科技黑 / 蓝海浅色」二选一。
+    /// 不再出现在设置页里 —— 用户只需要「科技黑绿 / 蓝海浅色」二选一。
     case techBlack, oceanBlue
     // 以下为历史配色，仅为解码旧数据保留。
     case system, dark, oled, light, blue, green, purple, sakura, cyber, amber, paper, mint, coffee, graphite

@@ -188,7 +188,7 @@ struct IncomeHubView: View {
     private var calendarCard: some View {
         VStack(spacing: 0) {
             entryRow(title: "基金收益日历", subtitle: "按日看场外基金的当日收益与累计",
-                     icon: "calendar", tint: Color(hex: 0x4F7CFF)) {
+                     icon: "calendar", tint: TechGreen.accent) {
                 showFundCalendar = true
             }
             divider

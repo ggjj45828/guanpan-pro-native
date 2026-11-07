@@ -2,6 +2,15 @@
 
 这是观盘 Pro 的原生 iOS / iPadOS 源码，最低系统版本为 iOS 17。当前版本见 `project.yml` 的 `CFBundleShortVersionString`。
 
+## 2.23.0 更新（科技黑绿主题全局生效）
+
+- 诊断：此前主题色是**亮蓝 `#4F7CFF`**，而且 `AppTheme`（管根背景、List/Form、弹窗背板）与 `DsPalette`（管新版页面的 canvas/card/accent）**各写一套颜色** —— 改一处就漏一处，于是「首页变了、点进去还是中性黑」。主题名也只是「科技黑」，没有绿。
+- 新增 `TechGreen` 作为**唯一色值源**，两套体系全部引用它：画布 `#0A100C → #030604`（墨绿近黑）、卡片 `#121916`、柔卡 `#1A241E`、强调色**柠檬绿 `#C8F751`**、AI 渐变 `#4FE0A0 → #A6E86A → #C8F751`、悬浮球光晕 `#8CE05A`。
+- **背景与卡片一起改**：根视图 `backgroundLayer`、弹窗 `ThemedSheetBackground`、各页 `.background(palette.canvas)`、`ToneCardBackground`/`plainCard`/`toneCard` 的行卡底、`dsSurface` 卡面，全部指向同一组值；设置页主题预览卡随之变色。主题显示名改为「科技黑绿」。
+- 强调色选**偏黄的柠檬绿**而不是薄荷/翠绿，是为了和 A 股「跌绿」`#12C48C` 拉开色相，避免把强调色读成亏损色。浅色主题「蓝海浅色」保持原有蓝色不变。
+- 「跟随系统」原来解析到旧的中性 `.dark`/`.light`，不吃新主题；现在落到 `.techBlack`/`.oceanBlue`，老存档也能拿到完整主题底色。
+- 逐项核对了 93 个 sheet/fullScreenCover：主题底覆盖完整（`LedgerConfirmationSheet`、`LandscapeChartView` 等组件内部自带，非漏挂）。
+
 ## 2.22.0 更新（NAS 部分对齐观盘max 的严谨度）
 
 - 新增 `Sources/GuanpanMaxNASMinute.swift`：把观盘max 客户端最厚的「归档分钟线」能力移植进来。逐条校验来源白名单、时间戳落在所问交易日、价格为正、成交量非负、采集时间不早于该分钟也不来自未来；同一分钟重复只保留第一条。

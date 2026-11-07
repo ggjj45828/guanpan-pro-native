@@ -110,7 +110,7 @@ struct ProTabBar: View {
                     .fill(DS.aiGradient)
                     .frame(width: 52, height: 52)
                     .overlay { Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1) }
-                    .shadow(color: Color(hex: 0x6A5CF0).opacity(0.55), radius: 14, y: 4)
+                    .shadow(color: TechGreen.orbGlow.opacity(0.55), radius: 14, y: 4)
                 Image(systemName: "sparkles")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)

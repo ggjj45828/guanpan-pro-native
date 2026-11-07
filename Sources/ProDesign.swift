@@ -2,8 +2,8 @@ import SwiftUI
 
 // MARK: - 设计系统（深色高级质感）
 //
-// 参照三张 Dribbble 作品重建：纯黑画布、比画布略亮一级的大圆角浮起卡片、
-// 极细描边代替阴影、超大等宽数字、12pt 灰标签、单一强调色 + 一条 AI 渐变。
+// 参照三张 Dribbble 作品重建：墨绿近黑画布、比画布略亮一级的大圆角浮起卡片、
+// 极细描边代替阴影、超大等宽数字、12pt 灰标签、柠檬绿强调 + 一条绿系 AI 渐变。
 //
 // 这里只放「长得一样」的东西（色、圆角、间距、字号、通用小部件），
 // 业务含义一律不进这个文件 —— 涨跌红绿、金额口径仍然走 PnLColor / Formatting。
@@ -24,20 +24,22 @@ struct DsPalette {
 
     init(isLight: Bool) { self.isLight = isLight }
 
-    // 画布：深色几乎纯黑，浅色是极淡的冷灰。
-    var canvasTop: Color { isLight ? Color(hex: 0xF7F8FA) : Color(hex: 0x0B0B0C) }
-    var canvasBottom: Color { isLight ? Color(hex: 0xEDEFF3) : Color(hex: 0x040405) }
+    // 画布：深色是墨绿近黑，浅色是极淡的冷灰。
+    // 深色分支一律引用 TechGreen —— 与 AppTheme 的根背景层、弹窗背板同源，
+    // 主题才不会在主页面与次级页面之间断掉。
+    var canvasTop: Color { isLight ? Color(hex: 0xF7F8FA) : TechGreen.canvasTop }
+    var canvasBottom: Color { isLight ? Color(hex: 0xEDEFF3) : TechGreen.canvasBottom }
 
-    // 卡片：比画布亮一级即可，靠 1px 描边界定范围，不用阴影（阴影在纯黑上看不见）。
-    var card: Color { isLight ? Color.white : Color(hex: 0x141416) }
-    var cardSoft: Color { isLight ? Color(hex: 0xF2F3F6) : Color(hex: 0x1C1C1F) }
+    // 卡片：比画布亮一级即可，靠 1px 描边界定范围，不用阴影（阴影在近黑上看不见）。
+    var card: Color { isLight ? Color.white : TechGreen.surface }
+    var cardSoft: Color { isLight ? Color(hex: 0xF2F3F6) : TechGreen.surfaceSoft }
     var hairline: Color { isLight ? Color.black.opacity(0.07) : Color.white.opacity(0.07) }
 
     var ink: Color { isLight ? Color(hex: 0x101013) : Color.white }
     var ink2: Color { isLight ? Color(hex: 0x6E6E76) : Color(hex: 0x8C8C93) }
     var ink3: Color { isLight ? Color(hex: 0x9A9AA2) : Color(hex: 0x5B5B62) }
 
-    var accent: Color { isLight ? Color(hex: 0x2F5BE8) : Color(hex: 0x4F7CFF) }
+    var accent: Color { isLight ? Color(hex: 0x2F5BE8) : TechGreen.accent }
     var accentDim: Color { accent.opacity(isLight ? 0.12 : 0.18) }
 
     var canvas: LinearGradient {
@@ -69,12 +71,8 @@ enum DS {
     static let fsLabel: CGFloat = 12
     static let fsMicro: CGFloat = 10.5
 
-    /// AI 那一块专用的蓝→紫渐变，整个 App 只有它用渐变。
-    static var aiGradient: LinearGradient {
-        LinearGradient(colors: [Color(hex: 0x3A63F2), Color(hex: 0x7A5AF0), Color(hex: 0xA98BFF)],
-                       startPoint: .topLeading,
-                       endPoint: .bottomTrailing)
-    }
+    /// AI 那一块专用的绿系渐变，整个 App 只有它用渐变。
+    static var aiGradient: LinearGradient { TechGreen.aiGradient }
 }
 
 // MARK: - 卡片底
