@@ -63,17 +63,25 @@ jobs:
           set -eu
           APP=$(find build/Device/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
           echo "app: $APP"
+          VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          echo "version: $VER ($BUILD)"
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry GuanpanPro-unsigned.ipa Payload
-          ls -lh GuanpanPro-unsigned.ipa
+          # 用 ditto 而不是 zip：ditto 会正确写 UTF-8 名称标志位并保留资源分叉。
+          # 之前用 zip -qry 时条目名没有 UTF-8 标志，Windows 侧签名/安装工具
+          # 按 ANSI 代码页解包会把路径解成乱码，表现就是「签名成功但装不上」。
+          rm -f "GuanpanPro-${VER}-unsigned.ipa"
+          ditto -c -k --sequesterRsrc --keepParent Payload "GuanpanPro-${VER}-unsigned.ipa"
+          ls -lh "GuanpanPro-${VER}-unsigned.ipa"
+          echo "IPA_NAME=GuanpanPro-${VER}-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: guanpan-pro-ipa
-          path: GuanpanPro-unsigned.ipa
+          path: ${{ env.IPA_NAME }}
           if-no-files-found: error
 
       - name: Upload build log on failure

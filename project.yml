@@ -23,8 +23,8 @@ targets:
         CFBundleDisplayName: 观盘 Pro
         CFBundleName: 观盘 Pro
         CFBundleDevelopmentRegion: zh_CN
-        CFBundleShortVersionString: "2.28.8"
-        CFBundleVersion: "38"
+        CFBundleShortVersionString: "2.28.9"
+        CFBundleVersion: "39"
         LSRequiresIPhoneOS: true
         UIApplicationSupportsIndirectInputEvents: true
         # 原来是空字典：启动瞬间是系统默认白/黑，会明显闪一下再进 App。
@@ -55,7 +55,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guanpan.pro.native
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        PRODUCT_NAME: 观盘 Pro
+        # 可执行文件名必须是纯 ASCII。原来这里是「观盘 Pro」，
+        # 导致 .app 目录名、Mach-O 可执行名都带空格与中文，
+        # zip 里又没打 UTF-8 标志位 → Windows 侧签名/安装工具解包后路径变乱码，
+        # 表现为「签名成功但装不上 / 找不到 .app」。
+        # 界面显示名由 CFBundleDisplayName 决定，仍是「观盘 Pro」。
+        PRODUCT_NAME: GuanpanPro
         GENERATE_INFOPLIST_FILE: "NO"
         # 1 = iPhone，2 = iPad。改成 "1,2" 后 App 才能在 iPad 上以全屏（而非放大 2 倍的兼容模式）运行，
         # 配合 ContentView 里 horizontalSizeClass == .regular 的分栏分支才真正有意义。
