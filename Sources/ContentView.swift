@@ -3842,6 +3842,7 @@ struct ToolsView: View {
     @State private var showReturnSource = false
     @State private var showHistoricalReplay = false
     @State private var showIntradayArchive = false
+    @State private var showNASPeriodChart = false
     @State private var showDataTrust = false
     @State private var showReconciliation = false
     @State private var showTradeLedger = false
@@ -3916,6 +3917,9 @@ struct ToolsView: View {
                 }
                 Button { showIntradayArchive = true } label: {
                     Label("分时采集与历史复盘", systemImage: "chart.xyaxis.line")
+                }
+                Button { showNASPeriodChart = true } label: {
+                    Label("周期K线（120/60/30/15）", systemImage: "candlestick.chart")
                 }
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showAllTools.toggle() }
@@ -4223,6 +4227,7 @@ struct ToolsView: View {
             .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
             .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
             .sheet(isPresented: $showIntradayArchive) { IntradayArchiveView() .themedSheetBackground() }
+            .sheet(isPresented: $showNASPeriodChart) { NASPeriodChartView() .themedSheetBackground() }
             .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
             .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
             .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }
