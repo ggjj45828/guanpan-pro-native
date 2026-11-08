@@ -194,9 +194,9 @@ struct NASPeriodChartView: View {
         }
     }
 
-    private var candleChart: some View {
+    private func candleChart(_ chart: NASPeriodChart) -> some View {
         Chart {
-            ForEach(chart?.bars ?? []) { bar in
+            ForEach(chart.bars) { bar in
                 let up = bar.close >= bar.open
                 let color = up ? Color.red : Color.green
                 RuleMark(x: .value("时间", bar.timestamp),
