@@ -2426,6 +2426,8 @@ struct TradeCSVImportView: View {
 struct TradeLedgerManagementView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮。
+    var embedded: Bool = false
     @State private var pending: LedgerEntry?
     @State private var showConfirm = false
     @State private var message = ""
@@ -2440,7 +2442,7 @@ struct TradeLedgerManagementView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("全部流水 · \(rows.count) 笔") {
                     if rows.isEmpty {
@@ -2478,7 +2480,7 @@ struct TradeLedgerManagementView: View {
             .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
             .navigationTitle("交易流水")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .confirmationDialog("确认删除这笔流水？相关份额、成本和联动现金会按流水重算。", isPresented: $showConfirm, titleVisibility: .visible) {
                 Button("确认删除", role: .destructive) {
                     guard let entry = pending else { return }
@@ -4223,14 +4225,11 @@ struct ToolsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
             .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
-            .sheet(isPresented: $showAIAnalysis) { AIAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
-            .sheet(isPresented: $showLedgerHealth) { LedgerHealthView() .themedSheetBackground() }
             .sheet(isPresented: $showTradePlans) { TradePlansView() .themedSheetBackground() }
             .sheet(isPresented: $showOverlap) { ETFOverlapView() .themedSheetBackground() }
             .sheet(isPresented: $showAddCash) { AddCashSimulationView() .themedSheetBackground() }
             .sheet(isPresented: $showFundReplay) { FundDCAReplayView() .themedSheetBackground() }
-            .sheet(isPresented: $showQuantEngine) { QuantitativeEngineView() .themedSheetBackground() }
             .sheet(isPresented: $showVolumeAnalysis) { VolumeAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showDisciplineLab) { DisciplineLabView() .themedSheetBackground() }
             .sheet(isPresented: $showScreenshotImport) { TradeScreenshotImportView() .themedSheetBackground() }
@@ -4241,19 +4240,22 @@ struct ToolsView: View {
             .sheet(isPresented: $showPortfolioAnalysis) { PortfolioAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showTradePreview) { TradePreviewView() .themedSheetBackground() }
             .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
-            .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
-            .sheet(isPresented: $showIntradayArchive) { IntradayArchiveView() .themedSheetBackground() }
-            // 这几项改成真页面推入，不再弹窗。
+            .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() .themedSheetBackground() }
+            // 高频入口全部改成真页面推入，不再弹窗。
             .navigationDestination(isPresented: $showNASPeriodChart) { NASPeriodChartView(embedded: true) }
             .navigationDestination(isPresented: $showQuXianChaoGe) { QuXianChaoGeView(embedded: true) }
             .navigationDestination(isPresented: $showWatchRadar) { WatchRadarView(embedded: true) }
             .navigationDestination(isPresented: $showLocalAdvice) { LocalAdviceView(embedded: true) }
-            .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
-            .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }
-            .sheet(isPresented: $showMonthlyReview) { MonthlyReviewView() .themedSheetBackground() }
-            .sheet(isPresented: $showYearlyReview) { YearlyReviewView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() .themedSheetBackground() }
+            .navigationDestination(isPresented: $showLedgerHealth) { LedgerHealthView(embedded: true) }
+            .navigationDestination(isPresented: $showReconciliation) { ReconciliationView(embedded: true) }
+            .navigationDestination(isPresented: $showAIAnalysis) { AIAnalysisView(embedded: true) }
+            .navigationDestination(isPresented: $showTradeLedger) { TradeLedgerManagementView(embedded: true) }
+            .navigationDestination(isPresented: $showIntradayArchive) { IntradayArchiveView(embedded: true) }
+            .navigationDestination(isPresented: $showDataTrust) { DataTrustView(embedded: true) }
+            .navigationDestination(isPresented: $showHistoricalReplay) { HistoricalReplayView(embedded: true) }
+            .navigationDestination(isPresented: $showMonthlyReview) { MonthlyReviewView(embedded: true) }
+            .navigationDestination(isPresented: $showYearlyReview) { YearlyReviewView(embedded: true) }
+            .navigationDestination(isPresented: $showQuantEngine) { QuantitativeEngineView(embedded: true) }
             .sheet(item: $targetEdit) { holding in
                 AllocationTargetEditor(holding: holding,
                     targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
@@ -4532,6 +4534,8 @@ struct DividendCalendarView: View {
 struct LedgerHealthView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮。
+    var embedded: Bool = false
     @State private var findings: [LedgerHealthFinding] = []
     @State private var isRunning = true
     @State private var runError = ""
@@ -4543,7 +4547,7 @@ struct LedgerHealthView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 if isRunning {
                     Section {
@@ -4601,7 +4605,7 @@ struct LedgerHealthView: View {
             .background(.clear)
             .navigationTitle("账本体检")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .task { await runHealthCheck() }
         }
     }
@@ -6752,7 +6756,8 @@ struct SettingsView: View {
 
     var body: some View {
         formContent
-            .sheet(isPresented: $showOperationHistory) { OperationHistoryView() .themedSheetBackground() }
+            // 操作记录改成真页面推入（设置页只以 embedded 方式挂载在导航栈内）。
+            .navigationDestination(isPresented: $showOperationHistory) { OperationHistoryView(embedded: true) }
             .sheet(isPresented: $showManualPriceEditor) { ManualQuoteOverrideEditor() .themedSheetBackground() }
             .onAppear {
                 BackgroundQuoteRefresh.configure(store: store)

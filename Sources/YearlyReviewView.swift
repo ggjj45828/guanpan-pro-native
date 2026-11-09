@@ -192,6 +192,8 @@ enum LedgerPeriodAggregator {
 struct YearlyReviewView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮。
+    var embedded: Bool = false
     @State private var year: Int = LedgerPeriodAggregator.currentYear()
 
     private var yearStart: String { "\(year)-01-01" }
@@ -234,7 +236,7 @@ struct YearlyReviewView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section { yearSwitcherBody }
                 Section("全年结果") { headlineBody }
@@ -263,7 +265,7 @@ struct YearlyReviewView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: reportText) { Image(systemName: "square.and.arrow.up") }
                 }
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } }
             }
         }
     }

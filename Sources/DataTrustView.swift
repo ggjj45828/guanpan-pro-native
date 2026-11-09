@@ -10,6 +10,8 @@ private struct DataTrustQuoteRow: Identifiable {
 /// Shows provenance and age of locally available data without inferring freshness from price values.
 struct DataTrustView: View {
     @EnvironmentObject private var store: PortfolioStore
+    /// 推入已有导航栈时 true：不再自建 NavigationStack（外层导航栈与返回键接管）。
+    var embedded: Bool = false
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
@@ -60,7 +62,7 @@ struct DataTrustView: View {
     private var staleCount: Int { quoteRows.filter { isStale($0.timestamp) }.count }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("估值口径") {
                     // 这一块是「总资产那个数敢不敢信」的直接答案。

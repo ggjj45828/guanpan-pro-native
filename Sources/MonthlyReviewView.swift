@@ -27,6 +27,8 @@ private struct MonthlyReviewSummary {
 struct MonthlyReviewView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮。
+    var embedded: Bool = false
     @State private var month = Self.monthString(.now)
 
     private var monthStart: String { "\(month)-01" }
@@ -39,7 +41,7 @@ struct MonthlyReviewView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section {
                     HStack {
@@ -95,7 +97,7 @@ struct MonthlyReviewView: View {
             .navigationTitle("月度投资复盘")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { ShareLink(item: reportText) { Image(systemName: "square.and.arrow.up") } }
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } }
             }
         }
     }

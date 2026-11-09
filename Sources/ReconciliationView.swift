@@ -3,6 +3,8 @@ import SwiftUI
 struct ReconciliationView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var brokerCash = ""
     @State private var brokerDayPnL = ""
     @State private var brokerTotalPnL = ""
@@ -102,7 +104,7 @@ struct ReconciliationView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 cashSection
                 dayPnLSection
@@ -114,7 +116,7 @@ struct ReconciliationView: View {
             .navigationTitle("账务对账")
             .keyboardDoneToolbar()
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .sheet(item: $costTarget) { CostOverrideEditor(holding: $0) .themedSheetBackground() }
         }
     }

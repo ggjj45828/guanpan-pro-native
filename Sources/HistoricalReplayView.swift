@@ -5,6 +5,8 @@ import SwiftUI
 struct HistoricalReplayView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮。
+    var embedded: Bool = false
     @State private var selectedDate = Date.now
 
     private struct Position: Identifiable {
@@ -45,7 +47,7 @@ struct HistoricalReplayView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("回放日期") {
                     DatePicker("截至日期", selection: $selectedDate, in: ...Date.now, displayedComponents: .date)
@@ -95,7 +97,7 @@ struct HistoricalReplayView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("历史状态回放")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
         }
     }
 

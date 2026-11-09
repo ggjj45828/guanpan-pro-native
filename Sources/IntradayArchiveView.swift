@@ -7,6 +7,8 @@ struct IntradayArchiveView: View {
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
+    /// 推入已有导航栈时 true：不再自建 NavigationStack、隐藏完成按钮。
+    var embedded: Bool = false
     @State private var selectedCode = ""
     @State private var selectedDay = ""
     @State private var subchart: Subchart = .volume
@@ -130,7 +132,7 @@ struct IntradayArchiveView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("采集与归档") {
                     HStack(spacing: 12) {
@@ -360,7 +362,7 @@ struct IntradayArchiveView: View {
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("分时档案")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .onAppear {
                 if selectedCode.isEmpty { selectedCode = instruments.first?.code ?? "" }
                 subchart = store.data.intradaySubchartMode == "macd" ? .macd : .volume
