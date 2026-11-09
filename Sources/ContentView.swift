@@ -3828,14 +3828,11 @@ struct ToolsView: View {
     @State private var showRebalanceDetails = false
     @State private var showGrid = false
     @State private var showLongGridPlanner = false
-    @State private var showAIAnalysis = false
     @State private var showPortrait = false
-    @State private var showLedgerHealth = false
     @State private var showTradePlans = false
     @State private var showOverlap = false
     @State private var showAddCash = false
     @State private var showFundReplay = false
-    @State private var showQuantEngine = false
     @State private var showVolumeAnalysis = false
     @State private var showDisciplineLab = false
     @State private var showScreenshotImport = false
@@ -3846,17 +3843,6 @@ struct ToolsView: View {
     @State private var showPortfolioAnalysis = false
     @State private var showTradePreview = false
     @State private var showReturnSource = false
-    @State private var showHistoricalReplay = false
-    @State private var showIntradayArchive = false
-    @State private var showNASPeriodChart = false
-    @State private var showQuXianChaoGe = false
-    @State private var showWatchRadar = false
-    @State private var showLocalAdvice = false
-    @State private var showDataTrust = false
-    @State private var showReconciliation = false
-    @State private var showTradeLedger = false
-    @State private var showMonthlyReview = false
-    @State private var showYearlyReview = false
     @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
 
@@ -3912,31 +3898,31 @@ struct ToolsView: View {
     var body: some View {
         PageHost(embedded: embedded) { ScrollViewReader { proxy in List {
             Section("常用工具") {
-                Button { showLedgerHealth = true } label: {
+                NavigationLink { LedgerHealthView(embedded: true) } label: {
                     Label("账本体检", systemImage: "checkmark.shield")
                 }
-                Button { showReconciliation = true } label: {
+                NavigationLink { ReconciliationView(embedded: true) } label: {
                     Label("现金与盈亏对账", systemImage: "equal.circle")
                 }
-                Button { showAIAnalysis = true } label: {
+                NavigationLink { AIAnalysisView(embedded: true) } label: {
                     Label("账户洞察与建议", systemImage: "sparkles")
                 }
-                Button { showTradeLedger = true } label: {
+                NavigationLink { TradeLedgerManagementView(embedded: true) } label: {
                     Label("全部交易流水（\(store.data.ledger.count) 笔）", systemImage: "list.bullet.rectangle")
                 }
-                Button { showIntradayArchive = true } label: {
+                NavigationLink { IntradayArchiveView(embedded: true) } label: {
                     Label("分时采集与历史复盘", systemImage: "chart.xyaxis.line")
                 }
-                Button { showNASPeriodChart = true } label: {
+                NavigationLink { NASPeriodChartView(embedded: true) } label: {
                     Label("周期K线（120/60/30/15）", systemImage: "candlestick.chart")
                 }
-                Button { showQuXianChaoGe = true } label: {
+                NavigationLink { QuXianChaoGeView(embedded: true) } label: {
                     Label("曲线超哥方法（A/B 条件 · 买点 · 状态机）", systemImage: "book.closed")
                 }
-                Button { showWatchRadar = true } label: {
+                NavigationLink { WatchRadarView(embedded: true) } label: {
                     Label("值不值得买 · 全持仓（六维条件复核）", systemImage: "speedometer")
                 }
-                Button { showLocalAdvice = true } label: {
+                NavigationLink { LocalAdviceView(embedded: true) } label: {
                     Label("离线账户建议（不联网 · 不需要密钥）", systemImage: "lock.shield")
                 }
                 Button {
@@ -3990,7 +3976,7 @@ struct ToolsView: View {
             .toneCard(PnLColor.down, isLight: isLight)
             .id("tools-risk")
             Section("数据状态") {
-                Button("数据可信度与更新状态") { showDataTrust = true }
+                NavigationLink("数据可信度与更新状态") { DataTrustView(embedded: true) }
                 Text("查看行情时间戳、基金净值日期、历史数据覆盖和 NAS 同步状态。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -3999,7 +3985,7 @@ struct ToolsView: View {
                 Button("ETF 每日收益日历") { showETFIncomeCalendar = true }
                 Button("分红日历与年度现金流") { showDividendCalendar = true }
                 Button("收益来源拆解") { showReturnSource = true }
-                Button("历史状态回放") { showHistoricalReplay = true }
+                NavigationLink("历史状态回放") { HistoricalReplayView(embedded: true) }
                 Text("按日 K 与可用交易流水估算历史持仓收益；缺少行情覆盖的日期会留空，休市日期会标出。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4137,7 +4123,7 @@ struct ToolsView: View {
             .plainCard(isLight: isLight)
             .id("tools-grid")
             Section("账户洞察") {
-                Button("账户分析与操作建议") { showAIAnalysis = true }
+                NavigationLink("账户分析与操作建议") { AIAnalysisView(embedded: true) }
                 Button("查看账户画像") { showPortrait = true }
                 Text("本机先计算规则建议和操作画像；只有主动点击大模型深度分析时才会发送画像数据。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -4145,7 +4131,7 @@ struct ToolsView: View {
             .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
             .id("tools-ai")
             Section("日线量化信号") {
-                Button("打开量化引擎并扫描全部自选/持仓") { showQuantEngine = true }
+                NavigationLink("打开量化引擎并扫描全部自选/持仓") { QuantitativeEngineView(embedded: true) }
                 Button("查看量能结构（MA5/10/20/60 与价量关系）") { showVolumeAnalysis = true }
                 Button("规则验证台：候选 / 风控 / 触发 / 影子评估") { showDisciplineLab = true }
                 Button("从成交截图导入（同花顺，需先核对再写入）") { showScreenshotImport = true }
@@ -4155,11 +4141,11 @@ struct ToolsView: View {
             }
             .plainCard(isLight: isLight)
             Section("本地数据检查") {
-                Button("运行账本体检") { showLedgerHealth = true }
-                Button("现金 / 当日盈亏 / 成本 / 总盈亏对账") { showReconciliation = true }
-                Button("查看和管理全部交易流水（\(store.data.ledger.count) 笔）") { showTradeLedger = true }
-                Button("月度投资复盘") { showMonthlyReview = true }
-                Button("年度账单（胜率 / 费率 / 逐月）") { showYearlyReview = true }
+                NavigationLink("运行账本体检") { LedgerHealthView(embedded: true) }
+                NavigationLink("现金 / 当日盈亏 / 成本 / 总盈亏对账") { ReconciliationView(embedded: true) }
+                NavigationLink("查看和管理全部交易流水（\(store.data.ledger.count) 笔）") { TradeLedgerManagementView(embedded: true) }
+                NavigationLink("月度投资复盘") { MonthlyReviewView(embedded: true) }
+                NavigationLink("年度账单（胜率 / 费率 / 逐月）") { YearlyReviewView(embedded: true) }
                 Text("只读检查持仓、交易流水、基金、现金、快照和净值历史，不会自动修改账本。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4241,21 +4227,6 @@ struct ToolsView: View {
             .sheet(isPresented: $showTradePreview) { TradePreviewView() .themedSheetBackground() }
             .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
             .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() .themedSheetBackground() }
-            // 高频入口全部改成真页面推入，不再弹窗。
-            .navigationDestination(isPresented: $showNASPeriodChart) { NASPeriodChartView(embedded: true) }
-            .navigationDestination(isPresented: $showQuXianChaoGe) { QuXianChaoGeView(embedded: true) }
-            .navigationDestination(isPresented: $showWatchRadar) { WatchRadarView(embedded: true) }
-            .navigationDestination(isPresented: $showLocalAdvice) { LocalAdviceView(embedded: true) }
-            .navigationDestination(isPresented: $showLedgerHealth) { LedgerHealthView(embedded: true) }
-            .navigationDestination(isPresented: $showReconciliation) { ReconciliationView(embedded: true) }
-            .navigationDestination(isPresented: $showAIAnalysis) { AIAnalysisView(embedded: true) }
-            .navigationDestination(isPresented: $showTradeLedger) { TradeLedgerManagementView(embedded: true) }
-            .navigationDestination(isPresented: $showIntradayArchive) { IntradayArchiveView(embedded: true) }
-            .navigationDestination(isPresented: $showDataTrust) { DataTrustView(embedded: true) }
-            .navigationDestination(isPresented: $showHistoricalReplay) { HistoricalReplayView(embedded: true) }
-            .navigationDestination(isPresented: $showMonthlyReview) { MonthlyReviewView(embedded: true) }
-            .navigationDestination(isPresented: $showYearlyReview) { YearlyReviewView(embedded: true) }
-            .navigationDestination(isPresented: $showQuantEngine) { QuantitativeEngineView(embedded: true) }
             .sheet(item: $targetEdit) { holding in
                 AllocationTargetEditor(holding: holding,
                     targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
@@ -6739,7 +6710,6 @@ struct SettingsView: View {
     @State private var marketHolidayText = ""
     @State private var showManualPriceEditor = false
     @State private var confirmUndoLastSave = false
-    @State private var showOperationHistory = false
     @State private var notificationBusy = false
     @State private var notificationEnabled = false
 
@@ -6756,8 +6726,6 @@ struct SettingsView: View {
 
     var body: some View {
         formContent
-            // 操作记录改成真页面推入（设置页只以 embedded 方式挂载在导航栈内）。
-            .navigationDestination(isPresented: $showOperationHistory) { OperationHistoryView(embedded: true) }
             .sheet(isPresented: $showManualPriceEditor) { ManualQuoteOverrideEditor() .themedSheetBackground() }
             .onAppear {
                 BackgroundQuoteRefresh.configure(store: store)
@@ -7059,7 +7027,7 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
         Section("操作撤销") {
-            Button("操作记录与撤销（最近 \(store.operationAudit.count) 条）") { showOperationHistory = true }
+            NavigationLink("操作记录与撤销（最近 \(store.operationAudit.count) 条）") { OperationHistoryView(embedded: true) }
             Text("记录你主动执行的账本修改，最多保留 20 条；行情、净值和后台自动补记不进入记录，只能撤销最近一条。")
                 .font(.footnote).foregroundStyle(.secondary)
             Button("撤销上一次本机保存", role: .destructive) { confirmUndoLastSave = true }
