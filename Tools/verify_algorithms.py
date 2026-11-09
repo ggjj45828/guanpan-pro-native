@@ -1679,9 +1679,134 @@ check("八类因子：IOPV 折溢价 = 价/净值 − 1",
       abs((10.5 / 10.0 - 1) - 0.05) < 1e-9)
 
 
+# ---- 曲线超哥：B 条件（四指数连续 N 日不创新低） -------------------------
+# 复刻 QuXianChaoGe.evaluateB 的口径：
+#   · 逐日「创新低」= 当日口径价 严格小于 此前 window 个已完成交易日的最小值；
+#   · 连续 streak 从最近一日向前数；
+#   · 四指数必须全部成立；任一取不到数据 → 未知（不拿别的指数顶替）。
+def qxcg_new_low_streak(prices, window=20, required=3):
+    need = window + required
+    if prices is None or len(prices) < need:
+        return None  # 样本不足 → 未知
+    streak = 0
+    index = len(prices) - 1
+    while index >= window:
+        anchor = min(prices[index - window:index])
+        if prices[index] < anchor:
+            break
+        streak += 1
+        index -= 1
+    return streak
+
+
+def qxcg_verdict(streak, required=3):
+    if streak is None:
+        return "unknown"
+    return "satisfied" if streak >= required else "unsatisfied"
+
+
+def qxcg_combine(a, b):
+    """A OR B：任一成立即成立；两项都不成立才不成立；否则未知。"""
+    if a == "satisfied" or b == "satisfied":
+        return "atLeastOneSatisfied"
+    if a == "unsatisfied" and b == "unsatisfied":
+        return "noneSatisfied"
+    return "unknown"
+
+
+# 稳步上行的序列：每一步都高于前 20 日最低 → 连续不创新低天数 = 全部可比较天数
+_rising = [100.0 + i for i in range(30)]
+check("曲线超哥B：持续走高 → 连续不创新低 >= 3（成立）",
+      qxcg_verdict(qxcg_new_low_streak(_rising)) == "satisfied",
+      f"streak={qxcg_new_low_streak(_rising)}")
+
+# 最后一根跌破前 20 日最低 → 最近一日创新低，streak 归零
+_breakdown = [100.0 + i for i in range(29)] + [90.0]
+check("曲线超哥B：最后一日破前低 → 连续天数为 0（不成立）",
+      qxcg_new_low_streak(_breakdown) == 0,
+      f"streak={qxcg_new_low_streak(_breakdown)}")
+
+# 相等不算创新低（软件口径显式选择）
+_equal = [100.0 + i for i in range(29)] + [100.0 + 28]
+check("曲线超哥B：与前低相等不算创新低",
+      qxcg_new_low_streak(_equal) >= 3,
+      f"streak={qxcg_new_low_streak(_equal)}")
+
+# 只有 2 日不创新低 < 3 → 不成立
+_two_days = [100.0 + i for i in range(28)] + [90.0, 91.0, 92.0]
+check("曲线超哥B：破位后仅 2 日未创新低 → 不成立",
+      qxcg_verdict(qxcg_new_low_streak(_two_days)) == "unsatisfied",
+      f"streak={qxcg_new_low_streak(_two_days)}")
+
+check("曲线超哥B：样本不足 → 未知（不判成不成立）",
+      qxcg_new_low_streak([100.0] * 10) is None)
+
+check("曲线超哥B：四指数缺一项 → 整体未知",
+      (lambda items: "unknown" if any(v == "unknown" for v in items)
+       else ("satisfied" if all(v == "satisfied" for v in items) else "unsatisfied"))(
+          ["satisfied", "satisfied", "satisfied", "unknown"]) == "unknown")
+
+check("曲线超哥B：四项都成立 → 成立",
+      (lambda items: "unknown" if any(v == "unknown" for v in items)
+       else ("satisfied" if all(v == "satisfied" for v in items) else "unsatisfied"))(
+          ["satisfied"] * 4) == "satisfied")
+
+# A 条件：三种口径分别判定，缺数据一律未知
+def qxcg_a(caliber, today, previous):
+    if caliber is None:
+        return "unknown"
+    if today is None or today <= 0:
+        return "unknown"
+    if caliber == "total2000":
+        return "satisfied" if today >= 2000 else "unsatisfied"
+    if caliber == "total20000":
+        return "satisfied" if today >= 20000 else "unsatisfied"
+    if caliber == "increase10":
+        if previous is None or previous <= 0:
+            return "unknown"
+        return "satisfied" if (today - previous) / previous >= 0.10 else "unsatisfied"
+    return "unknown"
+
+
+check("曲线超哥A：2000 亿口径 2100 亿 → 成立", qxcg_a("total2000", 2100, None) == "satisfied")
+check("曲线超哥A：2000 亿口径 1900 亿 → 不成立", qxcg_a("total2000", 1900, None) == "unsatisfied")
+check("曲线超哥A：2 万亿口径 1.9 万亿 → 不成立", qxcg_a("total20000", 19000, None) == "unsatisfied")
+check("曲线超哥A：增额口径 10% 边界 → 成立", qxcg_a("increase10", 1100, 1000) == "satisfied")
+check("曲线超哥A：增额口径缺前日 → 未知", qxcg_a("increase10", 1100, None) == "unknown")
+check("曲线超哥A：未选口径 → 未知（不擅自统一）", qxcg_a(None, 9000, 8000) == "unknown")
+
+# A OR B，且绝不能被写成 AND
+check("曲线超哥：A 成立 B 未知 → 或关系成立", qxcg_combine("satisfied", "unknown") == "atLeastOneSatisfied")
+check("曲线超哥：A 未知 B 成立 → 或关系成立", qxcg_combine("unknown", "satisfied") == "atLeastOneSatisfied")
+check("曲线超哥：A B 都不成立 → 不成立", qxcg_combine("unsatisfied", "unsatisfied") == "noneSatisfied")
+check("曲线超哥：A B 都未知 → 未知", qxcg_combine("unknown", "unknown") == "unknown")
+
+
+# 反未来函数：今天那根未收盘 K 必须被剔除
+def qxcg_completed_only(dates, today):
+    return [d for d in dates if d < today]
+
+
+_series = ["2026-11-05", "2026-11-06", "2026-11-09"]
+check("曲线超哥B：当天未收盘 K 被剔除",
+      qxcg_completed_only(_series, "2026-11-09") == ["2026-11-05", "2026-11-06"])
+
+# 四个来源截止日不同时，按最早截止日截齐（否则「同时」是四天拼出来的假结论）
+def qxcg_common_cutoff(series_list):
+    cutoff = min(s[-1] for s in series_list)
+    return [ [d for d in s if d <= cutoff] for s in series_list ]
+
+
+_a = ["2026-11-04", "2026-11-05", "2026-11-06"]
+_b = ["2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09"]
+_aligned = qxcg_common_cutoff([_a, _b])
+check("曲线超哥B：截止日截齐后长度一致",
+      len(_aligned[0]) == len(_aligned[1]) == 3 and _aligned[1][-1] == "2026-11-06")
+
+
 print()
 if failures:
     print(f"失败 {len(failures)} 项：{', '.join(failures)}")
     sys.exit(1)
-print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价 / MA250长期趋势 / 历史验证 / 八类本地量化因子")
+print("全部通过：VolumeAnalysis / PositionDiscipline / RealtimeTrigger / Shadow / OCR 行解析 / 汇总对账 / 手续费口径 / Anti-Overtrading / 生产盯盘 / 成交关联 / T vs HOLD / MACD多周期 / MACD背离 / K线六形态 / IOPV折溢价 / 价格闸门 / 风险预算 / 策略仲裁 / ATR耐心限价 / MA250长期趋势 / 历史验证 / 八类本地量化因子 / 曲线超哥A-B条件")
 sys.exit(0)

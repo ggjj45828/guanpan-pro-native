@@ -454,7 +454,91 @@ enum GuanpanMaxNAS {
         return result
     }
 
-    // MARK: 指数日 K（只取交易日，不编造 OHLCV）
+    // MARK: 指数日 K
+
+    /// 指数归档日 K 的一条。`open/high/low/volume` 在归档里允许整段缺失，
+    /// 所以这里是 optional —— 上层必须自己决定「缺 OHLC 时怎么算」，
+    /// 而不是在这里用 close 冒充 low。
+    struct IndexDailyBar: Sendable {
+        let tradingDate: String
+        let close: Double
+        let open: Double?
+        let high: Double?
+        let low: Double?
+        let volume: Double?
+
+        var hasOHLC: Bool { open != nil && high != nil && low != nil }
+    }
+
+    /// 取指数归档日 K 的完整序列（含可选的 OHLC）。
+    ///
+    /// 与 `indexTradingDays` 的区别：那个只回交易日列表（供交易日历反推），
+    /// 这个把 OHLC 一起带出来，供「四指数连续 3 日不创新低」这类需要最低价的检查。
+    /// 校验口径与 `indexTradingDays` 完全一致：来源白名单、盖章时间、样本数、日期严格递增、
+    /// OHLC 必须「全有或全无」。任一不满足就整份丢弃，不降级成残缺序列。
+    ///
+    /// 科创 50（sh000688）在这里单独放行：作者口语的「科创板」用它代理，
+    /// 但代理关系未确认，上层必须显式标注（见 QuXianChaoGe.bRequirements）。
+    static func indexDailyBars(indexCode: String, now: Date = .now) async throws -> [IndexDailyBar] {
+        let supported: Set<String> = ["sh000001", "sh000300", "sh000510", "sz399001", "sz399006", "sh000688"]
+        guard supported.contains(indexCode) else { throw URLError(.badURL) }
+        let (data, status) = try await request(
+            path: "/api/v1/index-daily-history",
+            query: [URLQueryItem(name: "indexCode", value: indexCode)], timeout: 20)
+        guard status == 200 else { throw URLError(.badServerResponse) }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["indexCode"] as? String == indexCode,
+              object["status"] as? String == "available",
+              object["timezone"] as? String == "Asia/Shanghai",
+              let source = object["source"] as? String, trustedDailySources.contains(source),
+              let sampleCount = object["sampleCount"] as? Int,
+              let rows = object["bars"] as? [[String: Any]],
+              sampleCount == rows.count, !rows.isEmpty,
+              isFresh(object["fetchedAt"] as? String, now: now) else {
+            throw URLError(.cannotParseResponse)
+        }
+        var result: [IndexDailyBar] = []
+        result.reserveCapacity(rows.count)
+        var previous: Date?
+        let todayText = dayFormatter.string(from: now)
+        for row in rows {
+            guard let text = row["tradingDate"] as? String, text < todayText,
+                  let day = canonicalDay(text), day < now,
+                  let closeText = row["close"] as? String,
+                  let close = Double(closeText), close > 0 else {
+                throw URLError(.cannotParseResponse)
+            }
+            let optionalKeys = ["open", "high", "low", "volume"]
+            let present = optionalKeys.map { key -> Bool in
+                guard let value = row[key], !(value is NSNull) else { return false }
+                return true
+            }
+            let allPresent = present.allSatisfy { $0 }
+            let nonePresent = present.allSatisfy { !$0 }
+            guard allPresent || nonePresent else { throw URLError(.cannotParseResponse) }
+            var open: Double?
+            var high: Double?
+            var low: Double?
+            var volume: Double?
+            if allPresent {
+                guard let openText = row["open"] as? String, let o = Double(openText),
+                      let highText = row["high"] as? String, let h = Double(highText),
+                      let lowText = row["low"] as? String, let l = Double(lowText),
+                      let volumeText = row["volume"] as? String, let v = Double(volumeText),
+                      h >= max(o, close), l <= min(o, close), h >= l, v >= 0 else {
+                    throw URLError(.cannotParseResponse)
+                }
+                open = o; high = h; low = l; volume = v
+            }
+            if let previous, previous >= day { throw URLError(.cannotParseResponse) }
+            previous = day
+            result.append(IndexDailyBar(tradingDate: text, close: close,
+                                        open: open, high: high, low: low, volume: volume))
+        }
+        return result
+    }
+
+    // MARK: 指数交易日（只取交易日，不编造 OHLCV）
 
     /// 观盘max 的指数归档**只有 close 是必填**，OHLCV 可以整段缺失。
     /// Pro 的 DailyBar 四个字段都是非 optional Double，填 0 或拿 close 冒充就是编造数据。

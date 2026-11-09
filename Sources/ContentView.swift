@@ -3843,6 +3843,7 @@ struct ToolsView: View {
     @State private var showHistoricalReplay = false
     @State private var showIntradayArchive = false
     @State private var showNASPeriodChart = false
+    @State private var showQuXianChaoGe = false
     @State private var showDataTrust = false
     @State private var showReconciliation = false
     @State private var showTradeLedger = false
@@ -3920,6 +3921,9 @@ struct ToolsView: View {
                 }
                 Button { showNASPeriodChart = true } label: {
                     Label("周期K线（120/60/30/15）", systemImage: "candlestick.chart")
+                }
+                Button { showQuXianChaoGe = true } label: {
+                    Label("曲线超哥方法（A/B 条件 · 买点 · 状态机）", systemImage: "book.closed")
                 }
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showAllTools.toggle() }
@@ -4228,6 +4232,7 @@ struct ToolsView: View {
             .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
             .sheet(isPresented: $showIntradayArchive) { IntradayArchiveView() .themedSheetBackground() }
             .sheet(isPresented: $showNASPeriodChart) { NASPeriodChartView() .themedSheetBackground() }
+            .sheet(isPresented: $showQuXianChaoGe) { QuXianChaoGeView() .themedSheetBackground() }
             .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
             .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
             .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }
@@ -7317,7 +7322,8 @@ struct SettingsView: View {
                 let version = try await FNASBridge.health()
                 fnasStatus = version.map { "连接正常 · 服务端版本 \($0)" } ?? "连接正常（服务端未返回版本号）"
             } catch {
-                fnasStatus = "连接失败：\(error.localizedDescription)。确认地址带端口（例如 :30001）且服务端已启动。"
+                fnasStatus = "连接失败：\(error.localizedDescription)"
+                fnasStatus += "\n如果这里填的是观盘max NAS（8790）的地址，这条一定失败：它没有 /v1/market/quotes，请把地址填到下面的「观盘max NAS」里，这里留空。只部署了 F NAS 时这条不填也不影响使用。"
             }
         }
     }
@@ -7338,11 +7344,16 @@ struct SettingsView: View {
                 })?.code ?? store.data.quotes.first(where: {
                     GuanpanMaxNAS.normalizedSecurityCode($0.code) != nil
                 })?.code
-                if let candidate,
-                   let coverage = try? await GuanpanMaxNAS.minuteDiagnostics(code: candidate) {
-                    lines.append(coverage)
+                if let candidate {
+                    if let coverage = try? await GuanpanMaxNAS.minuteDiagnostics(code: candidate) {
+                        lines.append(coverage)
+                    } else {
+                        // 能连上但诊断接口失败：多半是旧部署包没有 diagnostics 路由，
+                        // 或者这只标的还没归档。不能说成「没有 A 股标的」。
+                        lines.append("已选标的 \(candidate) 的分钟诊断没返回：可能是这个部署包没有 diagnostics 路由，或该标的还没归档分钟数据。")
+                    }
                 } else {
-                    lines.append("目前没有 A 股标的，暂时无法检查分钟归档覆盖。")
+                    lines.append("自选和持仓里没有可识别的 6 位 A 股代码，无法检查分钟归档覆盖（不影响指数日K 与 B 条件检查）。")
                 }
                 if let queue = try? await GuanpanMaxNAS.backfillQueue() {
                     lines.append(queue)
