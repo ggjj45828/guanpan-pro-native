@@ -334,7 +334,6 @@ struct DashboardView: View {
     @State private var showAlertEditor = false
     @State private var chartTarget: Holding?
     /// 顶部指数条里被点开的那一格（nil = 没打开详情）。
-    @State private var indexDetailTarget: MarketIndexQuote?
     /// 首页快捷入口弹窗：AI 顾问 / 网格 / 收息 / 账本审计。
     @State private var showAdvice = false
     @State private var showGrid = false
@@ -410,6 +409,7 @@ struct DashboardView: View {
                         quickTiles
                     }
                     pulseSection
+                    quXianChaoGeEntry
                     newsPreviewSection
                     watchHeader
                     watchListBody
@@ -432,11 +432,6 @@ struct DashboardView: View {
             .sheet(isPresented: $showAdd) { WatchEditor() .themedSheetBackground() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() .themedSheetBackground() }
             .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
-            // 指数详情改成真页面推入：以前是 sheet(item:)，行情刷新替换数组时
-            // sheet 会跟着 item 失效而立刻被顶掉，表现就是「点了没反应」。
-            .navigationDestination(item: $indexDetailTarget) { index in
-                IndexDetailView(index: index, embedded: true)
-            }
             .sheet(isPresented: $showAdvice) { PortfolioAdviceView() .themedSheetBackground() }
             .sheet(isPresented: $showGrid) { DayGridView() .themedSheetBackground() }
             .sheet(isPresented: $showIncome) { IncomeHubView() .themedSheetBackground() }
@@ -654,6 +649,43 @@ struct DashboardView: View {
         }
     }
 
+    /// 曲线超哥的独立入口：不埋在工具页里，首页直接可见。
+    /// 只做「入口」，判定在页面里算 —— 首页不该为了一张卡去拉四个指数的日 K。
+    private var quXianChaoGeEntry: some View {
+        NavigationLink {
+            QuXianChaoGeView(embedded: true)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .foregroundStyle(palette.accent)
+                    Text("曲线超哥")
+                        .scaledFont(palette.fsLabel, weight: .semibold)
+                        .foregroundStyle(palette.ink)
+                    Spacer()
+                    Text("现在能不能加仓")
+                        .scaledFont(palette.fsMicro)
+                        .foregroundStyle(palette.accent)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(palette.ink3)
+                }
+                Text("按方法自动判定 A/B 条件、给出下一步动作；不用自己逐个对条件。")
+                    .scaledFont(palette.fsMicro)
+                    .foregroundStyle(palette.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.card, in: RoundedRectangle(cornerRadius: palette.radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: palette.radius, style: .continuous)
+                    .stroke(palette.hairline, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
     /// 市场脉搏：横向滚动的大盘指数卡。
     private var pulseSection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -667,9 +699,8 @@ struct DashboardView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(store.indexQuotes) { item in
-                            Button {
-                                Haptics.tap()
-                                indexDetailTarget = item
+                            NavigationLink {
+                                IndexDetailView(index: item, embedded: true)
                             } label: {
                                 indexCard(item)
                             }
@@ -964,7 +995,7 @@ struct DashboardView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(store.indexQuotes) { item in
-                            Button { Haptics.tap(); indexDetailTarget = item } label: {
+                            NavigationLink { IndexDetailView(index: item, embedded: true) } label: {
                                 marketIndexChip(item)
                             }
                             .buttonStyle(.plain)
@@ -1069,7 +1100,7 @@ struct DashboardView: View {
                 MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
                            toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
             ])
-            Text("持仓市值 + 参考现金 = 总资产。当日盈亏 = 场内证券（\(intradayDateNote)）+ 场外基金（\(fundNAVDateNote)），两处数据日期不同，合计数即两者相加；没取到数显示 --，不臆测补数。")
+            Text("持仓市值 + 参考现金 = 总资产。当日盈亏只按场内证券计算（\(intradayDateNote)）；没取到数显示 --，不臆测补数。")
                 .scaledFont(10).foregroundStyle(.secondary)
         }
         .cardSurface(tone: CardTone.pnl(store.totalPnL))
@@ -1359,6 +1390,14 @@ struct MoreHubView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
+                    MoreHubNavigationCard(title: "曲线超哥",
+                                          subtitle: "按方法判定 A/B 条件，直接给下一步动作",
+                                          icon: "chart.line.uptrend.xyaxis",
+                                          tint: Color(red: 0.24, green: 0.72, blue: 0.52)) {
+                        QuXianChaoGeView(embedded: true)
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
                     MoreHubCard(title: "市场快讯", subtitle: "同花顺 7×24 公开接口；只给标题与来源，不给结论",
                                 icon: "newspaper.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
                         showNewsHub = true
@@ -1476,6 +1515,48 @@ private struct MoreHubCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 15, style: .continuous)
                     .strokeBorder(tint.opacity(0.28), lineWidth: 0.6)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 和 MoreHubCard 同一套外观，但用 NavigationLink 真推入。
+/// 不用「点一下再置 state + navigationDestination」：那条路在嵌套页里会失效（点了没反应）。
+private struct MoreHubNavigationCard<Destination: View>: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let tint: Color
+    @ViewBuilder let destination: Destination
+
+    var body: some View {
+        NavigationLink {
+            destination
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .scaledFont(20, weight: .semibold)
+                    .foregroundStyle(tint)
+                    .frame(width: 46, height: 46)
+                    .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).scaledFont(15, weight: .semibold).foregroundStyle(.primary)
+                    Text(subtitle).scaledFont(11).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(tint.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(tint.opacity(0.22), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -1782,22 +1863,6 @@ struct HoldingsView: View {
 
     /// 列表主体单独成表达式：与末尾十余个 sheet / alert 修饰符分开做类型检查，
     /// 否则整条 body 表达式树过大，编译报 "unable to type-check in reasonable time"。
-    /// ETF / 场外基金 分段切换。放在列表最上面而不是导航栏 ——
-    /// 导航栏里放分段控件会和大标题抢空间，而且下拉时会被吸顶压扁。
-    private var kindSwitcherSection: some View {
-        let palette = DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
-        return HStack(spacing: 4) {
-            segmentButton("ETF / 证券", target: .etf, palette: palette)
-            segmentButton("场外基金", target: .fund, palette: palette)
-        }
-        .padding(4)
-        .background { RoundedRectangle(cornerRadius: 14, style: .continuous).fill(palette.cardSoft) }
-        .listRowInsets(EdgeInsets(top: 4, leading: ThemeLayout.of(store.resolvedAppearance).pageInset,
-                                  bottom: 8, trailing: ThemeLayout.of(store.resolvedAppearance).pageInset))
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-    }
-
     private func segmentButton(_ text: String, target: Holding.Kind, palette: DsPalette) -> some View {
         let selected = activeKind == target
         return Button {
@@ -1830,7 +1895,6 @@ struct HoldingsView: View {
                 if isSearching {
                     holdingRowList
                 } else {
-                    kindSwitcherSection
                     moduleSummarySection
                     accountHintSection
                     if holdings.isEmpty {
@@ -3327,7 +3391,6 @@ struct AssetsView: View {
                                       toneValue: store.hasDayPnLGross ? store.dayPnLGross : nil),
                             MetricCell(title: "已实现盈亏", value: (store.realizedPnL).cny(), toneValue: store.realizedPnL),
                             MetricCell(title: "ETF / 证券", value: (store.marketValue(of: .etf)).cny()),
-                            MetricCell(title: "场外基金", value: (store.marketValue(of: .fund)).cny()),
                             MetricCell(title: "累计净转入", value: netDeposit.cny(), toneValue: netDeposit)
                         ])
                         Text("累计净转入 = 现金流记录里转入与转出相抵后的净额，只统计你手动记录过的流水。")
@@ -3832,7 +3895,6 @@ struct ToolsView: View {
     @State private var showTradePlans = false
     @State private var showOverlap = false
     @State private var showAddCash = false
-    @State private var showFundReplay = false
     @State private var showVolumeAnalysis = false
     @State private var showDisciplineLab = false
     @State private var showScreenshotImport = false
@@ -3892,23 +3954,26 @@ struct ToolsView: View {
         ToolShortcut(title: "网格", anchor: "tools-grid"),
         ToolShortcut(title: "AI", anchor: "tools-ai"),
         ToolShortcut(title: "数据", anchor: "tools-data"),
-        ToolShortcut(title: "交易", anchor: "tools-trades"),
-        ToolShortcut(title: "基金", anchor: "tools-funds")
+        ToolShortcut(title: "交易", anchor: "tools-trades")
     ]
     var body: some View {
         PageHost(embedded: embedded) { ScrollViewReader { proxy in List {
-            Section("常用工具") {
+            Section("账户与账本") {
                 NavigationLink { LedgerHealthView(embedded: true) } label: {
                     Label("账本体检", systemImage: "checkmark.shield")
                 }
                 NavigationLink { ReconciliationView(embedded: true) } label: {
                     Label("现金与盈亏对账", systemImage: "equal.circle")
                 }
-                NavigationLink { AIAnalysisView(embedded: true) } label: {
-                    Label("账户洞察与建议", systemImage: "sparkles")
-                }
                 NavigationLink { TradeLedgerManagementView(embedded: true) } label: {
                     Label("全部交易流水（\(store.data.ledger.count) 笔）", systemImage: "list.bullet.rectangle")
+                }
+            }
+            .toneCard(store.effectiveAccentColor, isLight: isLight)
+
+            Section("行情与数据") {
+                NavigationLink { DataTrustView(embedded: true) } label: {
+                    Label("数据可信度与更新状态", systemImage: "checkmark.seal")
                 }
                 NavigationLink { IntradayArchiveView(embedded: true) } label: {
                     Label("分时采集与历史复盘", systemImage: "chart.xyaxis.line")
@@ -3916,23 +3981,47 @@ struct ToolsView: View {
                 NavigationLink { NASPeriodChartView(embedded: true) } label: {
                     Label("周期K线（120/60/30/15）", systemImage: "candlestick.chart")
                 }
-                NavigationLink { QuXianChaoGeView(embedded: true) } label: {
-                    Label("曲线超哥方法（A/B 条件 · 买点 · 状态机）", systemImage: "book.closed")
-                }
+            }
+            .plainCard(isLight: isLight)
+
+            Section("分析研究") {
                 NavigationLink { WatchRadarView(embedded: true) } label: {
-                    Label("值不值得买 · 全持仓（六维条件复核）", systemImage: "speedometer")
+                    Label("值不值得买 · 全持仓", systemImage: "speedometer")
+                }
+                NavigationLink { AIAnalysisView(embedded: true) } label: {
+                    Label("账户洞察与建议", systemImage: "sparkles")
                 }
                 NavigationLink { LocalAdviceView(embedded: true) } label: {
                     Label("离线账户建议（不联网 · 不需要密钥）", systemImage: "lock.shield")
                 }
+                NavigationLink { QuantitativeEngineView(embedded: true) } label: {
+                    Label("日线量化信号扫描", systemImage: "waveform.path.ecg")
+                }
+            }
+            .plainCard(isLight: isLight)
+
+            Section("计划与复盘") {
+                NavigationLink { MonthlyReviewView(embedded: true) } label: {
+                    Label("月度投资复盘", systemImage: "calendar")
+                }
+                NavigationLink { YearlyReviewView(embedded: true) } label: {
+                    Label("年度账单（胜率 / 费率 / 逐月）", systemImage: "calendar.badge.clock")
+                }
+                NavigationLink { HistoricalReplayView(embedded: true) } label: {
+                    Label("历史状态回放", systemImage: "clock.arrow.circlepath")
+                }
+            }
+            .plainCard(isLight: isLight)
+
+            Section {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showAllTools.toggle() }
                 } label: {
-                    Label(showAllTools ? "收起全部工具" : "展开全部工具",
+                    Label(showAllTools ? "收起高级工具" : "更多工具（网格 / 压力测试 / 导入 / 试算）",
                           systemImage: showAllTools ? "chevron.up" : "chevron.down")
                 }
             }
-            .toneCard(store.effectiveAccentColor, isLight: isLight)
+            .plainCard(isLight: isLight)
 
             if showAllTools {
             Section("快速定位") {
@@ -3975,17 +4064,10 @@ struct ToolsView: View {
             }
             .toneCard(PnLColor.down, isLight: isLight)
             .id("tools-risk")
-            Section("数据状态") {
-                NavigationLink("数据可信度与更新状态") { DataTrustView(embedded: true) }
-                Text("查看行情时间戳、基金净值日期、历史数据覆盖和 NAS 同步状态。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .plainCard(isLight: isLight)
             Section("收益日历") {
                 Button("ETF 每日收益日历") { showETFIncomeCalendar = true }
                 Button("分红日历与年度现金流") { showDividendCalendar = true }
                 Button("收益来源拆解") { showReturnSource = true }
-                NavigationLink("历史状态回放") { HistoricalReplayView(embedded: true) }
                 Text("按日 K 与可用交易流水估算历史持仓收益；缺少行情覆盖的日期会留空，休市日期会标出。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4123,7 +4205,6 @@ struct ToolsView: View {
             .plainCard(isLight: isLight)
             .id("tools-grid")
             Section("账户洞察") {
-                NavigationLink("账户分析与操作建议") { AIAnalysisView(embedded: true) }
                 Button("查看账户画像") { showPortrait = true }
                 Text("本机先计算规则建议和操作画像；只有主动点击大模型深度分析时才会发送画像数据。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -4131,7 +4212,6 @@ struct ToolsView: View {
             .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
             .id("tools-ai")
             Section("日线量化信号") {
-                NavigationLink("打开量化引擎并扫描全部自选/持仓") { QuantitativeEngineView(embedded: true) }
                 Button("查看量能结构（MA5/10/20/60 与价量关系）") { showVolumeAnalysis = true }
                 Button("规则验证台：候选 / 风控 / 触发 / 影子评估") { showDisciplineLab = true }
                 Button("从成交截图导入（同花顺，需先核对再写入）") { showScreenshotImport = true }
@@ -4140,23 +4220,13 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
-            Section("本地数据检查") {
-                NavigationLink("运行账本体检") { LedgerHealthView(embedded: true) }
-                NavigationLink("现金 / 当日盈亏 / 成本 / 总盈亏对账") { ReconciliationView(embedded: true) }
-                NavigationLink("查看和管理全部交易流水（\(store.data.ledger.count) 笔）") { TradeLedgerManagementView(embedded: true) }
-                NavigationLink("月度投资复盘") { MonthlyReviewView(embedded: true) }
-                NavigationLink("年度账单（胜率 / 费率 / 逐月）") { YearlyReviewView(embedded: true) }
-                Text("只读检查持仓、交易流水、基金、现金、快照和净值历史，不会自动修改账本。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .plainCard(isLight: isLight)
-            .id("tools-data")
             Section("券商成交历史导入") {
                 Button("导入成交 CSV / 表格") { showTradeCSVImport = true }
                 Text("先解析并预览，再由你确认入账。只增加 ETF/证券历史流水并计算可核实的已实现盈亏，不修改当前持仓或现金；需提供从首次买入开始的完整记录，避免把历史成交重复加到当前余额。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
+            .id("tools-data")
             Section("交易计划与复盘") {
                 Button("打开计划记录（\(store.data.tradePlans.count)）") { showTradePlans = true }
                 Text("记录交易理由、计划价和失效条件；手动成交后可复盘执行偏差，不会自动下单或修改真实账本。")
@@ -4182,13 +4252,6 @@ struct ToolsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
-            Section("历史定投回放") {
-                Button("按已公布基金净值回放") { showFundReplay = true }
-                Text("只用已公布历史净值和用户选择的月投金额，不包含基金盘中估值；结果不代表未来表现。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .plainCard(isLight: isLight)
-            .id("tools-funds")
             Text("AI 分析只读取本机已记录的数据；缺少有效日线或资讯时，不会提供相应技术判断或新闻结论。")
                 .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4215,7 +4278,6 @@ struct ToolsView: View {
             .sheet(isPresented: $showTradePlans) { TradePlansView() .themedSheetBackground() }
             .sheet(isPresented: $showOverlap) { ETFOverlapView() .themedSheetBackground() }
             .sheet(isPresented: $showAddCash) { AddCashSimulationView() .themedSheetBackground() }
-            .sheet(isPresented: $showFundReplay) { FundDCAReplayView() .themedSheetBackground() }
             .sheet(isPresented: $showVolumeAnalysis) { VolumeAnalysisView() .themedSheetBackground() }
             .sheet(isPresented: $showDisciplineLab) { DisciplineLabView() .themedSheetBackground() }
             .sheet(isPresented: $showScreenshotImport) { TradeScreenshotImportView() .themedSheetBackground() }
@@ -6685,14 +6747,9 @@ struct SettingsView: View {
     @AppStorage("guanpan.native.settings.showMore") private var showMoreSettings = false
     @AppStorage(NASSyncService.urlKey) private var nasURL = ""
     @AppStorage(NASSyncService.automaticKey) private var nasAutoSync = false
-    /// 观盘Next 服务端（30001）：可选的实时行情兜底，只在直连腾讯全失败时用。
-    /// 它和下面观盘max 的归档服务不是同一套协议，也不是同一个进程。
-    @AppStorage(FNASBridge.urlKey) private var fnasURL = ""
     /// 观盘max NAS（f-minute-archive，8790）：归档日线、交易日、分钟线与研究证据。
-    /// **不提供实时报价** —— 这条地址只用于历史数据，不能填到上面那栏。
+    /// 它不提供实时报价，只用于历史数据与研究证据。
     @AppStorage(GuanpanMaxNAS.urlKey) private var fminuteURL = ""
-    @State private var checkingFNAS = false
-    @State private var fnasStatus = ""
     @State private var checkingFMinute = false
     @State private var fminuteStatus = ""
     @State private var showExporter = false
@@ -7038,30 +7095,6 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var nasSection: some View {
-        Section("观盘Next 服务端（可选 · 实时行情兜底）") {
-            HStack {
-                TextField("例如 http://192.168.1.20:30001", text: $fnasURL)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .keyboardType(.URL)
-                PasteButton(payloadType: String.self) { values in
-                    if let value = values.first { fnasURL = value.trimmingCharacters(in: .whitespacesAndNewlines) }
-                }
-                .labelStyle(.iconOnly)
-                .accessibilityLabel("从剪贴板粘贴观盘Next 服务端地址")
-            }
-            Button {
-                testFNAS()
-            } label: {
-                Label(checkingFNAS ? "正在检查…" : "测试连接", systemImage: "antenna.radiowaves.left.and.right")
-            }
-            .disabled(checkingFNAS || fnasURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            if !fnasStatus.isEmpty {
-                Text(fnasStatus).font(.footnote).foregroundStyle(.secondary)
-            }
-            Text("这是观盘Next 的 30001 服务端，只有它能转发实时报价：/v1/market/quotes 与日线。直连腾讯失败时用它兜底，不读取或覆盖本机账本。**它不是观盘max 的 NAS**，两者的接口路径完全不同，地址不能互换。没部署这套服务就留空。")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-
         Section("观盘max NAS（历史数据 · 研究证据）") {
             HStack {
                 TextField("例如 http://192.168.1.20:8790", text: $fminuteURL)
@@ -7298,21 +7331,6 @@ struct SettingsView: View {
                 _ = try await NASSyncService.ping(base: nasURL, token: nasToken)
                 store.nasSyncStatus = "NAS 连接正常，原生同步接口可用"
             } catch { store.nasSyncStatus = "连接失败：\(error.localizedDescription)" }
-        }
-    }
-
-    /// 只探测 F 服务端的 /health：确认地址填对了、服务端在线，不改动任何数据。
-    private func testFNAS() {
-        checkingFNAS = true
-        Task { @MainActor in
-            defer { checkingFNAS = false }
-            do {
-                let version = try await FNASBridge.health()
-                fnasStatus = version.map { "连接正常 · 服务端版本 \($0)" } ?? "连接正常（服务端未返回版本号）"
-            } catch {
-                fnasStatus = "连接失败：\(error.localizedDescription)"
-                fnasStatus += "\n如果这里填的是观盘max NAS（8790）的地址，这条一定失败：它没有 /v1/market/quotes，请把地址填到下面的「观盘max NAS」里，这里留空。只部署了 F NAS 时这条不填也不影响使用。"
-            }
         }
     }
 

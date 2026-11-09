@@ -449,6 +449,173 @@ enum QuXianChaoGe {
         return .unknown
     }
 
+    // MARK: - 主动指导（软件先给结论，不让人自己拼条件）
+
+    /// 一条指导。`headline` 是结论，`why` 是依据，`todo` 是下一步动作。
+    ///
+    /// 这里刻意不给「买入/卖出」四个字：方法原文也只说要进入「考虑加仓的环节」，
+    /// 具体买哪个、买多少要过买点和风险预算。软件替人算的是**条件是否成立**与
+    /// **下一步该做什么**，不是替他下单。
+    struct Guidance: Identifiable {
+        enum Tone {
+            case act      // 可以推进
+            case caution  // 要谨慎/先别动
+            case block    // 明确不该做
+            case note     // 口径与证据说明
+        }
+        let id: Int
+        let tone: Tone
+        let headline: String
+        let why: String
+        let todo: String
+    }
+
+    struct Brief {
+        let verdict: ABVerdict
+        let headline: String
+        let summary: String
+        let asOf: String?
+        let items: [Guidance]
+    }
+
+    /// 把 A/B、仓位状态机和组合现状合成一份「现在该做什么」。
+    ///
+    /// 判定优先级：未知按不成立处理 → 条件不成立时不推任何加仓动作 →
+    /// 条件成立时才给推进建议，且必须带上买点选择与风险提示。
+    static func brief(b: BConditionResult,
+                      a: AConditionResult,
+                      state: PositionState,
+                      holdingCount: Int) -> Brief {
+        let verdict = combine(a: a.verdict, b: b.verdict)
+        var items: [Guidance] = []
+        var index = 0
+        func add(_ tone: Guidance.Tone, _ headline: String, _ why: String, _ todo: String) {
+            index += 1
+            items.append(Guidance(id: index, tone: tone, headline: headline, why: why, todo: todo))
+        }
+
+        // 1) 条件本身：先说清 A 和 B 各自什么情况。
+        let bFailed = b.readings.filter { $0.verdict != .satisfied }
+        var conditionWhy = "A（放量）：" + a.verdict.rawValue + "｜B（四指数连续 \(b.required) 日不创新低）：" + b.verdict.rawValue
+        if !bFailed.isEmpty {
+            conditionWhy += "\n未通过：" + bFailed.map { "\($0.displayName)" + ($0.verdict == .unknown ? "（未知）" : "（\($0.streak) 日）") }.joined(separator: "、")
+        }
+        let conditionTone: Guidance.Tone
+        switch verdict {
+        case .atLeastOneSatisfied: conditionTone = .act
+        case .noneSatisfied: conditionTone = .block
+        case .unknown: conditionTone = .caution
+        }
+        add(conditionTone,
+            "条件判定：" + verdict.title,
+            conditionWhy,
+            verdict == .unknown ? "先把缺的数据补齐（指数日 K 或当日成交额），未知不能当成立。" : verdict.detail)
+
+        // 2) 依条件给出「加不加仓」的直接回答。
+        switch verdict {
+        case .atLeastOneSatisfied:
+            if holdingCount == 0 {
+                add(.note, "当前没有持仓：先建观察名单，不要因为条件成立就急着满仓。",
+                    "方法里的「加仓」以已有仓位为前提；空仓时对应的是「轻仓试探」。",
+                    "先挑 1–2 只标的放进自选，再看下面的买点。")
+            }
+            add(.act, "可以进入加仓环节，但不是现在全仓。",
+                "A 或 B 至少一项成立才轮到买点判断；这一步只解决「能不能加」，不解决「买哪只、买多少」。",
+                "按下面的买点挑一个：右侧确认优先，左侧只在恐慌加速时轻仓试。")
+        case .noneSatisfied:
+            add(.block, "现在不加仓。",
+                "A 和 B 都不成立，按方法应继续观察或保持轻仓，不用叙事凑信号。",
+                "不做动作就是正确动作；等 B 重新连续 \(b.required) 日不创新低，或成交额达到你选的口径。")
+        case .unknown:
+            add(.caution, "条件没算全，先当不成立处理。",
+                "未知按不成立处理，不能因为另一项成立就当作已确认。",
+                "去「市场状态」看四个指数是否都有日 K；A 需要你录入当日成交额。")
+        }
+
+        // 3) 仓位状态机：状态和条件打架时，以条件为准。
+        let suggestion = nextStateSuggestion(from: state, verdict: verdict)
+        if let suggestion {
+            add(suggestion.blocked ? .caution : .act,
+                "仓位状态：\(state.rawValue) → 建议\(suggestion.target.rawValue)",
+                suggestion.why,
+                suggestion.todo)
+        } else {
+            add(.note, "仓位状态：\(state.rawValue) 维持不变",
+                "当前状态和条件不冲突，不需要为了「有动作」而改状态。",
+                state.guidance)
+        }
+
+        // 4) 口径与边界，最后一条固定出现。
+        add(.note, "这是条件复核，不是买卖信号。",
+            "B 用最低价、20 日锚点、严格小于，且只用已完成交易日；A 的成交额由你录入，软件不猜。",
+            "任何一次加仓都要先写失效线，再决定买点。")
+
+        let headline: String
+        let summary: String
+        switch verdict {
+        case .atLeastOneSatisfied:
+            headline = "可以加仓"
+            summary = "条件成立，进入买点选择与风险预算环节。"
+        case .noneSatisfied:
+            headline = "暂不加仓"
+            summary = "条件不成立，保持现有仓位或观察。"
+        case .unknown:
+            headline = "条件不齐"
+            summary = "缺数据，按不成立处理。"
+        }
+
+        return Brief(verdict: verdict,
+                     headline: headline,
+                     summary: summary,
+                     asOf: b.asOfSession,
+                     items: items)
+    }
+
+    struct StateSuggestion {
+        let target: PositionState
+        let why: String
+        let todo: String
+        let blocked: Bool
+    }
+
+    /// 状态机推进建议。条件不成立时只允许「原地」或「后退」，不允许往前推。
+    static func nextStateSuggestion(from state: PositionState, verdict: ABVerdict) -> StateSuggestion? {
+        switch (state, verdict) {
+        case (.observe, .atLeastOneSatisfied):
+            return StateSuggestion(target: .probe,
+                                   why: "条件已成立，观察状态可以往前走一步；按方法先轻仓试，不直接跳到重仓。",
+                                   todo: "先用小仓位试，并写好失效线：跌破就退回观察。",
+                                   blocked: false)
+        case (.probe, .atLeastOneSatisfied):
+            return StateSuggestion(target: .confirm,
+                                   why: "已有试探仓且条件仍成立，满足「确认」的前置。",
+                                   todo: "确认买点是否仍在有效区间，再决定是否提高到「加仓」。",
+                                   blocked: false)
+        case (.confirm, .atLeastOneSatisfied):
+            return StateSuggestion(target: .add,
+                                   why: "确认后条件继续成立，才轮到加仓；加仓要有新的条件与风险预算。",
+                                   todo: "算清这次加仓后的单一标的上限与现金下限，不为摊成本而加。",
+                                   blocked: false)
+        case (.add, .noneSatisfied), (.heavy, .noneSatisfied):
+            return StateSuggestion(target: .reduce,
+                                   why: "仓位已经不低，但加仓条件转为不成立；方法要求此时不加，且要核对失效条件。",
+                                   todo: "逐只核对失效线；触发就减，不触发可继续持有但不加。",
+                                   blocked: true)
+        case (.probe, .noneSatisfied):
+            return StateSuggestion(target: .observe,
+                                   why: "试探的前提没了，按方法退回观察，不硬扛。",
+                                   todo: "把试探仓处理掉或明确止损价，回到观察等下一次条件。",
+                                   blocked: true)
+        case (.reduce, .atLeastOneSatisfied), (.exit, .atLeastOneSatisfied):
+            return StateSuggestion(target: .observe,
+                                   why: "已经减/退过，条件又成立：先回到观察重新评估，不因为「刚卖」就立刻反手。",
+                                   todo: "重新看买点是否有效，别用刚卖出的价格当锚。",
+                                   blocked: false)
+        default:
+            return nil
+        }
+    }
+
     // MARK: - 三个买点
 
     struct BuyPoint: Identifiable {

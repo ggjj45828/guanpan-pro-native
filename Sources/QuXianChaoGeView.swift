@@ -6,6 +6,7 @@ import SwiftUI
 private typealias QXCGBInput = QuXianChaoGe.BInput
 private typealias QXCGTransition = QuXianChaoGe.PositionTransition
 private typealias NASIndexBar = GuanpanMaxNAS.IndexDailyBar
+private typealias QXCGBResult = QuXianChaoGe.BConditionResult
 
 /// 曲线超哥 · 独立模块。
 ///
@@ -58,7 +59,7 @@ struct QuXianChaoGeView: View {
 
     private var content: some View {
             List {
-                introSection
+                guidanceSection
                 conditionSection
                 buyPointSection
                 positionSection
@@ -76,6 +77,111 @@ struct QuXianChaoGeView: View {
                 }
             }
             .onAppear(perform: reloadJournal)
+            // 主动检查：进页面就把 B 算出来，不用先点按钮。
+            .task {
+                if bResult == nil { await runBCheck() }
+            }
+    }
+
+    // MARK: - 主动指导
+
+    /// B 还没算出来时也要能渲染结论卡，所以给一个显式的「未算」结果，而不是 Optional 到处判空。
+    private var bForBrief: QuXianChaoGe.BConditionResult {
+        bResult ?? QXCGBResult(readings: [],
+                               verdict: .unknown,
+                               asOfSession: nil,
+                               window: 20,
+                               required: 3,
+                               definitionNote: "")
+    }
+
+    private var brief: QuXianChaoGe.Brief {
+        QuXianChaoGe.brief(b: bForBrief,
+                           a: aEvaluation,
+                           state: currentState,
+                           holdingCount: store.data.holdings.count)
+    }
+
+    private var guidanceSection: some View {
+        let brief = self.brief
+        return Section {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(brief.headline)
+                        .scaledFont(palette.fsTitle, weight: .semibold)
+                        .foregroundStyle(palette.ink)
+                    Spacer()
+                    if checkingB {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                Text(brief.summary)
+                    .scaledFont(palette.fsRow)
+                    .foregroundStyle(palette.ink2)
+                Text(brief.asOf.map { "指数数据截至 \($0)" } ?? "指数数据未取到")
+                    .font(.caption2)
+                    .foregroundStyle(palette.ink3)
+            }
+            ForEach(brief.items) { item in
+                guidanceRow(item)
+            }
+            Button {
+                Task { await runBCheck() }
+            } label: {
+                Label("重新判定", systemImage: "arrow.triangle.2.circlepath")
+                    .scaledFont(palette.fsRow)
+            }
+            .disabled(checkingB)
+        } header: {
+            Text("现在该怎么做")
+        } footer: {
+            Text("这是按方法条件算出的结论，不是买卖信号。软件只回答「能不能加仓、下一步做什么」，不替你下单，也不给评分排名。")
+                .font(.footnote)
+                .foregroundStyle(palette.ink3)
+        }
+        .toneCard(toneColor(brief.verdict), isLight: isLight)
+    }
+
+    private func toneColor(_ verdict: QuXianChaoGe.ABVerdict) -> Color {
+        switch verdict {
+        case .atLeastOneSatisfied: return CardTone.ok
+        case .noneSatisfied: return PnLColor.down
+        case .unknown: return CardTone.warn
+        }
+    }
+
+    private func guidanceRow(_ item: QuXianChaoGe.Guidance) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(guidanceToneColor(item.tone))
+                .frame(width: 7, height: 7)
+                .padding(.top, 6)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.headline)
+                    .scaledFont(palette.fsRow, weight: .medium)
+                    .foregroundStyle(palette.ink)
+                if !item.why.isEmpty {
+                    Text(item.why)
+                        .font(.caption)
+                        .foregroundStyle(palette.ink2)
+                }
+                if !item.todo.isEmpty {
+                    Text("下一步：" + item.todo)
+                        .font(.caption)
+                        .foregroundStyle(palette.ink3)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func guidanceToneColor(_ tone: QuXianChaoGe.Guidance.Tone) -> Color {
+        switch tone {
+        case .act: return CardTone.ok
+        case .caution: return CardTone.warn
+        case .block: return PnLColor.down
+        case .note: return palette.ink3
+        }
     }
 
     // MARK: - 说明

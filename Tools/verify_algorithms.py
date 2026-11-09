@@ -1813,6 +1813,28 @@ check("账本隔离：space 缺省（旧载荷）按 Pro 处理", _belongs_to_pr
 check("账本隔离：space=guanpan-f 必须拒收", _belongs_to_pro("guanpan-f") is False)
 check("账本隔离：任意第三方 space 必须拒收", _belongs_to_pro("guanpan-next") is False)
 
+# 曲线超哥 · 主动指导：条件不成立时绝不允许把仓位往前推。
+# 复刻 nextStateSuggestion 的判定表（Swift 侧同名函数），只验证「方向」这一条不变量。
+_QXCG_ADVANCE = {"观察": "轻仓试探", "轻仓试探": "确认", "确认": "加仓"}
+_QXCG_STATES = ["观察", "轻仓试探", "确认", "加仓", "重仓确认", "持有", "减仓", "退出"]
+
+def qxcg_next_state(state, verdict):
+    if verdict == "satisfied":
+        return _QXCG_ADVANCE.get(state, "观察")
+    if verdict == "noneSatisfied":
+        return "减仓" if state in ("加仓", "重仓确认") else ("观察" if state == "轻仓试探" else state)
+    return state  # 未知一律原地
+
+for _st in _QXCG_STATES:
+    check(f"曲线超哥指导：条件不成立时 {_st} 不得前进到加仓",
+          qxcg_next_state(_st, "noneSatisfied") not in ("加仓", "重仓确认"))
+check("曲线超哥指导：观察 + 条件成立 → 轻仓试探（不直接加仓）",
+      qxcg_next_state("观察", "satisfied") == "轻仓试探")
+check("曲线超哥指导：加仓 + 条件不成立 → 退回减仓",
+      qxcg_next_state("加仓", "noneSatisfied") == "减仓")
+check("曲线超哥指导：条件未知一律原地不动",
+      qxcg_next_state("确认", "unknown") == "确认")
+
 
 print()
 if failures:

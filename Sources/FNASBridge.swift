@@ -51,15 +51,14 @@ enum FNASBridge {
         UserDefaults.standard.string(forKey: urlKey) ?? ""
     }
 
+    /// **已停用**：观盘Next 的 30001 服务端不再接入。
+    /// 设置页里的地址栏已删除，这里强制返回 nil，避免旧安装残留的地址
+    /// 继续被当成行情兜底源（那套路径和观盘max NAS 完全不同，填错就是 -1011）。
     static var normalizedBase: String? {
-        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let url = URL(string: trimmed),
-              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              url.host != nil else { return nil }
-        return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        nil
     }
 
-    static var isConfigured: Bool { normalizedBase != nil }
+    static var isConfigured: Bool { false }
 
     static func save(_ address: String) {
         UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: urlKey)

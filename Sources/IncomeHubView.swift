@@ -11,7 +11,6 @@ struct IncomeHubView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.appAppearance) private var appearance
 
-    @State private var showFundCalendar = false
     @State private var showETFCalendar = false
     @State private var showDividendCalendar = false
     @State private var showPool = false
@@ -31,11 +30,6 @@ struct IncomeHubView: View {
     }
 
     private var yearKey: String { String(monthKey.prefix(4)) }
-
-    /// 本月场外基金收益合计（含分红与净值波动，口径与基金收益日历一致）。
-    private var fundMonthProfit: Double {
-        store.fundDailyPerformance(month: monthKey).reduce(0) { $0 + $1.profit }
-    }
 
     /// 本月已登记的场内 ETF 分红合计。
     private var etfMonthDividend: Double {
@@ -98,7 +92,6 @@ struct IncomeHubView: View {
             .background(.clear)
             .navigationTitle("收息")
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() .themedSheetBackground() }
             .sheet(isPresented: $showETFCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
             .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
             .sheet(isPresented: $showPool) { DividendPoolView() .themedSheetBackground() }
@@ -108,7 +101,7 @@ struct IncomeHubView: View {
     // MARK: 汇总
 
     private var summaryCard: some View {
-        let total = fundMonthProfit + etfMonthDividend
+        let total = etfMonthDividend
         return VStack(alignment: .leading, spacing: 12) {
             Text("本月已收 · \(monthKey)")
                 .scaledFont(palette.fsLabel, weight: .medium)
@@ -120,14 +113,10 @@ struct IncomeHubView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             HStack(spacing: 0) {
-                statCell("场外基金", "¥" + fundMonthProfit.cny(),
-                         tint: CardTone.pnl(fundMonthProfit) ?? palette.ink)
                 statCell("场内分红", "¥" + etfMonthDividend.cny(), tint: palette.ink)
                 statCell("今年分红", "¥" + etfYearDividend.cny(), tint: palette.ink)
             }
-            Text(fundMonthProfit >= 0
-                 ? "场外基金含净值波动，不等同于到手现金；场内部分只统计已登记的分红事件。"
-                 : "本月场外基金净值回撤大于分红，合计为负属正常，不代表没有收到分红。")
+            Text("只统计已登记的场内分红事件，不含净值波动，也不等同于到手现金。")
                 .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -187,11 +176,6 @@ struct IncomeHubView: View {
 
     private var calendarCard: some View {
         VStack(spacing: 0) {
-            entryRow(title: "基金收益日历", subtitle: "按日看场外基金的当日收益与累计",
-                     icon: "calendar", tint: palette.accent) {
-                showFundCalendar = true
-            }
-            divider
             entryRow(title: "场内收益日历", subtitle: "ETF 的逐日盈亏与收益归因",
                      icon: "chart.bar.doc.horizontal", tint: Color(hex: 0x35C08A)) {
                 showETFCalendar = true
