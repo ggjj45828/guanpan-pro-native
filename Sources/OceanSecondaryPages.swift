@@ -127,6 +127,20 @@ struct OceanHoldingsView: View {
                     ])
                     .oceanSectionRow(palette)
                 }
+                Section("编辑") {
+                    // 原来这一行放在列表最后：内容一多就落到 tab bar 底下，
+                    // 只有「过度滚动」才看得到，松手又弹回去（截图反馈的正是这个）。
+                    // 编辑是高频入口，提到汇总卡下面；底部再留一段滚动余量兜底。
+                    Button {
+                        Haptics.push()
+                        sheetTarget = .fullEditor
+                    } label: {
+                        Label("打开完整持仓编辑（成交 / 分红 / 网格 / 基金）",
+                              systemImage: "square.and.pencil")
+                            .scaledFont(palette.fsLabel)
+                    }
+                    .oceanSectionRow(palette)
+                }
                 Section("场内 ETF · \(etfHoldings.count)") {
                     ForEach(etfHoldings) { holding in
                         Button {
@@ -168,22 +182,15 @@ struct OceanHoldingsView: View {
                     }
                     if store.data.quotes.isEmpty { emptyRow("还没有自选") }
                 }
-                Section("编辑") {
-                    Button {
-                        Haptics.push()
-                        sheetTarget = .fullEditor
-                    } label: {
-                        Label("打开完整持仓编辑（成交 / 分红 / 网格 / 基金）",
-                              systemImage: "square.and.pencil")
-                            .scaledFont(palette.fsLabel)
-                    }
-                    .oceanSectionRow(palette)
-                }
             }
             .listStyle(.grouped)
             .listSectionSpacing(.compact)
             .scrollContentBackground(.hidden)
             .background(.clear)
+            // 底部给 tab bar 再让一段：内容刚好一屏多一点时，
+            // 最后一行会卡在底栏后面，松手就回弹。
+            .contentMargins(.bottom, 28, for: .scrollContent)
+            .scrollBounceBehavior(.basedOnSize)
             .navigationTitle("持仓")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
