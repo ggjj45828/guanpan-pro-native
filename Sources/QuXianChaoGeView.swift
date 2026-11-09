@@ -19,6 +19,8 @@ private typealias NASIndexBar = GuanpanMaxNAS.IndexDailyBar
 struct QuXianChaoGeView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 由工具页 push 时为 true：不自建导航栈，用外层返回。
+    var embedded: Bool = false
 
     // B 条件
     @State private var bResult: QuXianChaoGe.BConditionResult?
@@ -47,7 +49,14 @@ struct QuXianChaoGeView: View {
     private var palette: DsPalette { DsPalette.of(store.resolvedAppearance) }
 
     var body: some View {
-        NavigationStack {
+        if embedded {
+            content
+        } else {
+            NavigationStack { content }
+        }
+    }
+
+    private var content: some View {
             List {
                 introSection
                 conditionSection
@@ -63,11 +72,10 @@ struct QuXianChaoGeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    if !embedded { Button("关闭") { dismiss() } }
                 }
             }
             .onAppear(perform: reloadJournal)
-        }
     }
 
     // MARK: - 说明

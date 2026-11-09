@@ -10,6 +10,8 @@ import Charts
 struct NASPeriodChartView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+    /// 由工具页 push 时为 true：不自建导航栈，用外层返回。
+    var embedded: Bool = false
 
     @State private var selectedCode = ""
     @State private var periodMinutes = 120
@@ -41,7 +43,14 @@ struct NASPeriodChartView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        if embedded {
+            content
+        } else {
+            NavigationStack { content }
+        }
+    }
+
+    private var content: some View {
             List {
                 controls
                 statusSection
@@ -54,7 +63,7 @@ struct NASPeriodChartView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    if !embedded { Button("关闭") { dismiss() } }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button { Task { await load() } } label: {
@@ -67,7 +76,6 @@ struct NASPeriodChartView: View {
                 if selectedCode.isEmpty { selectedCode = instruments.first?.code ?? "" }
                 if chart == nil, !selectedCode.isEmpty { Task { await load() } }
             }
-        }
     }
 
     // MARK: - 参数区

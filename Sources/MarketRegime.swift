@@ -605,23 +605,27 @@ enum MarketRegimeStore {
 }
 
 extension PortfolioStore {
-    /// 用上证指数日 K 评估市场状态。
+    /// 用指定指数的日 K 评估市场状态。
     ///
     /// 用指数而不是持仓个股：个股状态是「这只票怎么样」，
     /// 市场状态要回答的是「现在整个环境适不适合做」。
-    func marketRegime(benchmarkCode: String = "sh000001") -> MarketRegimeAssessment? {
+    ///
+    /// - Parameter market: 状态记忆的存放键。多指数同时看时必须各用各的键，
+    ///   否则沪深300 的状态会被创业板覆盖，转变记录也会串。
+    func marketRegime(benchmarkCode: String = "sh000001",
+                      market: String = "CN") -> MarketRegimeAssessment? {
         guard let bars = dailyBars[benchmarkCode], bars.count >= 60 else { return nil }
-        let previous = MarketRegimeStore.load()
+        let previous = MarketRegimeStore.load(market: market)
         let result = MarketRegimeEngine.evaluate(bars: bars, previous: previous)
         // 同一根 K 线重复评估不该把 pending 计数推上去，所以只在会话推进时写回。
         if let previous {
             if result.memory.lastEvaluationAt > previous.lastEvaluationAt {
-                MarketRegimeStore.recordChange(from: previous, to: result.memory)
-                MarketRegimeStore.save(result.memory)
+                MarketRegimeStore.recordChange(from: previous, to: result.memory, market: market)
+                MarketRegimeStore.save(result.memory, market: market)
             }
         } else {
             // 第一次评估没有「之前」，不记变更 —— 那是初始化，不是转变。
-            MarketRegimeStore.save(result.memory)
+            MarketRegimeStore.save(result.memory, market: market)
         }
         return result
     }

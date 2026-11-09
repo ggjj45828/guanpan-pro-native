@@ -3848,6 +3848,8 @@ struct ToolsView: View {
     @State private var showIntradayArchive = false
     @State private var showNASPeriodChart = false
     @State private var showQuXianChaoGe = false
+    @State private var showWatchRadar = false
+    @State private var showLocalAdvice = false
     @State private var showDataTrust = false
     @State private var showReconciliation = false
     @State private var showTradeLedger = false
@@ -3928,6 +3930,12 @@ struct ToolsView: View {
                 }
                 Button { showQuXianChaoGe = true } label: {
                     Label("曲线超哥方法（A/B 条件 · 买点 · 状态机）", systemImage: "book.closed")
+                }
+                Button { showWatchRadar = true } label: {
+                    Label("值不值得买 · 全持仓（六维条件复核）", systemImage: "speedometer")
+                }
+                Button { showLocalAdvice = true } label: {
+                    Label("离线账户建议（不联网 · 不需要密钥）", systemImage: "lock.shield")
                 }
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showAllTools.toggle() }
@@ -4235,8 +4243,11 @@ struct ToolsView: View {
             .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
             .sheet(isPresented: $showHistoricalReplay) { HistoricalReplayView() .themedSheetBackground() }
             .sheet(isPresented: $showIntradayArchive) { IntradayArchiveView() .themedSheetBackground() }
-            .sheet(isPresented: $showNASPeriodChart) { NASPeriodChartView() .themedSheetBackground() }
-            .sheet(isPresented: $showQuXianChaoGe) { QuXianChaoGeView() .themedSheetBackground() }
+            // 这几项改成真页面推入，不再弹窗。
+            .navigationDestination(isPresented: $showNASPeriodChart) { NASPeriodChartView(embedded: true) }
+            .navigationDestination(isPresented: $showQuXianChaoGe) { QuXianChaoGeView(embedded: true) }
+            .navigationDestination(isPresented: $showWatchRadar) { WatchRadarView(embedded: true) }
+            .navigationDestination(isPresented: $showLocalAdvice) { LocalAdviceView(embedded: true) }
             .sheet(isPresented: $showDataTrust) { DataTrustView() .themedSheetBackground() }
             .sheet(isPresented: $showReconciliation) { ReconciliationView() .themedSheetBackground() }
             .sheet(isPresented: $showTradeLedger) { TradeLedgerManagementView() .themedSheetBackground() }

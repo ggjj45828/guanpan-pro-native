@@ -10,11 +10,43 @@ struct MarketStateView: View {
     /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成」关闭按钮（外层返回即可退出）。
     var embedded: Bool = false
 
-    @State private var regime: MarketRegimeAssessment?
-    @State private var transitions: [MarketRegimeTransition] = []
+    @State private var selectedCode = "sh000001"
+    @State private var assessments: [String: MarketRegimeAssessment] = [:]
+    /// 取数失败按指数单独记：科创 50 拿不到数据，不该让上证也显示成「无数据」。
+    @State private var failures: [String: String] = [:]
+    @State private var loadingCodes: Set<String> = []
+    @State private var loadStarted = false
     /// 因子表默认展开：这一页进来的目的就是看细节，藏起来要再点一次没有意义。
     @State private var expandedFactors = true
     @State private var expandedFactorKey: String?
+
+    /// 市场状态不能只看上证。上证是权重、创业板是成长、科创 50 是硬科技，
+    /// 经常走出完全相反的行情 —— 只报上证会把「成长股在跌」说成「市场没事」。
+    struct Benchmark: Identifiable, Hashable {
+        let code: String
+        let name: String
+        let note: String
+        var id: String { code }
+    }
+
+    static let benchmarks: [Benchmark] = [
+        Benchmark(code: "sh000001", name: "上证指数", note: "大盘权重"),
+        Benchmark(code: "sz399001", name: "深证成指", note: "深市整体"),
+        Benchmark(code: "sz399006", name: "创业板指", note: "成长风格"),
+        Benchmark(code: "sh000688", name: "科创50", note: "硬科技"),
+        Benchmark(code: "sh000300", name: "沪深300", note: "核心宽基"),
+    ]
+
+    private var selectedBenchmark: Benchmark {
+        Self.benchmarks.first { $0.code == selectedCode } ?? Self.benchmarks[0]
+    }
+
+    private var regime: MarketRegimeAssessment? { assessments[selectedCode] }
+
+    /// 状态变更按指数分开读：沪深300 的转变记录不该出现在创业板的页面里。
+    private var transitions: [MarketRegimeTransition] {
+        MarketRegimeStore.loadTransitions(market: selectedCode)
+    }
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -24,6 +56,7 @@ struct MarketStateView: View {
         PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.sectionGap) {
+                    indexStrip
                     regimeCard
                     if let regime, !regime.reasons.isEmpty {
                         reasonCard(regime)
@@ -45,12 +78,92 @@ struct MarketStateView: View {
                     if !embedded { Button("完成") { dismiss() }.tint(palette.accent) }
                 }
             }
-            .onAppear {
-                // 顺序不能反：marketRegime() 会先写入可能发生的新变更，
-                // 之后读才拿得到刚记下的那条。
-                regime = store.marketRegime()
-                transitions = MarketRegimeStore.loadTransitions()
+            .onAppear(perform: startLoadingIfNeeded)
+        }
+    }
+
+    // MARK: 指数切换
+
+    /// 五个指数各算各的。横条只露「名称 + 当前状态」，细节看下面那张大卡。
+    private var indexStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Self.benchmarks) { item in
+                    indexChip(item)
+                }
             }
+            .padding(.vertical, 2)
+        }
+        // 抵消外层 pageInset，让横条能一直滑到屏幕边缘
+        .padding(.horizontal, -palette.pageInset)
+        .padding(.horizontal, palette.pageInset)
+    }
+
+    private func indexChip(_ item: Benchmark) -> some View {
+        let assessment = assessments[item.code]
+        let failure = failures[item.code]
+        let selected = item.code == selectedCode
+        return Button {
+            Haptics.tap()
+            selectedCode = item.code
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(item.name)
+                        .scaledFont(11.5, weight: .medium)
+                        .foregroundStyle(selected ? palette.ink : palette.ink2)
+                    if loadingCodes.contains(item.code) {
+                        ProgressView().controlSize(.mini).scaleEffect(0.6)
+                    }
+                }
+                Text(assessment.map { $0.regime.title } ?? (failure ?? "未加载"))
+                    .scaledFont(palette.fsMicro)
+                    .foregroundStyle(assessment.map { riskTint($0.riskLevel) } ?? palette.ink3)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background {
+                RoundedRectangle(cornerRadius: palette.chipRadius, style: .continuous)
+                    .fill(selected ? palette.accent.opacity(palette.isLight ? 0.14 : 0.22) : palette.cardSoft)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: palette.chipRadius, style: .continuous)
+                    .strokeBorder(selected ? palette.accent.opacity(0.55) : Color.clear, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: 加载
+
+    private func startLoadingIfNeeded() {
+        guard !loadStarted else { return }
+        loadStarted = true
+        Task { @MainActor in
+            for benchmark in Self.benchmarks {
+                await reload(benchmark)
+            }
+        }
+    }
+
+    @MainActor
+    private func reload(_ benchmark: Benchmark) async {
+        loadingCodes.insert(benchmark.code)
+        defer { loadingCodes.remove(benchmark.code) }
+        failures[benchmark.code] = nil
+        do {
+            // 指数和持仓走同一套日线取数（腾讯直连 → NAS 归档兜底），
+            // 只是代码带市场前缀。取不到就记失败，不做任何编造。
+            _ = try await store.fetchDailyBars(code: benchmark.code, count: 300)
+            if let assessment = store.marketRegime(benchmarkCode: benchmark.code,
+                                                   market: benchmark.code) {
+                assessments[benchmark.code] = assessment
+            } else {
+                failures[benchmark.code] = "日线不足 60 根"
+            }
+        } catch {
+            failures[benchmark.code] = "取数失败"
         }
     }
 
@@ -59,9 +172,14 @@ struct MarketStateView: View {
     private var regimeCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text("上证指数")
-                    .scaledFont(palette.fsLabel, weight: .medium)
-                    .foregroundStyle(palette.ink2)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(selectedBenchmark.name)
+                        .scaledFont(palette.fsLabel, weight: .medium)
+                        .foregroundStyle(palette.ink2)
+                    Text(selectedBenchmark.note)
+                        .scaledFont(9)
+                        .foregroundStyle(palette.ink3)
+                }
                 Spacer(minLength: 4)
                 if let regime {
                     Text(regime.riskLevel.title)
@@ -119,7 +237,7 @@ struct MarketStateView: View {
                 Text("日线不足")
                     .scaledFont(palette.fsHero, weight: .bold)
                     .foregroundStyle(palette.ink3)
-                Text("至少需要 60 个交易日的上证指数日线。打开一次行情页并下滑刷新，让它把日 K 拉回来。")
+                Text("至少需要 60 个交易日的\(selectedBenchmark.name)日线。\(failures[selectedCode] ?? "打开一次行情页并下滑刷新，让它把日 K 拉回来。")")
                     .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
                     .fixedSize(horizontal: false, vertical: true)
