@@ -811,10 +811,13 @@ final class PortfolioStore: ObservableObject {
     }
 
     private func makeNASDocument() -> NativeSyncDocument {
-        NativeSyncDocument(data: data, intradayBars: intradayBars,
+        var document = NativeSyncDocument(data: data, intradayBars: intradayBars,
                            dailyBars: dailyBars.values.flatMap { $0 }.sorted {
                                $0.code == $1.code ? $0.date < $1.date : $0.code < $1.code
                            })
+        // 每一份上传的账本都自带空间标识，NAS 上明示这是观盘 Pro 的记录。
+        document.space = NativeSyncDocument.proSpace
+        return document
     }
 
     private func hasNASUserData(_ document: NativeSyncDocument) -> Bool {
@@ -863,39 +866,25 @@ final class PortfolioStore: ObservableObject {
             let baseline = defaults.string(forKey: NASSyncService.fingerprintKey)
             let knownRevision = defaults.integer(forKey: NASSyncService.revisionKey)
             guard let remoteDocument = remote.data else {
-                let legacy = try await NASSyncService.legacyBackup(base: url, token: token)
-                if let legacyBytes = legacy.data,
-                   let migrated = try? LegacyMigration.decodePackage(legacyBytes) {
-                    let migratedDocument = NativeSyncDocument(data: migrated.data,
-                        intradayBars: migrated.intradayBars, dailyBars: [])
-                    if hasNASUserData(migratedDocument) {
-                        if !hasNASUserData(local) {
-                            applyNASDocument(migratedDocument)
-                            let imported = makeNASDocument()
-                            let result = try await NASSyncService.put(base: url, token: token,
-                                document: imported, expectedRevision: remote.revision)
-                            recordNASSync(revision: result.revision, document: imported)
-                            nasSyncStatus = "已将 NAS 网页账本迁入原生空间并同步（版本 \(result.revision)）"
-                        } else if try NASSyncService.fingerprint(migratedDocument) == localFingerprint {
-                            let result = try await NASSyncService.put(base: url, token: token,
-                                document: local, expectedRevision: remote.revision)
-                            recordNASSync(revision: result.revision, document: local)
-                            nasSyncStatus = "本机与 NAS 网页账本一致，已建立原生同步（版本 \(result.revision)）"
-                        } else {
-                            nasSyncStatus = "NAS 有网页账本，本机也有不同数据；为避免覆盖，请先导出本机备份并选择同步方向"
-                        }
-                        return
-                    }
-                }
+                // 账本硬隔离：这里以前会自动读 /api/data（观盘 F 的网页账本）迁进 Pro 空间，
+                // 那正是「两个 App 混在一起」的唯一通道，现已切断。
+                // 观盘 Pro 的 NAS 空间为空时只有两种正常动作：本机有数据就初始化上传，
+                // 本机也没数据就保持空，不做任何跨 App 迁移。
                 if hasNASUserData(local) {
-                    let result = try await NASSyncService.put(base: url, token: token, document: local,
+                    var upload = local
+                    upload.space = NativeSyncDocument.proSpace
+                    let result = try await NASSyncService.put(base: url, token: token, document: upload,
                                                               expectedRevision: remote.revision)
-                    recordNASSync(revision: result.revision, document: local)
-                    nasSyncStatus = "已上传到 NAS（版本 \(result.revision)）"
+                    recordNASSync(revision: result.revision, document: upload)
+                    nasSyncStatus = "已在 NAS 建立观盘 Pro 独立空间（版本 \(result.revision)）"
                 } else {
                     recordNASSync(revision: remote.revision, document: local)
-                    nasSyncStatus = "NAS 暂无数据"
+                    nasSyncStatus = "NAS 的观盘 Pro 空间为空，本机也没有数据。不会读取观盘 F 的网页账本。"
                 }
+                return
+            }
+            guard remoteDocument.belongsToPro else {
+                nasSyncStatus = "NAS 这个空间里的账本不属于观盘 Pro（space=\(remoteDocument.space ?? "未标注")），已停止同步。请给观盘 Pro 换一个独立空间，不要和观盘 F 共用同一份记录。"
                 return
             }
             let remoteFingerprint = try NASSyncService.fingerprint(remoteDocument)
@@ -945,25 +934,18 @@ final class PortfolioStore: ObservableObject {
                 base: defaults.string(forKey: NASSyncService.urlKey) ?? "",
                 token: NASCredentialStore.load() ?? "")
             if let document = response.data {
+                guard document.belongsToPro else {
+                    nasSyncStatus = "NAS 这个空间里的账本不属于观盘 Pro（space=\(document.space ?? "未标注")），已拒绝下载。"
+                    return
+                }
                 applyNASDocument(document)
                 recordNASSync(revision: response.revision, document: document)
                 nasSyncStatus = "已从 NAS 下载（版本 \(response.revision)）"
                 return
             }
-            let legacy = try await NASSyncService.legacyBackup(
-                base: defaults.string(forKey: NASSyncService.urlKey) ?? "",
-                token: NASCredentialStore.load() ?? "")
-            guard let bytes = legacy.data, let migrated = try? LegacyMigration.decodePackage(bytes) else {
-                nasSyncStatus = "NAS 当前没有可识别的原生或网页账本数据"
-                return
-            }
-            let imported = NativeSyncDocument(data: migrated.data, intradayBars: migrated.intradayBars, dailyBars: [])
-            applyNASDocument(imported)
-            let saved = makeNASDocument()
-            let result = try await NASSyncService.put(base: defaults.string(forKey: NASSyncService.urlKey) ?? "",
-                token: NASCredentialStore.load() ?? "", document: saved, expectedRevision: response.revision)
-            recordNASSync(revision: result.revision, document: saved)
-            nasSyncStatus = "网页账本已迁入原生空间（版本 \(result.revision)）"
+            // 以前这里会回退去读 /api/data（观盘 F 的网页账本）并覆盖本机，现已切断：
+            // 观盘 Pro 只在它自己的原生空间里读写。
+            nasSyncStatus = "NAS 的观盘 Pro 空间还没有数据。为避免混入观盘 F 的账本，不会读取网页账本（/api/data）。"
         } catch { nasSyncStatus = "下载失败：\(error.localizedDescription)" }
     }
 

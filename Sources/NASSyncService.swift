@@ -4,11 +4,23 @@ import Security
 import CoreFoundation
 
 struct NativeSyncDocument: Codable {
+    /// 账本空间标识。观盘 Pro 只认 "guanpan-pro"；观盘 F 的网页账本走 /api/data，
+    /// 两者在 NAS 上是两套独立记录，任何一侧都不得把另一侧的数据当成自己的。
+    /// 旧版本载荷没有这个字段（解码为 nil），仍按 guanpan-pro 处理，避免老用户无法恢复。
+    var space: String? = nil
     var schemaVersion: Int = 1
     var updatedAt: Date = .now
     var data: PortfolioData
     var intradayBars: [IntradayBar]
     var dailyBars: [DailyBar]
+
+    static let proSpace = "guanpan-pro"
+
+    /// nil（旧载荷）视为 Pro 自己的数据；有值但不是 proSpace 则拒收。
+    var belongsToPro: Bool {
+        guard let space, !space.isEmpty else { return true }
+        return space == Self.proSpace
+    }
 }
 
 struct NASSyncResponse: Decodable {
@@ -23,6 +35,22 @@ struct NASSyncVersion: Decodable, Identifiable {
     var revision: Int
     var updatedAt: String
     var id: Int { revision }
+
+    /// 服务端存的是 ISO8601，恢复确认时必须让用户看到「哪一天的哪一版」，
+    /// 而不是一个裸版本号。解析不了就原样显示，不编造时间。
+    var updatedAtText: String {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        guard let date = fractional.date(from: updatedAt) ?? plain.date(from: updatedAt) else {
+            return updatedAt
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
 }
 
 private struct NASSyncHistoryResponse: Decodable {
@@ -141,6 +169,10 @@ enum NASSyncService {
         throw lastError
     }
 
+    /// **观盘 F 专用，观盘 Pro 的同步链路不得调用。**
+    /// `/api/data` 是观盘 F 的网页账本空间，`/api/native/data` 才是观盘 Pro 的空间。
+    /// 一旦 Pro 读它，就会把 F 的持仓混进自己的账本——那正是明确禁止的。
+    /// 保留这个函数只为留档「F 那侧是怎么读的」，不要在新的同步逻辑里引用。
     static func legacyBackup(base: String, token: String) async throws -> (revision: Int, data: Data?) {
         let root = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let baseURL = URL(string: root), ["http", "https"].contains(baseURL.scheme?.lowercased() ?? ""), baseURL.host != nil else {

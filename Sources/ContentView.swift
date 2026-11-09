@@ -6768,7 +6768,7 @@ struct SettingsView: View {
                 Button("上传并覆盖 NAS", role: .destructive) { Task { await store.uploadToNAS(allowEmptyOverwrite: true) } }
                 Button("取消", role: .cancel) { }
             }
-            .confirmationDialog("恢复 NAS 版本 \(selectedNASVersion?.revision ?? 0)？恢复后会替换 NAS 当前账本和本机账本，并作为新版本保存。", isPresented: $confirmNASRestore, titleVisibility: .visible) {
+            .confirmationDialog(nasRestorePrompt, isPresented: $confirmNASRestore, titleVisibility: .visible) {
                 Button("恢复此版本", role: .destructive) {
                     if let version = selectedNASVersion { restoreNASVersion(version) }
                 }
@@ -7175,7 +7175,7 @@ struct SettingsView: View {
                 }
             }
             Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。原生空间为空时会先迁入 NAS 上可识别的网页账本；之后网页与原生各自同步，原生改动不会反向转换回网页格式。分时和日线缓存随原生账本同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
+            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。\n\n账本隔离：观盘 Pro 只读写 NAS 上的原生空间（/api/native/data），观盘 F 的网页账本（/api/data）属于另一个独立空间，Pro 不会读、也不会把 F 的数据迁进来；每份上传都带空间标识 guanpan-pro，遇到不属于自己的账本会直接停下。分时和日线缓存随 Pro 账本一起同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复，恢复前会显示版本时间并要求确认；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if !store.data.legacySettingsArchives.isEmpty {
@@ -7365,6 +7365,13 @@ struct SettingsView: View {
                 fminuteStatus = GuanpanMaxNAS.connectionHint(for: error)
             }
         }
+    }
+
+    /// 恢复确认必须写清三件事：哪一版、什么时候、影响到谁。
+    /// 只写「版本 3」用户无法判断这是今天的还是上周的，也不清楚会不会动到观盘 F。
+    private var nasRestorePrompt: String {
+        guard let version = selectedNASVersion else { return "确认恢复？" }
+        return "恢复观盘 Pro 的第 \(version.revision) 版（\(version.updatedAtText)）？只影响观盘 Pro 的账本，不会动观盘 F 的数据。会用它替换 NAS 当前的 Pro 账本和本机账本，并另存为一个新版本；旧版本仍保留在历史里。"
     }
 
     private func loadNASHistory() {

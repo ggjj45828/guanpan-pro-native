@@ -1803,6 +1803,16 @@ _aligned = qxcg_common_cutoff([_a, _b])
 check("曲线超哥B：截止日截齐后长度一致",
       len(_aligned[0]) == len(_aligned[1]) == 3 and _aligned[1][-1] == "2026-11-06")
 
+# 账本硬隔离：观盘 Pro 只认原生空间，绝不把观盘 F 的网页账本当成自己的。
+# 旧载荷没有 space 字段（None）按 Pro 处理，否则老用户升级后无法恢复自己的账本。
+def _belongs_to_pro(space):
+    return True if not space else space == "guanpan-pro"
+
+check("账本隔离：space=guanpan-pro 属于观盘 Pro", _belongs_to_pro("guanpan-pro") is True)
+check("账本隔离：space 缺省（旧载荷）按 Pro 处理", _belongs_to_pro(None) is True)
+check("账本隔离：space=guanpan-f 必须拒收", _belongs_to_pro("guanpan-f") is False)
+check("账本隔离：任意第三方 space 必须拒收", _belongs_to_pro("guanpan-next") is False)
+
 
 print()
 if failures:
