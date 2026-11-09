@@ -432,7 +432,11 @@ struct DashboardView: View {
             .sheet(isPresented: $showAdd) { WatchEditor() .themedSheetBackground() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() .themedSheetBackground() }
             .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
-            .sheet(item: $indexDetailTarget) { index in IndexDetailView(index: index).themedSheetBackground() }
+            // 指数详情改成真页面推入：以前是 sheet(item:)，行情刷新替换数组时
+            // sheet 会跟着 item 失效而立刻被顶掉，表现就是「点了没反应」。
+            .navigationDestination(item: $indexDetailTarget) { index in
+                IndexDetailView(index: index, embedded: true)
+            }
             .sheet(isPresented: $showAdvice) { PortfolioAdviceView() .themedSheetBackground() }
             .sheet(isPresented: $showGrid) { DayGridView() .themedSheetBackground() }
             .sheet(isPresented: $showIncome) { IncomeHubView() .themedSheetBackground() }

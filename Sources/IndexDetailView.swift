@@ -8,6 +8,9 @@ import SwiftUI
 /// （红涨绿跌、恒带 ▲▼）。
 struct IndexDetailView: View {
     let index: MarketIndexQuote
+    /// 由首页 `navigationDestination` 推入时为 true：不自建导航栈，直接用外层返回。
+    /// 首页指数卡以前走 sheet，点开常被行情刷新顶掉；改成真页面后不再有这个问题。
+    var embedded: Bool = false
 
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
@@ -43,7 +46,26 @@ struct IndexDetailView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
+            if embedded {
+                coreContent
+                    .navigationTitle(index.name)
+                    .navigationBarTitleDisplayMode(.inline)
+            } else {
+                NavigationStack {
+                    coreContent
+                        .navigationTitle(index.name)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
+                        }
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private var coreContent: some View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     header
@@ -71,13 +93,6 @@ struct IndexDetailView: View {
                 }
                 .padding(16)
             }
-            .navigationTitle(index.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
-            }
-        }
-        .task { await load() }
     }
 
     // MARK: - 头部
