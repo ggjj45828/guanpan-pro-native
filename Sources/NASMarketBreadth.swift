@@ -194,7 +194,7 @@ extension NASMarketSnapshot {
     var coveragePercent: Double? { coverage.map { $0 * 100 } }
 
     /// 供 A 条件使用的观测量。nil 表示这份快照给不出成交额口径。
-    var aObservation: QXCGAObservation? {
+    var aObservation: QuXianChaoGe.AObservation? {
         let amount = sessionAmountYi
         let previous = previousSameTimeYi
         guard amount != nil || previous != nil else { return nil }
