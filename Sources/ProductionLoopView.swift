@@ -20,6 +20,8 @@ enum ProductionLoopTab: String, CaseIterable, Identifiable {
 }
 
 struct ProductionLoopView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appAppearance) private var appearance
@@ -29,7 +31,7 @@ struct ProductionLoopView: View {
     private var review: TodayTComparison { store.todayTComparison() }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section {
                     Picker("视图", selection: $tab) {
@@ -52,7 +54,7 @@ struct ProductionLoopView: View {
             .navigationTitle("生产盯盘与复盘")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } }
             }
             .scrollDismissesKeyboard(.interactively)
         }

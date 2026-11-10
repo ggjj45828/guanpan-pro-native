@@ -13,8 +13,6 @@ struct PeriodLedgerAggregate {
     var sell = 0.0
     var fee = 0.0
     var realized = 0.0
-    var cashDividend = 0.0
-    var reinvestedDividend = 0.0
     var netFlow = 0.0
     var buyCount = 0
     var sellCount = 0
@@ -27,7 +25,7 @@ struct PeriodLedgerAggregate {
     var snapshotNetFlow = 0.0
 
     /// 已实现盈亏 + 现金分红
-    var netResult: Double { realized + cashDividend }
+    var netResult: Double { realized }
     /// 卖出笔数里赚钱的比例；没有卖出记录时返回 nil（不是 0，0 会被误读成「全亏」）
     var winRate: Double? {
         let total = winCount + loseCount
@@ -72,7 +70,7 @@ enum LedgerPeriodAggregator {
 
         // —— 证券 / ETF 流水 ——
         let ledgerRows = data.ledger.filter {
-            ($0.kind ?? .etf) != .fund && dayString($0.date) >= startDay && dayString($0.date) < endDay
+            ($0.kind ?? .etf) == .etf && dayString($0.date) >= startDay && dayString($0.date) < endDay
         }
         for trade in ledgerRows {
             result.fee += trade.fee
@@ -92,48 +90,12 @@ enum LedgerPeriodAggregator {
             }
         }
 
-        // —— 基金流水 ——
-        let fundRows = data.fundTransactions.filter {
-            $0.requestDate >= startDay && $0.requestDate < endDay && $0.status == .confirmed
-        }
-        for trade in fundRows {
-            switch trade.side {
-            case .buy where !trade.isBackfill:
-                result.buy += trade.amount + trade.fee
-                result.fee += trade.fee
-                result.buyCount += 1
-                result.operationDays.insert(trade.requestDate)
-            case .sell:
-                result.sell += max(0, trade.amount - trade.fee)
-                result.fee += trade.fee
-                result.realized += trade.realizedPnL
-                result.sellCount += 1
-                result.operationDays.insert(trade.requestDate)
-                if trade.realizedPnL > 0 { result.winCount += 1 }
-                else if trade.realizedPnL < 0 { result.loseCount += 1 }
-                var row = result.realizedByCode[trade.code] ?? RealizedRow(code: trade.code, name: trade.name, pnl: 0)
-                row.pnl += trade.realizedPnL
-                result.realizedByCode[trade.code] = row
-            case .dividend:
-                if trade.dividendMode == .cash { result.cashDividend += trade.amount }
-                else if trade.dividendMode == .reinvest { result.reinvestedDividend += trade.amount }
-                result.operationDays.insert(trade.requestDate)
-            default: break
-            }
-        }
-
         // —— 外部资金流 ——
         result.netFlow = data.cashFlows.reduce(0) { partial, flow in
             let flowDay = dayString(flow.date)
             guard flowDay >= startDay, flowDay < endDay, flow.external ?? true else { return partial }
             return partial + flow.amount
         }
-        // 场外申赎也是外部资金流；自动定投已有专门的 CashFlow 记录，这里跳过避免重复计算
-        for trade in fundRows where !trade.linkedCash && !trade.isBackfill && trade.isAutomaticDCA != true {
-            if trade.side == .buy { result.netFlow += trade.amount }
-            else if trade.side == .sell { result.netFlow -= max(0, trade.amount - trade.fee) }
-        }
-
         // —— 全账户快照 ——
         let snapshots = data.snapshots.filter { $0.date >= startDay && $0.date < endDay }.sorted { $0.date < $1.date }
         result.snapshotStart = snapshots.first
@@ -143,11 +105,6 @@ enum LedgerPeriodAggregator {
                 let flowDay = dayString(flow.date)
                 guard flowDay > start.date, flowDay <= end.date, flow.external ?? true else { return partial }
                 return partial + flow.amount
-            }
-            for trade in fundRows where trade.requestDate > start.date && trade.requestDate <= end.date
-                    && !trade.linkedCash && !trade.isBackfill && trade.isAutomaticDCA != true {
-                if trade.side == .buy { result.snapshotNetFlow += trade.amount }
-                else if trade.side == .sell { result.snapshotNetFlow -= max(0, trade.amount - trade.fee) }
             }
         }
         return result
@@ -218,7 +175,7 @@ struct YearlyReviewView: View {
         aggregate.realizedByCode.values.sorted { $0.pnl > $1.pnl }
     }
     private var hasAnyData: Bool {
-        aggregate.operationCount > 0 || aggregate.cashDividend > 0 || aggregate.netFlow != 0
+        aggregate.operationCount > 0 || aggregate.netFlow != 0
     }
     private var canGoForward: Bool { year < LedgerPeriodAggregator.currentYear() }
     private var reportText: String {
@@ -226,7 +183,7 @@ struct YearlyReviewView: View {
         let feeText = a.feeRate.map { "（占换手 \($0.pct(2))）" } ?? ""
         let lines = [
             "观盘 Pro · \(year) 年度账单",
-            "已实现盈亏 \(a.realized.cny()) / 现金分红 \(a.cashDividend.cny()) / 合计 \(a.netResult.cny())",
+            "已实现盈亏 \(a.realized.cny())",
             "买入 \(a.buy.cny())（\(a.buyCount) 笔）/ 卖出 \(a.sell.cny())（\(a.sellCount) 笔）",
             "交易费用 \(a.fee.cny())\(feeText)",
             "净外部投入 \(a.netFlow.cny()) / 有操作的日期 \(a.operationDays.count) 天",
@@ -288,13 +245,8 @@ struct YearlyReviewView: View {
     }
 
     @ViewBuilder private var headlineBody: some View {
-        LabeledContent("已实现盈亏 + 现金分红", value: (aggregate.netResult).cny())
+        LabeledContent("已实现盈亏", value: (aggregate.netResult).cny())
             .pnlAccessibility(money: aggregate.netResult)
-        LabeledContent("其中已实现盈亏", value: (aggregate.realized).cny())
-        if aggregate.cashDividend > 0 || aggregate.reinvestedDividend > 0 {
-            LabeledContent("现金分红 / 红利再投",
-                           value: "\(aggregate.cashDividend.cny()) / \(aggregate.reinvestedDividend.cny())")
-        }
         if let winRate = aggregate.winRate {
             LabeledContent("卖出胜率", value: "\(winRate.pct(1))（\(aggregate.winCount) 赚 / \(aggregate.loseCount) 亏）")
                 .accessibilityLabel("卖出胜率 \(winRate.pct(1))，\(aggregate.winCount) 笔赚钱，\(aggregate.loseCount) 笔亏损")

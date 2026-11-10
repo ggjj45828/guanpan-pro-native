@@ -86,6 +86,9 @@ struct DividendPoolView: View {
     @Environment(\.appAppearance) private var appearance
     @Environment(\.dismiss) private var dismiss
 
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
+
     @State private var newCode = ""
     @State private var newDividend = ""
     @State private var status = ""
@@ -120,7 +123,7 @@ struct DividendPoolView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.gap) {
                     summaryCard
@@ -147,7 +150,7 @@ struct DividendPoolView: View {
             .navigationTitle("收息池")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             }
         }
     }

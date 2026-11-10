@@ -39,17 +39,11 @@ struct PortfolioValuation {
     /// 用到的所有报价里最早的那个时间。显示「估值截至」时用它，
     /// 不能拿本地当前时间冒充。
     let quotesAsOf: Date?
-    /// 非致命降级说明（手动覆盖价、场外净值滞后等）。有内容时界面要标出来。
+    /// 非致命降级说明（手动覆盖价等）。有内容时界面要标出来。
     let degradedReasons: [String]
 }
 
 enum PortfolioValuationEngine {
-    /// 场外基金净值的容忍窗口（自然日）。
-    ///
-    /// 基金净值 T 日盘后公布，QDII 还要再晚一天；周一看到的周五净值是正常的。
-    /// 场内 ETF 不适用这个窗口 —— 它有连续竞价，必须按秒判。
-    static let fundNAVToleranceDays = 3
-
     /// 求值。`session` 传当前时段，非交易时段只要求报价落在最近交易日。
     static func evaluate(data: PortfolioData,
                          session: MarketSessionStatus,
@@ -67,8 +61,6 @@ enum PortfolioValuationEngine {
         var timestamps: [Date] = []
         var degraded: [String] = []
         var manualCount = 0
-        var laggingFundCount = 0
-        var unknownNAVDateCount = 0
 
         for holding in data.holdings {
             guard holding.quantity > 0 else {
@@ -119,28 +111,8 @@ enum PortfolioValuationEngine {
                 holdingsValue += holding.quantity * price
 
             case .fund:
-                // 场外基金：用最新净值，容忍 T+N，但必须知道净值是哪天的。
-                //
-                // 注意「不知道净值日期」≠「报价过期」。基金净值是定期公布的，
-                // 很多账户从来没有 `marketUpdatedAt`（那是行情字段）。
-                // 如果因为缺这个字段就把整个估值判死，纯基金用户会永远看到「不可信」。
-                // 所以这里回落到净值历史里最新一点的日期，都取不到就只降级、不阻断。
-                let price = holding.current
-                guard price.isFinite, price > 0 else {
-                    missing.append(holding.code); continue
-                }
-                let navDate = holding.marketUpdatedAt ?? latestNAVDate(for: holding.code, in: data)
-                if let navDate {
-                    let age = now.timeIntervalSince(navDate)
-                    if age > Double(fundNAVToleranceDays) * 86_400 {
-                        stale.append(holding.code); continue
-                    }
-                    if age > 86_400 { laggingFundCount += 1 }
-                    timestamps.append(navDate)
-                } else {
-                    unknownNAVDateCount += 1
-                }
-                holdingsValue += holding.quantity * price
+                // 场外基金已下线：遗留数据在加载时就被清掉，这里只是兜底跳过。
+                continue
             }
         }
 
@@ -150,12 +122,6 @@ enum PortfolioValuationEngine {
 
         if manualCount > 0 {
             degraded.append("\(manualCount) 项用了手动覆盖价")
-        }
-        if laggingFundCount > 0 {
-            degraded.append("\(laggingFundCount) 只场外基金净值滞后一日以上")
-        }
-        if unknownNAVDateCount > 0 {
-            degraded.append("\(unknownNAVDateCount) 只基金净值日期未知")
         }
 
         let total = holdingsValue + data.cash
@@ -167,20 +133,5 @@ enum PortfolioValuationEngine {
                                            total: total,
                                            quotesAsOf: timestamps.min(),
                                            degradedReasons: degraded))
-    }
-
-    /// 净值历史里最新一点的日期。用于「持仓没记净值日期」的情况。
-    private static func latestNAVDate(for code: String, in data: PortfolioData) -> Date? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        var newest: Date?
-        for point in data.fundNAVHistory where point.code == code {
-            guard let date = formatter.date(from: point.date) else { continue }
-            if let current = newest, current >= date { continue }
-            newest = date
-        }
-        return newest
     }
 }

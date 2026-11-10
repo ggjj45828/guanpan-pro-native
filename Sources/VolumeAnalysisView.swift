@@ -6,6 +6,8 @@ import SwiftUI
 // 页面明确标出 evidenceLevel = experimental：量能结构只是观察材料，不是结论。
 
 struct VolumeAnalysisView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appAppearance) private var appearance
@@ -29,7 +31,7 @@ struct VolumeAnalysisView: View {
     private var result: VolumeAnalysisResult { VolumeAnalysisEngine.daily(bars) }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.sectionGap) {
                     pickerCard
@@ -55,7 +57,7 @@ struct VolumeAnalysisView: View {
             .navigationTitle("量能结构")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { if !embedded { Button("完成") { dismiss() } } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         Task { await load(force: true) }

@@ -14,7 +14,6 @@ struct BehaviorProfile {
     // 已实现交易
     var closedCount = 0
     var etfClosedCount = 0
-    var fundClosedCount = 0
     var winCount = 0
     var lossCount = 0
     var totalProfit = 0.0
@@ -23,7 +22,6 @@ struct BehaviorProfile {
     // 持有周期（FIFO 匹配买卖批次算出来的自然日）
     var overallHoldingDays: Double?
     var etfHoldingDays: Double?
-    var fundHoldingDays: Double?
 
     // 加仓节奏：买入时标的近 20 个交易日是涨还是跌
     var buyOnDipRatio: Double?
@@ -58,7 +56,7 @@ struct BehaviorProfile {
 
     // MARK: - 计算
 
-    /// 事件（买入/卖出）的统一形态，ETF 流水与基金申赎都归一到这里。
+    /// 事件（买入/卖出）的统一形态。
     private struct Event {
         let date: Date
         let code: String
@@ -74,11 +72,6 @@ struct BehaviorProfile {
             Event(date: $0.date, code: $0.code, isBuy: $0.side == .buy,
                   quantity: $0.quantity, price: $0.price)
         }
-        let fundEvents = data.fundTransactions.compactMap { trade -> Event? in
-            guard trade.side != .dividend, let date = parseDay(trade.effectiveDate) else { return nil }
-            return Event(date: date, code: trade.code, isBuy: trade.side == .buy,
-                         quantity: trade.quantity, price: trade.nav)
-        }
 
         // ---- 已实现盈亏 ----
         var sellPnLs: [Double] = []
@@ -86,11 +79,6 @@ struct BehaviorProfile {
             guard entry.realizedPnL.isFinite else { continue }
             sellPnLs.append(entry.realizedPnL)
             profile.etfClosedCount += 1
-        }
-        for trade in data.fundTransactions where trade.side == .sell {
-            guard trade.realizedPnL.isFinite else { continue }
-            sellPnLs.append(trade.realizedPnL)
-            profile.fundClosedCount += 1
         }
         profile.closedCount = sellPnLs.count
         profile.winCount = sellPnLs.filter { $0 > 0.005 }.count
@@ -100,13 +88,11 @@ struct BehaviorProfile {
 
         // ---- 持有周期 ----
         let etfDurations = fifoHoldingDays(etfEvents)
-        let fundDurations = fifoHoldingDays(fundEvents)
         profile.etfHoldingDays = mean(etfDurations)
-        profile.fundHoldingDays = mean(fundDurations)
-        profile.overallHoldingDays = mean(etfDurations + fundDurations)
+        profile.overallHoldingDays = mean(etfDurations)
 
         // ---- 加仓节奏：买入时标的近 20 个交易日是涨还是跌 ----
-        let buys = (etfEvents + fundEvents).filter { $0.isBuy }
+        let buys = etfEvents.filter { $0.isBuy }
         var dipBuys = 0
         var dipSamples = 0
         for buy in buys {
@@ -121,7 +107,7 @@ struct BehaviorProfile {
         }
 
         // ---- 卖出后回看 ----
-        let sells = (etfEvents + fundEvents).filter { !$0.isBuy }
+        let sells = etfEvents.filter { !$0.isBuy }
         var missed: [Double] = []
         for sell in sells {
             guard let bars = dailyBars[sell.code], sell.price > 0 else { continue }
@@ -143,7 +129,7 @@ struct BehaviorProfile {
         profile.positionCap = data.investmentProfile.maxPositionPercent
 
         // ---- 交易频率 ----
-        let allDates = etfEvents.map(\.date) + fundEvents.map(\.date)
+        let allDates = etfEvents.map(\.date)
         if let first = allDates.min(), let last = allDates.max(), allDates.count >= 3 {
             let months = max(1.0, last.timeIntervalSince(first) / (86_400 * 30.4))
             profile.tradesPerMonth = Double(allDates.count) / months
@@ -163,7 +149,7 @@ struct BehaviorProfile {
         var lines: [String] = []
 
         if closedCount > 0 {
-            var line = "已实现卖出 \(closedCount) 笔（ETF/证券 \(etfClosedCount) 笔、场外基金 \(fundClosedCount) 笔）"
+            var line = "已实现卖出 \(closedCount) 笔"
             if let winRate = winRate {
                 line += "：胜率 \(winRate.num(0))%（\(winCount) 胜 / \(lossCount) 负）"
                 if let pf = profitFactor {
@@ -178,10 +164,7 @@ struct BehaviorProfile {
 
         if let days = overallHoldingDays {
             var line = "平均持有 \(days.num(0)) 天"
-            var parts: [String] = []
-            if let etf = etfHoldingDays { parts.append("ETF \(etf.num(0)) 天") }
-            if let fund = fundHoldingDays { parts.append("场外基金 \(fund.num(0)) 天") }
-            if !parts.isEmpty { line += "（\(parts.joined(separator: "、"))）" }
+            if let etf = etfHoldingDays { line += "（ETF \(etf.num(0)) 天）" }
             lines.append("· " + line)
         }
 

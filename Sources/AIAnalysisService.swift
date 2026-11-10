@@ -25,7 +25,7 @@ enum AIAnalysisService {
     private static let keychainAccount = "api-key"
     /// 固定分析标准与个性化提示分层，避免自定义要求覆盖网页版的推理深度。
     private static let analysisStandard = """
-    你是有独立判断的投资研究助手，分析要帮助用户决定下一步，而不是复述行情或逐项解释指标。先形成明确但有条件的核心判断，再说明推理链：趋势结构、动能与量能、所处区间/关键支撑压力如何相互印证或冲突；只挑最能改变结论的少数证据，解释其意义，不堆数字。操作建议要落到观察触发条件、行动、仓位/节奏边界和复核时点；同时给出会推翻判断的反向信号。区分输入事实与推断，说明报价、净值、日线或样本的时效和缺口；没有的数据不得编造。结合用户实际持仓、成本、风险偏好和期限。禁止保证收益、无条件买卖指令、空泛风险套话、重复输入清单和假装使用外部信息。表达简洁自然，优先写判断与因果，不朗读指标。
+    你是有独立判断的投资研究助手，分析要帮助用户决定下一步，而不是复述行情或逐项解释指标。先形成明确但有条件的核心判断，再说明推理链：趋势结构、动能与量能、所处区间/关键支撑压力如何相互印证或冲突；只挑最能改变结论的少数证据，解释其意义，不堆数字。操作建议要落到观察触发条件、行动、仓位/节奏边界和复核时点；同时给出会推翻判断的反向信号。区分输入事实与推断，说明报价、日线或样本的时效和缺口；没有的数据不得编造。结合用户实际持仓、成本、风险偏好和期限。禁止保证收益、无条件买卖指令、空泛风险套话、重复输入清单和假装使用外部信息。表达简洁自然，优先写判断与因果，不朗读指标。
     个股/ETF分析需覆盖趋势、动能量能、关键支撑压力、条件化操作与风险；没有可靠价位数据时明确说无法给价位，不得虚构。组合分析优先处理最影响结果的集中度、重复暴露、现金与期限匹配，最多提出三项优先行动，不必逐只复述全部持仓。账户画像要把流水行为与当前结构分开判断；样本不足时明确不可推断。
     """
 
@@ -264,8 +264,7 @@ enum AIAnalysisService {
     private static func portfolioPrompt(_ data: PortfolioData, extraSections: [String] = []) -> String {
         let fmt: (Double) -> String = { String(format: "%.2f", $0) }
         let holdings = data.holdings.map { h -> String in
-            let kindText = h.kind == .fund ? "场外基金" : "ETF/证券"
-            return "- \(h.name)（\(h.code)，\(kindText)）：份额 \(fmt(h.quantity))，成本 \(fmt(h.cost))，现价/净值 \(fmt(h.current))，市值 \(fmt(h.marketValue))，浮动盈亏 \(fmt(h.pnl))）"
+            "- \(h.name)（\(h.code)，ETF/证券）：份额 \(fmt(h.quantity))，成本 \(fmt(h.cost))，现价 \(fmt(h.current))，市值 \(fmt(h.marketValue))，浮动盈亏 \(fmt(h.pnl))）"
         }.joined(separator: "\n")
         let quotes = data.quotes.map { q -> String in
             let timeText = q.updatedAt?.formatted() ?? "未知"
@@ -297,22 +296,6 @@ enum AIAnalysisService {
             return "\(trade.date.formatted(date: .numeric, time: .omitted)) \(side) \(trade.name)(\(trade.code))，成交额\(fmt(trade.gross))，费用\(fmt(trade.fee))，已实现盈亏\(fmt(trade.realizedPnL))"
         }.joined(separator: "\n")
         let recentTradesText = recentTrades.isEmpty ? "没有 ETF/证券买卖流水，不能判断操作胜率或交易纪律。" : recentTrades
-        let fundTransactions = data.fundTransactions.sorted { $0.effectiveDate > $1.effectiveDate }.prefix(30).map { trade in
-            let side = trade.side == .buy ? "申购" : trade.side == .sell ? "赎回" : "分红"
-            return "\(trade.effectiveDate) \(side) \(trade.name)(\(trade.code))，份额\(fmt(trade.quantity))，净值\(fmt(trade.nav))，金额\(fmt(trade.amount))，费用\(fmt(trade.fee))，已实现盈亏\(fmt(trade.realizedPnL))，状态\(trade.status == .confirmed ? "已确认" : "待确认")"
-        }.joined(separator: "\n")
-        let fundTransactionsText = fundTransactions.isEmpty ? "没有基金申赎/分红流水，不能判断基金交易纪律。" : fundTransactions
-        let dcaPlans = data.fundDCAPlans.map { plan in
-            let frequency = [FundDCAPlan.Frequency.daily: "每日", .weekly: "每周", .biweekly: "每两周", .monthly: "每月"][plan.frequency] ?? plan.frequency.rawValue
-            return "\(plan.name)(\(plan.code))，每期\(fmt(plan.amount))元，\(frequency)，\(plan.enabled ? "执行中" : "已暂停")，已执行\(plan.processedDates.count)期"
-        }.joined(separator: "\n")
-        let dcaPlansText = dcaPlans.isEmpty ? "暂无基金定投计划。" : dcaPlans
-        let fundComposition = data.fundConstituentSnapshots.map { snapshot in
-            let top = snapshot.holdings.sorted { $0.weightPercent > $1.weightPercent }.prefix(10)
-                .map { "\($0.name)(\($0.code)) \($0.weightPercent.num(1))%" }.joined(separator: "、")
-            return "\(snapshot.name)(\(snapshot.code))，报告日期\(snapshot.asOf)：\(top.isEmpty ? "无成分明细" : top)"
-        }.joined(separator: "\n")
-        let fundCompositionText = fundComposition.isEmpty ? "没有已保存的基金成分报告，不能核实基金穿透重叠。" : fundComposition
         let weighted = data.holdings.reduce(0.0) { $0 + $1.marketValue }
         let exposureText = data.holdings.sorted { $0.marketValue > $1.marketValue }.map { item in
             let weight = data.cash + weighted > 0 ? item.marketValue / (data.cash + weighted) * 100 : 0
@@ -322,8 +305,8 @@ enum AIAnalysisService {
         let extrasText = extraSections.isEmpty ? "" : "\n" + extraSections.joined(separator: "\n") + "\n"
         return """
         请做组合决策分析，而不是把持仓、自选、成交和快照逐项改写。先从持仓金额、成本、现金、期限和报价质量中找出最影响下一步的一到两个矛盾或风险，解释因果关系和优先级。
-        按以下结构回答：1. 核心判断：一两句话说明组合最需要处理的事、置信度和关键数据限制。2. 优先行动：最多 3 项；每项写清“问题/证据为何重要 → 触发条件 → 执行步骤与仓位边界 → 何时复核或撤销”，不要为了凑数逐只下结论。3. 组合结构：讨论现金缓冲、集中度/可能重复暴露、风险偏好与期限；没有基金成分或相关性数据时标为待核实，不得断言重仓同一行业。4. 反证与核对：说明哪些变化会推翻判断，以及最值得补充的数据。
-        只把已提供数据当事实；数字只用于支撑因果判断，不要照单朗读。对推断明确标注。不得假装已查新闻、基本面、盘口或外部数据。报价/净值可能过时，缺少技术数据时降低置信度并给条件计划，不强给买卖结论。不承诺收益，不自动交易。输出自然、简洁、具体、有判断。
+        按以下结构回答：1. 核心判断：一两句话说明组合最需要处理的事、置信度和关键数据限制。2. 优先行动：最多 3 项；每项写清“问题/证据为何重要 → 触发条件 → 执行步骤与仓位边界 → 何时复核或撤销”，不要为了凑数逐只下结论。3. 组合结构：讨论现金缓冲、集中度/可能重复暴露、风险偏好与期限；没有成分或相关性数据时标为待核实，不得断言重仓同一行业。4. 反证与核对：说明哪些变化会推翻判断，以及最值得补充的数据。
+        只把已提供数据当事实；数字只用于支撑因果判断，不要照单朗读。对推断明确标注。不得假装已查新闻、基本面、盘口或外部数据。报价可能过时，缺少技术数据时降低置信度并给条件计划，不强给买卖结论。不承诺收益，不自动交易。输出自然、简洁、具体、有判断。
 
         【用户投资画像与约束】
         \(profile)
@@ -340,12 +323,6 @@ enum AIAnalysisService {
         \(cashFlowsText)
         【最近成交（最多 30 笔）】
         \(recentTradesText)
-        【场外基金申赎/分红（最多 30 笔）】
-        \(fundTransactionsText)
-        【场外基金定投计划】
-        \(dcaPlansText)
-        【已保存的基金前十大成分与报告日期】
-        \(fundCompositionText)
         \(extrasText)
         """
     }

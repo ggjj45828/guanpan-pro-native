@@ -28,8 +28,6 @@ struct HistoricalReplayView: View {
         var cashKnown: Bool
         var snapshot: PortfolioSnapshot?
         var realizedETF: Double
-        var realizedFund: Double
-        var cashDividends: Double
         var fees: Double
         var laterBuys: Double
         var laterSells: Double
@@ -39,8 +37,8 @@ struct HistoricalReplayView: View {
     private var day: String { format(selectedDate) }
     private var replay: Replay { reconstruct() }
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
-    /// 回放日的已实现结果（场内 + 基金 + 现金分红），用于给流水卡取色。
-    private var replayedRealized: Double { replay.realizedETF + replay.realizedFund + replay.cashDividends }
+    /// 回放日的已实现结果，用于给流水卡取色。
+    private var replayedRealized: Double { replay.realizedETF }
     private var valuedTotal: Double? {
         guard replay.cashKnown, replay.positions.allSatisfy({ $0.value != nil }) else { return nil }
         return replay.cash + replay.positions.reduce(0) { $0 + ($1.value ?? 0) }
@@ -62,7 +60,7 @@ struct HistoricalReplayView: View {
                     if let valuedTotal {
                         LabeledContent("回放估算总资产", value: (valuedTotal).cny())
                     }
-                    Text("持仓份额和现金按所选日期之后的流水反推；估值使用该日或此前最近的本地日线/基金净值。此结果是历史重建估算，不代表当日快照。")
+                    Text("持仓份额和现金按所选日期之后的流水反推；估值使用该日或此前最近的本地日线。此结果是历史重建估算，不代表当日快照。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -72,16 +70,8 @@ struct HistoricalReplayView: View {
                     ForEach(rows) { positionRow($0) }
                 }
                 .plainCard(isLight: isLight)
-                Section("场外基金") {
-                    let rows = replay.positions.filter { $0.kind == .fund && $0.quantity > 1e-8 }
-                    if rows.isEmpty { Text("该日没有可还原的基金持仓").foregroundStyle(.secondary) }
-                    ForEach(rows) { positionRow($0) }
-                }
-                .plainCard(isLight: isLight)
                 Section("该日累计流水") {
                     LabeledContent("场内已实现盈亏", value: (replay.realizedETF).cny())
-                    LabeledContent("基金已实现盈亏", value: (replay.realizedFund).cny())
-                    LabeledContent("现金分红", value: (replay.cashDividends).cny())
                     LabeledContent("已记录费用", value: (replay.fees).cny())
                     LabeledContent("此后买入金额", value: (replay.laterBuys).cny())
                     LabeledContent("此后卖出到账", value: (replay.laterSells).cny())
@@ -122,7 +112,7 @@ struct HistoricalReplayView: View {
                 kind: holding.kind, quantity: max(0, holding.quantity), cost: max(0, holding.cost))
         }
         let target = day
-        let laterLedger = store.data.ledger.enumerated().filter { _, trade in trade.kind != .fund && format(trade.date) > target }
+        let laterLedger = store.data.ledger.enumerated().filter { _, trade in (trade.kind ?? .etf) == .etf && format(trade.date) > target }
             .sorted { format($0.element.date) > format($1.element.date) }
         for (_, trade) in laterLedger {
             let kind = trade.kind ?? .etf, id = key(kind, trade.code)
@@ -142,104 +132,42 @@ struct HistoricalReplayView: View {
             }
             positions[id] = p
         }
-        let laterFundTrades = store.data.fundTransactions.filter { $0.effectiveDate > target && $0.status == .confirmed }
-            .sorted { $0.effectiveDate > $1.effectiveDate }
-        for trade in laterFundTrades {
-            let id = key(.fund, trade.code)
-            var p = positions[id] ?? MutablePosition(code: trade.code, name: trade.name, kind: .fund, quantity: 0, cost: 0)
-            switch trade.side {
-            case .buy:
-                let quantity = max(0, trade.quantity)
-                let previousQuantity = max(0, p.quantity - quantity)
-                let addedCost = (trade.isAutomaticDCA ?? false) ? trade.amount : trade.amount + trade.fee
-                let previousBasis = p.cost * p.quantity - addedCost
-                p.quantity = previousQuantity
-                p.cost = previousQuantity > 1e-8 ? max(0, previousBasis) / previousQuantity : 0
-            case .sell:
-                guard trade.status == .confirmed else { continue }
-                let quantity = max(0, trade.quantity)
-                let unitCost = quantity > 0 ? max(0, trade.nav - (trade.realizedPnL + trade.fee) / quantity) : p.cost
-                let totalCost = p.cost * p.quantity + unitCost * quantity
-                p.quantity += quantity
-                p.cost = p.quantity > 1e-8 ? totalCost / p.quantity : 0
-            case .dividend:
-                guard trade.status == .confirmed, trade.dividendMode == .reinvest else { continue }
-                let quantity = max(0, trade.quantity), previousQuantity = max(0, p.quantity - quantity)
-                let previousBasis = p.cost * p.quantity - trade.amount
-                p.quantity = previousQuantity
-                p.cost = previousQuantity > 1e-8 ? max(0, previousBasis) / previousQuantity : 0
-            }
-            positions[id] = p
-        }
-
         var cash = store.data.cash, cashKnown = true
         for flow in store.data.cashFlows where (flow.affectsCash ?? true) && format(flow.date) > target { cash -= flow.amount }
         for (_, trade) in laterLedger where trade.linkedCash {
             cash += trade.side == .buy ? trade.gross + trade.fee : -(trade.gross - trade.fee)
-        }
-        for trade in laterFundTrades where trade.linkedCash {
-            switch trade.side {
-            case .buy: cash += trade.amount + trade.fee
-            case .sell: cash -= trade.amount - trade.fee
-            case .dividend where trade.dividendMode == .cash: cash -= trade.amount
-            case .dividend: break
-            }
         }
         if cash < -0.01 || !cash.isFinite { cashKnown = false }; cash = max(0, cash)
 
         // 拆成 filter / map / sorted 三步并显式标注类型，避免链式表达式类型检查超时。
         let activePositions = positions.values.filter { $0.quantity > 1e-8 }
         let mappedPositions: [Position] = activePositions.map { p -> Position in
-            let pricePoint: (Double, String)?
-            if p.kind == .fund {
-                let candidates = store.data.fundNAVHistory.filter { $0.code == p.code && $0.date <= target }
-                pricePoint = candidates.max { $0.date < $1.date }.map { ($0.nav, $0.date) }
-            } else {
-                let candidates = (store.dailyBars[p.code] ?? []).filter { $0.date <= target }
-                pricePoint = candidates.max { $0.date < $1.date }.map { ($0.close, $0.date) }
-            }
+            let candidates = (store.dailyBars[p.code] ?? []).filter { $0.date <= target }
+            let pricePoint: (Double, String)? = candidates.max { $0.date < $1.date }.map { ($0.close, $0.date) }
             return Position(key: key(p.kind, p.code), code: p.code, name: p.name, kind: p.kind,
                 quantity: p.quantity, cost: p.cost, price: pricePoint?.0, priceDate: pricePoint?.1)
         }
         let rows: [Position] = mappedPositions.sorted { $0.kind == $1.kind ? $0.name < $1.name : $0.kind == .etf }
 
-        let ledgerToDate = store.data.ledger.filter { $0.kind != .fund && format($0.date) <= target }
-        let fundToDate = store.data.fundTransactions.filter { $0.effectiveDate <= target && $0.status == .confirmed }
+        let ledgerToDate = store.data.ledger.filter { ($0.kind ?? .etf) == .etf && format($0.date) <= target }
         let snapshot = store.data.snapshots.filter { $0.date <= target }.max { $0.date < $1.date }
         var warnings: [String] = []
         if store.data.holdings.contains(where: { holding in
-            holding.quantity > 0 && !store.data.ledger.contains(where: { $0.code == holding.code && $0.kind != .fund && $0.side == .buy })
+            holding.quantity > 0 && !store.data.ledger.contains(where: { $0.code == holding.code && ($0.kind ?? .etf) == .etf && $0.side == .buy })
         }) {
             warnings.append("部分当前手动持仓可能缺少买入起点流水，回放份额只按现有持仓和可见流水反推。")
-        }
-        if store.data.holdings.contains(where: { holding in
-            holding.kind == .fund && holding.quantity > 0 && !store.data.fundTransactions.contains(where: { $0.code == holding.code && $0.side == .buy })
-        }) {
-            warnings.append("部分当前基金没有申购或历史起点记录，所选日期的基金份额和成本可能不完整。")
-        }
-        if store.data.fundTransactions.contains(where: { $0.side == .buy && $0.isBackfill && $0.effectiveDate > target }) {
-            warnings.append("有基金历史起点补录日期晚于所选日；更早的基金份额无法完整核实。")
         }
         if !cashKnown { warnings.append("现金反推结果为负数或无效；可能缺少期初现金/现金流水记录。") }
         if snapshot == nil { warnings.append("所选日期前没有全账户快照，无法对比当时记录的总资产。") }
         if rows.contains(where: { $0.price == nil }) { warnings.append("部分持仓没有所选日之前的本地历史价格，因此总资产估值未完整显示。") }
         if store.data.ledger.contains(where: { $0.kind == nil }) { warnings.append("部分旧版交易流水没有资产类别，回放暂按场内证券处理。") }
         let realizedETF = ledgerToDate.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
-        let realizedFund = fundToDate.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
-        let cashDividends = fundToDate.filter { $0.side == .dividend && $0.dividendMode == .cash && !$0.linkedCash }.reduce(0) { $0 + $1.amount }
-        let fees = ledgerToDate.reduce(0) { $0 + $1.fee } + fundToDate.reduce(0) { $0 + $1.fee }
-        let laterBuys = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target && $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
-            + laterFundTrades.filter { $0.side == .buy && !$0.isBackfill }.reduce(0) { $0 + $1.amount + (($1.isAutomaticDCA ?? false) ? 0 : $1.fee) }
-        let laterSells = store.data.ledger.filter { $0.kind != .fund && format($0.date) > target && $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
-            + laterFundTrades.filter { $0.side == .sell && $0.status == .confirmed }.reduce(0) { $0 + max(0, $1.amount - $1.fee) }
-        // 先在闭包外算出补录基金代码集合，避免嵌套 contains 闭包让类型检查超时。
-        let backfillFundCodes = Set(store.data.fundTransactions.filter { $0.isBackfill }.map { $0.code })
-        if rows.contains(where: { $0.kind == .fund && backfillFundCodes.contains($0.code) }) {
-            warnings.append("基金历史起点补录只提供份额基线，未记录的早期申购成本无法精确还原。")
-        }
+        let fees = ledgerToDate.reduce(0) { $0 + $1.fee }
+        let laterBuys = store.data.ledger.filter { ($0.kind ?? .etf) == .etf && format($0.date) > target && $0.side == .buy }.reduce(0) { $0 + $1.gross + $1.fee }
+        let laterSells = store.data.ledger.filter { ($0.kind ?? .etf) == .etf && format($0.date) > target && $0.side == .sell }.reduce(0) { $0 + max(0, $1.gross - $1.fee) }
         return Replay(positions: rows, cash: cash, cashKnown: cashKnown, snapshot: snapshot,
-            realizedETF: realizedETF, realizedFund: realizedFund, cashDividends: cashDividends,
-            fees: fees, laterBuys: laterBuys, laterSells: laterSells, warnings: warnings)
+            realizedETF: realizedETF, fees: fees,
+            laterBuys: laterBuys, laterSells: laterSells, warnings: warnings)
     }
 
     private func format(_ date: Date) -> String {

@@ -20,7 +20,6 @@ enum PadTab: String, CaseIterable, Identifiable {
     case home
     case watchlist
     case holdings
-    case funds
     case grid
     case income
     case assets
@@ -33,7 +32,6 @@ enum PadTab: String, CaseIterable, Identifiable {
         case .home: return "首页"
         case .watchlist: return "自选"
         case .holdings: return "持仓"
-        case .funds: return "基金"
         case .grid: return "网格"
         case .income: return "收息"
         case .assets: return "资产"
@@ -46,7 +44,6 @@ enum PadTab: String, CaseIterable, Identifiable {
         case .home: return "house.fill"
         case .watchlist: return "chart.xyaxis.line"
         case .holdings: return "briefcase.fill"
-        case .funds: return "building.columns.fill"
         case .grid: return "square.grid.2x2.fill"
         case .income: return "yensign.circle.fill"
         case .assets: return "chart.pie.fill"
@@ -129,8 +126,6 @@ struct ContentView: View {
         ZStack {
             if layout.usesHeroHome {
                 tabPage(.home) { DashboardView(onOpenAssets: { openAssets() }) }
-                // 持仓页把 ETF / 场外基金 收在同一个页签里，顶部切换 ——
-                // 两者是同一件事的两种口径，不该占两个底栏位置。
                 tabPage(.holdings) { HoldingsTabView() }
                 tabPage(.assets) { AssetsView() }
                 tabPage(.more) { MoreHubView() }
@@ -210,7 +205,6 @@ struct ContentView: View {
             if layout.usesHeroHome { DashboardView() } else { OceanDashboardView() }
         case .holdings:
             if layout.usesHeroHome { HoldingsTabView() } else { OceanHoldingsView() }
-        case .funds: HoldingsView(kind: .fund)
         case .grid: DayGridView(embedded: true)
         case .income: IncomeHubView()
         case .assets:
@@ -248,29 +242,11 @@ struct ContentView: View {
 
 /// 自选分组后的一节。用结构体而不是元组：Swift 的 KeyPath 取不到元组元素，
 /// `ForEach(..., id: \.name)` 对元组会直接编译失败。
-/// 「持仓」页签的入口：ETF / 场外基金 共用一个页签，靠顶部分段切换。
-/// 首页快捷砖的数据项。列数由主题版式的 `quickColumns` 决定，
-/// tech 露 4 个、ocean 露 5 个 —— 不是同一排按钮换个颜色。
-private struct DashboardQuickTool: Identifiable {
-    let id: String
-    let symbol: String
-    let title: String
-    let badge: String?
-    let action: () -> Void
-
-    init(_ id: String, _ symbol: String, _ title: String,
-         badge: String? = nil, action: @escaping () -> Void) {
-        self.id = id
-        self.symbol = symbol
-        self.title = title
-        self.badge = badge
-        self.action = action
-    }
-}
+/// 「持仓」页签的入口。
 
 struct HoldingsTabView: View {
     var body: some View {
-        HoldingsView(kind: .etf)
+        HoldingsView()
     }
 }
 
@@ -333,13 +309,6 @@ struct DashboardView: View {
     @State private var showAdd = false
     @State private var showAlertEditor = false
     @State private var chartTarget: Holding?
-    /// 顶部指数条里被点开的那一格（nil = 没打开详情）。
-    /// 首页快捷入口弹窗：AI 顾问 / 网格 / 收息 / 账本审计。
-    @State private var showAdvice = false
-    @State private var showGrid = false
-    @State private var showIncome = false
-    @State private var showLedger = false
-    @State private var showNews = false
     /// 搜索框是否展开。不用 `.searchable`：它必须挂在导航栏上，
     /// 而新版首页把导航栏整条藏掉了（标题区自绘），两者只能留一个。
     @State private var searchActive = false
@@ -432,11 +401,6 @@ struct DashboardView: View {
             .sheet(isPresented: $showAdd) { WatchEditor() .themedSheetBackground() }
             .sheet(isPresented: $showAlertEditor) { QuoteAlertEditor() .themedSheetBackground() }
             .sheet(item: $chartTarget) { holding in MarketChartView(holding: holding).themedSheetBackground() }
-            .sheet(isPresented: $showAdvice) { PortfolioAdviceView() .themedSheetBackground() }
-            .sheet(isPresented: $showGrid) { DayGridView() .themedSheetBackground() }
-            .sheet(isPresented: $showIncome) { IncomeHubView() .themedSheetBackground() }
-            .sheet(isPresented: $showLedger) { LedgerAuditView() .themedSheetBackground() }
-            .sheet(isPresented: $showNews) { NewsHubView() .themedSheetBackground() }
             .alert("新建分组", isPresented: groupEditorBinding) {
                 TextField("分组名", text: $groupDraft)
                 Button("确定") {
@@ -621,30 +585,35 @@ struct DashboardView: View {
     }
 
     private var advisorBanner: some View {
-        DsAICard(palette: palette,
-                 title: "AI 洞察",
-                 subtitle: store.data.holdings.isEmpty
-                    ? "先建立真实持仓，再给出组合判断"
-                    : "读一遍真实组合，给出今天该不该动") {
-            showAdvice = true
+        DsAICardLink(palette: palette,
+                     title: "AI 洞察",
+                     subtitle: store.data.holdings.isEmpty
+                        ? "先建立真实持仓，再给出组合判断"
+                        : "读一遍真实组合，给出今天该不该动") {
+            PortfolioAdviceView(embedded: true)
         }
     }
 
+    /// 首页快捷入口：一律推入独立页面，不再走 sheet 弹窗。
+    /// 只有「加自选」仍是表单弹窗 —— 那是录入动作，不是页面。
     private var quickTiles: some View {
-        let all: [DashboardQuickTool] = [
-            DashboardQuickTool("grid", "square.grid.2x2.fill", "网格") { showGrid = true },
-            DashboardQuickTool("income", "yensign.circle.fill", "收息") { showIncome = true },
-            DashboardQuickTool("ledger", "checklist", "账本", badge: "审计") { showLedger = true },
-            DashboardQuickTool("news", "newspaper.fill", "快讯") { showNews = true },
-            DashboardQuickTool("add", "plus.circle.fill", "加自选") { showAdd = true }
-        ]
-        return HStack(spacing: 10) {
-            ForEach(Array(all.prefix(palette.quickColumns))) { tool in
-                DsQuickTile(palette: palette,
-                            symbol: tool.symbol,
-                            title: tool.title,
-                            badge: tool.badge,
-                            action: tool.action)
+        HStack(spacing: 10) {
+            DsQuickTileLink(palette: palette, symbol: "square.grid.2x2.fill", title: "网格") {
+                DayGridView(embedded: true)
+            }
+            DsQuickTileLink(palette: palette, symbol: "yensign.circle.fill", title: "收息") {
+                IncomeHubView(embedded: true)
+            }
+            DsQuickTileLink(palette: palette, symbol: "checklist", title: "账本", badge: "审计") {
+                LedgerAuditView(embedded: true)
+            }
+            DsQuickTileLink(palette: palette, symbol: "newspaper.fill", title: "快讯") {
+                NewsHubView(embedded: true)
+            }
+            if palette.quickColumns >= 5 {
+                DsQuickTile(palette: palette, symbol: "plus.circle.fill", title: "加自选") {
+                    showAdd = true
+                }
             }
         }
     }
@@ -722,13 +691,13 @@ struct DashboardView: View {
         let items = Array(news.displayArticles.prefix(3))
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                DsSectionHeader(palette: palette, title: "市场快讯",
-                                trailing: "全部", action: { showNews = true })
+                DsSectionHeaderLink(palette: palette, title: "市场快讯", trailing: "全部") {
+                    NewsHubView(embedded: true)
+                }
                 VStack(spacing: 0) {
                     ForEach(items) { article in
-                        Button {
-                            Haptics.tap()
-                            showNews = true
+                        NavigationLink {
+                            NewsHubView(embedded: true)
                         } label: {
                             newsPreviewRow(article, isLast: article.id == items.last?.id)
                         }
@@ -1058,9 +1027,8 @@ struct DashboardView: View {
     /// v2.12 把两张卡合成了一张，但「今日盈亏」当时只统计了场内 ETF，却和「总资产」
     /// 并排放在最显眼的位置，很容易被读成「全部账户的今日盈亏」。
     ///
-    /// v2.13 按主流基金 App 的账户卡重排：主区域只留两个数 —— 左边总资产、右边当日盈亏，
-    /// **并把数据日期写进标签**（「10-09 当日盈亏」），一眼能分辨谁是谁；
-    /// 场内 / 场外各自的盈亏压到下面宫格里分成两格，主区域不再堆第二、第三行。
+    /// v2.13 账户卡重排：主区域只留两个数 —— 左边总资产、右边当日盈亏，
+    /// **并把数据日期写进标签**（「10-09 当日盈亏」），一眼能分辨谁是谁。
     private var accountSummaryCard: some View {
         let grossTone = store.hasDayPnLGross ? PnLColor.of(store.dayPnLGross) : Color.secondary
         return VStack(alignment: .leading, spacing: 12) {
@@ -1095,10 +1063,9 @@ struct DashboardView: View {
                 MetricCell(title: "盈亏比例", value: pnlRateText, toneValue: store.totalPnL),
                 MetricCell(title: "总成本", value: store.totalCost.cny()),
                 MetricCell(title: "已实现", value: store.realizedPnL.cny(), toneValue: store.realizedPnL),
-                MetricCell(title: "场内盈亏", value: store.hasIntradayPnL ? store.intradayPnL.cny() : "--",
+                MetricCell(title: "当日盈亏", value: store.hasIntradayPnL ? store.intradayPnL.cny() : "--",
                            toneValue: store.hasIntradayPnL ? store.intradayPnL : nil),
-                MetricCell(title: "场外盈亏", value: store.hasFundDayPnL ? store.fundDayPnL.cny() : "--",
-                           toneValue: store.hasFundDayPnL ? store.fundDayPnL : nil)
+                MetricCell(title: "持仓数", value: "\(store.data.holdings.filter { $0.quantity > 0 }.count) 只")
             ])
             Text("持仓市值 + 参考现金 = 总资产。当日盈亏只按场内证券计算（\(intradayDateNote)）；没取到数显示 --，不臆测补数。")
                 .scaledFont(10).foregroundStyle(.secondary)
@@ -1107,18 +1074,13 @@ struct DashboardView: View {
     }
 
     /// 当日盈亏的标签。核心是**别让人以为是当天**：
-    /// 休市时行情源照旧返回上一交易日收盘价，而场外基金要 T+1 才有净值 ——
-    /// 场内还在跳、场外是空的，很容易被读成「今天场内赚了这么多」。
+    /// 休市时行情源照旧返回上一交易日收盘价。
     /// 所以标签按数据时点分档写死：今日盈亏 / 今日收盘盈亏 / 休市 · MM-dd 盈亏。
     private var dayPnLLabel: String {
         guard store.hasDayPnLGross else { return "当日盈亏" }
         if store.hasIntradayPnL, let day = store.intradayQuoteDate.map({ shortDay($0) }) {
             if !store.isIntradayQuoteToday { return "休市 · \(day) 盈亏" }
             return store.isMarketOpenNow ? "今日盈亏" : "今日收盘盈亏"
-        }
-        // 只有场外基金：净值通常 T+1 公布，永远晚于当天，直接标净值日。
-        if store.hasFundDayPnL, let day = store.latestFundNAVDate.map({ shortDay($0) }) {
-            return "净值 \(day) 盈亏"
         }
         return "当日盈亏"
     }
@@ -1129,12 +1091,6 @@ struct DashboardView: View {
         guard store.hasIntradayPnL, let date = store.intradayQuoteDate else { return "无行情" }
         if !store.isIntradayQuoteToday { return "休市 · \(shortDay(date)) 收盘" }
         return store.isMarketOpenNow ? "实时" : "\(shortDay(date)) 收盘"
-    }
-
-    /// 场外基金最新公布净值日。"2026-10-08" → "净值 10-08"。
-    private var fundNAVDateNote: String {
-        guard store.hasFundDayPnL, let date = store.latestFundNAVDate else { return "无净值" }
-        return "净值 \(shortDay(date))"
     }
 
     // MARK: - 自选行渲染
@@ -1291,22 +1247,8 @@ struct DashboardView: View {
 
 struct MoreHubView: View {
     @EnvironmentObject private var store: PortfolioStore
-    @State private var showAnalysisTools = false
-    @State private var showPlanningTools = false
-    @State private var showAppSettings = false
-    @State private var showDataSync = false
     // AI 相关入口此前埋在「分析与规划」二级页深处（更多 → 分析与规划 → 再往下滚），
     // 三层之后基本找不到。这里提到一级页顶部做成卡片区。
-    @State private var showAIAnalysis = false
-    @State private var showQuantEngine = false
-    @State private var showPortfolioAdvice = false
-    @State private var showLedgerAudit = false
-    @State private var showOperationHistory = false
-    @State private var showDecisionScorecard = false
-    @State private var showEpisodes = false
-    @State private var showExpenses = false
-    @State private var showNewsHub = false
-    @State private var showMarketState = false
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -1354,38 +1296,38 @@ struct MoreHubView: View {
                 }
                 Section {
                     VStack(spacing: 10) {
-                        MoreHubCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
+                        MoreHubNavigationCard(title: "AI 账户分析", subtitle: "大模型解读持仓、风险与待核对项",
                                     icon: "sparkles", tint: store.effectiveAccentColor) {
-                            showAIAnalysis = true
+                            AIAnalysisView(embedded: true)
                         }
                         HStack(spacing: 10) {
-                            MoreHubTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
+                            MoreHubNavigationTile(title: "量化信号", subtitle: "本地扫描\n自选与持仓",
                                         icon: "waveform.path.ecg", tint: Color(red: 0.16, green: 0.72, blue: 0.85)) {
-                                showQuantEngine = true
+                                QuantitativeEngineView(embedded: true)
                             }
-                            MoreHubTile(title: "账户决策提示", subtitle: "仓位上限\n现金占比",
+                            MoreHubNavigationTile(title: "账户决策提示", subtitle: "仓位上限\n现金占比",
                                         icon: "lightbulb.fill", tint: Color(red: 1.0, green: 0.62, blue: 0.18)) {
-                                showPortfolioAdvice = true
+                                PortfolioAdviceView(embedded: true)
                             }
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
 
-                    MoreHubCard(title: "决策成绩单", subtitle: "AI 带价位的建议逐条留档，之后用真实日线判对错",
+                    MoreHubNavigationCard(title: "决策成绩单", subtitle: "AI 带价位的建议逐条留档，之后用真实日线判对错",
                                 icon: "checkmark.seal.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
-                        showDecisionScorecard = true
+                        DecisionScorecardView(embedded: true)
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
                     HStack(spacing: 10) {
-                        MoreHubTile(title: "持仓周期", subtitle: "几轮买卖\n每轮战绩",
+                        MoreHubNavigationTile(title: "持仓周期", subtitle: "几轮买卖\n每轮战绩",
                                     icon: "arrow.triangle.2.circlepath", tint: Color(red: 0.36, green: 0.72, blue: 0.62)) {
-                            showEpisodes = true
+                            EpisodeView(embedded: true)
                         }
-                        MoreHubTile(title: "账户杂费", subtitle: "平台费\n融资利息",
+                        MoreHubNavigationTile(title: "账户杂费", subtitle: "平台费\n融资利息",
                                     icon: "creditcard.fill", tint: Color(red: 0.92, green: 0.52, blue: 0.32)) {
-                            showExpenses = true
+                            ExpenseView(embedded: true)
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -1398,15 +1340,15 @@ struct MoreHubView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
-                    MoreHubCard(title: "市场快讯", subtitle: "同花顺 7×24 公开接口；只给标题与来源，不给结论",
+                    MoreHubNavigationCard(title: "市场快讯", subtitle: "同花顺 7×24 公开接口；只给标题与来源，不给结论",
                                 icon: "newspaper.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
-                        showNewsHub = true
+                        NewsHubView(embedded: true)
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
-                    MoreHubCard(title: "市场状态与战绩", subtitle: "大盘处于什么状态，已实现与做 T 到底赚没赚",
+                    MoreHubNavigationCard(title: "市场状态与战绩", subtitle: "大盘处于什么状态，已实现与做 T 到底赚没赚",
                                 icon: "waveform.path.ecg", tint: Color(red: 0.52, green: 0.44, blue: 0.96)) {
-                        showMarketState = true
+                        MarketStateView(embedded: true)
                     }
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
@@ -1418,27 +1360,27 @@ struct MoreHubView: View {
                 Section {
                     VStack(spacing: 10) {
                         HStack(spacing: 10) {
-                            MoreHubTile(title: "分析工具", subtitle: "风险、信号\n账户体检", icon: "chart.bar.xaxis", tint: .blue) {
-                                showAnalysisTools = true
+                            MoreHubNavigationTile(title: "分析工具", subtitle: "风险、信号\n账户体检", icon: "chart.bar.xaxis", tint: .blue) {
+                                ToolsView(initialAnchor: "tools-risk", title: "分析工具", embedded: true)
                             }
-                            MoreHubTile(title: "计划与复盘", subtitle: "网格、收益\n历史回看", icon: "calendar.badge.clock", tint: .orange) {
-                                showPlanningTools = true
-                            }
-                        }
-                        HStack(spacing: 10) {
-                            MoreHubTile(title: "账本与审计", subtitle: "起点快照\n现金对账", icon: "text.book.closed.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
-                                showLedgerAudit = true
-                            }
-                            MoreHubTile(title: "应用设置", subtitle: "配色、行情\n成本口径", icon: "gearshape.fill", tint: .gray) {
-                                showAppSettings = true
+                            MoreHubNavigationTile(title: "计划与复盘", subtitle: "网格、收益\n历史回看", icon: "calendar.badge.clock", tint: .orange) {
+                                ToolsView(initialAnchor: "tools-returns", title: "计划与复盘", embedded: true)
                             }
                         }
                         HStack(spacing: 10) {
-                            MoreHubTile(title: "数据与同步", subtitle: "备份、NAS\n通知权限", icon: "externaldrive.fill", tint: .purple) {
-                                showDataSync = true
+                            MoreHubNavigationTile(title: "账本与审计", subtitle: "起点快照\n现金对账", icon: "text.book.closed.fill", tint: Color(red: 0.36, green: 0.62, blue: 0.96)) {
+                                LedgerAuditView(embedded: true)
                             }
-                            MoreHubTile(title: "操作记录", subtitle: "逐条改动\n可撤回", icon: "clock.arrow.circlepath", tint: Color(red: 0.40, green: 0.72, blue: 0.50)) {
-                                showOperationHistory = true
+                            MoreHubNavigationTile(title: "应用设置", subtitle: "配色、行情\n成本口径", icon: "gearshape.fill", tint: .gray) {
+                                SettingsView(mode: .app, embedded: true)
+                            }
+                        }
+                        HStack(spacing: 10) {
+                            MoreHubNavigationTile(title: "数据与同步", subtitle: "备份、NAS\n通知权限", icon: "externaldrive.fill", tint: .purple) {
+                                SettingsView(mode: .sync, embedded: true)
+                            }
+                            MoreHubNavigationTile(title: "操作记录", subtitle: "逐条改动\n可撤回", icon: "clock.arrow.circlepath", tint: Color(red: 0.40, green: 0.72, blue: 0.50)) {
+                                OperationHistoryView(embedded: true)
                             }
                         }
                     }
@@ -1449,7 +1391,6 @@ struct MoreHubView: View {
                 Section("账户状态") {
                     LabeledContent("自选", value: "\(store.data.quotes.count) 只")
                     LabeledContent("场内持仓", value: "\(store.data.holdings.filter { $0.kind == .etf }.count) 只")
-                    LabeledContent("场外基金", value: "\(store.data.holdings.filter { $0.kind == .fund }.count) 只")
                     Label(store.nasSyncStatus, systemImage: "externaldrive.fill")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -1464,62 +1405,10 @@ struct MoreHubView: View {
             .background(.clear)
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(isPresented: $showAnalysisTools) { ToolsView(initialAnchor: "tools-risk", title: "分析工具", embedded: true) }
-            .navigationDestination(isPresented: $showPlanningTools) { ToolsView(initialAnchor: "tools-returns", title: "计划与复盘", embedded: true) }
-            .navigationDestination(isPresented: $showAppSettings) { SettingsView(mode: .app, embedded: true) }
-            .navigationDestination(isPresented: $showDataSync) { SettingsView(mode: .sync, embedded: true) }
-            .navigationDestination(isPresented: $showAIAnalysis) { AIAnalysisView(embedded: true) }
-            .navigationDestination(isPresented: $showQuantEngine) { QuantitativeEngineView(embedded: true) }
-            .navigationDestination(isPresented: $showPortfolioAdvice) { PortfolioAdviceView(embedded: true) }
-            .navigationDestination(isPresented: $showLedgerAudit) { LedgerAuditView(embedded: true) }
-            .navigationDestination(isPresented: $showOperationHistory) { OperationHistoryView(embedded: true) }
-            .navigationDestination(isPresented: $showDecisionScorecard) { DecisionScorecardView(embedded: true) }
-            .navigationDestination(isPresented: $showEpisodes) { EpisodeView(embedded: true) }
-            .navigationDestination(isPresented: $showExpenses) { ExpenseView(embedded: true) }
-            .navigationDestination(isPresented: $showNewsHub) { NewsHubView(embedded: true) }
-            .navigationDestination(isPresented: $showMarketState) { MarketStateView(embedded: true) }
         }
     }
 }
 
-/// 一级页的横向大卡：图标 + 标题 + 说明，整块可点。
-private struct MoreHubCard: View {
-    let title: String
-    let subtitle: String
-    let icon: String
-    let tint: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .scaledFont(20, weight: .semibold)
-                    .foregroundStyle(tint)
-                    .frame(width: 46, height: 46)
-                    .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).scaledFont(15, weight: .semibold).foregroundStyle(.primary)
-                    Text(subtitle).scaledFont(11).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(tint.opacity(0.12))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .strokeBorder(tint.opacity(0.28), lineWidth: 0.6)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-}
 
 /// 和 MoreHubCard 同一套外观，但用 NavigationLink 真推入。
 /// 不用「点一下再置 state + navigationDestination」：那条路在嵌套页里会失效（点了没反应）。
@@ -1528,7 +1417,16 @@ private struct MoreHubNavigationCard<Destination: View>: View {
     let subtitle: String
     let icon: String
     let tint: Color
-    @ViewBuilder let destination: Destination
+    let destination: Destination
+
+    init(title: String, subtitle: String, icon: String, tint: Color,
+         @ViewBuilder destination: () -> Destination) {
+        self.title = title
+        self.subtitle = subtitle
+        self.icon = icon
+        self.tint = tint
+        self.destination = destination()
+    }
 
     var body: some View {
         NavigationLink {
@@ -1563,16 +1461,28 @@ private struct MoreHubNavigationCard<Destination: View>: View {
     }
 }
 
-/// 一半宽度的小卡，两个并排。
-private struct MoreHubTile: View {
+/// 和 MoreHubTile 同一套外观，但用 NavigationLink 真推入。
+/// 嵌套页里「点一下再置 state + navigationDestination」会失效（点了没反应），实测踩过两次。
+private struct MoreHubNavigationTile<Destination: View>: View {
     let title: String
     let subtitle: String
     let icon: String
     let tint: Color
-    let action: () -> Void
+    let destination: Destination
+
+    init(title: String, subtitle: String, icon: String, tint: Color,
+         @ViewBuilder destination: () -> Destination) {
+        self.title = title
+        self.subtitle = subtitle
+        self.icon = icon
+        self.tint = tint
+        self.destination = destination()
+    }
 
     var body: some View {
-        Button(action: action) {
+        NavigationLink {
+            destination
+        } label: {
             VStack(alignment: .leading, spacing: 7) {
                 Image(systemName: icon)
                     .scaledFont(17, weight: .semibold)
@@ -1597,6 +1507,7 @@ private struct MoreHubTile: View {
         .buttonStyle(.plain)
     }
 }
+
 
 struct QuoteAlertEditor: View {
     @EnvironmentObject var store: PortfolioStore
@@ -1739,40 +1650,19 @@ struct WatchEditor: View {
 struct HoldingsView: View {
     @EnvironmentObject var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
-    let kind: Holding.Kind
-    /// 顶部分段切换的实际选择。nil 时跟随 `kind` —— 这样既能让独立入口
-    /// （如「场外基金」详情）指定初始口径，又不会在只读场景里多出切换器。
-    @State private var kindPick: Holding.Kind?
-    private var activeKind: Holding.Kind { kindPick ?? kind }
     @State private var showAdd = false
     @State private var editTarget: Holding?
     @State private var tradeTarget: Holding?
-    @State private var fundHistoryTarget: Holding?
-    @State private var fundReconciliationTarget: Holding?
-    @State private var backfillTarget: Holding?
-    @State private var dcaTarget: Holding?
-    @State private var feePolicyTarget: Holding?
-    @State private var feeReconciliationTarget: FundTransaction?
     @State private var marketChartTarget: Holding?
-    @State private var showFundCalendar = false
-    @State private var showFundQuant = false
-    @State private var archivedFundTarget: ArchivedFundItem?
-    @State private var deleteArchivedFundCode: String?
     @State private var undoTradeMessage: String?
-    @State private var showPortfolioAdvice = false
     @State private var alertTarget: Holding?
-    /// 「基金工具」原来直接用 Menu 嵌在行内 —— List 行内嵌 Menu 会抢走横向平移手势，
-    /// 导致整行左滑失效（swipeActions 弹不出来）。改成按钮 + confirmationDialog。
-    @State private var fundToolTarget: Holding?
     /// 长按菜单 / 左滑删除的确认目标（走 HoldingRemovalSheet 表单）
     @State private var removeTarget: Holding?
     /// 删除完成后的结论文案，用 alert 交代账本到底发生了什么。
     @State private var removalMessage: String?
     @State private var searchText = ""
-    /// 驱动“最新净值已更新”彩虹强调在下一交易日 09:30 准时恢复普通卡片。
-    @State private var fundFreshnessClock = Date.now
-    private var holdings: [Holding] { store.data.holdings.filter { $0.kind == activeKind } }
-    private var title: String { activeKind == .fund ? "场外基金" : "ETF / 证券持仓" }
+
+    private var holdings: [Holding] { store.data.holdings.filter { $0.kind == .etf } }
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1780,59 +1670,19 @@ struct HoldingsView: View {
     private var isSearching: Bool { !searchQuery.isEmpty }
     /// 搜索时只按名称 / 代码过滤持仓行；其它分区在搜索态下隐藏，避免结果被无关内容淹没
     private var searchedHoldings: [Holding] {
-        let base = holdings.filter { $0.quantity > 0 || activeKind == .fund }
+        let base = holdings.filter { $0.quantity > 0 }
         guard isSearching else { return base }
         let query = searchQuery.lowercased()
         return base.filter { $0.name.lowercased().contains(query) || $0.code.contains(query) }
     }
 
-    private func fundTransactionLabel(_ trade: FundTransaction) -> String {
-        switch trade.side {
-        case .buy: return trade.isBackfill ? "历史起点补录" : ((trade.isAutomaticDCA ?? false) ? "自动定投 · \(trade.name)" : "申购 · \(trade.name)")
-        case .sell: return "赎回 · \(trade.name)\(trade.feeWasEstimated == true ? " · 估算费待核对" : "")"
-        case .dividend: return trade.dividendMode == .reinvest ? "红利再投资 · \(trade.name)" : "现金分红 · \(trade.name)"
-        }
-    }
-
-    private func dcaDescription(_ plan: FundDCAPlan) -> String {
-        switch plan.frequency {
-        case .daily: return "每个有净值记录的交易日"
-        case .weekly:
-            let names = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-            return "每\(names.indices.contains(plan.weekday) ? names[plan.weekday] : "周一")"
-        case .biweekly: return "每两周一次"
-        case .monthly: return "每月\(plan.monthDay)日或其后首个有净值日"
-        }
-    }
-
-    private func legacyDCAStatus(_ value: String) -> String {
-        switch value {
-        case "booked": return "网页端已补入份额"
-        case "waiting-nav": return "等待历史净值"
-        case "needs-hold": return "基金不在当前持仓"
-        case "error": return "网页端补记失败"
-        case "未迁入流水": return "未迁入流水"
-        default: return value.isEmpty ? "状态未记录" : value
-        }
-    }
-
     var body: some View {
         listContent
-            .sheet(isPresented: $showAdd) { HoldingEditor(kind: activeKind) .themedSheetBackground() }
-            .sheet(item: $editTarget) { HoldingEditor(kind: activeKind, initial: $0) .themedSheetBackground() }
+            .sheet(isPresented: $showAdd) { HoldingEditor() .themedSheetBackground() }
+            .sheet(item: $editTarget) { HoldingEditor(initial: $0) .themedSheetBackground() }
             .sheet(item: $tradeTarget) { TradeEditor(holding: $0) .themedSheetBackground() }
-            .sheet(item: $fundHistoryTarget) { FundNAVHistoryView(fund: $0) .themedSheetBackground() }
-            .sheet(item: $fundReconciliationTarget) { FundReconciliationView(fund: $0) .themedSheetBackground() }
-            .sheet(item: $backfillTarget) { FundBackfillView(fund: $0) .themedSheetBackground() }
-            .sheet(item: $dcaTarget) { FundDCAPlanEditor(holding: $0) .themedSheetBackground() }
-            .sheet(item: $feePolicyTarget) { FundFeePolicyEditor(fund: $0) .themedSheetBackground() }
-            .sheet(item: $feeReconciliationTarget) { FundFeeReconciliationEditor(transaction: $0) .themedSheetBackground() }
             .sheet(item: $marketChartTarget) { MarketChartView(holding: $0) .themedSheetBackground() }
             .sheet(item: $alertTarget) { QuoteAlertEditor(initialCode: $0.code) .themedSheetBackground() }
-            .sheet(isPresented: $showFundCalendar) { FundIncomeCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showFundQuant) { FundQuantView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioAdvice) { PortfolioAdviceView() .themedSheetBackground() }
-            .sheet(item: $archivedFundTarget) { ArchivedFundHistoryView(item: $0) .themedSheetBackground() }
             .sheet(item: $removeTarget) { target in
                 HoldingRemovalSheet(holding: target) { removalMessage = $0 }
                     .themedSheetBackground()
@@ -1840,53 +1690,9 @@ struct HoldingsView: View {
             .alert("持仓已更新", isPresented: Binding(get: { removalMessage != nil }, set: { if !$0 { removalMessage = nil } })) {
                 Button("好", role: .cancel) { removalMessage = nil }
             } message: { Text(removalMessage ?? "") }
-            .confirmationDialog(fundToolTarget?.name ?? "基金工具", isPresented: Binding(get: { fundToolTarget != nil }, set: { if !$0 { fundToolTarget = nil } }), titleVisibility: .visible) {
-                Button("净值走势") { if let t = fundToolTarget { fundHistoryTarget = t }; fundToolTarget = nil }
-                Button("赎回费率") { if let t = fundToolTarget { feePolicyTarget = t }; fundToolTarget = nil }
-                Button("流水核对") { if let t = fundToolTarget { fundReconciliationTarget = t }; fundToolTarget = nil }
-                Button("取消", role: .cancel) { fundToolTarget = nil }
-            } message: { Text("这只基金的历史净值、费率与流水核对工具。") }
             .alert("交易流水", isPresented: Binding(get: { undoTradeMessage != nil }, set: { if !$0 { undoTradeMessage = nil } })) {
                 Button("好", role: .cancel) { undoTradeMessage = nil }
             } message: { Text(undoTradeMessage ?? "") }
-            .confirmationDialog("删除这只基金的历史记录？", isPresented: Binding(get: { deleteArchivedFundCode != nil }, set: { if !$0 { deleteArchivedFundCode = nil } }), titleVisibility: .visible) {
-                Button("删除历史流水与净值", role: .destructive) {
-                    if let code = deleteArchivedFundCode { store.removeArchivedFundHistory(code: code) }
-                    deleteArchivedFundCode = nil
-                }
-                Button("取消", role: .cancel) { deleteArchivedFundCode = nil }
-            } message: {
-                Text("此操作会删除该只已移出基金的流水和净值历史，不会删除当前持仓；操作无法直接撤回，请先确认备份。")
-            }
-            .onAppear { if activeKind == .fund { store.maybeRefreshFundNAVsAfterMarketClose() } }
-    }
-
-    /// 列表主体单独成表达式：与末尾十余个 sheet / alert 修饰符分开做类型检查，
-    /// 否则整条 body 表达式树过大，编译报 "unable to type-check in reasonable time"。
-    private func segmentButton(_ text: String, target: Holding.Kind, palette: DsPalette) -> some View {
-        let selected = activeKind == target
-        return Button {
-            Haptics.tap()
-            withAnimation(.easeOut(duration: 0.16)) { kindPick = target }
-        } label: {
-            Text(text)
-                .scaledFont(13, weight: selected ? .semibold : .regular)
-                .foregroundStyle(selected ? palette.ink : palette.ink2)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background {
-                    if selected {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(palette.card)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                    .strokeBorder(palette.hairline, lineWidth: 1)
-                            }
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private var listContent: some View {
@@ -1898,68 +1704,35 @@ struct HoldingsView: View {
                     moduleSummarySection
                     accountHintSection
                     if holdings.isEmpty {
-                        ContentUnavailableView("暂无\(title)", systemImage: "tray", description: Text("点右上角添加持仓。"))
+                        ContentUnavailableView("暂无持仓", systemImage: "tray", description: Text("点右上角添加持仓。"))
                     }
                     holdingRowList
-                    if activeKind == .fund {
-                        fundToolsSection
-                    }
-                    recentTradesSection
-                    if activeKind == .fund {
-                        archivedFundSection
-                    }
+                    ledgerTradesSection
                 }
             }
             .scrollContentBackground(.hidden)
             .appListLayout()
             .background(.clear)
             .searchable(text: $searchText, prompt: "搜索名称或代码")
-            .navigationTitle(title)
+            .navigationTitle("ETF / 证券持仓")
             .navigationBarTitleDisplayMode(.inline)
-            .refreshable {
-                // 基金页下拉刷净值，ETF/证券页下拉刷行情，各自对应页面上真正会变的东西
-                await manuallyRefreshHoldings()
-            }
+            .refreshable { await manuallyRefreshHoldings() }
             .refreshFeedbackOverlay(refreshFeedback)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    if activeKind == .fund {
-                        Button {
-                            Haptics.push()
-                            Task { await manuallyRefreshHoldings() }
-                        } label: {
-                            RefreshToolbarIcon(isRefreshing: store.isRefreshingFunds)
-                        }
-                            .disabled(store.isRefreshingFunds)
-                            .accessibilityLabel(store.isRefreshingFunds ? "正在更新基金净值" : "更新基金净值")
-                    }
                     Button { showAdd = true } label: { Image(systemName: "plus") }
-                        .accessibilityLabel(activeKind == .fund ? "添加基金持仓" : "添加 ETF / 证券持仓")
-                }
-            }
-            .task {
-                while !Task.isCancelled {
-                    fundFreshnessClock = .now
-                    try? await Task.sleep(for: .seconds(60))
+                        .accessibilityLabel("添加 ETF / 证券持仓")
                 }
             }
         }
     }
 
     @MainActor private func manuallyRefreshHoldings() async {
-        if activeKind == .fund {
-            refreshFeedback.begin("正在更新已公布净值…")
-            let ok = await store.refreshFundNAVsAndWait()
-            refreshFeedback.finish(store.fundNAVStatus, succeeded: ok)
-        } else {
-            refreshFeedback.begin("正在刷新持仓行情…")
-            let ok = await store.refreshQuotesAndWait()
-            refreshFeedback.finish(ok ? "持仓行情已更新" : store.sourceStatus, succeeded: ok)
-        }
+        refreshFeedback.begin("正在刷新持仓行情…")
+        let ok = await store.refreshQuotesAndWait()
+        refreshFeedback.finish(ok ? "持仓行情已更新" : store.sourceStatus, succeeded: ok)
     }
 
-    /// 本模块（ETF/证券 或 场外基金）自己的汇总：市值 / 浮盈 / 收益率。
-    /// 与账户页的「总资产」互不混算——两个模块各看各的，避免把合计当成单模块数字。
     /// 持仓行内的小统计：紧凑但不小于 10pt，一行放三个且保持可读。
     private func holdingStat(_ title: String, _ value: String, _ tone: Double?) -> some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -1975,19 +1748,12 @@ struct HoldingsView: View {
     }
 
     @ViewBuilder private var moduleSummarySection: some View {
-        Section(activeKind == .fund ? "基金资产概览" : "ETF / 证券资产概览") {
-            let value = store.marketValue(of: activeKind)
-            let pnlValue = store.pnl(of: activeKind)
+        Section("ETF / 证券资产概览") {
+            let value = store.marketValue(of: .etf)
+            let pnlValue = store.pnl(of: .etf)
             let count = holdings.filter { $0.quantity > 0 }.count
-            // 场内与场外的「当日盈亏」不是一个口径，不能共用 `dayPnL(of:)`：
-            // 行情接口只认场内代码，`marketChanges` 里根本没有基金代码，
-            // 所以之前场外这一格无论涨跌永远显示 0。场外改按最新净值日两点的净值差算。
-            let dayValue = activeKind == .fund ? store.fundDayPnL : store.intradayPnL
-            let hasDayValue = activeKind == .fund ? store.hasFundDayPnL : store.hasIntradayPnL
-            let dayTitle = activeKind == .fund ? "净值日盈亏" : "今日盈亏"
-            let dayDateNote = activeKind == .fund
-                ? (store.latestFundNAVDate.map { "净值 \(shortDay($0))" } ?? "无净值")
-                : "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
+            let hasDayValue = store.hasIntradayPnL
+            let dayDateNote = "行情日 \(store.intradayQuoteDate.map { shortDay($0) } ?? "--")"
             // 网页版的资产汇总卡是彩色区块（.sum）；这里按浮盈亏红绿上色，不再是一片灰白
             let cardTone: Color? = pnlValue > 0.005 ? PnLColor.up : pnlValue < -0.005 ? PnLColor.down : nil
             VStack(alignment: .leading, spacing: 10) {
@@ -2009,20 +1775,18 @@ struct HoldingsView: View {
                     }
                 }
                 MetricGrid(columns: DsPalette.of(store.resolvedAppearance).statColumns, cells: [
-                    MetricCell(title: "成本收益率", value: store.pnlRate(of: activeKind).map { $0.pct(2) } ?? "--",
+                    MetricCell(title: "成本收益率", value: store.pnlRate(of: .etf).map { $0.pct(2) } ?? "--",
                                toneValue: pnlValue),
-                    MetricCell(title: dayTitle, value: hasDayValue ? dayValue.cny() : "--",
-                               toneValue: hasDayValue ? dayValue : nil),
+                    MetricCell(title: "今日盈亏", value: hasDayValue ? store.intradayPnL.cny() : "--",
+                               toneValue: hasDayValue ? store.intradayPnL : nil),
                     MetricCell(title: "持仓数", value: "\(count) 只")
                 ])
-                Text(activeKind == .fund
-                     ? "只统计本页场外基金；ETF / 证券不计入。净值日盈亏 = 最新两个公布净值之差（\(dayDateNote)）。"
-                     : "只统计本页 ETF / 证券；场外基金不计入。今日盈亏按最近一次行情反推昨收（\(dayDateNote)）。")
+                Text("只统计 ETF / 证券持仓。今日盈亏按最近一次行情反推昨收（\(dayDateNote)）。")
                     .scaledFont(10).foregroundStyle(.secondary)
 
                 // 本模块自己的情绪量尺：口径与首页「市场情绪」一致（等权平均涨跌幅），
                 // 但范围收窄到本页持仓 —— 两个模块的资产/盈亏本来就分开算，情绪也该各看各的。
-                if let mood = store.marketMood(of: activeKind) {
+                if let mood = store.marketMood(of: .etf) {
                     let strength = mood.average * 100
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -2050,16 +1814,14 @@ struct HoldingsView: View {
     }
 
     @ViewBuilder private var accountHintSection: some View {
-        if activeKind == .etf {
-            Section("账户提示") {
-                Button {
-                    showPortfolioAdvice = true
-                } label: {
-                    Label("查看账户决策提示", systemImage: "lightbulb")
-                }
-                Text("汇总仓位上限、现金占比和基金定期报告重叠提示；只作记录核对，不预测涨跌或自动交易。")
-                    .font(.footnote).foregroundStyle(.secondary)
+        Section("账户提示") {
+            NavigationLink {
+                PortfolioAdviceView(embedded: true)
+            } label: {
+                Label("查看账户决策提示", systemImage: "lightbulb")
             }
+            Text("汇总仓位上限与现金占比；只作记录核对，不预测涨跌或自动交易。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -2075,8 +1837,7 @@ struct HoldingsView: View {
     }
 
     @ViewBuilder private func holdingRow(_ h: Holding) -> some View {
-        // 列布局对齐养基宝：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），
-        // 市值在名称行右侧，占总资产挪到底部信息行 —— 4 列太挤，3 列是它的可读上限。
+        // 列布局：当日涨幅% / 当日收益 / 持有收益（元 + 百分比），市值在名称行右侧。
         // 缺当日行情时显示 --，不把「没数据」画成 0。
         let dayValue = store.dayPnL(of: h)
         let hasDay = store.marketChanges[h.code] != nil
@@ -2084,7 +1845,6 @@ struct HoldingsView: View {
         let costBasis = h.quantity * store.displayedCost(for: h)
         let holdingPnL = store.holdingPnL(h)
         let rate = costBasis > 0 ? holdingPnL / costBasis * 100 : nil
-        let highlightFreshNAV = shouldHighlightFreshFundNAV(h, now: fundFreshnessClock)
         VStack(alignment: .leading, spacing: 7) {
             HStack { Text(h.name).font(.headline).lineLimit(1); Spacer(); Text((h.marketValue).cny()).font(.headline) }
             HStack(spacing: 9) {
@@ -2093,7 +1853,7 @@ struct HoldingsView: View {
                 holdingStat("持有收益", "\(holdingPnL.directionMark()) \(holdingPnL.cny())" + (rate.map { " · \($0.pct(2))" } ?? ""), holdingPnL)
                 Spacer(minLength: 0)
             }
-            Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num((activeKind == .fund ? 4 : 3))) · 现价 \((h.current).num((activeKind == .fund ? 4 : 3))) · 占总资产 \((store.allocationActualPercent(for: h)).pct(1))")
+            Text("\(h.code) · \((h.quantity).num(4)) 份 · 成本 \((store.displayedCost(for: h)).num(3)) · 现价 \((h.current).num(3)) · 占总资产 \((store.allocationActualPercent(for: h)).pct(1))")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("成本额 \((h.quantity * store.displayedCost(for: h)).cny())")
@@ -2102,30 +1862,10 @@ struct HoldingsView: View {
                 Text((pnl).cny()).foregroundStyle(pnl >= 0 ? .red : .green)
             }
             .font(.subheadline)
-            if activeKind == .fund, let latest = store.data.fundNAVHistory.filter({ $0.code == h.code }).max(by: { $0.date < $1.date }) {
-                let previous = store.data.fundNAVHistory.filter { $0.code == h.code && $0.date < latest.date }.max(by: { $0.date < $1.date })
-                if let previous {
-                    let change = (latest.nav - previous.nav) * h.quantity
-                    Text("\(latest.date) 近一期净值变化 · 按当前份额折算 \((change).cny())")
-                        .font(.caption).foregroundStyle(change >= 0 ? .red : .green)
-                } else {
-                    Text("最新净值日期：\(latest.date)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            // 小屏/大字号下将操作按钮自动换行，避免“基金工具 / 定投 / 编辑”等入口被挤出屏幕。
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 82, maximum: 150), alignment: .leading)],
                       alignment: .leading, spacing: 4) {
                 Button("买入 / 卖出") { tradeTarget = h }
-                if activeKind == .fund {
-                    if h.quantity > 0 && !store.data.fundTransactions.contains(where: { $0.code == h.code && $0.side == .buy }) {
-                        Button("补录起点") { backfillTarget = h }
-                    }
-                    Button("定投") { dcaTarget = h }
-                    // 不能用 Menu：行内嵌 Menu 会吃掉滑动手势，左滑删除就弹不出来
-                    Button("基金工具") { fundToolTarget = h }
-                } else {
-                    Button("日K与指标") { marketChartTarget = h }
-                }
+                Button("日K与指标") { marketChartTarget = h }
                 Button("编辑") { editTarget = h }
             }
             .buttonStyle(.borderless).font(.subheadline)
@@ -2134,38 +1874,15 @@ struct HoldingsView: View {
         .cardPanelBackground(cornerRadius: 16,
             fallback: Color(uiColor: .secondarySystemBackground).opacity(0.72),
             tone: holdingPnL > 0.005 ? PnLColor.up : holdingPnL < -0.005 ? PnLColor.down : nil)
-        .overlay {
-            if highlightFreshNAV {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(fundFreshNAVGradient, lineWidth: 2.2)
-            }
-        }
-        .overlay(alignment: .leading) {
-            if highlightFreshNAV {
-                Capsule()
-                    .fill(fundFreshNAVGradient)
-                    .frame(width: 4)
-                    .padding(.vertical, 12)
-                    .padding(.leading, 2)
-            }
-        }
         .contentShape(Rectangle())
-        // 左滑动作对齐养基宝的「后面有很多」：删除仍是全滑直达，
-        // 后面依次是编辑 / 交易 / 图表或净值 / 提醒或定投。
+        // 左滑动作：删除走表单，编辑 / 交易 / 日K / 提醒依次排后。
         // 注意这里不能用 .buttonStyle(.plain)，会吃掉横向滑动手势（之前踩过）。
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            // 不再用全滑直达删除：账本已经有成交时，「删」有三种完全不同的后果，
-            // 必须让用户在表单里选，而不是靠一次手滑替他决定。
             Button("删除", role: .destructive) { Haptics.tap(); removeTarget = h }
             Button("编辑") { Haptics.tap(); editTarget = h }.tint(.blue)
             Button("交易") { Haptics.tap(); tradeTarget = h }.tint(.orange)
-            if activeKind == .fund {
-                Button("净值") { fundHistoryTarget = h }.tint(.indigo)
-                Button("定投") { dcaTarget = h }.tint(.teal)
-            } else {
-                Button("日K") { marketChartTarget = h }.tint(.indigo)
-                Button("提醒") { alertTarget = h }.tint(.teal)
-            }
+            Button("日K") { Haptics.tap(); marketChartTarget = h }.tint(.indigo)
+            Button("提醒") { Haptics.tap(); alertTarget = h }.tint(.teal)
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             Button("加自选") {
@@ -2184,133 +1901,20 @@ struct HoldingsView: View {
                 removeTarget = h
             } label: { Label("删除持仓", systemImage: "trash") }
         }
-        // 删除走表单（见 HoldingsView 根视图上的 sheet）：
-        // 那里会先问「这一下到底该记卖出、还是改起点」，并要求填一句审计说明。
-
-    }
-
-    /// 从该净值日开始保持彩虹强调，直到它之后的首个交易日 09:30。
-    /// 因而周五晚更新会跨周末保留，周一开市再自动恢复；不是简单到午夜就消失。
-    private func shouldHighlightFreshFundNAV(_ holding: Holding, now: Date) -> Bool {
-        guard holding.kind == .fund,
-              let latestDay = store.data.fundNAVHistory
-                .filter({ $0.code == holding.code })
-                .map(\.date).max() else { return false }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let navDay = formatter.date(from: latestDay) else { return false }
-
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = formatter.timeZone
-        var candidate = calendar.date(byAdding: .day, value: 1, to: navDay) ?? navDay
-        for _ in 0..<14 where MarketCalendar.isClosure(candidate, custom: store.data.customMarketHolidays) {
-            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-        }
-        guard let nextOpen = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: candidate) else { return false }
-        return now >= navDay && now < nextOpen
-    }
-
-    private var fundFreshNAVGradient: LinearGradient {
-        LinearGradient(colors: [
-            Color(red: 0.98, green: 0.30, blue: 0.42),
-            Color(red: 1.00, green: 0.63, blue: 0.18),
-            Color(red: 0.20, green: 0.76, blue: 0.48),
-            Color(red: 0.20, green: 0.62, blue: 0.98),
-            Color(red: 0.62, green: 0.40, blue: 0.96)
-        ], startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
-    @ViewBuilder private var fundToolsSection: some View {
-        Section("定投与分析") {
-            Button("基金量化体检") { showFundQuant = true }
-            Button("基金日收益日历") { showFundCalendar = true }
-            Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
-            Text(store.fundDCAStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("净值可用页面右上角的刷新按钮更新，也可直接下拉刷新；本页只展示已公布净值。")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-        if !store.data.legacyDCAEvents.isEmpty {
-            Section("旧版定投档案") {
-                ForEach(store.data.legacyDCAEvents.sorted { $0.dueDate > $1.dueDate }) { event in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("\(event.name) · \(event.code)")
-                        Text("计划日 \(event.dueDate) · \((event.amount).cny()) · \(legacyDCAStatus(event.status))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private var recentTradesSection: some View {
-        if activeKind == .fund {
-            fundTradesSection
-        } else {
-            ledgerTradesSection
-        }
-    }
-
-    @ViewBuilder private var fundTradesSection: some View {
-        Section("最近基金流水") {
-            let codes = Set(holdings.map(\.code))
-            let allEntries = store.data.fundTransactions.filter { codes.contains($0.code) }
-                .sorted { $0.requestDate > $1.requestDate }
-            let recentEntries = Array(allEntries.prefix(10))
-            let recentIDs = Set(recentEntries.map(\.id))
-            let pendingFeeChecks = allEntries.filter { $0.side == .sell && $0.feeWasEstimated == true && !recentIDs.contains($0.id) }
-            let entries = pendingFeeChecks + recentEntries
-            if entries.isEmpty { Text("暂无基金流水").foregroundStyle(.secondary) }
-            ForEach(Array(entries)) { trade in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(fundTransactionLabel(trade))
-                        Text("\(trade.effectiveDate) · \((trade.quantity).num(4)) 份\(trade.status == .pending ? " · 待确认" : "")")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if trade.side == .sell && trade.feeWasEstimated == true {
-                        Button("核对费用") { feeReconciliationTarget = trade }
-                            .font(.caption)
-                    }
-                    Text((trade.amount).cny())
-                }.contextMenu {
-                    if trade.side == .sell && trade.feeWasEstimated == true {
-                        Button("核对实际赎回费", systemImage: "checkmark.seal") { feeReconciliationTarget = trade }
-                    }
-                    if store.isLatestLedgerFundTransaction(trade) {
-                        Button("撤销最近一笔交易", systemImage: "arrow.uturn.backward", role: .destructive) {
-                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                            catch { undoTradeMessage = error.localizedDescription }
-                        }
-                    }
-                }.swipeActions(edge: .trailing) {
-                    if store.isLatestLedgerFundTransaction(trade) {
-                        Button("撤销", role: .destructive) {
-                            do { try store.undoLatestTrade(); undoTradeMessage = "最近一笔交易已撤销，持仓和联动现金已回滚。" }
-                            catch { undoTradeMessage = error.localizedDescription }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     @ViewBuilder private var ledgerTradesSection: some View {
         Section("最近交易流水") {
             let entries = store.data.ledger.filter { e in
-                holdings.contains(where: { $0.code == e.code && (e.kind == nil || e.kind == $0.kind) })
+                holdings.contains(where: { $0.code == e.code && (e.kind == nil || e.kind == .etf) })
             }.suffix(10).reversed()
             if entries.isEmpty { Text("暂无交易流水").foregroundStyle(.secondary) }
             ForEach(Array(entries)) { e in
-                // 名称回填：ledger 记录若没存名称，依次从在场持仓 / 已归档基金流水中反查，
+                // 名称回填：ledger 记录若没存名称，从在场持仓反查，
                 // 避免出现「买入 ¥556.00」这种只有金额没有标的的行。
                 let resolvedName: String = {
                     if !e.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return e.name }
-                    if let held = store.data.holdings.first(where: { $0.code == e.code && $0.kind == e.kind }) { return held.name }
                     if let held = store.data.holdings.first(where: { $0.code == e.code }), !held.name.isEmpty { return held.name }
-                    if let tx = store.data.fundTransactions.first(where: { $0.code == e.code && !$0.name.isEmpty }) { return tx.name }
                     return e.code
                 }()
                 HStack {
@@ -2336,42 +1940,14 @@ struct HoldingsView: View {
             }
         }
     }
-
-    @ViewBuilder private var archivedFundSection: some View {
-        Section("已移出持仓 · 左滑可删除历史") {
-            let activeCodes = Set(holdings.map(\.code))
-            let archivedCodes = Set(store.data.fundTransactions.map(\.code)).subtracting(activeCodes).sorted()
-            if archivedCodes.isEmpty { Text("暂无已移出持仓的基金历史").foregroundStyle(.secondary) }
-            ForEach(archivedCodes, id: \.self) { code in
-                let trades = store.data.fundTransactions.filter { $0.code == code }
-                let name = trades.first(where: { !$0.name.isEmpty })?.name ?? code
-                let realized = store.data.ledger.filter { $0.code == code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
-                    + trades.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
-                // 之前这一行是 Button + .buttonStyle(.plain)：按钮会吃掉横向滑动手势，
-                // 导致左滑不弹出删除按钮。改成普通行 + onTapGesture，swipeActions 才能生效。
-                HStack {
-                    VStack(alignment: .leading) { Text(name); Text("\(trades.count) 笔流水 · 历史保留").font(.caption).foregroundStyle(.secondary) }
-                    Spacer(); Text((realized).cny())
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { archivedFundTarget = ArchivedFundItem(code: code, name: name) }
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button("删除历史", role: .destructive) { deleteArchivedFundCode = code }
-                }
-            }
-        }
-    }
-}
-
-struct ArchivedFundItem: Identifiable {
-    var id: String { code }
-    var code: String
-    var name: String
 }
 
 struct TradeCSVImportView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @Environment(\.appAppearance) private var appearance
     @State private var text = ""
     @State private var drafts: [TradeImportDraft] = []
@@ -2400,7 +1976,7 @@ struct TradeCSVImportView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section("选择数据") {
                     Button("从文件选择 CSV / 表格") { showImporter = true }
@@ -2454,7 +2030,7 @@ struct TradeCSVImportView: View {
             .themedSheetBackground()
             .navigationTitle("导入成交历史")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
             .keyboardDoneToolbar()
             .scrollDismissesKeyboard(.interactively)
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { result in
@@ -2522,7 +2098,7 @@ struct TradeLedgerManagementView: View {
                             }
                             Text("\(entry.date.formatted(date: .numeric, time: .shortened)) · \((entry.quantity).num(4)) × \((entry.price).num(4)) · 手续费 \((entry.fee).num(2))")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text(entry.affectsHoldings == false ? "导入的历史流水，不影响当前持仓和现金" : "\(entry.kind == .fund ? "场外基金" : "当前账本交易") · \(entry.linkedCash ? "联动现金" : "未联动现金")")
+                            Text(entry.affectsHoldings == false ? "导入的历史流水，不影响当前持仓和现金" : "当前账本交易 · \(entry.linkedCash ? "联动现金" : "未联动现金")")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         .swipeActions(edge: .trailing) {
@@ -2535,7 +2111,7 @@ struct TradeLedgerManagementView: View {
                     }
                 }
                 Section {
-                    Text("删除 ETF 账本交易会按该标的剩余流水重算份额和成本，并回滚该笔联动现金。导入的历史流水只删除记录，不改当前余额。场外基金旧交易只允许撤销最近一笔，避免破坏后续申赎、分红或定投批次。")
+                    Text("删除 ETF 账本交易会按该标的剩余流水重算份额和成本，并回滚该笔联动现金。导入的历史流水只删除记录，不改当前余额。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if !message.isEmpty { Section { Text(message).font(.footnote).foregroundStyle(.orange) } }
@@ -2565,583 +2141,15 @@ struct TradeLedgerManagementView: View {
     }
 }
 
-struct ArchivedFundHistoryView: View {
-    @EnvironmentObject var store: PortfolioStore
-    let item: ArchivedFundItem
-
-    private var transactions: [FundTransaction] {
-        store.data.fundTransactions.filter { $0.code == item.code }.sorted { $0.effectiveDate > $1.effectiveDate }
-    }
-    private var points: [FundNAVPoint] {
-        store.data.fundNAVHistory.filter { $0.code == item.code }.sorted { $0.date < $1.date }
-    }
-    private var realized: Double {
-        store.data.ledger.filter { $0.code == item.code && $0.kind == .fund }.reduce(0) { $0 + $1.realizedPnL }
-            + transactions.filter { $0.side == .dividend && $0.status == .confirmed }.reduce(0) { $0 + $1.amount }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("收益保留") {
-                    LabeledContent("已实现盈亏", value: (realized).cny())
-                    Text("移出持仓只隐藏当前持仓，不删除流水和净值历史。基金收益日历仍可使用这些记录。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if points.count > 1 {
-                    Section("已公布净值走势") {
-                        Chart(Array(points.suffix(300))) { point in
-                            LineMark(x: .value("日期", point.date), y: .value("净值", point.nav))
-                        }.frame(height: 210)
-                    }
-                }
-                Section("基金流水") {
-                    if transactions.isEmpty { Text("暂无流水").foregroundStyle(.secondary) }
-                    ForEach(transactions) { trade in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text(transactionTitle(trade)).font(.headline)
-                                Spacer(); Text(trade.status == .pending ? "待确认" : "已确认")
-                                    .foregroundStyle(trade.status == .pending ? Color.orange : Color.secondary)
-                            }
-                            Text("生效日 \(trade.effectiveDate) · \((trade.quantity).num(4)) 份 · 净值 \((trade.nav).num(4))")
-                                .font(.caption).foregroundStyle(.secondary)
-                            if trade.fee > 0 { Text("费用 \((trade.fee).cny())").font(.caption).foregroundStyle(.secondary) }
-                        }
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle(item.name)
-            .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-
-    private func transactionTitle(_ trade: FundTransaction) -> String {
-        switch trade.side {
-        case .buy: return trade.isBackfill ? "历史起点补录" : "申购"
-        case .sell: return "赎回"
-        case .dividend: return trade.dividendMode == .reinvest ? "红利再投资" : "现金分红"
-        }
-    }
-}
-
-struct FundBackfillView: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let fund: Holding
-    @State private var date = Date.now
-    @State private var quantity = ""
-    @State private var message = ""
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                DatePicker("历史持有起始日", selection: $date, in: ...Date.now, displayedComponents: .date)
-                TextField("当时总份额", text: $quantity).keyboardType(.decimalPad)
-                Text("按现有份额和已记赎回流水，系统估算的起始份额为 \((store.inferredBackfillShares(for: fund)).num(4))。补录只建立收益日历的份额基准，不改当前持仓、不新增交易或现金。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                if !message.isEmpty { Text(message).foregroundStyle(.red) }
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("补录基金历史起点")
-            .keyboardDoneToolbar()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
-            }
-            .onAppear {
-                if quantity.isEmpty { quantity = String(store.inferredBackfillShares(for: fund)) }
-            }
-        }
-    }
-    private func save() {
-        guard let value = Double(quantity), value.isFinite else { message = "请填写有效份额"; return }
-        do { try store.recordFundBackfill(code: fund.code, date: date, quantity: value); dismiss() }
-        catch { message = error.localizedDescription }
-    }
-}
-
-struct FundDCAPlanEditor: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let holding: Holding
-    @State private var amount = "100"
-    @State private var feeRatePercent = "0.15"
-    @State private var frequency: FundDCAPlan.Frequency = .daily
-    @State private var weekday = 2
-    @State private var monthDay = 1
-    @State private var error = ""
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                LabeledContent("基金", value: "\(holding.name) · \(holding.code)")
-                TextField("每期计划金额（元）", text: $amount).keyboardType(.decimalPad)
-                TextField("申购费率（%）", text: $feeRatePercent).keyboardType(.decimalPad)
-                Picker("频率", selection: $frequency) {
-                    Text("每个净值交易日").tag(FundDCAPlan.Frequency.daily)
-                    Text("每周指定交易日").tag(FundDCAPlan.Frequency.weekly)
-                    Text("每两周一次").tag(FundDCAPlan.Frequency.biweekly)
-                    Text("每月指定日期").tag(FundDCAPlan.Frequency.monthly)
-                }
-                if frequency == .weekly {
-                    Picker("星期", selection: $weekday) {
-                        Text("周一").tag(2); Text("周二").tag(3); Text("周三").tag(4)
-                        Text("周四").tag(5); Text("周五").tag(6)
-                    }
-                }
-                if frequency == .monthly {
-                    Stepper("每月第 \(monthDay) 日", value: $monthDay, in: 1...28)
-                }
-                if !error.isEmpty { Text(error).foregroundStyle(.red) }
-                Text("这是本机定投计划记账，不连接券商、不下单，也不改变参考现金。份额按（计划金额 − 申购费）÷ 对应日已公布净值计算，计划金额计入基金成本。默认申购费率 0.15%，请按基金实际费率修改。每周/每月休市时顺延到同周/当月首个可用净值日；没有对应净值时不猜价、不补成交。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("设置自动定投")
-            .keyboardDoneToolbar()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("启用") {
-                        guard let value = Double(amount), value.isFinite, value > 0,
-                              let rate = Double(feeRatePercent), rate.isFinite, (0...5).contains(rate) else {
-                            error = "请输入有效金额和 0～5% 的申购费率"; return
-                        }
-                        do {
-                            try store.addDCAPlan(code: holding.code, name: holding.name, amount: value, feeRatePercent: rate,
-                                frequency: frequency, weekday: weekday, monthDay: monthDay)
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
-                    }
-                }
-            }
-        }
-    }
-}
-
 private struct FeeBandDraft: Identifiable {
     var id = UUID()
     var days: String
     var rate: String
 }
 
-struct FundFeePolicyEditor: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let fund: Holding
-    @State private var bands = [0, 7, 30, 365, 730].map { FeeBandDraft(days: String($0), rate: "") }
-    @State private var sellMode: FundSellMode = .fifo
-    @State private var message = ""
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("按基金合同配置赎回费") {
-                    Picker("赎回批次策略", selection: $sellMode) {
-                        ForEach(FundSellMode.allCases) { mode in Text(mode.title).tag(mode) }
-                    }
-                    Text("低费率策略会优先使用当前持有天数对应费率较低的批次；同费率时先使用较早批次。策略只用于估费和本地记录，实际扣费与销售平台批次以平台确认为准。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    ForEach($bands) { $band in
-                        HStack {
-                            TextField("持有天数起点", text: $band.days).keyboardType(.numberPad)
-                            Text("天起")
-                            TextField("费率 %", text: $band.rate).keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
-                    .onDelete { bands.remove(atOffsets: $0) }
-                    Button("增加一个费率档") {
-                        let next = (bands.compactMap { Int($0.days) }.max() ?? 0) + 30
-                        bands.append(FeeBandDraft(days: String(next), rate: ""))
-                    }
-                    Text("至少需要 0 天起始档；程序按所选赎回批次逐笔计算持有天数，并套用最近的费率档。请按该基金销售页面/合同填写，缺失费率或买入批次不完整时不会估算，不会擅自认定为 0 费率。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if !message.isEmpty { Text(message).foregroundStyle(.red) }
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("\(fund.name)赎回费率")
-            .keyboardDoneToolbar()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
-            }
-            .onAppear {
-                if let policy = store.data.fundFeePolicies.first(where: { $0.code == fund.code }) {
-                    bands = policy.bands.map { FeeBandDraft(days: String($0.minimumHoldingDays), rate: String($0.ratePercent)) }
-                    sellMode = policy.sellMode ?? .fifo
-                }
-            }
-        }
-    }
-
-    private func save() {
-        let parsed = bands.compactMap { row -> FundFeeBand? in
-            guard let days = Int(row.days), let rate = Double(row.rate) else { return nil }
-            return FundFeeBand(minimumHoldingDays: days, ratePercent: rate)
-        }
-        guard parsed.count == bands.count else { message = "每个档位都要填写持有天数和费率。"; return }
-        do { try store.saveFundFeePolicy(code: fund.code, name: fund.name, bands: parsed, sellMode: sellMode); dismiss() }
-        catch { message = error.localizedDescription }
-    }
-}
-
-struct FundDividendEditor: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let holding: Holding
-    @State private var amount = ""
-    @State private var nav = ""
-    @State private var date = Date.now
-    @State private var mode: FundTransaction.DividendMode = .cash
-    @State private var linkCash = false
-    @State private var error = ""
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                LabeledContent("基金", value: "\(holding.name) · \(holding.code)")
-                DatePicker("分红到账/确认日", selection: $date, displayedComponents: .date)
-                TextField("分红金额", text: $amount).keyboardType(.decimalPad)
-                Picker("分红方式", selection: $mode) {
-                    Text("现金分红").tag(FundTransaction.DividendMode.cash)
-                    Text("红利再投资").tag(FundTransaction.DividendMode.reinvest)
-                }.pickerStyle(.segmented)
-                if mode == .reinvest {
-                    TextField("再投资净值", text: $nav).keyboardType(.decimalPad)
-                    if let cash = Double(amount), let value = Double(nav), value > 0, cash > 0 {
-                        LabeledContent("增加份额", value: (cash / value).num(4))
-                    }
-                } else {
-                    Toggle("计入本程序参考现金", isOn: $linkCash)
-                }
-                if !error.isEmpty { Text(error).foregroundStyle(.red) }
-                Text("分红会计入累计收益。红利再投资按填写净值增加基金份额和成本；现金分红默认不改参考现金，只有确认资金也记在本程序现金中时才打开上面的开关。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("记录基金分红")
-            .keyboardDoneToolbar()
-            .onAppear { nav = nav.isEmpty ? String(holding.current) : nav }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        guard let cash = Double(amount), cash.isFinite, cash > 0 else { error = "请输入有效分红金额"; return }
-                        let effectiveNAV = Double(nav) ?? 0
-                        do {
-                            try store.recordFundDividend(code: holding.code, date: date, amount: cash,
-                                mode: mode, nav: effectiveNAV, linkCash: mode == .cash && linkCash)
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct FundIncomeCalendarView: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var monthOffset = 0
-
-    private var monthDate: Date { Calendar(identifier: .gregorian).date(byAdding: .month, value: monthOffset, to: .now) ?? .now }
-    private var monthKey: String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM"
-        return formatter.string(from: monthDate)
-    }
-    private var days: [FundDailyPerformance] { store.fundDailyPerformance(month: monthKey) }
-    private var total: Double { days.reduce(0) { $0 + $1.profit } }
-    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    HStack {
-                        Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.accessibilityLabel("上个月")
-                        Spacer(); Text(monthKey).font(.headline)
-                        Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }.accessibilityLabel("下个月")
-                    }
-                    LabeledContent("本月已记录日收益合计", value: "\((total).directionMark()) \((total).cny())")
-                        .foregroundStyle(PnLColor.of(total))
-                    Text("共 \(days.count) 个有数据的净值日。这里只展示已公布净值覆盖且有已确认申购/补录份额依据的基金。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .toneCard(CardTone.pnl(total), isLight: isLight)
-                Section("每日收益") {
-                    if days.isEmpty {
-                        ContentUnavailableView("暂无可核算收益", systemImage: "calendar", description: Text("需要先导入基金买卖流水，并获取覆盖对应日期的已公布净值历史。手动录入但没有买入日期的持仓不会被猜测成历史收益。"))
-                    }
-                    ForEach(days.reversed()) { day in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(day.date)
-                                Spacer()
-                                Text("\((day.profit).directionMark()) \((day.profit).cny())")
-                            }
-                            .foregroundStyle(PnLColor.of(day.profit))
-                            Text("净值基数 \((day.baseValue).cny()) · \(day.fundCount) 只基金")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .plainCard(isLight: isLight)
-                Text("日收益按前一净值日已确认份额计算；当日买入不计入当日净值变化，当日赎回份额仍计入；分红金额和申赎费用按流水日计入。手动持仓若缺少历史买入流水，会被排除，因此历史可能不完整。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("基金收益日历")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
-        }
-    }
-}
-
-struct FundQuantView: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-
-    private var funds: [Holding] {
-        store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
-            .sorted { $0.marketValue > $1.marketValue }
-    }
-    private var totalValue: Double { funds.reduce(0) { $0 + $1.marketValue } }
-    private var totalCost: Double { funds.reduce(0) { $0 + $1.quantity * store.displayedCost(for: $1) } }
-    private var confirmedTransactions: [FundTransaction] {
-        store.data.fundTransactions.filter { $0.status == .confirmed }
-    }
-    private var recordedFees: Double {
-        confirmedTransactions.filter { $0.side != .dividend }.reduce(0) { $0 + abs($1.fee) }
-    }
-    private var cashDividends: Double {
-        confirmedTransactions.filter { $0.side == .dividend && $0.dividendMode == .cash }
-            .reduce(0) { $0 + $1.amount }
-    }
-    private var reinvestedDividends: Double {
-        confirmedTransactions.filter { $0.side == .dividend && $0.dividendMode == .reinvest }
-            .reduce(0) { $0 + $1.amount }
-    }
-
-    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
-    /// 基金模块的浮盈，用于给「组合概览」卡取色。
-    private var fundPnLTotal: Double { totalValue - totalCost }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("组合概览") {
-                    LabeledContent("当前基金数", value: "\(funds.count)")
-                    LabeledContent("当前市值", value: (totalValue).cny())
-                    LabeledContent("持仓成本", value: (totalCost).cny())
-                    LabeledContent("持仓浮盈", value: "\((fundPnLTotal).directionMark()) \((fundPnLTotal).cny())")
-                        .foregroundStyle(PnLColor.of(fundPnLTotal))
-                    if totalCost > 0 {
-                        LabeledContent("成本收益率", value: ((totalValue - totalCost) / totalCost * 100).pct(2))
-                    }
-                }
-                .toneCard(CardTone.pnl(fundPnLTotal), isLight: isLight)
-                Section("持仓集中度与表现") {
-                    if funds.isEmpty { Text("没有份额大于 0 的基金持仓。").foregroundStyle(.secondary) }
-                    ForEach(funds) { fund in
-                        let weight = totalValue > 0 ? fund.marketValue / totalValue : 0
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(fund.name).font(.headline)
-                                Spacer()
-                                Text((weight * 100).pct(1))
-                                    .foregroundStyle(weight >= 0.5 ? Color.orange : Color.secondary)
-                            }
-                            let fundPnL = store.holdingPnL(fund)
-                            Text("\(fund.code) · 市值 \((fund.marketValue).cny()) · 浮盈 \((fundPnL).cny())")
-                                .font(.caption).foregroundStyle(fundPnL >= 0 ? Color.red : Color.green)
-                            Text("份额 \((fund.quantity).num(4)) · 现值 \((fund.current).num(4)) · 成本 \((store.displayedCost(for: fund)).num(4))")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }.padding(.vertical, 3)
-                    }
-                    if funds.contains(where: { totalValue > 0 && $0.marketValue / totalValue >= 0.5 }) {
-                        Text("有单只基金占当前基金市值一半或以上；这只是集中度提示，不代表买卖建议。")
-                            .font(.footnote).foregroundStyle(CardTone.warn)
-                    }
-                }
-                .plainCard(isLight: isLight)
-                Section("费用与分红流水") {
-                    LabeledContent("已记录申购/赎回费用", value: (recordedFees).cny())
-                    LabeledContent("已记录现金分红", value: (cashDividends).cny())
-                    LabeledContent("已记录红利再投资", value: (reinvestedDividends).cny())
-                    Text("只汇总本机已确认流水；不包含销售平台未录入的费用、分红或管理费。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
-                Section("整笔赎回费可估性") {
-                    ForEach(funds) { fund in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(fund.name)
-                            if store.data.fundFeePolicies.contains(where: { $0.code == fund.code }) {
-                                if let estimate = store.estimateFundRedemptionFee(code: fund.code,
-                                    shares: fund.quantity, nav: fund.current, on: .now) {
-                                    Text("按当前费率档和批次策略估算：\((estimate.total).cny())")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                } else {
-                                    Text("已设置费率档，但当前批次或流水不足，无法可靠估算。")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            } else {
-                                Text("尚未设置该基金的赎回费率档。")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Text("这是按当前份额整笔赎回的估算，不会记账或下单；最终费用以销售平台确认结果为准。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
-                Section("定投执行记录") {
-                    if store.data.fundDCAPlans.isEmpty { Text("暂无原生定投计划。").foregroundStyle(.secondary) }
-                    ForEach(store.data.fundDCAPlans) { plan in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack { Text(plan.name); Spacer(); Text(plan.enabled ? "运行中" : "已暂停").foregroundStyle(plan.enabled ? Color.green : Color.secondary) }
-                            Text("每期 \(plan.amount.cny()) · 已记 \(plan.processedDates.count) 期 · 开始于 \(plan.startDate)")
-                                .font(.caption).foregroundStyle(.secondary)
-                            HStack {
-                                Button(plan.enabled ? "暂停计划" : "恢复计划") {
-                                    store.setDCAPlan(plan, enabled: !plan.enabled)
-                                }.buttonStyle(.bordered)
-                                Button("删除计划", role: .destructive) { store.removeDCAPlan(plan) }
-                                    .buttonStyle(.bordered)
-                            }.font(.caption)
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button("删除", systemImage: "trash", role: .destructive) { store.removeDCAPlan(plan) }
-                            Button(plan.enabled ? "暂停" : "恢复", systemImage: plan.enabled ? "pause.fill" : "play.fill") {
-                                store.setDCAPlan(plan, enabled: !plan.enabled)
-                            }.tint(.orange)
-                        }
-                    }
-                    Text("执行期数依据本机已记录的定投流水，不推断错过期次，也不连接销售平台。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("基金量化体检")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
-        }
-    }
-}
-
-struct FundNAVHistoryView: View {
-    @EnvironmentObject var store: PortfolioStore
-    let fund: Holding
-    @State private var rangeDays = 90
-    @State private var selectedDate: String?
-
-    private var points: [FundNAVPoint] {
-        store.data.fundNAVHistory.filter { $0.code == fund.code }.sorted { $0.date < $1.date }
-    }
-    private var chartPoints: [FundNAVPoint] {
-        guard rangeDays > 0 else { return points }
-        let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -rangeDays, to: .now) ?? .distantPast
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "yyyy-MM-dd"
-        let key = f.string(from: cutoff)
-        let filtered = points.filter { $0.date >= key }
-        return filtered.isEmpty ? Array(points.suffix(30)) : filtered
-    }
-    private var chartDomain: ClosedRange<Double> {
-        guard let low = chartPoints.map(\.nav).min(), let high = chartPoints.map(\.nav).max() else { return 0...1 }
-        let pad = max(max((high - low) * 0.12, high * 0.002), 0.0001)
-        return max(0, low - pad)...(high + pad)
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("已公布净值，不是盘中估值") {
-                    if let latest = points.last {
-                        LabeledContent("最新净值日期", value: latest.date)
-                        LabeledContent("最新净值", value: (latest.nav).num(4))
-                        if points.count > 1, let previous = points.dropLast().last {
-                            let navChange = latest.nav - previous.nav
-                            LabeledContent("较上一期", value: (navChange).num(4))
-                            LabeledContent("按当前份额折算", value: (navChange * fund.quantity).cny())
-                        }
-                    } else {
-                        ContentUnavailableView("暂无净值历史", systemImage: "chart.xyaxis.line", description: Text("回到基金页点右上角刷新。"))
-                    }
-                }
-                if points.count > 1 {
-                    Section("历史净值") {
-                        Picker("时间范围", selection: $rangeDays) {
-                            Text("1月").tag(30); Text("3月").tag(90); Text("半年").tag(180); Text("1年").tag(365); Text("全部").tag(0)
-                        }.pickerStyle(.segmented)
-                        if let selectedDate, let point = chartPoints.first(where: { $0.date == selectedDate }) {
-                            LabeledContent("选中日期净值", value: "\(selectedDate) · \((point.nav).num(4))")
-                        }
-                        Chart(chartPoints) { point in
-                            LineMark(x: .value("日期", point.date), y: .value("单位净值", point.nav))
-                                .interpolationMethod(.linear).lineStyle(StrokeStyle(lineWidth: 2))
-                                .foregroundStyle(Color.accentColor)
-                            AreaMark(x: .value("日期", point.date), yStart: .value("区间低点", chartDomain.lowerBound), yEnd: .value("单位净值", point.nav))
-                                .foregroundStyle(Color.accentColor.opacity(0.10))
-                        }
-                        .chartYScale(domain: chartDomain)
-                        .chartXAxis {
-                            AxisMarks(values: sampledNAVAxisDates) { value in
-                                AxisGridLine().foregroundStyle(Color.primary.opacity(0.07))
-                                AxisValueLabel {
-                                    if let date = value.as(String.self) {
-                                        Text(String(date.dropFirst(5)).replacingOccurrences(of: "-", with: "/"))
-                                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
-                        .frame(height: 280)
-                        .chartXSelection(value: $selectedDate)
-                        .accessibilityLabel("\(fund.name)历史单位净值曲线")
-                    }
-                    Section("最近净值") {
-                        ForEach(points.suffix(20).reversed()) { point in
-                            HStack { Text(point.date); Spacer(); Text((point.nav).num(4)) }
-                        }
-                    }
-                }
-                Text("历史净值变化只反映单位净值变化；“按当前份额折算”没有还原过去每天的实际份额，不能当作历史账户收益。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle(fund.name)
-            .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-
-    private var sampledNAVAxisDates: [String] {
-        guard chartPoints.count > 1 else { return chartPoints.map(\.date) }
-        let count = min(4, chartPoints.count)
-        return (0..<count).map { index in
-            chartPoints[(index * (chartPoints.count - 1)) / (count - 1)].date
-        }
-    }
-}
-
 struct HoldingEditor: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
-    let kind: Holding.Kind
     var initial: Holding?
     @State private var code: String
     @State private var name: String
@@ -3153,8 +2161,8 @@ struct HoldingEditor: View {
     @State private var annualDividendPerShare: String
     @State private var lookupMessage = ""
 
-    init(kind: Holding.Kind, initial: Holding? = nil) {
-        self.kind = kind; self.initial = initial
+    init(initial: Holding? = nil) {
+        self.initial = initial
         _code = State(initialValue: initial?.code ?? "")
         _name = State(initialValue: initial?.name ?? "")
         _quantity = State(initialValue: initial.map { String($0.quantity) } ?? "")
@@ -3179,21 +2187,17 @@ struct HoldingEditor: View {
                     TextField("成本净值/成本价", text: $cost).keyboardType(.decimalPad)
                     TextField("当前净值/价格", text: $current).keyboardType(.decimalPad)
                 }
-                if kind == .etf {
-                    Section("单只风险提示") {
-                        TextField("仓位上限（占总资产 %，可空）", text: $maxPositionPercent).keyboardType(.decimalPad)
-                        Picker("收盘价跌破均线提示", selection: $maWarningPeriod) {
-                            Text("关闭").tag("")
-                            ForEach([5, 10, 20, 60, 120, 250], id: \.self) { Text("MA\($0)").tag(String($0)) }
-                        }
-                        TextField("每份年分红修正（元，可空）", text: $annualDividendPerShare).keyboardType(.decimalPad)
-                        Text("只在工具页和日线图打开时，依据本机已有日线检查；不会后台推送。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                Section("单只风险提示") {
+                    TextField("仓位上限（占总资产 %，可空）", text: $maxPositionPercent).keyboardType(.decimalPad)
+                    Picker("收盘价跌破均线提示", selection: $maWarningPeriod) {
+                        Text("关闭").tag("")
+                        ForEach([5, 10, 20, 60, 120, 250], id: \.self) { Text("MA\($0)").tag(String($0)) }
                     }
+                    TextField("每份年分红修正（元，可空）", text: $annualDividendPerShare).keyboardType(.decimalPad)
+                    Text("只在工具页和日线图打开时，依据本机已有日线检查；不会后台推送。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                Text(kind == .etf
-                    ? "这里只维护本机持仓，不连接券商或执行交易。输入六位代码后会尝试识别名称和现价；行情接口不可用时可手动填写。"
-                    : "这里只维护本机基金持仓，不连接销售平台或执行申赎。输入六位代码后会尝试识别名称和最近已公布净值；接口不可用时可手动填写。")
+                Text("这里只维护本机持仓，不连接券商或执行交易。输入六位代码后会尝试识别名称和现价；行情接口不可用时可手动填写。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .scrollContentBackground(.hidden)
@@ -3203,7 +2207,7 @@ struct HoldingEditor: View {
                 if filtered != newValue { code = filtered; return }
                 if oldValue != newValue {
                     // 新增时若上一组六位代码已经自动回填，再改代码必须清掉旧名称/价格；
-                    // 否则第二只基金可能被误存成第一只的名称。
+                    // 否则第二只标的可能被误存成第一只的名称。
                     let changedAwayFromResolvedCode = oldValue.filter(\.isNumber).count == 6
                     let changedAwayFromInitial = initial.map { $0.code != newValue } ?? false
                     if changedAwayFromResolvedCode || changedAwayFromInitial {
@@ -3221,33 +2225,17 @@ struct HoldingEditor: View {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled else { return }
                 do {
-                    if kind == .fund {
-                        guard let info = try await store.lookupFundInfo(code: requested), !Task.isCancelled,
-                              code.trimmingCharacters(in: .whitespacesAndNewlines) == requested else {
-                            if !Task.isCancelled { lookupMessage = "未识别到该基金代码，可手动填写名称和净值。" }
-                            return
-                        }
-                        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { name = info.name }
-                        if let nav = info.nav,
-                           current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || current == "0" {
-                            current = String(nav)
-                        }
-                        lookupMessage = info.nav.map { "已识别：\(info.name) · 最新净值 \($0)" } ?? "已识别：\(info.name)"
-                    } else {
-                        guard let quote = try await store.lookupETFQuote(code: requested), !Task.isCancelled,
-                              code.trimmingCharacters(in: .whitespacesAndNewlines) == requested else {
-                            if !Task.isCancelled { lookupMessage = "未识别到该代码，可手动填写名称和现价。" }
-                            return
-                        }
-                        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { name = quote.name }
-                        if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || current == "0" { current = String(quote.price) }
-                        lookupMessage = "已识别：\(quote.name) · 现价 \(quote.price)"
+                    guard let quote = try await store.lookupETFQuote(code: requested), !Task.isCancelled,
+                          code.trimmingCharacters(in: .whitespacesAndNewlines) == requested else {
+                        if !Task.isCancelled { lookupMessage = "未识别到该代码，可手动填写名称和现价。" }
+                        return
                     }
+                    if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { name = quote.name }
+                    if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || current == "0" { current = String(quote.price) }
+                    lookupMessage = "已识别：\(quote.name) · 现价 \(quote.price)"
                 } catch {
                     if !Task.isCancelled {
-                        lookupMessage = kind == .fund
-                            ? "基金信息接口暂不可用，可手动填写名称和净值。"
-                            : "行情接口暂不可用，可手动填写名称和现价。"
+                        lookupMessage = "行情接口暂不可用，可手动填写名称和现价。"
                     }
                 }
             }
@@ -3268,61 +2256,9 @@ struct HoldingEditor: View {
         guard maxPositionPercent.isEmpty || (maxLimit?.isFinite == true && maxLimit! > 0 && maxLimit! <= 100) else { return }
         let dividend = annualDividendPerShare.isEmpty ? nil : Double(annualDividendPerShare)
         guard annualDividendPerShare.isEmpty || (dividend?.isFinite == true && dividend! >= 0) else { return }
-        let h = Holding(code: cde, name: name.isEmpty ? cde : name, quantity: q, cost: c, current: p, kind: kind,
+        let h = Holding(code: cde, name: name.isEmpty ? cde : name, quantity: q, cost: c, current: p, kind: .etf,
                         maxPositionPercent: maxLimit, maWarningPeriod: Int(maWarningPeriod), annualDividendPerShare: dividend)
         store.upsertHolding(h, oldCode: initial?.code); dismiss()
-    }
-}
-
-private struct FundFeeReconciliationEditor: View {
-    @EnvironmentObject private var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    let transaction: FundTransaction
-    @State private var feeText = ""
-    @State private var netText = ""
-    @State private var message = ""
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section(transaction.name) {
-                    LabeledContent("赎回总额", value: (transaction.amount).cny())
-                    LabeledContent("原估算费用", value: (transaction.fee).cny())
-                    TextField("实际扣费（可选）", text: $feeText).keyboardType(.decimalPad)
-                    TextField("实际到账（可选）", text: $netText).keyboardType(.decimalPad)
-                    Text("填写实际扣费或实际到账，也可以同时填写核对一致性。保存后会修正已实现盈亏；若交易联动参考现金，也会按差额校正现金。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if !message.isEmpty { Text(message).foregroundStyle(.red) }
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("核对实际赎回费")
-            .keyboardDoneToolbar()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
-            }
-        }
-    }
-
-    private func save() {
-        let gross = transaction.amount
-        let hasFee = !feeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasNet = !netText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let feeValue = hasFee ? Double(feeText) : nil
-        let netValue = hasNet ? Double(netText) : nil
-        guard hasFee || hasNet else { message = "请填写实际扣费或实际到账。"; return }
-        guard (!hasFee || feeValue?.isFinite == true), (!hasNet || netValue?.isFinite == true) else { message = "金额格式无效。"; return }
-        let actualFee = feeValue ?? (gross - (netValue ?? gross))
-        guard actualFee >= 0, actualFee <= gross else { message = "实际费用需在 0 元与赎回总额之间。"; return }
-        if let netValue, (netValue < 0 || netValue > gross || abs((gross - actualFee) - netValue) > 0.01) {
-            message = "扣费与到账金额不一致，请核对后重填。"; return
-        }
-        do {
-            try store.confirmFundRedemptionFee(transactionID: transaction.id, actualFee: actualFee)
-            dismiss()
-        } catch { message = error.localizedDescription }
     }
 }
 
@@ -3334,9 +2270,6 @@ struct AssetsView: View {
     @State private var selectedLedgerMonth = ""
     /// 资产页的快捷工具（网格 / 收息 / 账本）。这三个不再是底栏页签，
     /// 但也不能沉到「我的」二级页里 —— 放在资产页顶部最顺手。
-    @State private var showGridTool = false
-    @State private var showIncomeTool = false
-    @State private var showLedgerTool = false
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: store.resolvedAppearance).isLight)
@@ -3344,9 +2277,15 @@ struct AssetsView: View {
 
     private var assetToolsRow: some View {
         HStack(spacing: 10) {
-            DsQuickTile(palette: palette, symbol: "square.grid.2x2.fill", title: "网格") { showGridTool = true }
-            DsQuickTile(palette: palette, symbol: "yensign.circle.fill", title: "收息") { showIncomeTool = true }
-            DsQuickTile(palette: palette, symbol: "checklist", title: "账本") { showLedgerTool = true }
+            DsQuickTileLink(palette: palette, symbol: "square.grid.2x2.fill", title: "网格") {
+                DayGridView(embedded: true)
+            }
+            DsQuickTileLink(palette: palette, symbol: "yensign.circle.fill", title: "收息") {
+                IncomeHubView(embedded: true)
+            }
+            DsQuickTileLink(palette: palette, symbol: "checklist", title: "账本") {
+                LedgerAuditView(embedded: true)
+            }
         }
     }
     var body: some View {
@@ -3419,7 +2358,7 @@ struct AssetsView: View {
                 }
                 Section("历史快照") {
                     // 休市日不给记录入口：这天的总资产和上一交易日几乎一样
-                    // （场外净值不更新、场内是上一交易日的收盘价），记了只会让
+                    // （场内是上一交易日的收盘价），记了只会让
                     // 收益曲线多出一段平线，还会把「区间收益」的分母算歪。
                     if store.isMarketClosedToday {
                         Label("今天休市，不用记录快照", systemImage: "moon.zzz")
@@ -3429,7 +2368,7 @@ struct AssetsView: View {
                     } else {
                         Button("记录/更新今日快照") { store.recordSnapshot() }
                     }
-                    Text("快照之间的收益 = 总资产变化 − 期间现金净转入。没有快照覆盖的日期无法回溯；基金净值尚未更新时快照也会沿用当前账面值。")
+                    Text("快照之间的收益 = 总资产变化 − 期间现金净转入。没有快照覆盖的日期无法回溯。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !store.snapshotMonths.isEmpty {
                         Picker("月份", selection: $selectedSnapshotMonth) {
@@ -3525,9 +2464,6 @@ struct AssetsView: View {
                     if selectedLedgerMonth.isEmpty { selectedLedgerMonth = store.ledgerMonths.first ?? "" }
                 }
                 .sheet(isPresented: $showCashFlow) { CashFlowEditor() .themedSheetBackground() }
-                .sheet(isPresented: $showGridTool) { DayGridView() .themedSheetBackground() }
-                .sheet(isPresented: $showIncomeTool) { IncomeHubView() .themedSheetBackground() }
-                .sheet(isPresented: $showLedgerTool) { LedgerAuditView() .themedSheetBackground() }
         }
     }
 
@@ -3551,23 +2487,21 @@ struct AssetsView: View {
         store.ledgerDailyRealized(month: selectedLedgerMonth).reduce(0) { $0 + $1.profit }
     }
 
-    /// 「账户总览」卡的当日盈亏取色依据：场内 + 场外的合计数（都没有时中性）。
+    /// 「账户总览」卡的当日盈亏取色依据（没有行情时中性）。
     private var dayTone: Color {
         guard store.hasDayPnLGross else { return .secondary }
         return PnLColor.of(store.dayPnLGross)
     }
 
-    /// 市值按 ETF/证券、场外基金、现金三段拆分。比「一个总数」更能看出钱压在哪。
+    /// 市值按 ETF/证券、现金两段拆分。比「一个总数」更能看出钱压在哪。
     private var assetComposition: some View {
         let total = max(store.totalAsset, 0.0001)
         let etf = max(store.marketValue(of: .etf), 0)
-        let fund = max(store.marketValue(of: .fund), 0)
         let cash = max(store.data.cash, 0)
         return VStack(alignment: .leading, spacing: 7) {
             GeometryReader { geo in
                 HStack(spacing: 2) {
                     segment(Color(red: 0.22, green: 0.53, blue: 0.90), width: geo.size.width * (etf / total))
-                    segment(Color(red: 0.55, green: 0.42, blue: 0.90), width: geo.size.width * (fund / total))
                     segment(Color(red: 0.15, green: 0.75, blue: 0.62), width: geo.size.width * (cash / total))
                     Spacer(minLength: 0)
                 }
@@ -3575,7 +2509,6 @@ struct AssetsView: View {
             .frame(height: 9)
             HStack(spacing: 12) {
                 legend(Color(red: 0.22, green: 0.53, blue: 0.90), "ETF/证券", etf / total)
-                legend(Color(red: 0.55, green: 0.42, blue: 0.90), "场外基金", fund / total)
                 legend(Color(red: 0.15, green: 0.75, blue: 0.62), "现金", cash / total)
             }
         }
@@ -3652,6 +2585,9 @@ private struct ETFIncomeDay: Identifiable {
 struct ETFIncomeCalendarView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var monthOffset = 0
     @State private var days: [ETFIncomeDay] = []
     @State private var selectedDate: String?
@@ -3699,7 +2635,7 @@ struct ETFIncomeCalendarView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section {
                     HStack {
@@ -3783,7 +2719,7 @@ struct ETFIncomeCalendarView: View {
             .background(.clear)
             .navigationTitle("ETF 收益日历")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } } }
             .task(id: monthKey) { await loadMonth() }
         }
     }
@@ -3889,23 +2825,6 @@ struct ToolsView: View {
     @State private var shockPercent = 20
     @State private var showShockDetails = false
     @State private var showRebalanceDetails = false
-    @State private var showGrid = false
-    @State private var showLongGridPlanner = false
-    @State private var showPortrait = false
-    @State private var showTradePlans = false
-    @State private var showOverlap = false
-    @State private var showAddCash = false
-    @State private var showVolumeAnalysis = false
-    @State private var showDisciplineLab = false
-    @State private var showScreenshotImport = false
-    @State private var showProductionLoop = false
-    @State private var showTradeCSVImport = false
-    @State private var showETFIncomeCalendar = false
-    @State private var showDividendCalendar = false
-    @State private var showPortfolioAnalysis = false
-    @State private var showTradePreview = false
-    @State private var showReturnSource = false
-    @State private var showPortfolioScenario = false
     @State private var targetEdit: Holding?
 
     init(initialAnchor: String? = nil, title: String = "工具", embedded: Bool = false) {
@@ -4040,8 +2959,8 @@ struct ToolsView: View {
                 }
             }
             Section("账户压力测试") {
-                Button("资产穿透与分市场压力测试") { showPortfolioAnalysis = true }
-                Button("交易前沙盘（只预演）") { showTradePreview = true }
+                NavigationLink { PortfolioAnalysisView(embedded: true) } label: { Label("资产穿透与分市场压力测试", systemImage: "square.stack.3d.up") }
+                NavigationLink { TradePreviewView(embedded: true) } label: { Label("交易前沙盘（只预演）", systemImage: "play.rectangle") }
                 Picker("统一下跌情景", selection: $shockPercent) {
                     Text("−10%").tag(10); Text("−20%").tag(20); Text("−30%").tag(30); Text("−50%").tag(50)
                 }.pickerStyle(.segmented)
@@ -4058,16 +2977,16 @@ struct ToolsView: View {
                             Text("−\((itemLoss).cny())").foregroundStyle(PnLColor.down)
                         }
                     }
-                    Text("统一冲击全部当前持仓，现金不变；这是静态压力情景，不是行情预测，不包含相关性、流动性、费用或基金估值滞后。")
+                    Text("统一冲击全部当前持仓，现金不变；这是静态压力情景，不是行情预测，不包含相关性、流动性或费用。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .toneCard(PnLColor.down, isLight: isLight)
             .id("tools-risk")
             Section("收益日历") {
-                Button("ETF 每日收益日历") { showETFIncomeCalendar = true }
-                Button("分红日历与年度现金流") { showDividendCalendar = true }
-                Button("收益来源拆解") { showReturnSource = true }
+                NavigationLink { ETFIncomeCalendarView(embedded: true) } label: { Label("ETF 每日收益日历", systemImage: "calendar.day.timeline.left") }
+                NavigationLink { DividendCalendarView(embedded: true) } label: { Label("分红日历与年度现金流", systemImage: "yensign.circle") }
+                NavigationLink { ReturnSourceView(embedded: true) } label: { Label("收益来源拆解", systemImage: "chart.bar.doc.horizontal") }
                 Text("按日 K 与可用交易流水估算历史持仓收益；缺少行情覆盖的日期会留空，休市日期会标出。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4092,7 +3011,7 @@ struct ToolsView: View {
                         }
                     }
                 }
-                Text("占比按总资产（含参考现金）计算。偏差只作为手动复核参考，不会自动买卖；场外基金采用最近已公布净值，净值滞后时偏差也会滞后。目标总和超过 100% 时请自行调整。")
+                Text("占比按总资产（含参考现金）计算。偏差只作为手动复核参考，不会自动买卖；价格滞后时偏差也会滞后。目标总和超过 100% 时请自行调整。")
                     .font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -4191,63 +3110,63 @@ struct ToolsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text("只在打开工具页时按最近账面价格计算偏离，不是后台推送；价格、基金净值滞后时偏离也会滞后。不会自动买卖。")
+                Text("只在打开工具页时按最近账面价格计算偏离，不是后台推送；价格滞后时偏离也会滞后。不会自动买卖。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(CardTone.warnIf(rebalanceBreachCount > 0), isLight: isLight)
             Section("网格工具") {
                 LabeledContent("本地分时记录", value: "\(store.gridBarCount) 点 · \(store.gridTradingDays.count) 个交易日")
-                Button("日内网格参数、分时导入与回放") { showGrid = true }
-                Button("中长期网格计划") { showLongGridPlanner = true }
+                NavigationLink { DayGridView(embedded: true) } label: { Label("日内网格参数、分时导入与回放", systemImage: "square.grid.2x2") }
+                NavigationLink { StrategicGridPlannerView(embedded: true).environmentObject(store) } label: { Label("中长期网格计划", systemImage: "chart.line.uptrend.xyaxis") }
                 Text("回放使用选定日期实际导入或前台采集的数据，结果是路径模拟，不是可实现收益保证。只在穿越网格价位时记模拟成交；不会修改主账户现金、持仓或流水。iOS 切后台可能暂停采集。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
             .id("tools-grid")
             Section("账户洞察") {
-                Button("查看账户画像") { showPortrait = true }
+                NavigationLink { AccountPortraitView(embedded: true) } label: { Label("查看账户画像", systemImage: "person.text.rectangle") }
                 Text("本机先计算规则建议和操作画像；只有主动点击大模型深度分析时才会发送画像数据。不会自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .toneCard(CardTone.themedAccent(isLight: isLight), isLight: isLight)
             .id("tools-ai")
             Section("日线量化信号") {
-                Button("查看量能结构（MA5/10/20/60 与价量关系）") { showVolumeAnalysis = true }
-                Button("规则验证台：候选 / 风控 / 触发 / 影子评估") { showDisciplineLab = true }
-                Button("从成交截图导入（同花顺，需先核对再写入）") { showScreenshotImport = true }
-                Button("生产盯盘与复盘：计划状态 / 成交关联 / 今日 T vs HOLD") { showProductionLoop = true }
+                NavigationLink { VolumeAnalysisView(embedded: true) } label: { Label("查看量能结构（MA5/10/20/60 与价量关系）", systemImage: "chart.bar.xaxis") }
+                NavigationLink { DisciplineLabView(embedded: true) } label: { Label("规则验证台：候选 / 风控 / 触发 / 影子评估", systemImage: "checklist") }
+                NavigationLink { TradeScreenshotImportView(embedded: true) } label: { Label("从成交截图导入（同花顺，需先核对再写入）", systemImage: "text.viewfinder") }
+                NavigationLink { ProductionLoopView(embedded: true) } label: { Label("生产盯盘与复盘：计划状态 / 成交关联 / 今日 T vs HOLD", systemImage: "dot.radiowaves.left.and.right") }
                 Text("本地规则因子对自选与持仓排序；每只标的详情内可打开 AI 深度分析。量化扫描不依赖模型密钥，不预测未来，也不自动交易。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
             Section("券商成交历史导入") {
-                Button("导入成交 CSV / 表格") { showTradeCSVImport = true }
+                NavigationLink { TradeCSVImportView(embedded: true) } label: { Label("导入成交 CSV / 表格", systemImage: "square.and.arrow.down") }
                 Text("先解析并预览，再由你确认入账。只增加 ETF/证券历史流水并计算可核实的已实现盈亏，不修改当前持仓或现金；需提供从首次买入开始的完整记录，避免把历史成交重复加到当前余额。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
             .id("tools-data")
             Section("交易计划与复盘") {
-                Button("打开计划记录（\(store.data.tradePlans.count)）") { showTradePlans = true }
+                NavigationLink { TradePlansView(embedded: true) } label: { Label("打开计划记录（\(store.data.tradePlans.count)）", systemImage: "list.clipboard") }
                 Text("记录交易理由、计划价和失效条件；手动成交后可复盘执行偏差，不会自动下单或修改真实账本。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
             .id("tools-trades")
             Section("ETF 底层持仓穿透") {
-                Button("查看成分股重叠") { showOverlap = true }
-                Text("ETF 使用截至 2026-06-30 的内置快照；场外基金可拉取定期报告重仓并统计 ETF/基金交叉重叠。")
+                NavigationLink { ETFOverlapView(embedded: true) } label: { Label("查看成分股重叠", systemImage: "circle.grid.cross") }
+                Text("ETF 使用截至 2026-06-30 的内置快照；只统计 ETF 之间重叠的持仓。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
             Section("新增资金加仓试算") {
-                Button("计算买入份额") { showAddCash = true }
+                NavigationLink { AddCashSimulationView(embedded: true) } label: { Label("计算买入份额", systemImage: "function") }
                 Text("按目标仓位缺口、整手和预算约束试算；不会下单或改动持仓。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .plainCard(isLight: isLight)
             Section("换仓情景试算") {
-                Button("调整假设份额并比较组合") { showPortfolioScenario = true }
+                NavigationLink { PortfolioScenarioView(embedded: true) } label: { Label("调整假设份额并比较组合", systemImage: "arrow.left.arrow.right.square") }
                 Text("临时调整 ETF/证券份额，比较市值、已知年分红、股息率和集中度；只作试算，不写入真实持仓。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -4272,23 +3191,6 @@ struct ToolsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
-            .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
-            .sheet(isPresented: $showLongGridPlanner) { StrategicGridPlannerView().environmentObject(store).themedSheetBackground() }
-            .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradePlans) { TradePlansView() .themedSheetBackground() }
-            .sheet(isPresented: $showOverlap) { ETFOverlapView() .themedSheetBackground() }
-            .sheet(isPresented: $showAddCash) { AddCashSimulationView() .themedSheetBackground() }
-            .sheet(isPresented: $showVolumeAnalysis) { VolumeAnalysisView() .themedSheetBackground() }
-            .sheet(isPresented: $showDisciplineLab) { DisciplineLabView() .themedSheetBackground() }
-            .sheet(isPresented: $showScreenshotImport) { TradeScreenshotImportView() .themedSheetBackground() }
-            .sheet(isPresented: $showProductionLoop) { ProductionLoopView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradeCSVImport) { TradeCSVImportView() .themedSheetBackground() }
-            .sheet(isPresented: $showETFIncomeCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioAnalysis) { PortfolioAnalysisView() .themedSheetBackground() }
-            .sheet(isPresented: $showTradePreview) { TradePreviewView() .themedSheetBackground() }
-            .sheet(isPresented: $showReturnSource) { ReturnSourceView() .themedSheetBackground() }
-            .sheet(isPresented: $showPortfolioScenario) { PortfolioScenarioView() .themedSheetBackground() }
             .sheet(item: $targetEdit) { holding in
                 AllocationTargetEditor(holding: holding,
                     targetPercent: store.data.allocationTargets.first { $0.code == holding.code && $0.kind == holding.kind }?.targetPercent)
@@ -4304,6 +3206,9 @@ struct ToolsView: View {
 struct PortfolioScenarioView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var quantities: [String: String] = [:]
     @State private var addedQuotes: [String: Quote] = [:]
 
@@ -4400,7 +3305,7 @@ struct PortfolioScenarioView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("模拟份额") {
                     if instruments.isEmpty {
@@ -4471,7 +3376,7 @@ struct PortfolioScenarioView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("换仓情景试算")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 
@@ -4494,6 +3399,9 @@ struct PortfolioScenarioView: View {
 struct DividendCalendarView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var year = Calendar(identifier: .gregorian).component(.year, from: .now)
 
     private var etfEvents: [(ETFDividendEvent, Holding?, Double)] {
@@ -4519,7 +3427,7 @@ struct DividendCalendarView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section {
                     Stepper("年份：\(year)", value: $year, in: 2000...2100)
@@ -4559,7 +3467,7 @@ struct DividendCalendarView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("分红日历")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 }
@@ -4695,6 +3603,9 @@ private struct ConstituentExposure: Identifiable {
 struct ETFOverlapView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     private var etfs: [Holding] { store.data.holdings.filter { $0.kind == .etf } }
     private var covered: [(Holding, [ETFConstituent])] {
@@ -4715,16 +3626,6 @@ struct ETFOverlapView: View {
                 grouped[item.code] = row
             }
         }
-        for snapshot in store.data.fundConstituentSnapshots {
-            guard let fund = store.data.holdings.first(where: { $0.kind == .fund && $0.code == snapshot.code }) else { continue }
-            for item in snapshot.holdings {
-                let amount = max(0, fund.marketValue) * item.weightPercent / 100
-                var row = grouped[item.code] ?? (item.name, 0, [])
-                row.value += amount
-                row.sources.append((fund.name, item.weightPercent))
-                grouped[item.code] = row
-            }
-        }
         return grouped.map { code, row in
             ConstituentExposure(code: code, name: row.name, exposure: row.value,
                 sources: row.sources.sorted { $0.1 > $1.1 }.map { (name: $0.0, percent: $0.1) })
@@ -4732,48 +3633,25 @@ struct ETFOverlapView: View {
     }
     private var duplicates: [ConstituentExposure] { exposureRows.filter { $0.sources.count > 1 } }
     private var coveredWeight: Double {
-        let etfWeight = covered.reduce(0) { $0 + $1.0.marketValue * $1.1.reduce(0) { $0 + $1.weightPercent } / 100 }
-        let fundWeight = store.data.fundConstituentSnapshots.reduce(0.0) { total, snapshot in
-            guard let fund = store.data.holdings.first(where: { $0.kind == .fund && $0.code == snapshot.code }) else { return total }
-            return total + max(0, fund.marketValue) * snapshot.holdings.reduce(0) { $0 + $1.weightPercent } / 100
-        }
-        return etfWeight + fundWeight
+        covered.reduce(0) { $0 + $1.0.marketValue * $1.1.reduce(0) { $0 + $1.weightPercent } / 100 }
     }
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("覆盖情况") {
-                    LabeledContent("持有 ETF / 场外基金", value: "\(etfs.count) / \(store.data.holdings.filter { $0.kind == .fund }.count) 只")
-                    LabeledContent("已有快照", value: "\(covered.count + store.data.fundConstituentSnapshots.count) 只")
+                    LabeledContent("持有 ETF", value: "\(etfs.count) 只")
+                    LabeledContent("已有快照", value: "\(covered.count) 只")
                     LabeledContent("前十大对应市值", value: (coveredWeight).cny())
                     LabeledContent("重复成分敞口合计", value: (duplicates.reduce(0) { $0 + $1.exposure }).cny())
-                    Text("ETF 快照：\(ETFConstituentLibrary.asOf)；场外基金按定期报告前十大（可取得时最多 50 只），报告日期见下方。未覆盖部分不代表没有重复持仓。")
+                    Text("ETF 快照：\(ETFConstituentLibrary.asOf)。未覆盖部分不代表没有重复持仓。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
-                if !store.data.holdings.filter({ $0.kind == .fund }).isEmpty {
-                    Section("场外基金重仓") {
-                        Button(store.isRefreshingFundHoldings ? "正在获取…" : "更新基金定期报告重仓") {
-                            Task { await manuallyRefreshFundHoldings() }
-                        }.disabled(store.isRefreshingFundHoldings)
-                        Text(store.fundHoldingsStatus).font(.footnote).foregroundStyle(.secondary)
-                        ForEach(store.data.fundConstituentSnapshots) { snapshot in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(snapshot.name).font(.subheadline)
-                                Text("\(snapshot.code) · 报告日期 \(snapshot.asOf.isEmpty ? "未提供" : snapshot.asOf) · \(snapshot.holdings.count) 项 · 更新于 \(snapshot.fetchedAt.formatted(date: .numeric, time: .shortened))")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(snapshot.holdings.prefix(5).map { "\($0.name) \(String(format: "%.2f", $0.weightPercent))%" }.joined(separator: " · "))
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }.padding(.vertical, 2)
-                        }
-                    }
-                    .plainCard(isLight: isLight)
-                }
-                Section("跨 ETF / 场外基金重复成分 · \(duplicates.count) 只") {
-                    if duplicates.isEmpty { Text(covered.count + store.data.fundConstituentSnapshots.count < 2 ? "至少需要两只已有成分快照的持仓才能比较。" : "现有前十大快照中未发现重复成分。")
+                Section("跨 ETF 重复成分 · \(duplicates.count) 只") {
+                    if duplicates.isEmpty { Text(covered.count < 2 ? "至少需要两只已有成分快照的持仓才能比较。" : "现有前十大快照中未发现重复成分。")
                         .foregroundStyle(.secondary) }
                     ForEach(duplicates) { item in
                         VStack(alignment: .leading, spacing: 4) {
@@ -4791,14 +3669,8 @@ struct ETFOverlapView: View {
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("ETF 持仓穿透")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
-    }
-
-    @MainActor private func manuallyRefreshFundHoldings() async {
-        refreshFeedback.begin("正在更新基金定期报告重仓…")
-        let ok = await store.refreshFundConstituentsAndWait()
-        refreshFeedback.finish(store.fundHoldingsStatus, succeeded: ok)
     }
 }
 
@@ -4812,112 +3684,12 @@ private struct AddCashRow: Identifiable {
     var id: String { holding.id }
 }
 
-private struct FundDCAReplaySummary {
-    var code: String
-    var firstDate: String
-    var lastDate: String
-    var contributions: Int
-    var invested: Double
-    var shares: Double
-    var value: Double
-    var lumpValue: Double
-    var latestNAV: Double
-    var dcaReturn: Double { invested > 0 ? (value / invested - 1) * 100 : 0 }
-    var lumpReturn: Double { invested > 0 ? (lumpValue / invested - 1) * 100 : 0 }
-}
-
-struct FundDCAReplayView: View {
-    @EnvironmentObject var store: PortfolioStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var code = ""
-    @State private var amountText = "500"
-    @State private var months = 24
-    private var funds: [Holding] { store.data.holdings.filter { $0.kind == .fund } }
-    private var summary: FundDCAReplaySummary? {
-        guard let amount = Double(amountText), amount.isFinite, amount > 0,
-              !code.isEmpty else { return nil }
-        let points = store.data.fundNAVHistory.filter { $0.code == code && $0.nav.isFinite && $0.nav > 0 }.sorted { $0.date < $1.date }
-        guard let last = points.last, let lastDate = parse(last.date) else { return nil }
-        let startDate = Calendar(identifier: .gregorian).date(byAdding: .month, value: -months, to: lastDate) ?? .distantPast
-        let startKey = dayKey(startDate)
-        let selected = points.filter { $0.date >= startKey }
-        let grouped = Dictionary(grouping: selected, by: { String($0.date.prefix(7)) })
-        let currentMonth = String(dayKey(.now).prefix(7))
-        let contributions: [FundNAVPoint] = grouped.keys.sorted().compactMap { month in
-            guard let rows = grouped[month]?.sorted(by: { $0.date < $1.date }) else { return nil }
-            if let due = rows.first(where: { Int($0.date.suffix(2)) ?? 0 >= 15 }) { return due }
-            return month == currentMonth ? nil : rows.last
-        }
-        guard let first = contributions.first, let end = points.last else { return nil }
-        let invested = amount * Double(contributions.count)
-        let shares = contributions.reduce(0.0) { $0 + amount / $1.nav }
-        let value = shares * end.nav
-        let lumpValue = (invested / first.nav) * end.nav
-        guard [invested, shares, value, lumpValue].allSatisfy(\.isFinite) else { return nil }
-        return FundDCAReplaySummary(code: code, firstDate: first.date, lastDate: end.date,
-            contributions: contributions.count, invested: invested, shares: shares,
-            value: value, lumpValue: lumpValue, latestNAV: end.nav)
-    }
-
-    private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("回放参数") {
-                    if funds.isEmpty { Text("先添加场外基金并更新已公布净值。") }
-                    else {
-                        Picker("基金", selection: $code) { ForEach(funds) { Text("\($0.name) · \($0.code)").tag($0.code) } }
-                        TextField("每月投入（元）", text: $amountText).keyboardType(.decimalPad)
-                        Picker("回溯区间", selection: $months) {
-                            Text("近 1 年").tag(12); Text("近 2 年").tag(24); Text("近 3 年").tag(36); Text("全部历史").tag(1200)
-                        }
-                    }
-                    Text("按每月 15 日或之后首个有净值的日期投入；若历史月份缺少该日期，使用该月最后一条已公布净值。一次性对照在首个定投日投入同样总额。未计申购费、赎回费、税费与现金分红再投。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
-                if let result = summary {
-                    Section("历史结果 · \(result.firstDate) 至 \(result.lastDate)") {
-                        LabeledContent("定投次数", value: "\(result.contributions)")
-                        LabeledContent("累计投入", value: (result.invested).cny())
-                        LabeledContent("期末份额", value: (result.shares).num(2))
-                        LabeledContent("按最近净值折算", value: (result.value).cny())
-                        LabeledContent("定投收益率", value: result.dcaReturn.directionMark() + result.dcaReturn.pct(2))
-                        LabeledContent("一次性买入收益率", value: result.lumpReturn.directionMark() + result.lumpReturn.pct(2))
-                        LabeledContent("最近已公布净值", value: (result.latestNAV).num(4))
-                    }
-                    .toneCard(CardTone.pnl(result.dcaReturn), isLight: isLight)
-                } else if !funds.isEmpty {
-                    Section { Text("当前净值历史不足以完成所选区间的回放，或投入金额无效。先刷新基金净值或缩短区间。")
-                        .font(.footnote).foregroundStyle(.secondary) }
-                        .toneCard(CardTone.warn, isLight: isLight)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(.clear)
-            .navigationTitle("历史定投回放")
-            .keyboardDoneToolbar()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .onAppear { if code.isEmpty { code = funds.first?.code ?? "" } }
-        }
-    }
-
-    private func parse(_ text: String) -> Date? {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: text)
-    }
-    private func dayKey(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
-}
-
 struct AddCashSimulationView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var cashText = "10000"
     @State private var reserveText = "10"
     @State private var feeText = "0.10"
@@ -4930,14 +3702,14 @@ struct AddCashSimulationView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section("试算参数") {
                     TextField("新增资金（元）", text: $cashText).keyboardType(.decimalPad)
                     TextField("现金预留（%）", text: $reserveText).keyboardType(.decimalPad)
                     TextField("每笔手续费（元）", text: $feeText).keyboardType(.decimalPad)
                     Button("开始试算") { calculate() }
-                    Text("ETF 使用 100 份整手。目标比例读取已设的持仓目标；未设置目标的标的按当前持仓占总资产比例分配。目标金额按总资产（含现金和基金）计算，场外基金不会被建议买卖。")
+                    Text("ETF 使用 100 份整手。目标比例读取已设的持仓目标；未设置目标的标的按当前持仓占总资产比例分配。目标金额按总资产（含现金）计算。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -4970,7 +3742,7 @@ struct AddCashSimulationView: View {
             .background(.clear)
             .navigationTitle("加仓试算")
             .keyboardDoneToolbar()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 
@@ -5019,13 +3791,16 @@ private struct TradePlanInstrument: Identifiable {
 struct TradePlansView: View {
     @EnvironmentObject var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var showNew = false
     @State private var reviewTarget: TradePlan?
 
     private var plans: [TradePlan] { store.data.tradePlans.sorted { $0.created > $1.created } }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 if plans.isEmpty { ContentUnavailableView("暂无交易计划", systemImage: "list.clipboard", description: Text("下单前记录理由、参考价与失效条件。")) }
                 ForEach(plans) { plan in
@@ -5034,7 +3809,7 @@ struct TradePlansView: View {
                             Text("\(plan.name) · \(plan.side == .buy ? "买入" : "卖出")").font(.headline)
                             Spacer(); Text(statusName(plan.status)).font(.caption).foregroundStyle(.secondary)
                         }
-                        Text("\(plan.kind == .fund ? "场外基金" : "ETF/证券") · \(plan.code) · \(plan.created)")
+                        Text("ETF/证券 · \(plan.code) · \(plan.created)")
                             .font(.caption).foregroundStyle(.secondary)
                         Text("计划价 \((plan.price).num(3)) · 金额 \((plan.amount).cny())")
                             .font(.subheadline)
@@ -5069,7 +3844,7 @@ struct TradePlansView: View {
             .background(.clear)
             .navigationTitle("交易计划与复盘")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+                if !embedded { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
                 ToolbarItem(placement: .primaryAction) { Button("新建", systemImage: "plus") { showNew = true } }
             }
             .sheet(isPresented: $showNew) { TradePlanEditor { store.data.tradePlans.append($0); store.save(label: "修改账本或设置") } .themedSheetBackground() }
@@ -5132,7 +3907,7 @@ struct TradePlanEditor: View {
             Form {
                 if instruments.isEmpty { Text("请先添加自选或持仓。") }
                 else {
-                    Picker("标的", selection: $selectedAsset) { ForEach(instruments) { Text("\($0.kind == .fund ? "基金" : "ETF/证券") · \($0.name) (\($0.code))").tag($0.id) } }
+                    Picker("标的", selection: $selectedAsset) { ForEach(instruments) { Text("ETF/证券 · \($0.name) (\($0.code))").tag($0.id) } }
                     Picker("方向", selection: $side) { Text("买入/申购").tag(LedgerEntry.Side.buy); Text("卖出/赎回").tag(LedgerEntry.Side.sell) }
                     TextField("计划金额（元）", text: $amount).keyboardType(.decimalPad)
                     TextField("参考价/净值", text: $price).keyboardType(.decimalPad)
@@ -5264,7 +4039,6 @@ struct AIAnalysisView: View {
     @State private var model = ""
     @State private var timeoutSeconds = 45
     @State private var systemPrompt = ""
-    @State private var showPortrait = false
     @State private var advisorResult = ""
     @State private var investmentProfile = InvestmentProfile()
     @State private var token = ""
@@ -5280,7 +4054,6 @@ struct AIAnalysisView: View {
     @State private var showProfileSettings = false
     @State private var showModelSettings = false
     /// 决策成绩单：把 AI 带价位的建议留档，事后用真实日线判读。
-    @State private var showDecisionScorecard = false
 
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
@@ -5292,8 +4065,8 @@ struct AIAnalysisView: View {
             Form {
                 Section {
                     VStack(spacing: 0) {
-                        insightButton(title: "账户画像", subtitle: "从持仓与流水归纳操作习惯", icon: "person.crop.circle.badge.checkmark") {
-                            showPortrait = true
+                        insightNavButton(title: "账户画像", subtitle: "从持仓与流水归纳操作习惯", icon: "person.crop.circle.badge.checkmark") {
+                            AccountPortraitView(embedded: true)
                         }
                         Divider().padding(.leading, 52)
                         insightButton(title: "本机账户建议", subtitle: "不需要 API 密钥，不上传数据", icon: "sparkles") {
@@ -5417,7 +4190,7 @@ struct AIAnalysisView: View {
                             Text(busy ? "正在分析…" : "大模型深度分析")
                         }
                     }.disabled(busy || !keySaved)
-                    Text("点击后会把投资偏好、全部持仓、自选报价、场内与场外基金流水、定投计划、基金成分报告、参考现金、最近快照和现金流记录发送至上述接口。此外还会在本机额外算出三段补充材料一并发送：交易行为画像（按你的历史流水统计的胜率、盈亏比、平均持有天数、加仓与卖出时点习惯）、大盘指数与组合集中度、已缓存标的的均线位置。这些都在手机本地计算，不额外发起请求。请不要在提示中加入账户密码或其他敏感信息。")
+                    Text("点击后会把投资偏好、全部持仓、自选报价、ETF 成交流水、参考现金、最近快照和现金流记录发送至上述接口。此外还会在本机额外算出三段补充材料一并发送：交易行为画像（按你的历史流水统计的胜率、盈亏比、平均持有天数、加仓与卖出时点习惯）、大盘指数与组合集中度、已缓存标的的均线位置。这些都在手机本地计算，不额外发起请求。请不要在提示中加入账户密码或其他敏感信息。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .toneCard(store.effectiveAccentColor, isLight: isLight)
@@ -5441,9 +4214,8 @@ struct AIAnalysisView: View {
                         .plainCard(isLight: isLight)
                     }
                     Section {
-                        Button {
-                            Haptics.tap()
-                            showDecisionScorecard = true
+                        NavigationLink {
+                            DecisionScorecardView(embedded: true)
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "checkmark.seal")
@@ -5471,7 +4243,7 @@ struct AIAnalysisView: View {
                         // 展示用剥掉机器可读段的人话版本；解析仍然读完整的 result。
                         AIFormattedResultView(text: AISuggestionParser.displayText(result),
                                               accent: store.effectiveAccentColor)
-                        Text("模型输出可能有误。价格/净值可能延迟；请核对行情与基金净值，不要仅依据模型文字交易。")
+                        Text("模型输出可能有误。价格可能延迟；请核对行情，不要仅依据模型文字交易。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if !suggestions.isEmpty {
@@ -5496,10 +4268,6 @@ struct AIAnalysisView: View {
             .appListLayout()
             .background(.clear)
             .themedSheetBackground()
-            .sheet(isPresented: $showPortrait) { AccountPortraitView() .themedSheetBackground() }
-            .sheet(isPresented: $showDecisionScorecard) {
-                DecisionScorecardView() .themedSheetBackground()
-            }
             .sheet(item: $planPrefill) { suggestion in
                 // 显式写 onSave: —— TradePlanEditor 的参数顺序是 (onSave, prefill)，
                 // 尾随闭包语法会绑到最后一个参数（prefill）上，类型对不上。
@@ -5526,25 +4294,34 @@ struct AIAnalysisView: View {
         }
     }
 
-    private func insightButton(title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(store.effectiveAccentColor)
-                    .frame(width: 36, height: 36)
-                    .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.headline).foregroundStyle(.primary)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+    private func insightLabel(_ title: String, _ subtitle: String, _ icon: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(store.effectiveAccentColor)
+                .frame(width: 36, height: 36)
+                .background(store.effectiveAccentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline).foregroundStyle(.primary)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+
+    private func insightButton(title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { insightLabel(title, subtitle, icon) }
+            .buttonStyle(.plain)
+    }
+
+    /// 真推入页面（不用 state + sheet）：嵌套页里 sheet 会盖住导航栈，退出一层还留在原地。
+    private func insightNavButton<Destination: View>(title: String, subtitle: String, icon: String,
+                                                    @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink { destination() } label: { insightLabel(title, subtitle, icon) }
+            .buttonStyle(.plain)
     }
 
     private func settingsSummary(title: String, value: String, icon: String) -> some View {
@@ -5646,7 +4423,7 @@ struct AIAnalysisView: View {
                     createAlert(from: suggestion)
                 }
                 .buttonStyle(.bordered)
-                .disabled(handled || alertTarget(suggestion) == nil || isFund(suggestion.code))
+                .disabled(handled || alertTarget(suggestion) == nil)
             }
             .font(.caption)
         }
@@ -5667,19 +4444,10 @@ struct AIAnalysisView: View {
         suggestion.price ?? suggestion.target ?? suggestion.invalid
     }
 
-    /// 这个代码是不是场外基金。基金按净值成交、没有实时价，价格提醒对它无意义。
-    private func isFund(_ code: String) -> Bool {
-        store.data.holdings.contains { $0.code == code && $0.kind == .fund }
-    }
 
     /// 把建议转成价格提醒。买入等回落到参考价（below），卖出等涨到参考价（above）。
     private func createAlert(from suggestion: AISuggestion) {
         guard let target = alertTarget(suggestion) else { return }
-        // 场外基金没有实时价，提醒引擎永远碰不到它 —— 建一条哑提醒不如说清楚。
-        if store.data.holdings.contains(where: { $0.code == suggestion.code && $0.kind == .fund }) {
-            suggestionNote = "\(suggestion.displayName) 是场外基金，按净值成交、没有实时价，价格提醒不会触发；请用「存入计划记录」，到净值公布后自己核对。"
-            return
-        }
         let direction: QuoteAlert.Direction = suggestion.side == .buy ? .below : .above
         do {
             try store.addQuoteAlert(code: suggestion.code,
@@ -5770,7 +4538,6 @@ struct DayGridView: View {
     @State private var message = ""
     @State private var recommendationText = ""
     @State private var showImporter = false
-    @State private var showStrategicGridPlanner = false
     /// 作为底栏页签直接嵌入时不需要「完成」按钮 —— 那是给弹窗用的关闭入口，
     /// 在页签里点它什么也不会发生，看起来像坏了。
     var embedded: Bool = false
@@ -5881,9 +4648,6 @@ struct DayGridView: View {
                     selectedDay = store.gridTradingDays.first ?? ""
                     message = "已导入 \(count) 个分时点。"
                 } catch { message = error.localizedDescription }
-            }
-            .sheet(isPresented: $showStrategicGridPlanner) {
-                StrategicGridPlannerView().environmentObject(store).themedSheetBackground()
             }
         }
     }
@@ -6349,8 +5113,8 @@ struct DayGridView: View {
     // MARK: 中长期规划
 
     private var strategicCard: some View {
-        Button {
-            showStrategicGridPlanner = true
+        NavigationLink {
+            StrategicGridPlannerView(embedded: true)
         } label: {
             HStack(spacing: 12) {
                 DsIconTile(symbol: "chart.xyaxis.line", tint: palette.accent, size: 36, palette: palette)
@@ -6538,6 +5302,9 @@ private struct StrategicGridResult {
 private struct StrategicGridPlannerView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
+
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
     @State private var code = ""
     @State private var capital = "3000"
     @State private var gapPercent = ""
@@ -6554,7 +5321,7 @@ private struct StrategicGridPlannerView: View {
     private var selected: GridInstrument? { instruments.first { $0.code == code } }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section("标的与预算") {
                     Picker("标的", selection: $code) {
@@ -6615,7 +5382,7 @@ private struct StrategicGridPlannerView: View {
             .navigationTitle("中长期网格计划")
             .toolbarBackground(.hidden, for: .navigationBar)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
             .onAppear {
                 if code.isEmpty, let first = instruments.first { code = first.code; selectInstrument(first.code) }
                 else { selectInstrument(code) }
@@ -7032,11 +5799,9 @@ struct SettingsView: View {
             Toggle("自动保存每日分时", isOn: Binding(get: { store.data.intradayCaptureEnabled }, set: { store.data.intradayCaptureEnabled = $0; store.save(label: "修改账本或设置") }))
             Text("前台刷新时记录实时点，并每 30 分钟至多补全一次自选和场内持仓的最近交易日整日分时；旧日期持续保留，可在“工具－分时采集与历史复盘”查看。")
                 .font(.footnote).foregroundStyle(.secondary)
-            Toggle("晚间打开基金页时自动更新已公布净值", isOn: Binding(get: { store.data.automaticFundNAVRefreshEnabled }, set: { store.data.automaticFundNAVRefreshEnabled = $0; store.save(label: "修改账本或设置") }))
-            Text("北京时间 19:00 后每天最多检查一次；只在打开基金页时触发，不保证后台准时运行。更新的是已公布净值，不包含盘中估值。")
                 .font(.footnote).foregroundStyle(.secondary)
             Toggle("允许系统安排后台刷新", isOn: $backgroundRefreshEnabled)
-            Text("前台按设置间隔刷新；后台刷新由 iOS 自主安排，时间和频率不保证。后台只尝试更新行情并触发已授权的本地价格提醒，不采集分时、不运行影子盘，也不刷新基金净值。")
+            Text("前台按设置间隔刷新；后台刷新由 iOS 自主安排，时间和频率不保证。后台只尝试更新行情并触发已授权的本地价格提醒，不采集分时、不运行影子盘，也不刷新净值。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         Section("图表显示") {
@@ -7196,7 +5961,7 @@ struct SettingsView: View {
                 }
             }
             Text(store.nasSyncStatus).font(.footnote).foregroundStyle(.secondary)
-            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。\n\n账本隔离：观盘 Pro 只读写 NAS 上的原生空间（/api/native/data），观盘 F 的网页账本（/api/data）属于另一个独立空间，Pro 不会读、也不会把 F 的数据迁进来；每份上传都带空间标识 guanpan-pro，遇到不属于自己的账本会直接停下。分时和日线缓存随 Pro 账本一起同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选、K线和基金重仓）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复，恢复前会显示版本时间并要求确认；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
+            Text("自动同步会在应用启动、回到前台、本机数据变更后运行，并在前台每 60 秒检查一次其他设备的更新。应用进入后台时暂停轮询；iOS 后台刷新不保证运行。若两台设备同时修改，会暂停并提示冲突。手动下载或上传会覆盖数据，请先确认方向。\n\n账本隔离：观盘 Pro 只读写 NAS 上的原生空间（/api/native/data），观盘 F 的网页账本（/api/data）属于另一个独立空间，Pro 不会读、也不会把 F 的数据迁进来；每份上传都带空间标识 guanpan-pro，遇到不属于自己的账本会直接停下。分时和日线缓存随 Pro 账本一起同步。\n\n行情与净值走 iPhone 直连，不经过 NAS，也不需要穿透；只有在直连失败时才会用 NAS 行情代理兜底（用于收藏、自选和 K 线）。因此在外使用流量时行情照常刷新。最近 10 个 NAS 历史版本可查看和恢复，恢复前会显示版本时间并要求确认；如果仍使用旧版一体化服务器包，历史按钮会提示接口缺失，请用源码包附带的历史恢复接口版服务包升级服务端，并保留原有 data 数据目录。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if !store.data.legacySettingsArchives.isEmpty {
@@ -7289,7 +6054,7 @@ struct SettingsView: View {
                 }
                 store.replaceData(migrated.data, intradayBars: migrated.intradayBars)
                 store.configureNASSync()
-                message = "网页备份已迁移：\(migrated.data.fundDCAPlans.count) 个定投计划、\(migrated.data.fundNAVHistory.count) 个基金净值点、\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 项旧版只读资料、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
+                message = "网页备份已迁移：\(migrated.data.manualQuoteOverrides.count) 个手填行情、\(migrated.data.etfDividendEvents.count) 条 ETF 分红事件、\(migrated.data.legacyDCAEvents.count) 个待核对定投期次、\(migrated.data.legacyGridArchives.count) 条旧网格记录（影子盘 \(migrated.data.legacyShadowArchives.count) 条）、\(migrated.data.legacySettingsArchives.count) 项旧版只读资料、\(migrated.intradayBars.count) 个分时点、\(migrated.data.quoteAlerts.count) 条价格提醒、\(migrated.data.customMarketHolidays.count) 个自定义休市日\(nasMigrationNotice)"
             }
         } catch { message = "导入失败：\(error.localizedDescription)" }
     }

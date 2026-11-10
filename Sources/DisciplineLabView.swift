@@ -6,6 +6,8 @@ import SwiftUI
 // 所有结论都带「证据等级」与降级项，避免把降级数据包装成确定结论。
 
 struct DisciplineLabView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appAppearance) private var appearance
@@ -45,7 +47,7 @@ struct DisciplineLabView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section("候选计划（只描述意图）") {
                     Picker("标的", selection: $code) {
@@ -116,7 +118,7 @@ struct DisciplineLabView: View {
             .navigationTitle("规则验证台")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { if !embedded { Button("完成") { dismiss() } } }
             }
             .keyboardDoneToolbar()
             .scrollDismissesKeyboard(.interactively)

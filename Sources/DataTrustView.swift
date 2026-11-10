@@ -29,7 +29,6 @@ struct DataTrustView: View {
         }).values.sorted { $0.name < $1.name }
     }
 
-    private var activeFunds: [Holding] { store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 } }
     private var isRegularSession: Bool {
         let now = Date.now
         // 休市判断统一走 MarketCalendar：它优先用「上证指数日 K 反推的交易日历」，
@@ -105,25 +104,6 @@ struct DataTrustView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .toneCard(staleCount > 0 ? CardTone.warn : CardTone.ok, isLight: isLight)
-                Section("场外基金已公布净值") {
-                    if activeFunds.isEmpty { Text("没有当前场外基金持仓。").foregroundStyle(.secondary) }
-                    Button(store.isRefreshingFunds ? "正在更新净值…" : "更新已公布净值") {
-                        Task { await refreshFunds() }
-                    }
-                        .disabled(store.isRefreshingFunds)
-                    Text(store.fundNAVStatus).font(.footnote).foregroundStyle(.secondary)
-                    ForEach(activeFunds) { fund in
-                        let point = store.data.fundNAVHistory.filter { $0.code == fund.code }.max { $0.date < $1.date }
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack { Text(fund.name); Spacer(); Text(point?.date ?? "没有本地净值") }
-                            Text(point.map { "最近公布净值 \(($0.nav).num(4))" } ?? "没有可用的历史净值")
-                                .font(.caption).foregroundStyle(point == nil ? Color.orange : Color.secondary)
-                        }
-                    }
-                    Text("这里展示已公布净值及日期，不含基金盘中估值。QDII 等海外资产净值可能有时差。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .plainCard(isLight: isLight)
                 Section("历史行情覆盖") {
                     LabeledContent("本机缓存日线", value: "\(store.dailyBars.values.reduce(0) { $0 + $1.count }) 条 · \(store.dailyBars.count) 个代码")
                     LabeledContent("本机永久分时", value: "\(store.gridBarCount) 点 · \(store.gridTradingDays.count) 个交易日")
@@ -151,12 +131,6 @@ struct DataTrustView: View {
         refreshFeedback.begin("正在刷新行情…")
         let ok = await store.refreshQuotesAndWait()
         refreshFeedback.finish(ok ? "行情已更新" : store.sourceStatus, succeeded: ok)
-    }
-
-    @MainActor private func refreshFunds() async {
-        refreshFeedback.begin("正在更新已公布净值…")
-        let ok = await store.refreshFundNAVsAndWait()
-        refreshFeedback.finish(store.fundNAVStatus, succeeded: ok)
     }
 
     private func ageLabel(_ timestamp: Date?) -> String {

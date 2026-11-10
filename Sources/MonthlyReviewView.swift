@@ -5,8 +5,6 @@ private struct MonthlyReviewSummary {
     var sell = 0.0
     var fee = 0.0
     var realized = 0.0
-    var cashDividend = 0.0
-    var reinvestedDividend = 0.0
     var netFlow = 0.0
     var buyCount = 0
     var sellCount = 0
@@ -21,7 +19,7 @@ private struct MonthlyReviewSummary {
         return snapshotEnd.total - snapshotStart.total
     }
     var adjustedChange: Double? { assetChange.map { $0 - snapshotNetFlow } }
-    var netResult: Double { realized + cashDividend }
+    var netResult: Double { realized }
 }
 
 struct MonthlyReviewView: View {
@@ -37,7 +35,7 @@ struct MonthlyReviewView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var reportText: String {
         let s = summary
-        return "观盘 Pro · \(month) 月度投资复盘\n买入 \(s.buy.cny()) / 卖出到账 \(s.sell.cny()) / 净投入 \(s.netFlow.cny())\n已实现 \(s.realized.cny()) / 现金分红 \(s.cashDividend.cny()) / 记录费用 \(s.fee.cny())\n买入 \(s.buyCount) 笔 / 卖出 \(s.sellCount) 笔 / 操作日 \(s.operationDays.count) 天"
+        return "观盘 Pro · \(month) 月度投资复盘\n买入 \(s.buy.cny()) / 卖出到账 \(s.sell.cny()) / 净投入 \(s.netFlow.cny())\n已实现 \(s.realized.cny()) / 记录费用 \(s.fee.cny())\n买入 \(s.buyCount) 笔 / 卖出 \(s.sellCount) 笔 / 操作日 \(s.operationDays.count) 天"
     }
 
     var body: some View {
@@ -55,15 +53,12 @@ struct MonthlyReviewView: View {
                     }
                 }
                 Section("本月流水") {
-                    LabeledContent("已实现盈亏 + 现金分红", value: (summary.netResult).cny())
+                    LabeledContent("已实现盈亏", value: (summary.netResult).cny())
                     LabeledContent("记录费用", value: (summary.fee).cny())
                     LabeledContent("买入 / 卖出", value: "\(summary.buyCount) / \(summary.sellCount) 笔")
                     LabeledContent("买入金额", value: (summary.buy).cny())
                     LabeledContent("卖出到账", value: (summary.sell).cny())
                     LabeledContent("净外部投入", value: (summary.netFlow).cny())
-                    if summary.cashDividend > 0 || summary.reinvestedDividend > 0 {
-                        LabeledContent("现金分红 / 红利再投", value: "\(summary.cashDividend.cny()) / \(summary.reinvestedDividend.cny())")
-                    }
                     LabeledContent("操作日期", value: "\(summary.operationDays.count) 天")
                 }
                 .toneCard(CardTone.pnl(summary.netResult), isLight: isLight)
@@ -104,7 +99,7 @@ struct MonthlyReviewView: View {
 
     private func makeSummary() -> MonthlyReviewSummary {
         var result = MonthlyReviewSummary()
-        let ledgerRows = store.data.ledger.filter { ($0.kind ?? .etf) != .fund && day($0.date) >= monthStart && day($0.date) < nextMonthStart }
+        let ledgerRows = store.data.ledger.filter { ($0.kind ?? .etf) == .etf && day($0.date) >= monthStart && day($0.date) < nextMonthStart }
         for trade in ledgerRows {
             result.fee += trade.fee
             result.operationDays.insert(day(trade.date))
@@ -122,44 +117,10 @@ struct MonthlyReviewView: View {
             result.tradedCodes[trade.code] = row
         }
 
-        let fundRows = store.data.fundTransactions.filter {
-            $0.requestDate >= monthStart && $0.requestDate < nextMonthStart && $0.status == .confirmed
-        }
-        for trade in fundRows {
-            switch trade.side {
-            case .buy where !trade.isBackfill:
-                result.buy += trade.amount + trade.fee
-                result.fee += trade.fee
-                result.buyCount += 1
-                result.operationDays.insert(trade.requestDate)
-                var row = result.tradedCodes[trade.code] ?? (trade.name, false, false)
-                row.bought = true; result.tradedCodes[trade.code] = row
-            case .sell:
-                result.sell += max(0, trade.amount - trade.fee)
-                result.fee += trade.fee
-                result.realized += trade.realizedPnL
-                result.sellCount += 1
-                result.operationDays.insert(trade.requestDate)
-                var row = result.tradedCodes[trade.code] ?? (trade.name, false, false)
-                row.sold = true; result.tradedCodes[trade.code] = row
-            case .dividend:
-                if trade.dividendMode == .cash { result.cashDividend += trade.amount }
-                else if trade.dividendMode == .reinvest { result.reinvestedDividend += trade.amount }
-                result.operationDays.insert(trade.requestDate)
-            default: break
-            }
-        }
-
         result.netFlow = store.data.cashFlows.reduce(0) { partial, flow in
             let flowDay = day(flow.date)
             guard flowDay >= monthStart, flowDay < nextMonthStart, flow.external ?? true else { return partial }
             return partial + flow.amount
-        }
-        // Off-account subscriptions/redemptions are external flows. Automatic DCA
-        // is already represented by its dedicated CashFlow record, so skip it here.
-        for trade in fundRows where !trade.linkedCash && !trade.isBackfill && trade.isAutomaticDCA != true {
-            if trade.side == .buy { result.netFlow += trade.amount }
-            else if trade.side == .sell { result.netFlow -= max(0, trade.amount - trade.fee) }
         }
 
         let snapshots = store.data.snapshots.filter { $0.date >= monthStart && $0.date < nextMonthStart }.sorted { $0.date < $1.date }
@@ -170,11 +131,6 @@ struct MonthlyReviewView: View {
                 let flowDay = day(flow.date)
                 guard flowDay > start.date, flowDay <= end.date, flow.external ?? true else { return partial }
                 return partial + flow.amount
-            }
-            for trade in fundRows where trade.requestDate > start.date && trade.requestDate <= end.date
-                && !trade.linkedCash && !trade.isBackfill && trade.isAutomaticDCA != true {
-                if trade.side == .buy { result.snapshotNetFlow += trade.amount }
-                else if trade.side == .sell { result.snapshotNetFlow -= max(0, trade.amount - trade.fee) }
             }
         }
         let operations = result.buyCount + result.sellCount

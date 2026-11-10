@@ -306,8 +306,42 @@ final class PortfolioStore: ObservableObject {
     func load() {
         guard let raw = UserDefaults.standard.data(forKey: key), let value = try? JSONDecoder().decode(PortfolioData.self, from: raw) else { return }
         data = value
+        purgeLegacyFundState()
         migrateChartRangeIfNeeded()
         migrateDefaultThemeIfNeeded()
+    }
+
+    /// 彻底下线场外基金。
+    ///
+    /// 旧存档里的基金持仓、申赎流水、净值历史、定投计划、成分报告与费率档一律丢弃，
+    /// 账本里 kind == .fund 的成交也一并清掉 —— 用户已确认不需要这些旧数据。
+    /// ETF / 证券账本、现金、快照、复盘记录完全不受影响。
+    /// 幂等：没有基金数据时不做任何改动，也不额外写盘。
+    @discardableResult
+    func purgeLegacyFundState() -> Bool {
+        var changed = false
+        if data.holdings.contains(where: { $0.kind == .fund }) {
+            data.holdings.removeAll { $0.kind == .fund }
+            changed = true
+        }
+        if !data.fundTransactions.isEmpty { data.fundTransactions.removeAll(); changed = true }
+        if !data.fundNAVHistory.isEmpty { data.fundNAVHistory.removeAll(); changed = true }
+        if !data.fundDCAPlans.isEmpty { data.fundDCAPlans.removeAll(); changed = true }
+        if !data.fundConstituentSnapshots.isEmpty { data.fundConstituentSnapshots.removeAll(); changed = true }
+        if !data.fundFeePolicies.isEmpty { data.fundFeePolicies.removeAll(); changed = true }
+        if data.ledger.contains(where: { $0.kind == .fund }) {
+            data.ledger.removeAll { $0.kind == .fund }
+            changed = true
+        }
+        if data.allocationTargets.contains(where: { $0.kind == .fund }) {
+            data.allocationTargets.removeAll { $0.kind == .fund }
+            changed = true
+        }
+        if data.tradePlans.contains(where: { $0.kind == .fund }) {
+            data.tradePlans.removeAll { $0.kind == .fund }
+            changed = true
+        }
+        return changed
     }
 
     /// 一次性迁移：旧默认 250 日会让 K 线细到亚像素（一团灰），
@@ -686,6 +720,9 @@ final class PortfolioStore: ObservableObject {
         return (success, failure)
     }
     func save(label: String? = nil) {
+        // 场外基金彻底下线：任何一次落盘前都先丢掉旧基金数据，
+        // 保证 NAS 备份与撤销快照里不再带基金记录。
+        purgeLegacyFundState()
         // 起点必须落成交之前：只要这一次保存时账本还是干净的，就把当下定为起点。
         // 顺序不能挪到 encode 之后，否则起点会带上这一次刚写入的内容。
         captureOpeningSnapshotIfNeeded()

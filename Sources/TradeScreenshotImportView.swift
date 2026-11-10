@@ -12,6 +12,8 @@ import PhotosUI
 // 2. 选了汇总截图就必须与逐笔截图对上；任一代码缺失或数量/金额不符，整批拦截。
 
 struct TradeScreenshotImportView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appAppearance) private var appearance
@@ -35,7 +37,7 @@ struct TradeScreenshotImportView: View {
     private var commitReady: Bool { didValidate && validCount > 0 && missingFeeCount == 0 }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section("选择截图") {
                     PhotosPicker(selection: $selectedItems, maxSelectionCount: 10,
@@ -166,7 +168,7 @@ struct TradeScreenshotImportView: View {
             .navigationTitle("截图导入成交")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { if !embedded { Button("完成") { dismiss() } } }
             }
             .keyboardDoneToolbar()
             .scrollDismissesKeyboard(.interactively)

@@ -8,9 +8,8 @@ import SwiftUI
 /// 现在这份状态有没有被人悄悄改过。三个问题对应三块内容：起点快照、
 /// 审计链、状态指纹。现金对账和起点重录也从这里发起。
 ///
-/// 2026-11 改版：把「场内」和「场外基金」当两个域分开陈述。
-/// 之前的页面只说「账本里有成交」就锁住起点，用户看着自己一堆基金申赎
-/// 却不知道锁的是哪一边；指纹也只算场内成交，删掉一笔基金流水指纹一动不动。
+/// 2026-11 改版：起点快照、现金与场内成交分开陈述。
+/// 之前的页面只说「账本里有成交」就锁住起点，用户却不知道锁的到底是哪一边。
 struct LedgerAuditView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
@@ -99,7 +98,7 @@ struct LedgerAuditView: View {
             .sheet(isPresented: $showLateAdopt) {
                 LedgerConfirmationSheet(
                     title: "补记账本起点",
-                    prompt: "补记原因（例如：先导入了基金申赎流水）",
+                    prompt: "补记原因（例如：先导入了成交流水）",
                     initialAmount: nil,
                     confirmTitle: "以当前持仓补记起点",
                     explain: "补记的起点描述的是「从现在开始跟踪时账户的样子」，不是历史起点。只能补一次，之后不会随持仓变化而改写。",
@@ -158,7 +157,6 @@ struct LedgerAuditView: View {
 
             HStack(spacing: 14) {
                 miniStat("场内成交", "\(store.data.ledger.count) 笔")
-                miniStat("基金流水", "\(store.data.fundTransactions.count) 笔")
                 miniStat("审计事件", "\(store.data.ledgerAudits.count) 条")
             }
 
@@ -178,7 +176,7 @@ struct LedgerAuditView: View {
                         .foregroundStyle(palette.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                     if !health.migrations.isEmpty {
-                        Text("第 \(health.migrations.map { String($0 + 1) }.joined(separator: "、")) 条是指纹口径升级点：从那之后基金流水也进指纹，前后算法不同，不算断链。")
+                        Text("第 \(health.migrations.map { String($0 + 1) }.joined(separator: "、")) 条是指纹口径升级点：前后算法不同，不算断链。")
                             .scaledFont(palette.fsMicro)
                             .foregroundStyle(palette.ink3)
                             .fixedSize(horizontal: false, vertical: true)
@@ -248,7 +246,7 @@ struct LedgerAuditView: View {
                         .foregroundStyle(CardTone.warn)
                         .padding(.top, 1)
                     Text(store.hasRecordedFills
-                         ? "账本里已经有流水，但起点是空的。这种情况常见于先导入基金申赎、后补持仓的账户 —— 起点这一章需要单独补记一次。"
+                         ? "账本里已经有流水，但起点是空的。这种情况常见于先导入流水、后补持仓的账户 —— 起点这一章需要单独补记一次。"
                          : "还没有记录账本起点。录入第一只持仓或第一笔现金时会自动记下。")
                         .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink2)
@@ -293,9 +291,6 @@ struct LedgerAuditView: View {
             factRow("来源", sourceLabel(opening.source))
             factRow("起点现金", "¥" + opening.cash.cny())
             factRow("场内持仓", "\(opening.etfPositions.count) 只 · 成本 ¥" + opening.etfCostValue.cny())
-            if opening.hasFundPositions {
-                factRow("场外基金", "\(opening.fundPositions.count) 只 · 成本 ¥" + opening.fundCostValue.cny())
-            }
         }
     }
 
@@ -380,30 +375,18 @@ struct LedgerAuditView: View {
 
     private var domainCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            DsSectionHeader(palette: palette, title: "账本的两个域")
+            DsSectionHeader(palette: palette, title: "账本范围")
             domainRow(symbol: "chart.candlestick",
                       title: "场内（交易所成交）",
                       detail: store.data.ledger.isEmpty ? "还没有成交记录" : "\(store.data.ledger.count) 笔成交",
                       tint: store.data.ledger.isEmpty ? palette.ink3 : CardTone.ok)
-            domainRow(symbol: "building.columns",
-                      title: "场外（基金申赎 / 分红）",
-                      detail: fundDomainDetail,
-                      tint: store.data.fundTransactions.isEmpty ? palette.ink3 : CardTone.ok)
-            Text("两个域共用一份现金，但各有各的成本口径：场内按成交加权，场外按份额与净值逐笔确认。指纹同时覆盖两边，任何一边被改动都会让指纹变化。")
+            Text("指纹覆盖起点快照、现金与场内成交；任何一项被改动都会让指纹变化。")
                 .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .dsSurface(palette, radius: 20, padding: 14)
-    }
-
-    private var fundDomainDetail: String {
-        let trades = store.data.fundTransactions
-        guard !trades.isEmpty else { return "还没有申赎记录" }
-        let pending = trades.filter { $0.status == .pending }.count
-        let confirmed = trades.count - pending
-        return pending > 0 ? "\(confirmed) 笔已确认 · \(pending) 笔待确认" : "\(confirmed) 笔已确认"
     }
 
     private func domainRow(symbol: String, title: String, detail: String, tint: Color) -> some View {
@@ -592,7 +575,7 @@ struct LedgerAuditView: View {
             Text("指纹口径")
                 .scaledFont(palette.fsLabel, weight: .semibold)
                 .foregroundStyle(palette.ink2)
-            Text("指纹由起点快照 + 现金 + 场内成交 + 场外基金流水算得。基金那边连分红模式与确认状态都算在内 —— 把「现金分红」改成「红利再投」会改变份额，属于账本事实，不是显示偏好。")
+            Text("指纹由起点快照 + 现金 + 场内成交算得。任何一笔成交的份额、价格、费用或方向被改动，指纹都会变化。")
                 .scaledFont(palette.fsMicro)
                 .foregroundStyle(palette.ink3)
                 .fixedSize(horizontal: false, vertical: true)

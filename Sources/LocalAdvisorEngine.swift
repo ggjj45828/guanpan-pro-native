@@ -32,9 +32,7 @@ enum LocalAdvisorEngine {
         }
 
         if cashWeight <= 5 {
-            let activeDCA = data.fundDCAPlans.filter(\.enabled)
-            let dcaText = activeDCA.isEmpty ? "" : "另有 \(activeDCA.count) 项定投在执行，"
-            actions.append("现金缓冲约 \(cashWeight.pct(1))，偏低。\(dcaText)新增买入前先核对未来支出和定投扣款；只有在现金计划允许且未突破仓位上限时再分批执行。")
+            actions.append("现金缓冲约 \(cashWeight.pct(1))，偏低。新增买入前先核对未来支出；只有在现金计划允许且未突破仓位上限时再分批执行。")
         } else if cashWeight >= 60 {
             actions.append("现金占比约 \(cashWeight.pct(1))，较高。若这不是近期用款安排，可按你设定的长期目标仓位分批投入，不必因单日涨跌一次性进场。")
         }
@@ -54,17 +52,9 @@ enum LocalAdvisorEngine {
             }
         }
 
-        let overlapPairs = overlappingFunds(data: data)
-        if !overlapPairs.isEmpty {
-            actions.append("基金穿透检查发现可能重复：\(overlapPairs.prefix(2).joined(separator: "；"))。成分报告有日期和覆盖范围限制，先核对报告日期及完整持仓，再决定是否合并。")
-        } else if data.holdings.filter({ $0.kind == .fund && $0.quantity > 0 }).count > 1 {
-            lines.append("场外基金有多只，但本机没有足够的同日成分数据，暂不能确认是否重复押注同一赛道。")
-        }
-
         lines.append("优先动作：")
         lines.append(contentsOf: actions.prefix(3).enumerated().map { "\($0.offset + 1). \($0.element)" })
         let hasTrades = data.ledger.contains { $0.side == .buy || $0.side == .sell }
-            || data.fundTransactions.contains { $0.side == .buy || $0.side == .sell }
         if !hasTrades {
             lines.append("画像依据：目前没有可用买卖流水，因此不推断胜率、交易纪律或真实操作风格；画像只描述当前资产结构。")
         } else {
@@ -72,29 +62,9 @@ enum LocalAdvisorEngine {
             let tags = portrait.tags.map(\.text).prefix(3).joined(separator: "、")
             lines.append("画像依据：本机根据已记录的交易、持仓和现金推断为\(tags.isEmpty ? "样本有限，暂不贴标签" : tags)。这是历史行为摘要，不是收益预测；流水不完整时结论会偏差。")
         }
-        lines.append("失效与复核：价格/净值变化、资金用途改变、成分报告更新或补录流水后重新分析；这份规则建议不读取新闻和实时基本面。")
-        lines.append("数据口径：持仓按账本现价/净值计算；本机不保证报价或场外基金净值刚刚更新，执行前需核对最新数据。")
+        lines.append("失效与复核：价格变化、资金用途改变或补录流水后重新分析；这份规则建议不读取新闻和实时基本面。")
+        lines.append("数据口径：持仓按账本现价计算；本机不保证报价刚刚更新，执行前需核对最新数据。")
         return lines.joined(separator: "\n\n")
     }
 
-    private static func overlappingFunds(data: PortfolioData) -> [String] {
-        let funds = data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
-        guard funds.count > 1 else { return [] }
-        let snapshots = Dictionary(data.fundConstituentSnapshots.map { ($0.code, $0) }, uniquingKeysWith: { a, b in
-            a.asOf >= b.asOf ? a : b
-        })
-        var pairs: [String] = []
-        for i in 0..<(funds.count - 1) {
-            for j in (i + 1)..<funds.count {
-                guard let a = snapshots[funds[i].code], let b = snapshots[funds[j].code] else { continue }
-                let aw = Dictionary(a.holdings.map { ($0.code, $0.weightPercent) }, uniquingKeysWith: { max($0, $1) })
-                let bw = Dictionary(b.holdings.map { ($0.code, $0.weightPercent) }, uniquingKeysWith: { max($0, $1) })
-                let overlap = aw.reduce(0.0) { $0 + min($1.value, bw[$1.key] ?? 0) }
-                if overlap >= 35 {
-                    pairs.append("\(funds[i].name)与\(funds[j].name)前十大重叠约\(overlap.num(1))%（报告 \(a.asOf) / \(b.asOf)）")
-                }
-            }
-        }
-        return pairs
-    }
 }

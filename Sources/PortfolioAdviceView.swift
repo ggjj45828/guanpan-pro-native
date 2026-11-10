@@ -46,30 +46,6 @@ struct PortfolioAdviceView: View {
             }
         }
 
-        let funds = store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }
-        let snapshots = Dictionary(uniqueKeysWithValues: store.data.fundConstituentSnapshots.map { ($0.code, $0) })
-        if funds.count > 1 {
-            for leftIndex in 0..<(funds.count - 1) {
-                for rightIndex in (leftIndex + 1)..<funds.count {
-                    let left = funds[leftIndex], right = funds[rightIndex]
-                    guard let a = snapshots[left.code], let b = snapshots[right.code] else { continue }
-                    let weightsA = Dictionary(a.holdings.map { ($0.code, $0.weightPercent) }, uniquingKeysWith: { max($0, $1) })
-                    let weightsB = Dictionary(b.holdings.map { ($0.code, $0.weightPercent) }, uniquingKeysWith: { max($0, $1) })
-                    let overlap = weightsA.reduce(0.0) { sum, row in sum + min(row.value, weightsB[row.key] ?? 0) }
-                    if overlap >= 40 {
-                        result.append(PortfolioAdviceItem(id: "overlap-\(left.code)-\(right.code)", title: "两只基金重仓成分重复",
-                            detail: "\(left.name) 与 \(right.name) 前十大重叠约 \(String(format: "%.1f", overlap))%（报告日期：\(a.asOf.isEmpty ? "未知" : a.asOf) / \(b.asOf.isEmpty ? "未知" : b.asOf)）。",
-                            highPriority: overlap >= 60))
-                    }
-                }
-            }
-        }
-
-        for fund in funds where fund.marketValue >= 100 && fund.current > 0 {
-            guard let estimate = store.estimateFundRedemptionFee(code: fund.code, shares: fund.quantity, nav: fund.current, on: .now), estimate.total <= 0.0001 else { continue }
-            result.append(PortfolioAdviceItem(id: "fee-free-\(fund.code)", title: "基金整笔赎回费估算为零",
-                detail: "按已录入的费率档与申购/分红批次，\(fund.name) 当前份额估算费为 0 元；实际扣费仍以销售平台为准。", highPriority: false))
-        }
         return result.sorted {
             if $0.highPriority != $1.highPriority { return $0.highPriority }
             return $0.title < $1.title
@@ -95,7 +71,7 @@ struct PortfolioAdviceView: View {
                 }
                 .toneCard(items.isEmpty ? CardTone.ok : tipsTone, isLight: isLight)
                 Section {
-                    Text("只根据已保存的仓位上限、现金、基金定期报告和赎回费率流水生成提示，不使用 PE 估值、不预测涨跌，也不会自动买卖。基金重叠受报告日期和前十大覆盖范围限制；赎回费只是本地估算。")
+                    Text("只根据已保存的仓位上限和现金生成提示，不使用 PE 估值、不预测涨跌，也不会自动买卖。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)

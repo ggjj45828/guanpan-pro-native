@@ -1,8 +1,10 @@
 import SwiftUI
 
 /// Read-only approximation of the legacy asset look-through and market stress view.
-/// Unknown instruments and off-exchange funds stay explicitly unclassified.
+/// Unknown instruments stay explicitly unclassified.
 struct PortfolioAnalysisView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @StateObject private var refreshFeedback = RefreshFeedbackModel()
     @Environment(\.dismiss) private var dismiss
@@ -34,9 +36,6 @@ struct PortfolioAnalysisView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
     private var total: Double { exposures.reduce(0) { $0 + $1.value } + max(0, store.data.cash) }
     private var foreignValue: Double { exposures.filter { $0.currency == "USD" || $0.currency == "HKD" }.reduce(0) { $0 + $1.value } }
-    private var fundValue: Double {
-        store.data.holdings.filter { $0.kind == .fund && $0.quantity > 0 }.reduce(0) { $0 + max(0, $1.marketValue) }
-    }
 
     private var impact: Double {
         store.data.holdings.filter { $0.quantity > 0 }.reduce(0) { sum, holding in
@@ -56,9 +55,9 @@ struct PortfolioAnalysisView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
-                Section("资产分类（基金未穿透）") {
+                Section("资产分类") {
                     if exposures.isEmpty { Text("暂无持仓数据").foregroundStyle(.secondary) }
                     ForEach(exposures) { item in
                         HStack(alignment: .top) {
@@ -77,10 +76,6 @@ struct PortfolioAnalysisView: View {
                     LabeledContent("现金", value: (max(0, store.data.cash)).cny())
                     LabeledContent("外币计价 ETF 敞口（估算）", value: (foreignValue).cny())
                     LabeledContent("占总资产", value: (total > 0 ? foreignValue / total * 100 : 0).pct(1))
-                    if fundValue > 0 {
-                        Text("场外基金 \((fundValue).cny()) 作为未穿透持仓单列；本页不推测基金底层地区、币种或类别。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
                 }
                 .plainCard(isLight: isLight)
                 Section("实时汇率") {
@@ -130,7 +125,7 @@ struct PortfolioAnalysisView: View {
                     LabeledContent("持仓估算影响", value: "\((impact).directionMark()) \((impact).cny())")
                         .foregroundStyle(PnLColor.of(impact))
                     LabeledContent("占总资产", value: (total > 0 ? impact / total * 100 : 0).pct(2))
-                    Text("仅对当前持仓市值做静态情景估算；外币冲击按汇率折算近似计算。现金不受冲击。ETF 分类使用代码表或名称关键词，未知品种会标为未分类；基金未穿透。不是行情预测或最大亏损保证。")
+                    Text("仅对当前持仓市值做静态情景估算；外币冲击按汇率折算近似计算。现金不受冲击。ETF 分类使用代码表或名称关键词，未知品种会标为未分类。不是行情预测或最大亏损保证。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .toneCard(CardTone.pnl(impact), isLight: isLight)
@@ -141,7 +136,7 @@ struct PortfolioAnalysisView: View {
             .navigationTitle("资产穿透与压力测试")
             .keyboardDoneToolbar()
             .task { _ = await refreshFX(force: false) }
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
         }
     }
 
@@ -219,7 +214,6 @@ struct PortfolioAnalysisView: View {
             "511260": ("债券", "CNY", "中国", "bond"), "511010": ("债券", "CNY", "中国", "bond")
         ]
         let name = holding.name
-        if holding.kind == .fund { return ("场外基金（未穿透）", "未穿透", "未穿透", "unknown") }
         if let mapped = map[holding.code] { return mapped }
         if name.contains("金") || name.contains("黄金") { return ("黄金", "CNY", "全球", "gold") }
         if name.contains("债") { return ("债券", "CNY", "中国", "bond") }

@@ -12,7 +12,6 @@ struct ReconciliationView: View {
     private var marketDay: String {
         let dates = store.data.quotes.compactMap(\.updatedAt) + store.data.holdings.compactMap(\.marketUpdatedAt)
         if let latest = dates.max() { return dayString(latest) }
-        if let latestFundDay = store.data.fundNAVHistory.map(\.date).max() { return latestFundDay }
         return dayString(.now)
     }
 
@@ -28,7 +27,7 @@ struct ReconciliationView: View {
         var holdings = store.data.holdings
         let heldCodes = Set(holdings.filter { $0.kind == .etf }.map(\.code))
         let soldOnlyCodes = Set(store.data.ledger.filter {
-            $0.kind != .fund && dayString($0.date) == marketDay
+            ($0.kind ?? .etf) == .etf && dayString($0.date) == marketDay
         }.map(\.code)).subtracting(heldCodes)
         for code in soldOnlyCodes {
             let quote = store.data.quotes.first { $0.code == code }
@@ -43,12 +42,6 @@ struct ReconciliationView: View {
     }
 
     private func dailyPnL(for holding: Holding) -> Double? {
-        if holding.kind == .fund {
-            let points = store.data.fundNAVHistory.filter { $0.code == holding.code && $0.nav > 0 }
-                .sorted { $0.date > $1.date }
-            guard points.count >= 2 else { return nil }
-            return holding.quantity * (points[0].nav - points[1].nav)
-        }
         let quote = store.data.quotes.first { $0.code == holding.code }
         let manual = store.data.manualQuoteOverrides[holding.code]
         let current = manual?.price ?? quote?.price ?? holding.current
@@ -64,7 +57,7 @@ struct ReconciliationView: View {
         }
         guard let previous, previous.isFinite, previous > 0, current.isFinite, current > 0 else { return nil }
         let trades = store.data.ledger.filter {
-            $0.code == holding.code && $0.kind != .fund && dayString($0.date) == marketDay
+            $0.code == holding.code && ($0.kind ?? .etf) == .etf && dayString($0.date) == marketDay
         }
         let buys = trades.filter { $0.side == .buy }
         let sells = trades.filter { $0.side == .sell }
@@ -201,7 +194,7 @@ struct ReconciliationView: View {
                     else { Text("缺行情").foregroundStyle(.secondary) }
                 }.font(.caption)
             }
-            Text("ETF 昨收优先取手填昨收，否则由行情现价和涨跌幅反推；同花顺口径按当日成交额，不扣手续费。基金只按最近两期已公布净值变化估算，可能滞后。旧网页的当日盈亏口径设置会迁入；不重建日内成交时点，结果可能与券商不同。")
+            Text("ETF 昨收优先取手填昨收，否则由行情现价和涨跌幅反推；同花顺口径按当日成交额，不扣手续费。旧网页的当日盈亏口径设置会迁入；不重建日内成交时点，结果可能与券商不同。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         .plainCard(isLight: isLight)

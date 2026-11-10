@@ -197,6 +197,43 @@ struct DsSectionHeader: View {
     }
 }
 
+/// 与 DsSectionHeader 同一套版式，但右侧「全部」改成 NavigationLink —— 推入独立页面而不是弹窗。
+struct DsSectionHeaderLink<Destination: View>: View {
+    let palette: DsPalette
+    let title: String
+    let trailing: String
+    let destination: Destination
+
+    init(palette: DsPalette, title: String, trailing: String,
+         @ViewBuilder destination: () -> Destination) {
+        self.palette = palette
+        self.title = title
+        self.trailing = trailing
+        self.destination = destination()
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .scaledFont(palette.fsTitle, weight: .semibold)
+                .foregroundStyle(palette.ink)
+            Spacer(minLength: 6)
+            NavigationLink {
+                destination
+            } label: {
+                HStack(spacing: 2) {
+                    Text(trailing).scaledFont(palette.fsLabel, weight: .medium)
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundStyle(palette.ink2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 2)
+    }
+}
+
 // MARK: - 小部件
 
 /// 左侧圆角小图标砖：参考稿里每行、每张卡前面都有一枚。
@@ -431,34 +468,70 @@ struct DsAICard: View {
             Haptics.tap()
             action()
         } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(palette.onAccent.opacity(0.14)).frame(width: 38, height: 38)
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(palette.onAccent)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .scaledFont(palette.fsRow, weight: .semibold)
-                        .foregroundStyle(palette.onAccent)
-                    Text(subtitle)
-                        .scaledFont(palette.fsMicro)
-                        .foregroundStyle(palette.onAccentSub)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(palette.onAccent)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-            .background { RoundedRectangle(cornerRadius: palette.radius, style: .continuous).fill(palette.aiGradient) }
-            .contentShape(Rectangle())
+            DsAICardLabel(palette: palette, title: title, subtitle: subtitle)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 与 DsAICard 同一套外观，但用 NavigationLink 真推入独立页面 —— 不再弹 sheet。
+struct DsAICardLink<Destination: View>: View {
+    let palette: DsPalette
+    let title: String
+    let subtitle: String
+    let destination: Destination
+
+    init(palette: DsPalette, title: String, subtitle: String,
+         @ViewBuilder destination: () -> Destination) {
+        self.palette = palette
+        self.title = title
+        self.subtitle = subtitle
+        self.destination = destination()
+    }
+
+    var body: some View {
+        NavigationLink {
+            destination
+        } label: {
+            DsAICardLabel(palette: palette, title: title, subtitle: subtitle)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// AI 卡的外观本体：Button 与 NavigationLink 两种载体共用。
+struct DsAICardLabel: View {
+    let palette: DsPalette
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(palette.onAccent.opacity(0.14)).frame(width: 38, height: 38)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(palette.onAccent)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .scaledFont(palette.fsRow, weight: .semibold)
+                    .foregroundStyle(palette.onAccent)
+                Text(subtitle)
+                    .scaledFont(palette.fsMicro)
+                    .foregroundStyle(palette.onAccentSub)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "arrow.up.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(palette.onAccent)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background { RoundedRectangle(cornerRadius: palette.radius, style: .continuous).fill(palette.aiGradient) }
+        .contentShape(Rectangle())
     }
 }
 
@@ -475,33 +548,78 @@ struct DsQuickTile: View {
             Haptics.tap()
             action()
         } label: {
-            VStack(spacing: 8) {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: symbol)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(palette.ink)
-                        .frame(maxWidth: .infinity)
-                    if let badge {
-                        Text(badge)
-                            .scaledFont(8.5, weight: .bold)
-                            .foregroundStyle(palette.onAccent)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1.5)
-                            .background { Capsule().fill(palette.accent) }
-                            .offset(x: 8, y: -6)
-                    }
-                }
-                .frame(height: 22)
-                Text(title)
-                    .scaledFont(palette.fsMicro, weight: .medium)
-                    .foregroundStyle(palette.ink2)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .dsSurface(palette, radius: palette.radius, padding: 0)
-            .contentShape(Rectangle())
+            DsQuickTileLabel(palette: palette, symbol: symbol, title: title, badge: badge)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 和 DsQuickTile 同一套外观，但用 NavigationLink 真推入独立页面 —— 不再弹 sheet。
+struct DsQuickTileLink<Destination: View>: View {
+    let palette: DsPalette
+    let symbol: String
+    let title: String
+    var badge: String? = nil
+    let destination: Destination
+
+    /// 显式初始化器：把闭包在 init 里构造成具体 View，
+    /// 不依赖「@ViewBuilder 存储属性会自动进成员初始化器」这种版本相关行为。
+    init(palette: DsPalette,
+         symbol: String,
+         title: String,
+         badge: String? = nil,
+         @ViewBuilder destination: () -> Destination) {
+        self.palette = palette
+        self.symbol = symbol
+        self.title = title
+        self.badge = badge
+        self.destination = destination()
+    }
+
+    var body: some View {
+        NavigationLink {
+            destination
+        } label: {
+            DsQuickTileLabel(palette: palette, symbol: symbol, title: title, badge: badge)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 快捷砖的外观本体：只画样子，不决定「点了做什么」。
+/// 抽出来是为了 Button 与 NavigationLink 两种载体共用同一份版式，避免两处走样。
+struct DsQuickTileLabel: View {
+    let palette: DsPalette
+    let symbol: String
+    let title: String
+    var badge: String? = nil
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: symbol)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(palette.ink)
+                    .frame(maxWidth: .infinity)
+                if let badge {
+                    Text(badge)
+                        .scaledFont(8.5, weight: .bold)
+                        .foregroundStyle(palette.onAccent)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background { Capsule().fill(palette.accent) }
+                        .offset(x: 8, y: -6)
+                }
+            }
+            .frame(height: 22)
+            Text(title)
+                .scaledFont(palette.fsMicro, weight: .medium)
+                .foregroundStyle(palette.ink2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .dsSurface(palette, radius: palette.radius, padding: 0)
+        .contentShape(Rectangle())
     }
 }
 

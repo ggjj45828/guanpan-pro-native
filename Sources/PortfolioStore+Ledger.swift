@@ -15,38 +15,26 @@ extension PortfolioStore {
 
     // MARK: 状态判定
 
-    /// 账本里是否已经存在任何真实成交。基金交易流水也算 —— 那是同一批事实的另一张表。
+    /// 账本里是否已经存在任何真实成交。
     var hasRecordedFills: Bool {
-        !data.ledger.isEmpty || !data.fundTransactions.isEmpty
+        !data.ledger.isEmpty
     }
 
     /// 只有「一笔成交都没有」时，持仓才等于起点快照，才允许直接改写。
     var canRewriteOpening: Bool {
-        data.ledger.isEmpty && data.fundTransactions.isEmpty
+        data.ledger.isEmpty
     }
 
-    /// 起点被锁住是因为哪一边。用户点不动按钮时必须知道原因 ——
-    /// 「已有成交」四个字不够：场内 ETF 成交和场外基金申赎是两件事。
+    /// 起点被锁住时，用户点不动按钮必须知道原因。
     var openingLockReason: String? {
         let venue = data.ledger.count
-        let funds = data.fundTransactions.count
-        switch (venue, funds) {
-        case (0, 0):
-            return nil
-        case (_, 0):
-            return "场内已有 \(venue) 笔成交"
-        case (0, _):
-            return "场外基金已有 \(funds) 笔申赎/分红流水"
-        default:
-            return "场内 \(venue) 笔成交 + 基金 \(funds) 笔流水"
-        }
+        return venue == 0 ? nil : "场内已有 \(venue) 笔成交"
     }
 
     var ledgerDigest: String {
         LedgerDigest.make(opening: data.openingSnapshot,
                           cash: data.cash,
-                          fills: data.ledger,
-                          fundFills: data.fundTransactions)
+                          fills: data.ledger)
     }
 
     /// 审计链体检：返回链中断的位置（0 起算）与口径升级接缝。
@@ -127,11 +115,11 @@ extension PortfolioStore {
         return snapshot
     }
 
-    // MARK: 补记起点（基金域的主路径）
+    // MARK: 补记起点
 
     /// 补记一个起点：只给「起点是空的、但账本里已经先有流水」的账户用一次。
     ///
-    /// 这种情况在基金域非常常见：用户先导入基金申赎流水，账本立刻就不是空的了，
+    /// 这种情况很常见：用户先导入了成交流水，账本立刻就不是空的了，
     /// `captureOpeningSnapshotIfNeeded` 从此再也不会写入起点。结果就是账本永远
     /// 没有起点，审计页只能写「还没有记录账本起点」，起点这一章彻底缺失。
     ///
@@ -203,9 +191,6 @@ extension PortfolioStore {
                 : "已移除「\(current.name)」。"
         }
 
-        if current.kind == .fund {
-            data.fundDCAPlans.removeAll { $0.code == current.code }
-        }
         appendLedgerAudit(action: "删除持仓 · \(mode.title)",
                           reason: "\(current.name)（\(current.code)）· \(confirmation.trimmedNote)",
                           priorDigest: prior)

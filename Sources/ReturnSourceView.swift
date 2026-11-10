@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Explains snapshot based portfolio return without inventing daily price attribution.
 struct ReturnSourceView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @State private var fromDate = Calendar.current.date(byAdding: .month, value: -1, to: .now) ?? .now
@@ -21,9 +23,7 @@ struct ReturnSourceView: View {
         var economic = 0.0
         var realized = 0.0
         var realizedETF = 0.0
-        var realizedFund = 0.0
         var cashDividends = 0.0
-        var reinvestedDividends = 0.0
         var fees = 0.0
         /// 账户级杂费（平台费、融资利息等）。它不在成交流水里，
         /// 但确实降低了快照之间的资产变化，所以必须单列，否则会被当成「未归因」。
@@ -42,7 +42,7 @@ struct ReturnSourceView: View {
     var body: some View {
         let result = calculate()
         let canCalculate = result.start != nil && result.end != nil
-        NavigationStack {
+        PageHost(embedded: embedded) {
             List {
                 Section("区间") {
                     DatePicker("开始日期", selection: $fromDate, displayedComponents: .date)
@@ -75,9 +75,6 @@ struct ReturnSourceView: View {
                 Section("流水解释") {
                     LabeledContent("卖出/赎回已实现盈亏", value: (result.realized).cny())
                     LabeledContent("场内已实现", value: (result.realizedETF).cny())
-                    LabeledContent("基金已实现", value: (result.realizedFund).cny())
-                    LabeledContent("现金分红（已加回收益）", value: (result.cashDividends).cny())
-                    LabeledContent("红利再投资（不重复计收益）", value: (result.reinvestedDividends).cny())
                     LabeledContent("已记录交易费用", value: (result.fees).cny())
                     LabeledContent("账户级杂费（已含在快照结果中）",
                                    value: "-\((result.expenses).cny())")
@@ -114,7 +111,7 @@ struct ReturnSourceView: View {
             .navigationTitle("收益来源拆解")
             .toolbarBackground(.hidden, for: .navigationBar)
             .themedSheetBackground()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
         }
     }
 
@@ -137,7 +134,7 @@ struct ReturnSourceView: View {
                 r.flow = store.data.cashFlows.filter { $0.external ?? true }.filter {
                     let day = dateFormatter.string(from: $0.date); return day > start.date && day <= end.date
                 }.reduce(0) { $0 + $1.amount }
-                let ledger = store.data.ledger.filter { $0.kind != .fund }
+                let ledger = store.data.ledger.filter { ($0.kind ?? .etf) == .etf }
                 for trade in ledger {
                     let day = dateFormatter.string(from: trade.date)
                     guard day > start.date && day <= end.date else { continue }
@@ -153,31 +150,11 @@ struct ReturnSourceView: View {
                         r.perCode.append(CodeBreakdown(name: trade.name, amount: trade.realizedPnL))
                     }
                 }
-                for trade in store.data.fundTransactions {
-                    guard trade.effectiveDate > start.date && trade.effectiveDate <= end.date else { continue }
-                    r.fees += max(0, trade.fee)
-                    switch trade.side {
-                    case .buy:
-                        if trade.isBackfill { continue }
-                        r.buys += 1
-                        if !(trade.isAutomaticDCA ?? false) && !trade.linkedCash { r.flow += trade.amount + trade.fee }
-                    case .sell:
-                        guard trade.status == .confirmed else { continue }
-                        r.sells += 1
-                        if !trade.linkedCash { r.flow -= max(0, trade.amount - trade.fee) }
-                        r.realizedFund += trade.realizedPnL
-                        r.perCode.append(CodeBreakdown(name: trade.name, amount: trade.realizedPnL))
-                    case .dividend:
-                        guard trade.status == .confirmed else { continue }
-                        if trade.dividendMode == .cash && !trade.linkedCash { r.cashDividends += trade.amount }
-                        else { r.reinvestedDividends += trade.amount }
-                    }
-                }
                 r.expenses = store.data.accountExpenses
                     .filter { $0.date > (Self.day(from: start.date) ?? .distantPast) }
                     .filter { $0.date <= (Self.day(from: end.date) ?? .distantFuture) }
                     .reduce(0) { $0 + $1.amount }
-                r.realized = r.realizedETF + r.realizedFund
+                r.realized = r.realizedETF
                 r.economic = end.total - start.total - r.flow + r.cashDividends
                 r.account = end.total - start.total - r.flow
                 if start.date != from || end.date != to { r.warnings.append("实际快照为 \(start.date) → \(end.date)，与所选日期不同；计算按实际快照区间进行。") }
@@ -186,7 +163,7 @@ struct ReturnSourceView: View {
             r.warnings.append("区间内不足两个全账户快照；只能查看流水归因，不能计算完整区间收益。")
         }
         if store.data.holdings.contains(where: { $0.kind == .etf }) && store.data.ledger.contains(where: { $0.kind == nil }) {
-            r.warnings.append("部分旧版交易流水没有资产类别，场内/基金代码相同的记录可能无法可靠区分。")
+            r.warnings.append("部分旧版交易流水没有资产类别，可能无法可靠区分。")
         }
         if r.start == nil || r.end == nil {
             let from = dateFormatter.string(from: min(fromDate, toDate))
@@ -194,21 +171,16 @@ struct ReturnSourceView: View {
             let ledger = store.data.ledger.filter { trade in
                 let day = dateFormatter.string(from: trade.date); return day >= from && day <= to
             }
-            let funds = store.data.fundTransactions.filter { $0.effectiveDate >= from && $0.effectiveDate <= to }
             r.realizedETF = ledger.filter { $0.side == .sell }.reduce(0) { $0 + $1.realizedPnL }
-            r.realizedFund = funds.filter { $0.side == .sell && $0.status == .confirmed }.reduce(0) { $0 + $1.realizedPnL }
-            r.realized = r.realizedETF + r.realizedFund
-            r.cashDividends = funds.filter { $0.side == .dividend && $0.status == .confirmed && $0.dividendMode == .cash }.reduce(0) { $0 + $1.amount }
-            r.reinvestedDividends = funds.filter { $0.side == .dividend && $0.status == .confirmed && $0.dividendMode == .reinvest }.reduce(0) { $0 + $1.amount }
-            r.fees = ledger.reduce(0) { $0 + $1.fee } + funds.reduce(0) { $0 + max(0, $1.fee) }
+            r.realized = r.realizedETF
+            r.fees = ledger.reduce(0) { $0 + $1.fee }
             r.expenses = store.data.accountExpenses.filter {
                 let day = dateFormatter.string(from: $0.date)
                 return day >= from && day <= to
             }.reduce(0) { $0 + $1.amount }
-            r.buys = ledger.filter { $0.side == .buy }.count + funds.filter { $0.side == .buy && !$0.isBackfill }.count
-            r.sells = ledger.filter { $0.side == .sell }.count + funds.filter { $0.side == .sell && $0.status == .confirmed }.count
+            r.buys = ledger.filter { $0.side == .buy }.count
+            r.sells = ledger.filter { $0.side == .sell }.count
             r.perCode = ledger.filter { $0.side == .sell }.map { CodeBreakdown(name: $0.name, amount: $0.realizedPnL) }
-                + funds.filter { $0.side == .sell && $0.status == .confirmed }.map { CodeBreakdown(name: $0.name, amount: $0.realizedPnL) }
         }
         r.perCode = Dictionary(grouping: r.perCode, by: \.name).map { pair in
             CodeBreakdown(name: pair.key, amount: pair.value.reduce(0) { $0 + $1.amount })

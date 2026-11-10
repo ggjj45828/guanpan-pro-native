@@ -149,12 +149,6 @@ struct EpisodeView: View {
                 Text(instrument.code)
                     .scaledFont(palette.fsMicro)
                     .foregroundStyle(palette.ink3)
-                Text(instrument.kind == .fund ? "场外" : "场内")
-                    .scaledFont(9.5, weight: .semibold)
-                    .foregroundStyle(palette.ink2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background { Capsule().fill(palette.cardSoft) }
                 Spacer(minLength: 4)
                 Text("\(instrument.episodes.count) 轮")
                     .scaledFont(palette.fsMicro, weight: .medium)

@@ -1682,14 +1682,9 @@ struct MarketChartView: View {
                 .disabled(handled)
                 Button("设为价格提醒") { createInstrumentAlert(from: suggestion) }
                     .buttonStyle(.bordered)
-                    // 场外基金不走实时行情，提醒永远不会触发 —— 与其建一条哑的，不如不给按。
-                    .disabled(handled || suggestion.price == nil || holding.kind == .fund)
+                    .disabled(handled || suggestion.price == nil)
             }
             .font(.caption)
-            if holding.kind == .fund {
-                Text("场外基金按净值成交，没有实时价格提醒；可以转成计划记录，到净值公布后自己核对。")
-                    .scaledFont(11).foregroundStyle(.secondary)
-            }
         }
         .padding(.vertical, 3)
     }

@@ -30,16 +30,12 @@ struct HoldingRemovalSheet: View {
     private var layout: ThemeLayout { ThemeLayout.of(appearance) }
     private var accent: Color { s.accent }
 
-    /// 该标的在账本里的成交笔数（含基金交易流水）。
+    /// 该标的在账本里的成交笔数。
     private var fillCount: Int {
         store.data.ledger.filter { $0.code == holding.code && ($0.kind ?? .etf) == holding.kind }.count
     }
 
-    private var fundFillCount: Int {
-        holding.kind == .fund ? store.data.fundTransactions.filter { $0.code == holding.code }.count : 0
-    }
-
-    private var hasHistory: Bool { fillCount + fundFillCount > 0 }
+    private var hasHistory: Bool { fillCount > 0 }
 
     /// 可用模式：有成交就不能改写起点；零份额没什么可卖。
     private func isEnabled(_ candidate: HoldingRemovalMode) -> Bool {
@@ -99,7 +95,7 @@ struct HoldingRemovalSheet: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(s.ink2)
                 Spacer()
-                Text(holding.kind == .fund ? "场外基金" : "ETF")
+                Text("ETF")
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -138,7 +134,7 @@ struct HoldingRemovalSheet: View {
 
     private var stateCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(hasHistory ? "这只标的已有 \(fillCount + fundFillCount) 笔成交" : "这只标的还没有任何成交",
+            Label(hasHistory ? "这只标的已有 \(fillCount) 笔成交" : "这只标的还没有任何成交",
                   systemImage: hasHistory ? "list.bullet.rectangle" : "clock.badge.checkmark")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(hasHistory ? s.warn : s.ok)

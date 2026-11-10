@@ -13,7 +13,7 @@ struct LedgerOpeningSnapshot: Codable, Equatable {
         case recorded
         /// 老备份没有起点，第一次保存时按当时状态采纳。
         case adopted
-        /// 账本里已经先有了流水（典型是直接导入基金申赎），事后补记的起点。
+        /// 账本里已经先有了流水，事后补记的起点。
         /// 与 `adopted` 一样是「当时状态」，区别在于它明确不是跟踪的始点。
         case lateAdopt
     }
@@ -40,19 +40,11 @@ struct LedgerOpeningSnapshot: Codable, Equatable {
         return MarketCalendar.isoDay(capturedAt)
     }
 
-    // MARK: 两个域分开看
-    //
-    // 账本实际上是两张表：场内（`ledger`，交易所成交）和场外基金（`fundTransactions`，
-    // 申赎 + 分红 + 定投）。它们的成本口径不同 —— 场内是成交加权，场外是份额与净值
-    // 逐笔确认。混在一起看，用户永远不知道起点被哪一边锁住的。
-
+    // MARK: 起点口径
     var etfPositions: [LedgerOpeningPosition] { positions.filter { $0.kind == .etf } }
-    var fundPositions: [LedgerOpeningPosition] { positions.filter { $0.kind == .fund } }
 
     var etfCostValue: Double { etfPositions.reduce(0) { $0 + $1.costValue } }
-    var fundCostValue: Double { fundPositions.reduce(0) { $0 + $1.costValue } }
 
-    var hasFundPositions: Bool { !fundPositions.isEmpty }
 }
 
 struct LedgerOpeningPosition: Codable, Equatable, Identifiable {
@@ -119,14 +111,12 @@ struct LedgerAuditHealth: Equatable {
 /// 用于审计链自洽检查，不承担密码学职责。好处是不引入任何框架依赖，
 /// 也不会因为浮点格式化差异而在不同 iOS 版本上算出不同结果。
 enum LedgerDigest {
-    /// 口径版本。2 起把场外基金流水也纳入指纹 —— 之前只算场内 `ledger`，
-    /// 意味着删掉一笔基金申赎记录，指纹一点不动，审计链完全看不见。
+    /// 口径版本。
     static let caliber = 2
 
     static func make(opening: LedgerOpeningSnapshot?,
                      cash: Double,
-                     fills: [LedgerEntry],
-                     fundFills: [FundTransaction] = []) -> String {
+                     fills: [LedgerEntry]) -> String {
         var text = "v1|"
         if let opening {
             text += "open:\(opening.capturedAt.timeIntervalSince1970):\(opening.source.rawValue)"
@@ -144,16 +134,6 @@ enum LedgerDigest {
         }) {
             text += "|f:\(fill.id.uuidString):\(fill.code):\(fill.kind?.rawValue ?? "etf")"
             text += ":\(fill.side.rawValue):\(units(fill.quantity)):\(money(fill.price)):\(money(fill.fee))"
-        }
-        // 场外基金域：申赎、分红、定投都在这张表里。分红模式与状态也进指纹 ——
-        // 「现金分红」改成「红利再投」会改变份额，属于账本事实，不是显示偏好。
-        for trade in fundFills.sorted(by: { lhs, rhs in
-            if lhs.effectiveDate == rhs.effectiveDate { return lhs.id.uuidString < rhs.id.uuidString }
-            return lhs.effectiveDate < rhs.effectiveDate
-        }) {
-            text += "|ft:\(trade.id.uuidString):\(trade.code):\(trade.side.rawValue)"
-            text += ":\(trade.effectiveDate):\(units(trade.quantity)):\(money(trade.nav))"
-            text += ":\(money(trade.fee)):\(trade.status.rawValue):\(trade.dividendMode?.rawValue ?? "-")"
         }
         return fnv1a64(text)
     }

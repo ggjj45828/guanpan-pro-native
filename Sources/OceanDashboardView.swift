@@ -21,11 +21,6 @@ struct OceanDashboardView: View {
     @ObservedObject private var news = NewsCenter.shared
 
     @State private var showAdd = false
-    @State private var showAdvice = false
-    @State private var showGrid = false
-    @State private var showIncome = false
-    @State private var showLedger = false
-    @State private var showNews = false
     @State private var chartTarget: Holding?
 
     var onOpenAssets: () -> Void = {}
@@ -81,11 +76,6 @@ struct OceanDashboardView: View {
                 try? await Task.sleep(for: .seconds(1))
             }
             .sheet(isPresented: $showAdd) { WatchEditor().themedSheetBackground() }
-            .sheet(isPresented: $showAdvice) { PortfolioAdviceView().themedSheetBackground() }
-            .sheet(isPresented: $showGrid) { DayGridView().themedSheetBackground() }
-            .sheet(isPresented: $showIncome) { IncomeHubView().themedSheetBackground() }
-            .sheet(isPresented: $showLedger) { LedgerAuditView().themedSheetBackground() }
-            .sheet(isPresented: $showNews) { NewsHubView().themedSheetBackground() }
             .sheet(item: $chartTarget) { holding in
                 MarketChartView(holding: holding).themedSheetBackground()
             }
@@ -287,36 +277,59 @@ struct OceanDashboardView: View {
         rowCard {
             HStack(spacing: 2) {
                 ForEach(Array(tools.prefix(palette.quickColumns))) { tool in
-                    Button {
-                        Haptics.tap()
-                        perform(tool.id)
-                    } label: {
-                        VStack(spacing: 5) {
-                            Image(systemName: tool.symbol)
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(tool.tint)
-                                .frame(width: 32, height: 32)
-                                .background { RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tool.tint.opacity(0.13)) }
-                            Text(tool.title)
-                                .scaledFont(palette.fsMicro)
-                                .foregroundStyle(palette.ink2)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.75)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(tool.title)
+                    toolEntry(tool)
                 }
             }
         }
     }
 
+    /// 工具入口：页面型一律 NavigationLink 推入；只有「加自选」是表单弹窗。
+    @ViewBuilder private func toolEntry(_ tool: OceanTool) -> some View {
+        switch tool.id {
+        case "grid":
+            NavigationLink { DayGridView(embedded: true) } label: { toolLabel(tool) }
+                .buttonStyle(.plain).accessibilityLabel(tool.title)
+        case "income":
+            NavigationLink { IncomeHubView(embedded: true) } label: { toolLabel(tool) }
+                .buttonStyle(.plain).accessibilityLabel(tool.title)
+        case "ledger":
+            NavigationLink { LedgerAuditView(embedded: true) } label: { toolLabel(tool) }
+                .buttonStyle(.plain).accessibilityLabel(tool.title)
+        case "news":
+            NavigationLink { NewsHubView(embedded: true) } label: { toolLabel(tool) }
+                .buttonStyle(.plain).accessibilityLabel(tool.title)
+        default:
+            Button {
+                Haptics.tap()
+                perform(tool.id)
+            } label: {
+                toolLabel(tool)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(tool.title)
+        }
+    }
+
+    private func toolLabel(_ tool: OceanTool) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: tool.symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tool.tint)
+                .frame(width: 32, height: 32)
+                .background { RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tool.tint.opacity(0.13)) }
+            Text(tool.title)
+                .scaledFont(palette.fsMicro)
+                .foregroundStyle(palette.ink2)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+    }
+
     private var aiRow: some View {
-        Button {
-            Haptics.push()
-            showAdvice = true
+        NavigationLink {
+            PortfolioAdviceView(embedded: true)
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: "sparkles")
@@ -370,14 +383,8 @@ struct OceanDashboardView: View {
         }
     }
 
+    /// 页面型入口都改成 NavigationLink 了，这里只剩「加自选」这种表单弹窗。
     private func perform(_ id: String) {
-        switch id {
-        case "grid": showGrid = true
-        case "income": showIncome = true
-        case "ledger": showLedger = true
-        case "news": showNews = true
-        case "add": showAdd = true
-        default: break
-        }
+        if id == "add" { showAdd = true }
     }
 }

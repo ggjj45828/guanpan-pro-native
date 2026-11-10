@@ -11,9 +11,8 @@ struct IncomeHubView: View {
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.appAppearance) private var appearance
 
-    @State private var showETFCalendar = false
-    @State private var showDividendCalendar = false
-    @State private var showPool = false
+    /// 推入已有导航栈时为 true：不再自建 NavigationStack、隐藏「完成/关闭」按钮（外层返回即可退出）。
+    var embedded: Bool = false
 
     private var palette: DsPalette {
         DsPalette(isLight: AppTheme.palette(for: AppAppearance.resolved(appearance)).isLight)
@@ -73,7 +72,7 @@ struct IncomeHubView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: palette.gap) {
                     summaryCard
@@ -92,9 +91,6 @@ struct IncomeHubView: View {
             .background(.clear)
             .navigationTitle("收息")
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showETFCalendar) { ETFIncomeCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showDividendCalendar) { DividendCalendarView() .themedSheetBackground() }
-            .sheet(isPresented: $showPool) { DividendPoolView() .themedSheetBackground() }
         }
     }
 
@@ -143,33 +139,36 @@ struct IncomeHubView: View {
     // MARK: 收息池
 
     private var poolCard: some View {
-        Button {
-            Haptics.tap()
-            showPool = true
+        NavigationLink {
+            DividendPoolView(embedded: true)
         } label: {
-            HStack(spacing: 12) {
-                DsIconTile(symbol: "yensign.circle.fill", tint: accent, size: 38, palette: palette)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("收息池")
-                        .scaledFont(palette.fsRow, weight: .semibold)
-                        .foregroundStyle(palette.ink)
-                    Text(store.data.dividendPool.isEmpty
-                         ? "加入红利标的，填上每份年分红即可算股息率与买点"
-                         : "\(store.data.dividendPool.count) 只 · 已达目标 \(poolReached) 只 · 目标 \(store.data.dividendTargetYield.num(1))%")
-                        .scaledFont(palette.fsMicro)
-                        .foregroundStyle(palette.ink2)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(palette.ink3)
-            }
-            .dsSurface(palette, radius: 18, padding: 14)
-            .contentShape(Rectangle())
+            poolCardLabel
         }
         .buttonStyle(.plain)
+    }
+
+    private var poolCardLabel: some View {
+        HStack(spacing: 12) {
+            DsIconTile(symbol: "yensign.circle.fill", tint: accent, size: 38, palette: palette)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("收息池")
+                    .scaledFont(palette.fsRow, weight: .semibold)
+                    .foregroundStyle(palette.ink)
+                Text(store.data.dividendPool.isEmpty
+                     ? "加入红利标的，填上每份年分红即可算股息率与买点"
+                     : "\(store.data.dividendPool.count) 只 · 已达目标 \(poolReached) 只 · 目标 \(store.data.dividendTargetYield.num(1))%")
+                    .scaledFont(palette.fsMicro)
+                    .foregroundStyle(palette.ink2)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(palette.ink3)
+        }
+        .dsSurface(palette, radius: 18, padding: 14)
+        .contentShape(Rectangle())
     }
 
     // MARK: 日历
@@ -178,12 +177,12 @@ struct IncomeHubView: View {
         VStack(spacing: 0) {
             entryRow(title: "场内收益日历", subtitle: "ETF 的逐日盈亏与收益归因",
                      icon: "chart.bar.doc.horizontal", tint: Color(hex: 0x35C08A)) {
-                showETFCalendar = true
+                ETFIncomeCalendarView(embedded: true)
             }
             divider
             entryRow(title: "ETF 分红记录", subtitle: "已登记的分红事件与年度估算",
                      icon: "banknote", tint: Color(hex: 0xE8B33A)) {
-                showDividendCalendar = true
+                DividendCalendarView(embedded: true)
             }
         }
         .padding(.horizontal, 14)
@@ -229,32 +228,36 @@ struct IncomeHubView: View {
 
     // MARK: 行
 
-    private func entryRow(title: String, subtitle: String, icon: String,
-                          tint: Color, action: @escaping () -> Void) -> some View {
-        Button {
-            Haptics.tap()
-            action()
+    private func entryRow<Destination: View>(title: String, subtitle: String, icon: String,
+                                             tint: Color,
+                                             @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink {
+            destination()
         } label: {
-            HStack(spacing: 12) {
-                DsIconTile(symbol: icon, tint: tint, size: 34, palette: palette)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .scaledFont(14, weight: .medium)
-                        .foregroundStyle(palette.ink)
-                    Text(subtitle)
-                        .scaledFont(palette.fsMicro)
-                        .foregroundStyle(palette.ink2)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(palette.ink3)
-            }
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
+            entryRowLabel(title: title, subtitle: subtitle, icon: icon, tint: tint)
         }
         .buttonStyle(.plain)
+    }
+
+    private func entryRowLabel(title: String, subtitle: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 12) {
+            DsIconTile(symbol: icon, tint: tint, size: 34, palette: palette)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .scaledFont(14, weight: .medium)
+                    .foregroundStyle(palette.ink)
+                Text(subtitle)
+                    .scaledFont(palette.fsMicro)
+                    .foregroundStyle(palette.ink2)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(palette.ink3)
+        }
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
     }
 
     private func currentPrice(for code: String) -> Double? {

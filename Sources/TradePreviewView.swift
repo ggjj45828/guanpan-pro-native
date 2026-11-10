@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Local, read-only transaction preview. It never writes holdings, cash, or ledger entries.
 struct TradePreviewView: View {
+    /// 推入已有导航栈时 true：不再自建 NavigationStack，隐藏完成/关闭按钮。
+    var embedded: Bool = false
     @EnvironmentObject private var store: PortfolioStore
     @Environment(\.dismiss) private var dismiss
     @State private var instrumentID = ""
@@ -15,19 +17,17 @@ struct TradePreviewView: View {
     private var quantity: Double { Double(quantityText) ?? 0 }
     private var price: Double { Double(priceText) ?? 0 }
     private var feeInput: Double { Double(feeText) ?? 0 }
-    private var isFund: Bool { selected?.kind == .fund }
     private var gross: Double {
         guard selected != nil, quantity > 0, price > 0 else { return 0 }
-        return isFund && side == .buy ? quantity : quantity * price
+        return quantity * price
     }
-    private var fee: Double { isFund && side == .buy ? gross * feeInput / 100 : feeInput }
+    private var fee: Double { feeInput }
     private var sharesDelta: Double {
         guard price > 0 else { return 0 }
-        if isFund && side == .buy { return max(0, gross - fee) / price }
         return side == .buy ? quantity : -quantity
     }
     private var postValue: Double { max(0, (selected?.marketValue ?? 0) + sharesDelta * price) }
-    private var cashLinked: Bool { !isFund && store.data.cashLinkedByDefault }
+    private var cashLinked: Bool { store.data.cashLinkedByDefault }
     private var cashDelta: Double {
         guard cashLinked else { return 0 }
         return side == .buy ? -(gross + fee) : gross - fee
@@ -46,25 +46,25 @@ struct TradePreviewView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageHost(embedded: embedded) {
             Form {
                 Section("预演参数") {
-                    if instruments.isEmpty { ContentUnavailableView("暂无持仓", systemImage: "tray", description: Text("先添加 ETF 或基金持仓，再进行交易前试算。")) }
+                    if instruments.isEmpty { ContentUnavailableView("暂无持仓", systemImage: "tray", description: Text("先添加持仓，再进行交易前试算。")) }
                     else {
                         Picker("标的", selection: $instrumentID) {
                             ForEach(instruments) { item in
-                                Text("\(item.kind == .fund ? "基金" : "场内") · \(item.name)（\(item.code)）").tag(item.id)
+                                Text("场内 · \(item.name)（\(item.code)）").tag(item.id)
                             }
                         }
                         Picker("方向", selection: $side) {
-                            Text(isFund ? "申购" : "买入").tag(LedgerEntry.Side.buy)
-                            Text(isFund ? "赎回" : "卖出").tag(LedgerEntry.Side.sell)
+                            Text("买入").tag(LedgerEntry.Side.buy)
+                            Text("卖出").tag(LedgerEntry.Side.sell)
                         }.pickerStyle(.segmented)
-                        TextField(isFund && side == .buy ? "申购金额（元）" : "数量（份）", text: $quantityText).keyboardType(.decimalPad)
-                        TextField(isFund ? "参考净值" : "成交价", text: $priceText).keyboardType(.decimalPad)
-                        TextField(isFund && side == .buy ? "申购费率（%）" : "手续费（元）", text: $feeText).keyboardType(.decimalPad)
+                        TextField("数量（份）", text: $quantityText).keyboardType(.decimalPad)
+                        TextField("成交价", text: $priceText).keyboardType(.decimalPad)
+                        TextField("手续费（元）", text: $feeText).keyboardType(.decimalPad)
                     }
-                    Text("交易前沙盘只预演，不写账、不改现金或持仓。基金申购默认使用外部资金，不联动参考现金。")
+                    Text("交易前沙盘只预演，不写账、不改现金或持仓。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .plainCard(isLight: isLight)
@@ -72,9 +72,6 @@ struct TradePreviewView: View {
                     Section("试算结果 · \(holding.name)") {
                         LabeledContent("成交金额", value: (gross).cny())
                         LabeledContent("预计费用", value: (fee).cny())
-                        if isFund && side == .buy {
-                            LabeledContent("预计获得份额", value: (sharesDelta).num(2))
-                        }
                         LabeledContent("持仓市值", value: (holding.marketValue).cny())
                         LabeledContent("交易后市值", value: (postValue).cny())
                         LabeledContent("参考现金", value: (store.data.cash).cny())
@@ -97,23 +94,22 @@ struct TradePreviewView: View {
             .background(.clear)
             .navigationTitle("交易前沙盘")
             .keyboardDoneToolbar()
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { if !embedded { Button("完成") { dismiss() } } } }
             .onAppear {
                 if instrumentID.isEmpty, let holding = instruments.first {
                     instrumentID = holding.id
                     priceText = String(holding.current)
-                    feeText = holding.kind == .fund && side == .buy ? "0.15" : (holding.kind == .etf ? "0.10" : "0")
+                    feeText = "0.10"
                 }
             }
             .onChange(of: instrumentID) { _, value in
                 if let holding = instruments.first(where: { $0.id == value }) {
                     priceText = String(holding.current)
-                    feeText = holding.kind == .fund && side == .buy ? "0.15" : (holding.kind == .etf ? "0.10" : "0")
+                    feeText = "0.10"
                 }
             }
-            .onChange(of: side) { _, value in
-                if isFund { feeText = value == .buy ? "0.15" : "0" }
-                else { feeText = "0.10" }
+            .onChange(of: side) { _, _ in
+                feeText = "0.10"
             }
         }
     }

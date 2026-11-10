@@ -20,7 +20,7 @@ enum LedgerHealthAnalyzer {
             let counts = Dictionary(grouping: values.filter { !$0.isEmpty }, by: { $0 }).mapValues(\.count)
             return counts.filter { $0.value > 1 }.keys.sorted()
         }
-        // DateFormatter 初始化很重。旧代码每检查一个净值点都新建两次，几千个历史点时
+        // DateFormatter 初始化很重。旧代码每检查一个日期都新建两次，几千个历史点时
         // 会明显停顿。一次体检只复用这一份，后台线程内使用也不会发生并发访问。
         let dayFormatter = DateFormatter()
         dayFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -79,34 +79,6 @@ enum LedgerHealthAnalyzer {
         if !duplicatePlanIDs.isEmpty { add(.error, "交易计划", "交易计划 ID 重复", duplicatePlanIDs.prefix(5).joined(separator: "、")) }
         if invalidPlans.isEmpty && duplicatePlanIDs.isEmpty { add(.normal, "交易计划", "交易计划字段正常", "共检查 \(data.tradePlans.count) 条。") }
 
-        let invalidFunds = data.holdings.filter {
-            $0.kind == .fund && ($0.code.isEmpty || !$0.quantity.isFinite || $0.quantity < 0
-                || !$0.cost.isFinite || $0.cost < 0 || !$0.current.isFinite || $0.current < 0)
-        }
-        let duplicateFundCodes = duplicates(data.holdings.filter { $0.kind == .fund }.map(\.code))
-        if !invalidFunds.isEmpty { add(.error, "基金", "基金持仓存在无效数字", invalidFunds.prefix(5).map(\.name).joined(separator: "、")) }
-        if !duplicateFundCodes.isEmpty { add(.error, "基金", "基金代码重复", duplicateFundCodes.joined(separator: "、")) }
-        let invalidFundTrades = data.fundTransactions.filter { trade in
-            let invalidAllocation = trade.redemptionLots.map { lots in
-                !lots.allSatisfy { isDayString($0.purchaseDate) && $0.shares.isFinite && $0.shares > 0 }
-                    || abs(lots.reduce(0) { $0 + $1.shares } - trade.quantity) > 0.02
-            } ?? false
-            return trade.code.isEmpty || !trade.quantity.isFinite || trade.quantity < 0 || !trade.nav.isFinite || trade.nav < 0
-                || !trade.amount.isFinite || trade.amount < 0 || !trade.fee.isFinite || trade.fee < 0 || invalidAllocation
-        }
-        if !invalidFundTrades.isEmpty { add(.error, "基金", "基金流水有 \(invalidFundTrades.count) 笔无效数字", "检查代码、份额、净值、金额和费用。") }
-        let stalePending = data.fundTransactions.filter { trade in
-            guard trade.status == .pending, let date = dayDate(trade.requestDate) else { return false }
-            return (Calendar(identifier: .gregorian).dateComponents([.day], from: date, to: .now).day ?? 0) > 30
-        }
-        if !stalePending.isEmpty {
-            add(.warning, "基金", "有 \(stalePending.count) 笔待确认流水超过 30 天", "最早日期：\(stalePending.map(\.requestDate).sorted().first ?? "未知")。请按销售平台实际确认情况核对。")
-        }
-        let duplicateFundTradeIDs = duplicates(data.fundTransactions.map { $0.id.uuidString })
-        if !duplicateFundTradeIDs.isEmpty { add(.error, "基金", "基金流水 ID 重复", duplicateFundTradeIDs.prefix(5).joined(separator: "、")) }
-        if invalidFunds.isEmpty && duplicateFundCodes.isEmpty && invalidFundTrades.isEmpty && stalePending.isEmpty && duplicateFundTradeIDs.isEmpty {
-            add(.normal, "基金", "基金基础账本正常", "未发现无效数字、重复持仓或长期待确认流水。")
-        }
 
         if !data.cash.isFinite || data.cash < 0 {
             add(.error, "现金", "参考现金无效", "当前值：\(data.cash)")
@@ -121,13 +93,6 @@ enum LedgerHealthAnalyzer {
         if !duplicateSnapshotDays.isEmpty { add(.warning, "快照", "有 \(duplicateSnapshotDays.count) 个日期存在重复快照", duplicateSnapshotDays.prefix(5).joined(separator: "、")) }
         if !invalidSnapshots.isEmpty { add(.error, "快照", "有 \(invalidSnapshots.count) 条无效快照", "日期或总资产格式异常。") }
         if duplicateSnapshotDays.isEmpty && invalidSnapshots.isEmpty { add(.normal, "快照", "资产快照结构正常", "共 \(data.snapshots.count) 条。") }
-
-        let navKeys = data.fundNAVHistory.map { "\($0.code)-\($0.date)" }
-        let duplicateNAVs = duplicates(navKeys)
-        let invalidNAVs = data.fundNAVHistory.filter { $0.code.isEmpty || !isDayString($0.date) || !$0.nav.isFinite || $0.nav <= 0 }
-        if !duplicateNAVs.isEmpty { add(.warning, "净值历史", "基金净值有重复日期", duplicateNAVs.prefix(5).joined(separator: "、")) }
-        if !invalidNAVs.isEmpty { add(.error, "净值历史", "基金净值历史有 \(invalidNAVs.count) 个无效点", "检查代码、日期和净值。") }
-        if duplicateNAVs.isEmpty && invalidNAVs.isEmpty { add(.normal, "净值历史", "基金净值历史结构正常", "共 \(data.fundNAVHistory.count) 个点。") }
 
         return findings.sorted { $0.severity.rawValue > $1.severity.rawValue }
     }

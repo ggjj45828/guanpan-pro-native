@@ -14,8 +14,6 @@ import Foundation
 // · 成本用**加权平均**递推，与 `recordTrade` 完全一致：卖出时按当时单位成本
 //   移除成本，不改变剩余份额的单位成本。
 // · 红利再投算作一次「零现金买入」（份额加、成本加），因为它确实增加了持仓成本。
-// · 同一笔基金交易在 `ledger` 和 `fundTransactions` 里各有一份，这里按
-//   代码 + 方向 + 日期 + 份额 + 净值去重，绝不重复计一次买入。
 // · 导入的历史流水（`affectsHoldings == false`）不参与 —— 它们的效果已经在
 //   起点快照里了，再算一遍等于把同一批份额买两次。
 
@@ -145,7 +143,7 @@ enum EpisodeProjection {
         let snapshot = data.openingSnapshot
         let fills = episodeFills(from: data, warnings: &result.warnings)
 
-        // 按「资产类别 + 代码」分桶：同一串数字在场内和场外是两只不同的东西。
+        // 按「资产类别 + 代码」分桶，避免同名代码互相覆盖。
         var buckets: [String: [MutableEpisode]] = [:]
         var names: [String: String] = [:]
 
@@ -233,7 +231,7 @@ enum EpisodeProjection {
         return result
     }
 
-    /// 场内 + 场外合并成一条时间线，并去掉同一笔基金交易的重复副本。
+    /// 场内成交流水整理成一条时间线。
     private static func episodeFills(from data: PortfolioData, warnings: inout [String]) -> [EpisodeFill] {
         var fills: [EpisodeFill] = []
         var skippedImported = 0
@@ -248,56 +246,6 @@ enum EpisodeProjection {
         }
         if skippedImported > 0 {
             warnings.append("有 \(skippedImported) 条导入型历史流水未参与周期计算 —— 它们的效果已经体现在账本起点里，再算一次会重复。")
-        }
-
-        let dayFormatter = DateFormatter()
-        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dayFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        dayFormatter.dateFormat = "yyyy-MM-dd"
-
-        func alreadyInLedger(code: String, side: FundTransaction.Side, quantity: Double,
-                             nav: Double, days: [String]) -> Bool {
-            let wantedSide: LedgerEntry.Side = side == .sell ? .sell : .buy
-            let wantedDays = Set(days)
-            return fills.contains { fill in
-                guard fill.kind == .fund, fill.code == code, fill.side == wantedSide,
-                      abs(fill.quantity - quantity) <= 0.0001,
-                      abs(fill.price - nav) <= 0.0001 else { return false }
-                // 日期不能只认 effectiveDate：基金 T+1 确认时，账本流水记的是委托日，
-                // 只比确认日会漏配，然后把同一笔申赎算成两次买入。
-                return wantedDays.contains(dayFormatter.string(from: fill.date))
-            }
-        }
-
-        for trade in data.fundTransactions where trade.status == .confirmed {
-            guard trade.quantity > 0.000001 || trade.amount > 0 else { continue }
-            // 补录的起点份额（净值 0、金额 0）由起点快照代表，不能当成交。
-            if trade.isBackfill { continue }
-            let nav = trade.nav > 0 ? trade.nav : (trade.quantity > 0 ? trade.amount / trade.quantity : 0)
-            guard nav > 0 else { continue }
-            if alreadyInLedger(code: trade.code, side: trade.side, quantity: trade.quantity,
-                               nav: nav, days: [trade.effectiveDate, trade.requestDate]) { continue }
-
-            let side: LedgerEntry.Side
-            let isReinvest: Bool
-            switch trade.side {
-            case .buy:
-                side = .buy
-                isReinvest = false
-            case .sell:
-                side = .sell
-                isReinvest = false
-            case .dividend:
-                // 现金分红不是份额变动；只有红利再投才进周期。
-                guard trade.dividendMode == .reinvest else { continue }
-                side = .buy
-                isReinvest = true
-            }
-            let date = Self.parseDay(trade.effectiveDate) ?? .now
-            fills.append(EpisodeFill(id: trade.id, date: date, code: trade.code,
-                                     name: trade.name, kind: .fund, side: side,
-                                     quantity: trade.quantity, price: nav,
-                                     fee: max(0, trade.fee), isReinvest: isReinvest))
         }
 
         return fills.sorted { $0.date < $1.date }

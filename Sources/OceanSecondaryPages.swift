@@ -112,7 +112,6 @@ struct OceanHoldingsView: View {
     private var palette: DsPalette { .of(store.resolvedAppearance) }
 
     private var etfHoldings: [Holding] { store.data.holdings.filter { $0.kind == .etf } }
-    private var fundHoldings: [Holding] { store.data.holdings.filter { $0.kind == .fund } }
 
     var body: some View {
         NavigationStack {
@@ -120,7 +119,6 @@ struct OceanHoldingsView: View {
                 Section("持仓汇总") {
                     OceanMetricGroup(palette: palette, cells: [
                         OceanMetricCell("etf", "场内市值", store.marketValue(of: .etf).cny()),
-                        OceanMetricCell("fund", "场外市值", store.marketValue(of: .fund).cny()),
                         OceanMetricCell("pnl", "持仓浮盈", store.totalPnL.cny(),
                                         tone: PnLColor.of(store.totalPnL)),
                         OceanMetricCell("position", "仓位", store.positionPercent.pct(1))
@@ -135,7 +133,7 @@ struct OceanHoldingsView: View {
                         Haptics.push()
                         sheetTarget = .fullEditor
                     } label: {
-                        Label("打开完整持仓编辑（成交 / 分红 / 网格 / 基金）",
+                        Label("打开完整持仓编辑（成交 / 分红 / 网格）",
                               systemImage: "square.and.pencil")
                             .scaledFont(palette.fsLabel)
                     }
@@ -153,19 +151,6 @@ struct OceanHoldingsView: View {
                         .oceanSectionRow(palette)
                     }
                     if etfHoldings.isEmpty { emptyRow("还没有场内持仓") }
-                }
-                Section("场外基金 · \(fundHoldings.count)") {
-                    ForEach(fundHoldings) { holding in
-                        Button {
-                            Haptics.tap()
-                            sheetTarget = .chart(holding)
-                        } label: {
-                            holdingRow(holding)
-                        }
-                        .buttonStyle(.plain)
-                        .oceanSectionRow(palette)
-                    }
-                    if fundHoldings.isEmpty { emptyRow("还没有场外基金持仓") }
                 }
                 Section("自选行情 · \(store.data.quotes.count)") {
                     ForEach(Array(store.data.quotes.prefix(8))) { quote in
@@ -214,7 +199,7 @@ struct OceanHoldingsView: View {
                 case .chart(let holding):
                     MarketChartView(holding: holding).themedSheetBackground()
                 case .fullEditor:
-                    HoldingsView(kind: .etf).themedSheetBackground()
+                    HoldingsView().themedSheetBackground()
                 }
             }
         }
@@ -374,23 +359,20 @@ struct OceanAssetsView: View {
 
     private var compositionRow: some View {
         let etf = store.marketValue(of: .etf)
-        let fund = store.marketValue(of: .fund)
         let cash = store.data.cash
-        let total = max(etf + fund + cash, 0.000001)
+        let total = max(etf + cash, 0.000001)
         return VStack(alignment: .leading, spacing: 9) {
             // 按真实占比分配宽度，不用 scaleEffect 把等宽矩形压扁 ——
             // 那样画出来的比例是错的，属于「看起来像图其实在骗人」。
             GeometryReader { geo in
                 HStack(spacing: 2) {
                     bar(geo.size.width * CGFloat(etf / total), Color(hex: 0x2F5BE8))
-                    bar(geo.size.width * CGFloat(fund / total), Color(hex: 0x7A5AF0))
                     bar(geo.size.width * CGFloat(cash / total), Color(hex: 0x28B596))
                 }
             }
             .frame(height: 8)
             HStack(spacing: 12) {
                 legend("ETF / 证券", etf, Color(hex: 0x2F5BE8))
-                legend("场外基金", fund, Color(hex: 0x7A5AF0))
                 legend("现金", cash, Color(hex: 0x28B596))
             }
         }
@@ -574,7 +556,6 @@ struct OceanMoreView: View {
                 Section("账户状态") {
                     LabeledContent("自选", value: "\(store.data.quotes.count) 只")
                     LabeledContent("场内持仓", value: "\(store.data.holdings.filter { $0.kind == .etf }.count) 只")
-                    LabeledContent("场外基金", value: "\(store.data.holdings.filter { $0.kind == .fund }.count) 只")
                     Text(store.nasSyncStatus)
                         .scaledFont(palette.fsMicro)
                         .foregroundStyle(palette.ink3)
