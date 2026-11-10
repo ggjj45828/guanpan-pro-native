@@ -1775,6 +1775,39 @@ check("曲线超哥A：增额口径 10% 边界 → 成立", qxcg_a("increase10",
 check("曲线超哥A：增额口径缺前日 → 未知", qxcg_a("increase10", 1100, None) == "unknown")
 check("曲线超哥A：未选口径 → 未知（不擅自统一）", qxcg_a(None, 9000, 8000) == "unknown")
 
+# A 条件接 NAS 8788 快照：盘中累计绝不等于单日成交额，收盘且合计完整才判
+def qxcg_a_nas(caliber, obs):
+    if caliber is None:
+        return "unknown"
+    if not obs["coversClose"]:
+        return "unknown"
+    if not obs["complete"] or not obs["amount"] or obs["amount"] <= 0:
+        return "unknown"
+    if caliber == "total2000":
+        return "satisfied" if obs["amount"] >= 2000 else "unsatisfied"
+    if caliber == "total20000":
+        return "satisfied" if obs["amount"] >= 20000 else "unsatisfied"
+    if caliber == "increase10":
+        previous = obs["previous"]
+        if not previous or previous <= 0:
+            return "unknown"
+        return "satisfied" if (obs["amount"] - previous) / previous >= 0.10 else "unsatisfied"
+    return "unknown"
+
+
+check("曲线超哥A·NAS：收盘 2100 亿 → 成立",
+      qxcg_a_nas("total2000", {"amount": 2100, "previous": 1800,
+                               "coversClose": True, "complete": True}) == "satisfied")
+check("曲线超哥A·NAS：盘中 2100 亿 → 未知（盘中累计不是单日成交额）",
+      qxcg_a_nas("total2000", {"amount": 2100, "previous": 1800,
+                               "coversClose": False, "complete": True}) == "unknown")
+check("曲线超哥A·NAS：收盘但逐股成交额不完整 → 未知（不拿残缺合计当全天）",
+      qxcg_a_nas("total2000", {"amount": 2100, "previous": 1800,
+                               "coversClose": True, "complete": False}) == "unknown")
+check("曲线超哥A·NAS：收盘同刻增额 10% 边界 → 成立",
+      qxcg_a_nas("increase10", {"amount": 1100, "previous": 1000,
+                                "coversClose": True, "complete": True}) == "satisfied")
+
 # A OR B，且绝不能被写成 AND
 check("曲线超哥：A 成立 B 未知 → 或关系成立", qxcg_combine("satisfied", "unknown") == "atLeastOneSatisfied")
 check("曲线超哥：A 未知 B 成立 → 或关系成立", qxcg_combine("unknown", "satisfied") == "atLeastOneSatisfied")

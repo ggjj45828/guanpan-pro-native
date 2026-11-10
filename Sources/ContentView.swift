@@ -5527,6 +5527,11 @@ struct SettingsView: View {
     @AppStorage(GuanpanMaxNAS.urlKey) private var fminuteURL = ""
     @State private var checkingFMinute = false
     @State private var fminuteStatus = ""
+    /// 全市场量能令牌：只进 Keychain，不跟账本备份走，也不写 UserDefaults。
+    @State private var marketTokenInput = ""
+    @State private var marketTokenSaved = NASMarketToken.hasToken
+    @State private var testingMarket = false
+    @State private var marketTestNote = ""
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var confirmNASDownload = false
@@ -5893,6 +5898,39 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
+        Section("全市场量能与宽度（可选 · 契约 v1）") {
+            HStack {
+                SecureField("F_MARKET_BREADTH_API_TOKEN（≥32 字符）", text: $marketTokenInput)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                PasteButton(payloadType: String.self) { values in
+                    if let value = values.first {
+                        marketTokenInput = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("从剪贴板粘贴市场量能令牌")
+            }
+            HStack(spacing: 14) {
+                Button("保存令牌") { saveMarketToken() }
+                    .disabled(marketTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button {
+                    Task { await testMarketBreadth() }
+                } label: {
+                    Label(testingMarket ? "取数中…" : "测试取数", systemImage: "chart.bar.xaxis")
+                }
+                .disabled(testingMarket)
+            }
+            if marketTokenSaved {
+                Text("令牌已存入本机 Keychain：不写 UserDefaults、不进账本备份、不拼进 URL。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if !marketTestNote.isEmpty {
+                Text(marketTestNote).font(.footnote).foregroundStyle(.secondary)
+            }
+            Text("NAS 8788 的 `/api/v1/market/*` 用 Bearer 令牌校验，与上面的同步口令是两回事。填好后曲线超哥页会自动取全市场成交额与涨跌家数；**盘中只显示累计与同刻对比，A 条件要等 15:00 收盘后才判定**。没配也不影响离线功能。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+
         Section("NAS 多设备同步") {
             HStack {
                 TextField("服务器地址，例如 http://192.168.1.20:8788", text: $nasURL)
@@ -6143,6 +6181,51 @@ struct SettingsView: View {
             } catch {
                 fminuteStatus = GuanpanMaxNAS.connectionHint(for: error)
             }
+        }
+    }
+
+    // MARK: - 全市场量能令牌
+
+    /// 令牌只进 Keychain。清空输入框再点保存 = 删除令牌。
+    private func saveMarketToken() {
+        do {
+            try NASMarketToken.save(marketTokenInput)
+            marketTokenSaved = NASMarketToken.hasToken
+            marketTokenInput = ""
+            marketTestNote = marketTokenSaved ? "令牌已保存。" : "已清除令牌。"
+        } catch {
+            marketTestNote = error.localizedDescription
+        }
+    }
+
+    /// 测试取数：只读一次 /api/v1/market/realtime，把关键字段摊出来，
+    /// 让人一眼确认「NAS 到底有没有给到全市场数据」，而不是只知道能连上。
+    @MainActor
+    private func testMarketBreadth() async {
+        testingMarket = true
+        marketTestNote = ""
+        defer { testingMarket = false }
+        do {
+            let snapshot = try await NASMarketBreadth.fetchLatest()
+            var lines: [String] = []
+            lines.append("契约版本 \(snapshot.apiVersion ?? 0) · 状态 \(snapshot.status ?? "—") · 新鲜度 \(snapshot.freshness ?? "—")")
+            lines.append("交易日 \(snapshot.tradingDate ?? "—") · 快照 \(snapshot.sampleClock ?? "—") · 范围 \(snapshot.marketScope ?? "—")")
+            if let amount = snapshot.sessionAmountYi {
+                lines.append("成交额 \(amount.num(0)) 亿" + (snapshot.coversClose ? "（收盘全天）" : "（盘中累计，未收盘）"))
+            } else {
+                lines.append("成交额未发布（逐股合计不完整）")
+            }
+            if let ratio = snapshot.turnoverChangeRatio {
+                lines.append("较前日同刻 \((ratio * 100).pct(2))")
+            }
+            lines.append("涨 \(snapshot.upCount ?? 0) / 跌 \(snapshot.downCount ?? 0) / 平 \(snapshot.flatCount ?? 0)")
+            if let coverage = snapshot.coveragePercent {
+                lines.append("覆盖 \(coverage.pct(1)) · 质量 \(snapshot.quality ?? "—")")
+            }
+            marketTestNote = lines.joined(separator: "\n")
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            marketTestNote = message
         }
     }
 

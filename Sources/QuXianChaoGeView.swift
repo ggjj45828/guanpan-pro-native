@@ -34,6 +34,13 @@ struct QuXianChaoGeView: View {
     @State private var todayTurnoverText = ""
     @State private var previousTurnoverText = ""
 
+    // 全市场量能与宽度（NAS 8788 · 契约 v1）
+    @State private var marketSnapshot: NASMarketSnapshot?
+    @State private var loadingMarket = false
+    @State private var marketFailureNote = ""
+    /// 手动刷新过才记时间，避免每一帧都重建字符串。
+    @State private var marketLoadedAt = ""
+
     // 仓位状态机
     @State private var currentState: QuXianChaoGe.PositionState = .observe
     @State private var journal: [QuXianChaoGe.PositionTransition] = []
@@ -60,6 +67,7 @@ struct QuXianChaoGeView: View {
     private var content: some View {
             List {
                 guidanceSection
+                marketSection
                 conditionSection
                 buyPointSection
                 positionSection
@@ -80,6 +88,13 @@ struct QuXianChaoGeView: View {
             // 主动检查：进页面就把 B 算出来，不用先点按钮。
             .task {
                 if bResult == nil { await runBCheck() }
+            }
+            // 量能快照同样进来就取一次；没配 NAS 或没配令牌时只是安静地留一句说明，
+            // 不弹窗、不阻断这一页其它内容（NAS 不可用不能使顾问失效）。
+            .task {
+                if marketSnapshot == nil, GuanpanMaxNAS.isConfigured, NASMarketToken.hasToken {
+                    await loadMarket()
+                }
             }
     }
 
@@ -198,6 +213,164 @@ struct QuXianChaoGeView: View {
             Text("这个模块是什么")
         }
         .plainCard(isLight: isLight)
+    }
+
+    // MARK: - 全市场量能与宽度（NAS 8788 · 契约 v1）
+
+    /// 作者方法里「以主要指数和市场整体量能观察大概率方向」这一条，过去只能靠人眼看。
+    /// 这块把 NAS 每分钟归档的全市场快照摊开：成交额、同刻对比、涨跌家数、覆盖率、质量。
+    /// 只描述市场环境，不输出买卖结论。
+    private var marketSection: some View {
+        Section {
+            if let snapshot = marketSnapshot {
+                marketContent(snapshot)
+            } else {
+                Text(loadingMarket
+                     ? "正在从 NAS 取全市场快照…"
+                     : "还没取到全市场快照。填好设置里的观盘max NAS 地址与市场量能令牌后，这里会显示真实归档的成交额与涨跌家数。")
+                    .font(.footnote)
+                    .foregroundStyle(palette.ink3)
+            }
+            if !marketFailureNote.isEmpty {
+                Text(marketFailureNote)
+                    .font(.footnote)
+                    .foregroundStyle(palette.ink2)
+            }
+            HStack(spacing: 10) {
+                Button {
+                    Task { await loadMarket() }
+                } label: {
+                    Label(loadingMarket ? "取数中…" : (marketSnapshot == nil ? "从 NAS 取量能与宽度" : "刷新全市场快照"),
+                          systemImage: "chart.bar.xaxis")
+                }
+                .disabled(loadingMarket)
+                Spacer(minLength: 4)
+                if !marketLoadedAt.isEmpty {
+                    Text(marketLoadedAt)
+                        .font(.caption2)
+                        .foregroundStyle(palette.ink3)
+                }
+            }
+        } header: {
+            Text("全市场量能与宽度（NAS 8788）")
+        } footer: {
+            Text("来自 NAS 每分钟归档的全市场快照。成交额是所选范围内 A 股逐股成交额合计，不等于交易所官方两市汇总；指数与 ETF 不混入。快照时刻是 NAS 抓取时间，上游报价时间戳拿不到时会明确标空，不拿抓取时间冒充行情源时间。")
+                .font(.footnote)
+                .foregroundStyle(palette.ink3)
+        }
+        .plainCard(isLight: isLight)
+    }
+
+    @ViewBuilder
+    private func marketContent(_ snapshot: NASMarketSnapshot) -> some View {
+        HStack(spacing: 8) {
+            Text("快照 \(snapshot.tradingDate ?? "—") \(snapshot.sampleClock ?? "—")")
+                .scaledFont(palette.fsRow, weight: .medium)
+                .foregroundStyle(palette.ink)
+            Spacer(minLength: 4)
+            marketStatusBadge(snapshot)
+        }
+        Text(snapshot.isObserved && snapshot.isFresh
+             ? "状态与新鲜度都由 NAS 判定，不按 HTTP 200 认可用。"
+             : "这份快照不是可用的实时观测：\(snapshot.status ?? "未知") / \(snapshot.freshness ?? "未知")。下面的数字只作历史参考。")
+            .font(.caption2)
+            .foregroundStyle(palette.ink3)
+
+        if let amount = snapshot.sessionAmountYi {
+            marketRow("成交额", amount.num(0) + " 亿" + (snapshot.coversClose ? "（收盘全天）" : "（盘中累计，未收盘）"))
+        } else {
+            marketRow("成交额", "未发布（逐股成交额未覆盖全部在范围股票）")
+        }
+        if let ratio = snapshot.turnoverChangeRatio {
+            marketRow("较前日同刻", (ratio * 100).pct(2))
+        }
+        if let five = snapshot.fiveDayAverageYi {
+            marketRow("前五日同刻均值", five.num(0) + " 亿")
+        }
+        marketRow("涨 / 跌 / 平", "\(marketCount(snapshot.upCount)) / \(marketCount(snapshot.downCount)) / \(marketCount(snapshot.flatCount))")
+        marketRow("涨超 3% / 跌超 3%", "\(marketCount(snapshot.up3Count)) / \(marketCount(snapshot.down3Count))")
+        marketRow("涨超 5% / 跌超 5%", "\(marketCount(snapshot.up5Count)) / \(marketCount(snapshot.down5Count))")
+        if let rising = snapshot.risingRatio {
+            marketRow("上涨占比", (rising * 100).pct(1))
+        }
+        if let coverage = snapshot.coveragePercent {
+            marketRow("样本覆盖", coverage.pct(1) + "（有效 \(marketCount(snapshot.validCount)) / 源 \(marketCount(snapshot.sourceTotal))）")
+        }
+        if let quality = snapshot.quality {
+            marketRow("数据质量", marketQualityText(quality))
+        }
+        Text(snapshot.asOfBasis ?? "NAS 未给数据截止说明")
+            .font(.caption2)
+            .foregroundStyle(palette.ink3)
+    }
+
+    private func marketRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .scaledFont(palette.fsRow)
+                .foregroundStyle(palette.ink2)
+            Spacer(minLength: 4)
+            Text(value)
+                .scaledFont(palette.fsRow, weight: .medium)
+                .foregroundStyle(palette.ink)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func marketCount(_ value: Int?) -> String {
+        guard let value else { return "—" }
+        return value.num(0)
+    }
+
+    private func marketQualityText(_ raw: String) -> String {
+        switch raw {
+        case "verified": return "verified（覆盖、宽度、成交额三项同时达标）"
+        case "partial": return "partial（有缺口，按缺口展示，不补齐）"
+        case "unavailable": return "unavailable（本次没能算出）"
+        default: return raw
+        }
+    }
+
+    private func marketStatusBadge(_ snapshot: NASMarketSnapshot) -> some View {
+        let healthy = snapshot.isObserved && snapshot.isFresh
+        let text: String = {
+            if snapshot.isObserved { return snapshot.isFresh ? "实时" : "已过期" }
+            if let status = snapshot.status, !status.isEmpty { return status }
+            return "不可用"
+        }()
+        return Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill((healthy ? palette.accent : palette.ink3).opacity(0.14)))
+            .foregroundStyle(healthy ? palette.accent : palette.ink2)
+    }
+
+    /// 取一次快照。失败不覆盖已有数据：断网时继续显示上一次取到的（并标明时间），
+    /// 不要把「连不上」当成「今天没有量能」。
+    @MainActor
+    private func loadMarket() async {
+        guard !loadingMarket else { return }
+        loadingMarket = true
+        marketFailureNote = ""
+        defer { loadingMarket = false }
+        do {
+            let snapshot = try await NASMarketBreadth.fetchLatest()
+            marketSnapshot = snapshot
+            marketLoadedAt = "取数于 " + Date.now.formatted(date: .omitted, time: .shortened)
+            if !snapshot.isObserved {
+                marketFailureNote = "NAS 判定这份快照状态为 \(snapshot.status ?? "未知")，不能当作今天的量能结论。"
+            } else if !snapshot.isFresh {
+                marketFailureNote = "快照已过期（\(snapshot.freshness ?? "未知")），可能不是当前交易时段的数据。"
+            }
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if marketSnapshot == nil {
+                marketFailureNote = message
+            } else {
+                marketFailureNote = "这次没刷新成功：\(message)（下面仍是上一次取到的快照）"
+            }
+        }
     }
 
     // MARK: - A/B 条件
@@ -351,7 +524,8 @@ struct QuXianChaoGeView: View {
     private var aEvaluation: QuXianChaoGe.AConditionResult {
         QuXianChaoGe.evaluateA(caliber: caliberChosen ? caliber : nil,
                                todayAmountYi: Double(todayTurnoverText.trimmingCharacters(in: .whitespaces)),
-                               previousAmountYi: Double(previousTurnoverText.trimmingCharacters(in: .whitespaces)))
+                               previousAmountYi: Double(previousTurnoverText.trimmingCharacters(in: .whitespaces)),
+                               observation: marketSnapshot?.aObservation)
     }
 
     private var bEvaluationVerdict: QuXianChaoGe.ConditionVerdict {

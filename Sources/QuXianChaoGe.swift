@@ -376,42 +376,102 @@ enum QuXianChaoGe {
         let caliberNote: String
     }
 
+    /// NAS 8788 快照 → A 条件的观测输入（纯数据，不依赖网络类型）。
+    ///
+    /// 三个限定必须一起带着，否则很容易把盘中数字当全天数字：
+    ///   · `sessionAmountYi` 盘中是「截至某分钟的累计」，不是全天；
+    ///   · `previousSameTimeAmountYi` 是**前一交易日同一时刻**的值，不是前一日全天；
+    ///   · `coversClose` 只有在最后一笔快照到 15:00 时才为 true。
+    struct AObservation {
+        let tradingDate: String
+        let sampleClock: String?
+        /// 亿元。盘中=累计，收盘=全天（仅在 coversClose 时成立）。
+        let sessionAmountYi: Double?
+        /// 亿元。前一交易日**同一时刻**的成交额。
+        let previousSameTimeAmountYi: Double?
+        /// 服务端算的同刻变化比例（0.1 表示 +10%）。
+        let sameTimeRatio: Double?
+        let coversClose: Bool
+        /// 成交额合计是否覆盖全部在范围股票。为 false 时那个「合计」是残缺的。
+        let amountIsComplete: Bool
+        let capturedAtText: String
+        let sourceNote: String
+
+        var clockLabel: String { sampleClock ?? "—" }
+    }
+
     /// 全市场成交额本机没有可信数据源，因此 A 只做「你录入 + 软件比较」，不替用户猜数。
+    /// 配了 NAS 8788 之后，才允许用真实归档数字，并且只在收盘后才判成立。
     static func evaluateA(caliber: ACaliber?,
                           todayAmountYi: Double?,
-                          previousAmountYi: Double?) -> AConditionResult {
+                          previousAmountYi: Double?,
+                          observation: AObservation? = nil) -> AConditionResult {
         guard let caliber else {
             return AConditionResult(verdict: .unknown,
                                     detail: "未选择放量口径：作者给过 2000 亿、2 万亿、较前日增额 10% 等情境参数，软件不擅自统一。",
                                     caliberNote: "口径未确定 → A 记为未知（不填 0、不猜成不成立）")
         }
-        guard let today = todayAmountYi, today > 0 else {
-            return AConditionResult(verdict: .unknown,
-                                    detail: "缺少当日全市场成交额，无法判定。",
-                                    caliberNote: caliber.sourceNote)
+        // 手填优先：你录的可能是官方两市汇总（口径与 NAS 的「沪深A股逐股合计」不同），
+        // 软件不替你把两个口径混成一个。
+        if let today = todayAmountYi, today > 0 {
+            return compare(caliber: caliber, today: today, previous: previousAmountYi, origin: nil)
         }
+        // 手填为空 → 用 NAS 真实归档，但受「必须已收盘」这条硬约束。
+        if let observation {
+            return evaluateAFromNAS(caliber: caliber, observation: observation)
+        }
+        return AConditionResult(verdict: .unknown,
+                                detail: "缺少当日全市场成交额，无法判定。可手填，或在设置里配好 NAS 8788 后自动取数。",
+                                caliberNote: caliber.sourceNote)
+    }
+
+    private static func evaluateAFromNAS(caliber: ACaliber, observation: AObservation) -> AConditionResult {
+        let note = "数据来自 NAS 8788 归档快照 · \(observation.capturedAtText) · \(observation.sourceNote)"
+        guard observation.coversClose else {
+            let intraday = observation.sessionAmountYi.map { "盘中累计 \(number($0)) 亿元（截至 \(observation.clockLabel)）" }
+                ?? "盘中累计成交额未取到"
+            let reference = observation.sameTimeRatio.map {
+                "；较前一交易日同刻 \(($0 * 100) >= 0 ? "+" : "")\(number($0 * 100))%（同刻对比，不是全天增额）"
+            } ?? ""
+            return AConditionResult(verdict: .unknown,
+                                    detail: "\(intraday)\(reference)。未到 15:00 收盘，A 不能确认 —— 盘中累计不等于单日成交额。",
+                                    caliberNote: note)
+        }
+        guard observation.amountIsComplete, let today = observation.sessionAmountYi, today > 0 else {
+            return AConditionResult(verdict: .unknown,
+                                    detail: "NAS 有收盘快照，但成交额合计不完整（逐股成交额没覆盖全部在范围股票），不能当成全天成交额。",
+                                    caliberNote: note)
+        }
+        // 收盘后同刻即 15:00，前一交易日同刻值就等于前一日全天成交额，此时才允许按增额口径比。
+        return compare(caliber: caliber,
+                       today: today,
+                       previous: observation.previousSameTimeAmountYi,
+                       origin: "NAS 收盘快照")
+    }
+
+    private static func compare(caliber: ACaliber, today: Double, previous: Double?, origin: String?) -> AConditionResult {
+        let originNote = origin.map { "\(caliber.sourceNote) 口径来源：\($0)。" } ?? caliber.sourceNote
         switch caliber {
         case .total2000, .total20000:
             guard let threshold = caliber.thresholdYi else {
-                return AConditionResult(verdict: .unknown, detail: "口径阈值缺失。", caliberNote: caliber.sourceNote)
+                return AConditionResult(verdict: .unknown, detail: "口径阈值缺失。", caliberNote: originNote)
             }
             let ok = today >= threshold
-            let detail = "今日 \(number(today)) 亿元 / 阈值 \(number(threshold)) 亿元"
+            let label = origin == nil ? "今日" : "今日（\(origin ?? "")）"
             return AConditionResult(verdict: ok ? .satisfied : .unsatisfied,
-                                    detail: detail,
-                                    caliberNote: caliber.sourceNote)
+                                    detail: "\(label) \(number(today)) 亿元 / 阈值 \(number(threshold)) 亿元",
+                                    caliberNote: originNote)
         case .increase10:
-            guard let previous = previousAmountYi, previous > 0 else {
+            guard let previous, previous > 0 else {
                 return AConditionResult(verdict: .unknown,
                                         detail: "判定增额需要前一交易日的全市场成交额。",
-                                        caliberNote: caliber.sourceNote)
+                                        caliberNote: originNote)
             }
             let ratio = (today - previous) / previous
             let ok = ratio >= 0.10
-            let detail = "今日 \(number(today)) 亿元 / 前日 \(number(previous)) 亿元 = \(number(ratio * 100))%"
             return AConditionResult(verdict: ok ? .satisfied : .unsatisfied,
-                                    detail: detail,
-                                    caliberNote: caliber.sourceNote)
+                                    detail: "今日 \(number(today)) 亿元 / 前日 \(number(previous)) 亿元 = \(number(ratio * 100))%",
+                                    caliberNote: originNote)
         }
     }
 
