@@ -2030,7 +2030,7 @@ struct TradeCSVImportView: View {
             .themedSheetBackground()
             .navigationTitle("导入成交历史")
             .navigationBarTitleDisplayMode(.inline)
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
             .keyboardDoneToolbar()
             .scrollDismissesKeyboard(.interactively)
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { result in
@@ -2635,7 +2635,12 @@ struct ETFIncomeCalendarView: View {
     private var isLight: Bool { AppTheme.palette(for: store.resolvedAppearance).isLight }
 
     var body: some View {
-        PageHost(embedded: embedded) {
+        PageHost(embedded: embedded) { pageContent }
+    }
+
+    /// 内容抽成独立属性：整段 List/表单包在 PageHost 的泛型闭包里容易触发
+    /// 「unable to type-check this expression in reasonable time」，拆一层就稳。
+    private var pageContent: some View {
             List {
                 Section {
                     HStack {
@@ -2719,9 +2724,8 @@ struct ETFIncomeCalendarView: View {
             .background(.clear)
             .navigationTitle("ETF 收益日历")
             .navigationBarTitleDisplayMode(.inline)
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } } }
             .task(id: monthKey) { await loadMonth() }
-        }
     }
 
     @MainActor private func loadMonth() async {
@@ -3376,7 +3380,7 @@ struct PortfolioScenarioView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("换仓情景试算")
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 
@@ -3467,7 +3471,7 @@ struct DividendCalendarView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .navigationTitle("分红日历")
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 }
@@ -3669,7 +3673,7 @@ struct ETFOverlapView: View {
             .background(.clear)
             .refreshFeedbackOverlay(refreshFeedback)
             .navigationTitle("ETF 持仓穿透")
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 }
@@ -3742,7 +3746,7 @@ struct AddCashSimulationView: View {
             .background(.clear)
             .navigationTitle("加仓试算")
             .keyboardDoneToolbar()
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
         }
     }
 
@@ -5321,7 +5325,12 @@ private struct StrategicGridPlannerView: View {
     private var selected: GridInstrument? { instruments.first { $0.code == code } }
 
     var body: some View {
-        PageHost(embedded: embedded) {
+        PageHost(embedded: embedded) { plannerContent }
+    }
+
+    /// 内容抽成独立属性：整段 List/表单包在 PageHost 的泛型闭包里容易触发
+    /// 「unable to type-check this expression in reasonable time」，拆一层就稳。
+    private var plannerContent: some View {
             Form {
                 Section("标的与预算") {
                     Picker("标的", selection: $code) {
@@ -5382,7 +5391,7 @@ private struct StrategicGridPlannerView: View {
             .navigationTitle("中长期网格计划")
             .toolbarBackground(.hidden, for: .navigationBar)
             .navigationBarTitleDisplayMode(.inline)
-            if !embedded { .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+            .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
             .onAppear {
                 if code.isEmpty, let first = instruments.first { code = first.code; selectInstrument(first.code) }
                 else { selectInstrument(code) }
@@ -5393,7 +5402,6 @@ private struct StrategicGridPlannerView: View {
                 do { _ = try await store.fetchDailyBars(code: code, count: 640, force: true) }
                 catch { message = "日线加载失败：\(error.localizedDescription)" }
             }
-        }
     }
 
     private func selectInstrument(_ value: String) {
