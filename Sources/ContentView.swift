@@ -5898,9 +5898,9 @@ struct SettingsView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
-        Section("全市场量能与宽度（可选 · 契约 v1）") {
+        Section("全市场量能与宽度（可选 · 契约 v1/v2 自动识别）") {
             HStack {
-                SecureField("F_MARKET_BREADTH_API_TOKEN（≥32 字符）", text: $marketTokenInput)
+                SecureField("令牌（这版部署可留空）", text: $marketTokenInput)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 PasteButton(payloadType: String.self) { values in
                     if let value = values.first {
@@ -5927,7 +5927,7 @@ struct SettingsView: View {
             if !marketTestNote.isEmpty {
                 Text(marketTestNote).font(.footnote).foregroundStyle(.secondary)
             }
-            Text("NAS 8788 的 `/api/v1/market/*` 用 Bearer 令牌校验，与上面的同步口令是两回事。填好后曲线超哥页会自动取全市场成交额与涨跌家数；**盘中只显示累计与同刻对比，A 条件要等 15:00 收盘后才判定**。没配也不影响离线功能。")
+            Text("`F-NAS-DEPLOYMENT-2026-11-10` 这版把 `/api/v1/market/*` 做成了公开只读路由，**令牌可以留空**，直接点「测试取数」就能取。只有 NAS 以后给这批路由加了鉴权（`PRO_SYNC_TOKEN`）才需要填。填好后曲线超哥页会自动取全市场成交额与涨跌家数；**盘中只显示累计与同刻对比，A 条件要等 NAS 确认收盘快照后才判定**。没配也不影响离线功能。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
 
@@ -6208,19 +6208,37 @@ struct SettingsView: View {
         do {
             let snapshot = try await NASMarketBreadth.fetchLatest()
             var lines: [String] = []
-            lines.append("契约版本 \(snapshot.apiVersion ?? 0) · 状态 \(snapshot.status ?? "—") · 新鲜度 \(snapshot.freshness ?? "—")")
-            lines.append("交易日 \(snapshot.tradingDate ?? "—") · 快照 \(snapshot.sampleClock ?? "—") · 范围 \(snapshot.marketScope ?? "—")")
+            lines.append("契约 v\(snapshot.contractVersion) · \(snapshot.schemaLabel) · 状态 \(snapshot.status ?? "—") · 新鲜度 \(snapshot.freshness ?? "—")")
+            lines.append("交易日 \(snapshot.tradingDate ?? "—") · 快照 \(snapshot.sampleClock ?? "—") · 范围 \(snapshot.scopeText)")
+            if let stage = snapshot.marketStage {
+                lines.append("市场阶段 \(stage)" + (snapshot.stanceLabel.map { " · \($0)" } ?? ""))
+            }
             if let amount = snapshot.sessionAmountYi {
-                lines.append("成交额 \(amount.num(0)) 亿" + (snapshot.coversClose ? "（收盘全天）" : "（盘中累计，未收盘）"))
+                lines.append("成交额 \(amount.num(0)) 亿" + (snapshot.coversClose ? "（收盘全天，NAS 已确认）" : "（盘中累计，未收盘）"))
+            } else if let partial = snapshot.partialAmountYi {
+                lines.append("成交额仅观测到 \(partial.num(0)) 亿 · 逐股合计不完整，不发布")
             } else {
                 lines.append("成交额未发布（逐股合计不完整）")
             }
             if let ratio = snapshot.turnoverChangeRatio {
-                lines.append("较前日同刻 \((ratio * 100).pct(2))")
+                lines.append("较前日同刻 \((ratio * 100).pct(2))（同刻对比，不是全天增额）")
             }
-            lines.append("涨 \(snapshot.upCount ?? 0) / 跌 \(snapshot.downCount ?? 0) / 平 \(snapshot.flatCount ?? 0)")
+            lines.append("涨 \(snapshot.upCount.map { "\($0)" } ?? "—") / 跌 \(snapshot.downCount.map { "\($0)" } ?? "—") / 平 \(snapshot.flatCount.map { "\($0)" } ?? "—")")
+            lines.append("A股 \(snapshot.stockTotal.map { "\($0)" } ?? "—") 只 · ETF候选 \(snapshot.etfTotal.map { "\($0)" } ?? "—") 只 · 有效 \(snapshot.validCount.map { "\($0)" } ?? "—")")
             if let coverage = snapshot.coveragePercent {
-                lines.append("覆盖 \(coverage.pct(1)) · 质量 \(snapshot.quality ?? "—")")
+                lines.append("覆盖 \(coverage.pct(1)) · 质量 \(snapshot.quality ?? "—") · 收盘确认 \(snapshot.closeConfirmed ? "是" : "否")")
+            }
+            if let a = snapshot.aStatus {
+                lines.append("作者 A：\(a)")
+            }
+            if let b = snapshot.bStatus {
+                lines.append("作者 B：\(b)")
+            }
+            if let mainline = snapshot.mainlineClarity {
+                lines.append("主线 \(mainline)" + (snapshot.rotationState.map { " · 轮动 \($0)" } ?? ""))
+            }
+            if snapshot.marketCommonAmountYi == nil, let reason = snapshot.marketCommonReason {
+                lines.append("两市汇总：\(reason)")
             }
             marketTestNote = lines.joined(separator: "\n")
         } catch {

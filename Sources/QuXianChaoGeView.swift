@@ -254,7 +254,7 @@ struct QuXianChaoGeView: View {
         } header: {
             Text("全市场量能与宽度（NAS 8788）")
         } footer: {
-            Text("来自 NAS 每分钟归档的全市场快照。成交额是所选范围内 A 股逐股成交额合计，不等于交易所官方两市汇总；指数与 ETF 不混入。快照时刻是 NAS 抓取时间，上游报价时间戳拿不到时会明确标空，不拿抓取时间冒充行情源时间。")
+            Text("来自 NAS 每分钟归档的全市场快照，采集范围是沪深 A 股 + ETF 候选（含北交所）。成交额是范围内 A 股逐股成交额合计，不等于交易所官方两市汇总；指数与 ETF 不混入这个合计。快照时刻取自 NAS 的采集时间，上游报价时间戳拿不到时会明确标空，不拿抓取时间冒充行情源时间。")
                 .font(.footnote)
                 .foregroundStyle(palette.ink3)
         }
@@ -270,22 +270,29 @@ struct QuXianChaoGeView: View {
             Spacer(minLength: 4)
             marketStatusBadge(snapshot)
         }
-        Text(snapshot.isObserved && snapshot.isFresh
-             ? "状态与新鲜度都由 NAS 判定，不按 HTTP 200 认可用。"
+        Text(snapshot.isObserved && (snapshot.isFresh || snapshot.isLastSession)
+             ? "状态、新鲜度、是否已收盘都由 NAS 判定，不按 HTTP 200 认可用。"
              : "这份快照不是可用的实时观测：\(snapshot.status ?? "未知") / \(snapshot.freshness ?? "未知")。下面的数字只作历史参考。")
             .font(.caption2)
             .foregroundStyle(palette.ink3)
 
+        // NAS v2 直接给了市场阶段与操作倾向（软件量化定义），照原样展示、不加解释。
+        if let stage = snapshot.marketStage {
+            marketRow("市场阶段", stage)
+        }
+        if let stance = snapshot.stanceLabel {
+            marketRow("操作倾向", stance)
+        }
+
         if let amount = snapshot.sessionAmountYi {
             marketRow("成交额", amount.num(0) + " 亿" + (snapshot.coversClose ? "（收盘全天）" : "（盘中累计，未收盘）"))
+        } else if let partial = snapshot.partialAmountYi {
+            marketRow("成交额", "仅观测到 \(partial.num(0)) 亿 · 逐股合计不完整，不发布合计值")
         } else {
             marketRow("成交额", "未发布（逐股成交额未覆盖全部在范围股票）")
         }
         if let ratio = snapshot.turnoverChangeRatio {
-            marketRow("较前日同刻", (ratio * 100).pct(2))
-        }
-        if let five = snapshot.fiveDayAverageYi {
-            marketRow("前五日同刻均值", five.num(0) + " 亿")
+            marketRow("较前日同刻", (ratio * 100).pct(2) + "（同刻对比，不是全天增额）")
         }
         marketRow("涨 / 跌 / 平", "\(marketCount(snapshot.upCount)) / \(marketCount(snapshot.downCount)) / \(marketCount(snapshot.flatCount))")
         marketRow("涨超 3% / 跌超 3%", "\(marketCount(snapshot.up3Count)) / \(marketCount(snapshot.down3Count))")
@@ -294,12 +301,41 @@ struct QuXianChaoGeView: View {
             marketRow("上涨占比", (rising * 100).pct(1))
         }
         if let coverage = snapshot.coveragePercent {
-            marketRow("样本覆盖", coverage.pct(1) + "（有效 \(marketCount(snapshot.validCount)) / 源 \(marketCount(snapshot.sourceTotal))）")
+            marketRow("样本覆盖", coverage.pct(1) + "（有效 \(marketCount(snapshot.validCount)) / A股 \(marketCount(snapshot.stockTotal)) · ETF候选 \(marketCount(snapshot.etfTotal))）")
         }
         if let quality = snapshot.quality {
             marketRow("数据质量", marketQualityText(quality))
         }
-        Text(snapshot.asOfBasis ?? "NAS 未给数据截止说明")
+        // 作者 A/B 条件：NAS 用完整快照算的结论，原样展示，不在这里二次判定。
+        if let a = snapshot.aStatus {
+            marketRow("作者条件 A（量能）", a)
+        }
+        if let b = snapshot.bStatus {
+            marketRow("作者条件 B（指数）", b)
+        }
+        if snapshot.intradayCandidateOnly && !snapshot.closeConfirmed {
+            Text("盘中只作候选：NAS 未确认收盘快照，A 条件不会在这里判成立。")
+                .font(.caption2)
+                .foregroundStyle(palette.ink3)
+        }
+        if let rotation = snapshot.rotationState {
+            marketRow("板块轮动", rotation + "（软件量化定义）")
+        }
+        if let mainline = snapshot.mainlineClarity {
+            marketRow("主线清晰度", mainline + "（软件量化定义）")
+        }
+        if let risk = snapshot.riskLevel {
+            marketRow("数据风险", risk)
+        }
+        // 两市成交额汇总口径：NAS 未接入可靠源时恒为 null，绝不拿逐股合计冒充。
+        if let common = snapshot.marketCommonAmountYi {
+            marketRow("两市成交额", common.num(0) + " 亿（独立汇总口径）")
+        } else if let reason = snapshot.marketCommonReason {
+            Text("两市成交额汇总额：\(reason)")
+                .font(.caption2)
+                .foregroundStyle(palette.ink3)
+        }
+        Text("数据源 \(snapshot.source ?? "—") · 契约 v\(snapshot.contractVersion)")
             .font(.caption2)
             .foregroundStyle(palette.ink3)
     }
@@ -324,26 +360,41 @@ struct QuXianChaoGeView: View {
 
     private func marketQualityText(_ raw: String) -> String {
         switch raw {
-        case "verified": return "verified（覆盖、宽度、成交额三项同时达标）"
-        case "partial": return "partial（有缺口，按缺口展示，不补齐）"
-        case "unavailable": return "unavailable（本次没能算出）"
-        default: return raw
+        case "verified", "good":
+            return "good（覆盖、宽度、成交额三项同时达标）"
+        case "partial":
+            return "partial（有缺口，按缺口展示，不补齐）"
+        case "stale":
+            return "stale（快照已过期，只作历史参考）"
+        case "unavailable":
+            return "unavailable（本次没能算出）"
+        default:
+            return raw
         }
     }
 
     private func marketStatusBadge(_ snapshot: NASMarketSnapshot) -> some View {
-        let healthy = snapshot.isObserved && snapshot.isFresh
+        // NAS v2 的 status 是 available / closed / stale / unavailable，
+        // freshness 是 fresh-at-fetch / last-session / stale，两维都要读。
+        let usable = snapshot.isObserved && (snapshot.isFresh || snapshot.isLastSession)
         let text: String = {
-            if snapshot.isObserved { return snapshot.isFresh ? "实时" : "已过期" }
-            if let status = snapshot.status, !status.isEmpty { return status }
-            return "不可用"
+            switch (snapshot.status ?? "").lowercased() {
+            case "closed": return "收盘快照"
+            case "available": return snapshot.isLastSession ? "上一交易日" : (snapshot.isFresh ? "实时" : "已过期")
+            case "stale": return "已过期"
+            case "unavailable": return "不可用"
+            case "observed": return snapshot.isFresh ? "实时" : "已过期"
+            default:
+                if let status = snapshot.status, !status.isEmpty { return status }
+                return "不可用"
+            }
         }()
         return Text(text)
             .font(.caption2)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(Capsule().fill((healthy ? palette.accent : palette.ink3).opacity(0.14)))
-            .foregroundStyle(healthy ? palette.accent : palette.ink2)
+            .background(Capsule().fill((usable ? palette.accent : palette.ink3).opacity(0.14)))
+            .foregroundStyle(usable ? palette.accent : palette.ink2)
     }
 
     /// 取一次快照。失败不覆盖已有数据：断网时继续显示上一次取到的（并标明时间），
@@ -360,6 +411,9 @@ struct QuXianChaoGeView: View {
             marketLoadedAt = "取数于 " + Date.now.formatted(date: .omitted, time: .shortened)
             if !snapshot.isObserved {
                 marketFailureNote = "NAS 判定这份快照状态为 \(snapshot.status ?? "未知")，不能当作今天的量能结论。"
+            } else if snapshot.isLastSession {
+                // 收盘后 NAS 沿用上一场快照：这是「有日期的收盘结论」，不是坏数据。
+                marketFailureNote = "收盘后沿用最近交易日快照（\(snapshot.tradingDate ?? "—") 收盘），不是当前盘中数据。"
             } else if !snapshot.isFresh {
                 marketFailureNote = "快照已过期（\(snapshot.freshness ?? "未知")），可能不是当前交易时段的数据。"
             }
